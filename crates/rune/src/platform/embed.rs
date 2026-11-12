@@ -301,19 +301,31 @@ impl<S: 'static> LayerHost<S> {
         self.core.resize(self.rt.core_mut(), viewport, scale);
     }
 
-    /// Steps animations and layout to `Instant::now()` and presents one Metal frame, following
-    /// the shared [`crate::frame::host_step`] order.
+    /// [`Self::frame_at`] for a host with no presentation time: the frame is stepped to now.
+    pub fn frame(&mut self) -> EmbedFrame {
+        self.frame_to(None)
+    }
+
+    /// Steps animations and layout to `target`, the time the frame will be on screen, and
+    /// presents one Metal frame, following the shared [`crate::frame::host_step`] order. A
+    /// display link's target time is the one to pass (`CADisplayLink.targetTimestamp`, as far
+    /// ahead of now as it is of `CACurrentMediaTime()`), so motion is drawn where it will be
+    /// when the frame shows, and a late frame loses no time.
     ///
     /// A frame that gets no drawable costs that frame, never the host: a covered surface is
     /// tried again on a wait that doubles, an outdated one is configured again, and one the GPU
     /// refuses to configure rests until a resize. `EmbedFrame::wake_after_secs` carries the wait.
-    pub fn frame(&mut self) -> EmbedFrame {
+    pub fn frame_at(&mut self, target: Instant) -> EmbedFrame {
+        self.frame_to(Some(target))
+    }
+
+    fn frame_to(&mut self, target: Option<Instant>) -> EmbedFrame {
         let now = Instant::now();
         if !self.core.suspended && self.core.backoff.waiting(now) {
             return EmbedFrame { wake_after_secs: self.core.wake_after(self.rt.core(), now), ..EmbedFrame::default() };
         }
         let _ = self.core.backoff.step(BackoffEvent::Lapsed);
-        embed_frame::run_embed_frame(self).into()
+        embed_frame::run_embed_frame_at(self, target).into()
     }
 }
 
@@ -425,5 +437,9 @@ mod tests {
         let stats = host.surface_stats();
         assert_eq!((stats.totals.redraws, stats.totals.presents, stats.totals.failed()), (1, 1, 0));
         assert_eq!(host.runtime().surface_stats().map(|s| s.totals.presents), Some(1));
+        // A frame aimed at a display tick ahead of now draws too, and the clock keeps its target.
+        let target = crate::time::Instant::now() + std::time::Duration::from_millis(8);
+        assert!(host.frame_at(target).drew);
+        assert_eq!(host.core.clock.last(), target);
     }
 }

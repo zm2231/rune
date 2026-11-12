@@ -299,3 +299,12 @@ fn a_missed_drawable_that_waits_stops_ticking_and_wakes_at_the_retry() {
     let out = run_embed_frame(&mut surface);
     assert_eq!(out.wake_after_secs, Some(0.25), "with no timer the retry wakes the host");
 }
+
+#[test]
+fn a_frame_aimed_at_a_display_tick_steps_the_clock_to_it() {
+    let start = Instant::now();
+    let mut surface = MockEmbedSurface::new(start);
+    let target = Instant::now() + Duration::from_millis(8);
+    assert!(run_embed_frame_at(&mut surface, Some(target)).drew);
+    assert_eq!(surface.clock.last(), target, "the clock steps to when the frame will show");
+}

@@ -47,6 +47,8 @@ pub(crate) trait EmbedSurface {
 
 struct EmbedFrameHost<'a, E: EmbedSurface> {
     surface: &'a mut E,
+    /// When the frame will be on screen, from the host's display link; `None` steps to now.
+    target: Option<Instant>,
     t0: Option<Instant>,
     summary: FrameSummary,
 }
@@ -84,16 +86,17 @@ impl<E: EmbedSurface> FrameHost for EmbedFrameHost<'_, E> {
     fn step_runtime(&mut self) -> StepInfo {
         let t0 = Instant::now();
         self.t0 = Some(t0);
+        let target = self.target.unwrap_or(t0);
         let compositing = self.surface.compositor_animating();
-        let (animating, dt, update_ms) = self.surface.with_driver(|clock, rt, app| {
-            step_and_flush(clock, rt, app, t0, compositing)
+        let (animating, dt, _) = self.surface.with_driver(|clock, rt, app| {
+            step_and_flush(clock, rt, app, target, compositing)
         });
         StepInfo {
             runtime_animating: animating,
             animating,
             dt,
-            update_ms,
-            presents_at: None,
+            update_ms: t0.elapsed().as_secs_f64() * 1000.0,
+            presents_at: self.target,
         }
     }
 
@@ -167,10 +170,18 @@ impl<E: EmbedSurface> FrameHost for EmbedFrameHost<'_, E> {
 }
 
 /// Runs one embedded layer frame through the shared [`crate::frame::host_step::run`] sequencer.
-#[inline]
+#[cfg(test)]
 pub(crate) fn run_embed_frame<E: EmbedSurface>(surface: &mut E) -> FrameSummary {
+    run_embed_frame_at(surface, None)
+}
+
+/// [`run_embed_frame`], stepping the runtime to `target`, the time the frame will be on screen,
+/// when the host's display link gives one.
+#[inline]
+pub(crate) fn run_embed_frame_at<E: EmbedSurface>(surface: &mut E, target: Option<Instant>) -> FrameSummary {
     let mut host = EmbedFrameHost {
         surface,
+        target,
         t0: None,
         summary: FrameSummary::default(),
     };

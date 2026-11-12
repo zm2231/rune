@@ -196,7 +196,7 @@ impl EmbedSurface for MockEmbedSurface {
 
     fn retry_after(&self, _now: Instant) -> Option<f64> { self.retry }
 
-    fn serves(&self) -> Serves { Serves { clipboard: self.clipboard } }
+    fn serves(&self) -> Serves { Serves { clipboard: self.clipboard, ..Serves::default() } }
 
     fn receive_clipboard(&mut self) {
         if self.clipboard { self.log.push("receive".into()); }

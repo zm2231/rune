@@ -82,6 +82,8 @@ struct LayerHostCore {
     meter: SurfaceMeter,
     /// The system clipboard, for a host that asked for it.
     clipboard: Option<crate::clipboard::Client>,
+    /// The host shows pop-up menus itself.
+    popup_menus: bool,
 }
 
 impl LayerHostCore {
@@ -119,6 +121,7 @@ impl LayerHostCore {
             backoff: Backoff::default(),
             meter: SurfaceMeter::new(title, Arc::default()),
             clipboard: None,
+            popup_menus: false,
         };
         Ok((core, size, scale, now))
     }
@@ -303,6 +306,14 @@ impl<S: 'static> LayerHost<S> {
         self
     }
 
+    /// The host shows pop-up menus itself: it reads [`Runtime::popup_menu`] after a frame, puts
+    /// the menu up and answers with [`Runtime::resolve_popup`]. Without this every menu a
+    /// handler asks for is answered `None` at once.
+    pub fn with_popup_menus(mut self) -> Self {
+        self.core.popup_menus = true;
+        self
+    }
+
     /// A key from the host's keyboard. With [`LayerHost::with_system_clipboard`], the paste
     /// shortcut over something that takes a paste reads the system clipboard, as in an app's
     /// own window; every other key is [`Runtime::key`].
@@ -365,7 +376,7 @@ impl<S: 'static> EmbedSurface for LayerHost<S> {
     fn missed(&mut self, missed: Missed, now: Instant) -> bool { self.core.missed(missed, now) }
     fn retry_after(&self, now: Instant) -> Option<f64> { self.core.retry_after(now) }
     fn presented(&mut self, ticking: bool) { self.core.presented(ticking) }
-    fn serves(&self) -> Serves { Serves { clipboard: self.core.clipboard.is_some() } }
+    fn serves(&self) -> Serves { Serves { clipboard: self.core.clipboard.is_some(), popup_menus: self.core.popup_menus } }
     fn receive_clipboard(&mut self) {
         if let Some(clipboard) = &self.core.clipboard { clipboard.receive_core(self.rt.core_mut()); }
     }

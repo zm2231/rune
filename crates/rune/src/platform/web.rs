@@ -24,15 +24,12 @@ pub(crate) mod platform;
 pub(crate) use rune_text::segmenter;
 
 thread_local! {
-    static INSETS: std::cell::Cell<[f32; 4]> = const { std::cell::Cell::new([0.0; 4]) };
     /// The largest viewport's height in CSS points (`100lvh`): a page's band is sized from it so
     /// a phone's toolbar coming and going never changes the band.
     static LARGE_VIEWPORT: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
     /// The page's primary pointer can't hover (CSS `(hover: none)`): a phone's or tablet's touch screen.
     static PRIMARY_POINTER: std::cell::Cell<PrimaryPointer> = const { std::cell::Cell::new(PrimaryPointer::Hover) };
 }
-
-pub(crate) fn safe_area() -> [f32; 4] { INSETS.get() }
 
 /// The largest viewport's height in CSS points, or 0 before the browser has reported one.
 pub(crate) fn large_viewport() -> f32 { LARGE_VIEWPORT.get() }
@@ -578,7 +575,6 @@ impl ApplicationHandler<Wake> for Browser {
         if let Some(Ok((gpu, _))) = self.pending.borrow_mut().take() { gpu.device.destroy(); }
         if let Some(window) = self.window.take() && self.owns_canvas && let Some(canvas) = window.canvas() { canvas.remove(); }
         std::mem::take(&mut self.borrowed).give_back();
-        INSETS.set([0.0; 4]);
         LARGE_VIEWPORT.set(0.0);
         PRIMARY_POINTER.set(PrimaryPointer::Hover);
         page::vacate();

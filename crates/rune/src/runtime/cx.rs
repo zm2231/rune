@@ -51,6 +51,7 @@ pub fn commit_generation() -> u64 {
 pub(crate) struct CxCore {
     pub(super) env: Env,
     pub(super) titlebar_inset: f32,
+    pub(super) safe_area: [f32; 4],
     pub(super) chrome: crate::ChromeInsets,
     /// `Cx::caption_color`, read once the view returns.
     pub(super) caption_color: Option<Color>,
@@ -92,6 +93,7 @@ impl CxCore {
 
     pub(crate) fn clear_chrome(&mut self) {
         self.titlebar_inset = 0.0;
+        self.safe_area = [0.0; 4];
         self.chrome = crate::ChromeInsets::default();
     }
 
@@ -122,12 +124,7 @@ impl CxCore {
     pub(crate) fn set_titlebar(&mut self, titlebar: crate::Titlebar) { self.titlebar.titlebar = Some(titlebar); }
     pub(crate) fn accent(&self) -> Color { self.system_accent.accent(self.env.system_dark) }
     pub(crate) fn focus_color(&self) -> Color { self.system_accent.focus(self.env.system_dark) }
-    pub(crate) fn safe_area(&self) -> [f32; 4] {
-        #[cfg(target_arch = "wasm32")]
-        { crate::platform::web::safe_area() }
-        #[cfg(not(target_arch = "wasm32"))]
-        { [0.0; 4] }
-    }
+    pub(crate) fn safe_area(&self) -> [f32; 4] { self.safe_area }
     pub(crate) fn hover_none(&self) -> bool {
         #[cfg(target_arch = "wasm32")]
         { crate::platform::web::hover_none() }
@@ -289,8 +286,10 @@ impl<S> Cx<S> {
     /// their own draw their default focus ring in it.
     #[inline(always)]
     pub fn focus_color(&self) -> Color { self.core.focus_color() }
-    /// Browser safe-area insets in points, in top/right/bottom/left order. Zero on native.
-    /// Apply these inside a full-canvas root so backgrounds can extend to the screen edges.
+    /// What the screen keeps from the app at each edge, in points, in top/right/bottom/left
+    /// order: an iPhone's status bar, home indicator and rounded corners, a browser's notch.
+    /// Zero on the desktop. Apply these inside a full-canvas root so backgrounds can extend to
+    /// the screen edges. A `memo` closure that reads it needs nothing in its version.
     #[inline(always)]
     pub fn safe_area(&self) -> [f32; 4] { self.core.safe_area() }
     /// The primary pointer can't hover: a browser's `(hover: none)`, a phone's or tablet's touch

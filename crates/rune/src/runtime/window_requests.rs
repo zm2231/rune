@@ -10,6 +10,8 @@ pub(crate) struct HostState {
     pub(in crate::runtime) zoom: zoom::Zoom,
     pub(in crate::runtime) titlebar: titlebar::Titlebar,
     pub(in crate::runtime) titlebar_inset: f32,
+    /// What [`Cx::safe_area`] reports, in the window's points.
+    pub(in crate::runtime) safe_area: system_settings::SafeArea,
     pub(in crate::runtime) system_reduced_motion: bool,
     pub(in crate::runtime) system_accent: crate::SystemAccent,
     /// What [`Cx::system_contrast`] reports.
@@ -69,6 +71,7 @@ impl HostState {
             zoom: zoom::Zoom { k: 1.0, window: viewport, window_scale: env.scale },
             titlebar: Default::default(),
             titlebar_inset: 0.0,
+            safe_area: Default::default(),
             system_reduced_motion: false,
             system_accent: crate::SystemAccent::DEFAULT,
             system_contrast: None,

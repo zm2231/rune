@@ -207,6 +207,8 @@ impl<S: 'static> Runtime<S> {
     #[inline(always)]
     pub fn set_titlebar_inset(&mut self, points: f32) { self.core_mut().set_titlebar_inset(points); }
     #[inline(always)]
+    pub fn set_safe_area(&mut self, insets: [f32; 4]) -> bool { self.core_mut().set_safe_area(insets) }
+    #[inline(always)]
     pub(crate) fn system_accent(&self) -> crate::SystemAccent { self.core().system_accent() }
     #[inline(always)]
     pub fn set_system_accent(&mut self, accent: crate::SystemAccent) { self.core_mut().set_system_accent(accent); }

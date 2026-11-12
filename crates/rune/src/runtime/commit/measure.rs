@@ -55,6 +55,7 @@ impl RuntimeCore {
             system_reduced_motion: self.host.system_reduced_motion,
             // The window's controls are in its points; the view's are over the zoom.
             titlebar_inset: self.host.titlebar_inset / self.host.zoom.k,
+            safe_area: self.host.safe_area.over(self.host.zoom.k),
             chrome: self.host.titlebar.insets.zoomed(self.host.zoom.k),
             caption: self.host.titlebar.caption,
             system_accent: self.host.system_accent,
@@ -178,11 +179,13 @@ impl Measurement<'_> {
         (crate::titlebar::frame(root, &caption, symbol, (self.env.scale, self.zoom), self.fit_height), cx)
     }
 
-    /// What a memo scope hashes of the window's controls (`Cx::titlebar_inset`,
-    /// `Cx::chrome_insets`), so memos that read them rebuild when they change.
-    pub(in crate::runtime) fn chrome_bits(&self) -> [u32; 4] {
+    /// What a memo scope hashes of the window's controls and the screen's edges
+    /// (`Cx::titlebar_inset`, `Cx::chrome_insets`, `Cx::safe_area`), so memos that read them
+    /// rebuild when they change.
+    pub(in crate::runtime) fn chrome_bits(&self) -> [u32; 8] {
         let [leading, trailing, height] = self.chrome.bits();
-        [self.titlebar_inset.to_bits(), leading, trailing, height]
+        let [top, right, bottom, left] = self.safe_area.map(f32::to_bits);
+        [self.titlebar_inset.to_bits(), leading, trailing, height, top, right, bottom, left]
     }
 
     pub(in crate::runtime) fn finish(self, tx: &Tx) -> Measured {
@@ -450,6 +453,7 @@ impl Measurement<'_> {
         let fresh_cx = |this: &Self| cx::CxCore {
             env: this.env,
             titlebar_inset: this.titlebar_inset,
+            safe_area: this.safe_area,
             chrome: this.chrome,
             caption_color: None,
             titlebar: Default::default(),

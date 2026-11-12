@@ -223,6 +223,8 @@ mod truncate_fade_tests;
 #[cfg(test)]
 mod line_clamp_tests;
 #[cfg(test)]
+mod safe_area_tests;
+#[cfg(test)]
 mod aspect_fit_tests;
 #[cfg(test)]
 mod anchor_fit_tests;

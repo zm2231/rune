@@ -6,13 +6,14 @@ use std::sync::{Arc, OnceLock};
 
 use crate::compose::{Compositor, Frame};
 use crate::frame::clock::FrameClock;
+use crate::frame::surface_stats::{Pacing, SurfaceMeter, SurfaceStats};
 use crate::frame::host_step::{self, Acquire};
 use crate::platform::embed_frame::{self, EmbedSurface, FrameSummary};
 use crate::render::{Gpu, Renderer};
 use crate::runtime::{AppDriver, Env, Runtime, RuntimeCore, Waker};
 use crate::time::Instant;
 use crate::tooling::{AppSpec, runtime_for};
-use crate::window::Missed;
+use crate::window::{Backoff, BackoffEvent, Missed};
 
 static SHARED_GPU: OnceLock<Result<Arc<Gpu>, String>> = OnceLock::new();
 
@@ -74,10 +75,15 @@ struct LayerHostCore {
     renderer: Renderer,
     clock: FrameClock,
     suspended: bool,
+    /// Whether the surface took its last configuration. One that didn't has no drawable to give.
+    configured: bool,
+    /// The wait after a frame that got no drawable.
+    backoff: Backoff,
+    meter: SurfaceMeter,
 }
 
 impl LayerHostCore {
-    unsafe fn new(layer: *mut c_void, viewport: (f32, f32), scale: f32) -> Result<(Self, (f32, f32), f32, Instant), String> {
+    unsafe fn new(layer: *mut c_void, title: &str, viewport: (f32, f32), scale: f32) -> Result<(Self, (f32, f32), f32, Instant), String> {
         if layer.is_null() {
             return Err("null CAMetalLayer pointer".into());
         }
@@ -107,6 +113,9 @@ impl LayerHostCore {
             renderer,
             clock: FrameClock::new(now),
             suspended: viewport.0 <= 0.0 || viewport.1 <= 0.0,
+            configured: true,
+            backoff: Backoff::default(),
+            meter: SurfaceMeter::new(title, Arc::default()),
         };
         Ok((core, size, scale, now))
     }
@@ -116,6 +125,7 @@ impl LayerHostCore {
         rt.set_os_drag(false);
         rt.wall_start = Some(now);
         rt.frame.record_events = false;
+        rt.host.surface_stats = Some(self.meter.shared());
         let target_format = if rt.srgb_blend() { self.config.format.remove_srgb_suffix() } else { self.config.format };
         crate::window::rebuild_renderer_core(&self.gpu.device, &mut self.renderer, target_format, rt);
     }
@@ -130,33 +140,67 @@ impl LayerHostCore {
         let max_dim = self.gpu.device.limits().max_texture_dimension_2d.max(1);
         let px_w = ((viewport.0 * scale).round() as u32).clamp(1, max_dim);
         let px_h = ((viewport.1 * scale).round() as u32).clamp(1, max_dim);
-        if self.config.width != px_w || self.config.height != px_h {
+        if self.config.width != px_w || self.config.height != px_h || !self.configured {
             self.config.width = px_w;
             self.config.height = px_h;
-            if let Err(error) = crate::window::configure(&self.surface, &self.gpu, &self.config) {
-                eprintln!("rune: embedded layer surface refused its new size: {error}");
-            }
+            self.configure();
         }
         rt.set_viewport((px_w as f32 / scale, px_h as f32 / scale), scale);
     }
 
-    /// Acquires the next drawable, reconfiguring and retrying once on `Outdated`/`Lost`.
-    fn acquire(&mut self) -> Acquire<wgpu::SurfaceTexture> {
-        let mut retries = 1u8;
-        loop {
-            match self.surface.get_current_texture() {
-                wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => return Acquire::Ready(f),
-                wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                    if let Err(error) = crate::window::configure(&self.surface, &self.gpu, &self.config) {
-                        eprintln!("rune: embedded layer surface refused reconfiguration: {error}");
-                        return Acquire::Missed(Missed::Unconfigured);
-                    }
-                    if retries == 0 { return Acquire::Missed(Missed::Outdated); }
-                    retries -= 1;
-                }
-                _ => return Acquire::Missed(Missed::Timeout),
+    /// Configures the surface, saying so when the GPU refuses: the host then draws nothing
+    /// until a resize configures it again.
+    fn configure(&mut self) {
+        self.configured = match crate::window::configure(&self.surface, &self.gpu, &self.config) {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!("rune: an embedded surface refused its configuration: {error}");
+                false
             }
+        };
+        let _ = self.backoff.step(BackoffEvent::Lapsed);
+    }
+
+    /// Seconds until the host should call `frame` again with nothing moving: the runtime's
+    /// next timer, or the retry of a frame that got no drawable, whichever is sooner.
+    fn wake_after(&self, rt: &RuntimeCore, now: Instant) -> Option<f64> {
+        sooner(embed_frame::wake_after_secs(rt), self.retry_after(now))
+    }
+
+    /// Seconds until a frame that got no drawable is tried again.
+    fn retry_after(&self, now: Instant) -> Option<f64> {
+        self.backoff.deadline().map(|at| at.saturating_duration_since(now).as_secs_f64())
+    }
+
+    /// The next drawable, as a window takes one: an outdated or lost surface is configured
+    /// again and tried once more, and one whose configuration didn't take is never asked.
+    fn acquire(&mut self) -> Acquire<wgpu::SurfaceTexture> {
+        self.meter.redraw(true);
+        match crate::window::acquire_checked(&self.surface, &self.gpu, &self.config, self.configured, 1, &mut self.meter, true) {
+            Ok(frame) => Acquire::Ready(frame),
+            Err(missed) => Acquire::Missed(missed),
         }
+    }
+
+    /// A frame got no drawable at `now`. One the GPU refuses to configure rests until a resize;
+    /// every other miss waits, the host's display link pacing a timeout's retry. Returns whether
+    /// the surface now waits.
+    fn missed(&mut self, missed: Missed, now: Instant) -> bool {
+        self.meter.set_pacing(Pacing::Idle);
+        if missed == Missed::Unconfigured {
+            self.configured = false;
+            return true;
+        }
+        let _ = self.backoff.step(BackoffEvent::Missed { missed, paced: true, now });
+        self.backoff.deadline().is_some()
+    }
+
+    /// A frame presented: the waits start over, and the display link keeps pacing while
+    /// another frame follows.
+    fn presented(&mut self, ticking: bool) {
+        self.meter.presented();
+        let _ = self.backoff.step(BackoffEvent::Presented);
+        self.meter.set_pacing(if ticking { Pacing::DisplayLink } else { Pacing::Idle });
     }
 
     fn reblend(&mut self, rt: &mut RuntimeCore) -> bool {
@@ -189,6 +233,14 @@ impl LayerHostCore {
     }
 }
 
+/// The sooner of two waits, either of which may be unset.
+fn sooner(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
 /// Drives one Rune [`Runtime`] and [`Renderer`] directly onto a `CAMetalLayer`.
 ///
 /// Pause display-link calls while the host app is backgrounded on iOS: Metal forbids drawable
@@ -215,7 +267,7 @@ impl<S: 'static> LayerHost<S> {
         dark: bool,
         wake: Waker,
     ) -> Result<Self, String> {
-        let (mut core, size, scale, now) = unsafe { LayerHostCore::new(layer, viewport, scale) }?;
+        let (mut core, size, scale, now) = unsafe { LayerHostCore::new(layer, spec.title, viewport, scale) }?;
         let mut rt = runtime_for(spec, state, size, Env::new(dark, scale), wake);
         core.configure_runtime(rt.core_mut(), now);
         Ok(Self { core, compositor: None, rt })
@@ -237,6 +289,12 @@ impl<S: 'static> LayerHost<S> {
         &mut self.rt
     }
 
+    /// What this surface asked for, drew and missed, as totals and per-second rates
+    /// ([`Runtime::surface_stats`] reads the same counts).
+    pub fn surface_stats(&self) -> SurfaceStats {
+        crate::frame::surface_stats::read(&self.core.meter.shared())
+    }
+
     /// Updates the viewport in points and display scale, reconfiguring the Metal swapchain only
     /// when its clamped device-pixel dimensions change.
     pub fn resize(&mut self, viewport: (f32, f32), scale: f32) {
@@ -245,7 +303,16 @@ impl<S: 'static> LayerHost<S> {
 
     /// Steps animations and layout to `Instant::now()` and presents one Metal frame, following
     /// the shared [`crate::frame::host_step`] order.
+    ///
+    /// A frame that gets no drawable costs that frame, never the host: a covered surface is
+    /// tried again on a wait that doubles, an outdated one is configured again, and one the GPU
+    /// refuses to configure rests until a resize. `EmbedFrame::wake_after_secs` carries the wait.
     pub fn frame(&mut self) -> EmbedFrame {
+        let now = Instant::now();
+        if !self.core.suspended && self.core.backoff.waiting(now) {
+            return EmbedFrame { wake_after_secs: self.core.wake_after(self.rt.core(), now), ..EmbedFrame::default() };
+        }
+        let _ = self.core.backoff.step(BackoffEvent::Lapsed);
         embed_frame::run_embed_frame(self).into()
     }
 }
@@ -259,6 +326,9 @@ impl<S: 'static> EmbedSurface for LayerHost<S> {
     fn rt_srgb_blend(&self) -> bool { self.rt.core().srgb_blend() }
     fn reblend(&mut self) -> bool { self.core.reblend(self.rt.core_mut()) }
     fn acquire(&mut self) -> Acquire<wgpu::SurfaceTexture> { self.core.acquire() }
+    fn missed(&mut self, missed: Missed, now: Instant) -> bool { self.core.missed(missed, now) }
+    fn retry_after(&self, now: Instant) -> Option<f64> { self.core.retry_after(now) }
+    fn presented(&mut self, ticking: bool) { self.core.presented(ticking) }
     fn prepare(&mut self, drawable: wgpu::SurfaceTexture) -> PreparedEmbedFrame {
         self.core.prepare_draw(self.rt.core_mut(), drawable)
     }
@@ -352,5 +422,8 @@ mod tests {
         let out = host.frame();
         assert!(out.drew);
         assert_eq!(seen.load(Ordering::Relaxed), 42);
+        let stats = host.surface_stats();
+        assert_eq!((stats.totals.redraws, stats.totals.presents, stats.totals.failed()), (1, 1, 0));
+        assert_eq!(host.runtime().surface_stats().map(|s| s.totals.presents), Some(1));
     }
 }

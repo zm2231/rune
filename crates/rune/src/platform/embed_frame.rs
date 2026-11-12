@@ -30,6 +30,13 @@ pub(crate) trait EmbedSurface {
     fn rt_srgb_blend(&self) -> bool;
     fn reblend(&mut self) -> bool;
     fn acquire(&mut self) -> Acquire<Self::Drawable>;
+    /// A frame got no drawable at `now`: the surface's own bookkeeping. Returns whether the
+    /// surface now waits before it is tried again, which stops the display link meanwhile.
+    fn missed(&mut self, _missed: Missed, _now: Instant) -> bool { false }
+    /// Seconds until a surface waiting after a missed drawable is tried again.
+    fn retry_after(&self, _now: Instant) -> Option<f64> { None }
+    /// A frame presented; `ticking` says whether another follows on the next tick.
+    fn presented(&mut self, _ticking: bool) {}
     fn prepare(&mut self, drawable: Self::Drawable) -> Self::Prepared;
     fn compositor_animating(&self) -> bool;
     fn render(&mut self, prepared: &mut Self::Prepared, dt: f64, update_ms: f64) -> bool;
@@ -113,12 +120,20 @@ impl<E: EmbedSurface> FrameHost for EmbedFrameHost<'_, E> {
         let t0 = self.t0.unwrap_or_else(Instant::now);
         let retry_now = missed == Missed::Outdated;
         let comp_animating = self.surface.compositor_animating();
-        self.summary = if stepped {
+        let waiting = self.surface.missed(missed, t0);
+        let mut summary = if stepped {
             let (_, rt) = self.surface.clock_and_rt_mut();
             missed_after_step(rt, t0, comp_animating, retry_now)
         } else {
             self.surface.with_driver(|_, rt, app| missed_step(rt, app, t0, comp_animating, retry_now))
         };
+        if waiting {
+            summary.animating = false;
+        }
+        if let Some(retry) = self.surface.retry_after(t0) {
+            summary.wake_after_secs = Some(summary.wake_after_secs.map_or(retry, |wake| wake.min(retry)));
+        }
+        self.summary = summary;
     }
 
     #[inline]
@@ -147,6 +162,7 @@ impl<E: EmbedSurface> FrameHost for EmbedFrameHost<'_, E> {
         let t0 = self.t0.unwrap_or(submitted);
         let (_, rt) = self.surface.clock_and_rt_mut();
         self.summary = frame_summary_presented(rt, submitted, t0, info.animating);
+        self.surface.presented(self.summary.animating);
     }
 }
 

@@ -126,6 +126,8 @@ struct MockEmbedSurface {
     reblend_succeeds: bool,
     acquires: std::collections::VecDeque<Acquire<u32>>,
     comp_animating: bool,
+    /// The retry a missed drawable waits for, in seconds; `None` retries on the next tick.
+    retry: Option<f64>,
     log: Vec<String>,
 }
 
@@ -151,6 +153,7 @@ impl MockEmbedSurface {
             reblend_succeeds: true,
             acquires: std::collections::VecDeque::from([Acquire::Ready(1)]),
             comp_animating: false,
+            retry: None,
             log: Vec::new(),
         }
     }
@@ -181,6 +184,17 @@ impl EmbedSurface for MockEmbedSurface {
             Acquire::Missed(m) => format!("acquire:missed:{m:?}"),
         });
         got
+    }
+
+    fn missed(&mut self, missed: Missed, _now: Instant) -> bool {
+        self.log.push(format!("missed:{missed:?}"));
+        self.retry.is_some()
+    }
+
+    fn retry_after(&self, _now: Instant) -> Option<f64> { self.retry }
+
+    fn presented(&mut self, ticking: bool) {
+        self.log.push(format!("presented:{ticking}"));
     }
 
     fn prepare(&mut self, drawable: u32) -> u32 {
@@ -221,7 +235,7 @@ fn run_embed_frame_follows_shared_acquire_step_reblend_present_order() {
     assert!(out.drew);
     assert_eq!(
         surface.log,
-        ["acquire:ok:1", "step", "reblend:true", "acquire:ok:2", "prepare:2", "render:2", "present:2"]
+        ["acquire:ok:1", "step", "reblend:true", "acquire:ok:2", "prepare:2", "render:2", "present:2", "presented:false"]
     );
 }
 
@@ -264,3 +278,24 @@ fn run_embed_frame_post_step_reblend_miss_preserves_stale_and_live_pending_witho
     assert_eq!(surface2.rt.state.polls, 1, "post-step re-acquire miss must not step poll twice");
 }
 
+
+#[test]
+fn a_missed_drawable_that_waits_stops_ticking_and_wakes_at_the_retry() {
+    let start = Instant::now();
+    let mut surface = MockEmbedSurface::new(start);
+    surface.retry = Some(0.25);
+    surface.rt.update(|_, tx| tx.wake_after(Duration::from_millis(100)));
+    surface.acquires = std::collections::VecDeque::from([Acquire::Missed(Missed::Occluded)]);
+    let out = run_embed_frame(&mut surface);
+    assert!(!out.drew);
+    assert!(!out.animating, "a surface waiting out its retry stops the display link");
+    let wake = out.wake_after_secs.expect("a wake");
+    assert!(wake <= 0.1 + 1e-6, "the sooner of the timer and the retry: {wake}");
+    assert!(surface.log.contains(&"missed:Occluded".to_owned()), "{:?}", surface.log);
+
+    let mut surface = MockEmbedSurface::new(start);
+    surface.retry = Some(0.25);
+    surface.acquires = std::collections::VecDeque::from([Acquire::Missed(Missed::Timeout)]);
+    let out = run_embed_frame(&mut surface);
+    assert_eq!(out.wake_after_secs, Some(0.25), "with no timer the retry wakes the host");
+}

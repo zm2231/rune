@@ -68,7 +68,7 @@ pub(crate) fn parse_script(list: Value) -> Vec<Ev> {
             for part in e["mods"].as_str().unwrap_or("").split('+').filter(|p| !p.is_empty()) {
                 match part {
                     "shift" => mods.shift = true,
-                    "ctrl" | "control" => { mods.ctrl = true; if !cfg!(target_os = "macos") { mods.cmd = true; } }
+                    "ctrl" | "control" => { mods.ctrl = true; if !crate::edit::MAC_KEYS { mods.cmd = true; } }
                     "alt" => mods.alt = true,
                     other => die(&format!("unknown modifier {other:?} in mods")),
                 }

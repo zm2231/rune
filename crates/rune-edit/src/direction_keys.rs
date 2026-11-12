@@ -2,8 +2,8 @@
 //! Word and Chrome set an edit control's. Ctrl and one Shift pressed together and released with
 //! no other key between them set the field left to right (Left Shift) or right to left (Right
 //! Shift), every line of it, aligned to that side at once, an empty field too. Ctrl+Shift+P and
-//! the other shortcuts never set it: any other key while they're held disarms it. macOS has no
-//! such gesture. The runtime steps the chord on every physical key (`direction_chord`), whoever
+//! the other shortcuts never set it: any other key while they're held disarms it. macOS and iOS
+//! have no such gesture. The runtime steps the chord on every physical key (`direction_chord`), whoever
 //! takes the key, so it works in any field.
 
 use rune_text::Flow;
@@ -38,7 +38,7 @@ pub enum DirChord {
 pub fn step_dir_chord(state: DirChord, modifier: Modifier, pressed: bool, ctrl: bool, shift: bool) -> (DirChord, Option<Flow>) {
     use Modifier::*;
     match (state, modifier, pressed) {
-        (_, _, _) if cfg!(target_os = "macos") => (DirChord::Idle, None),
+        (_, _, _) if crate::MAC_KEYS => (DirChord::Idle, None),
         (DirChord::Idle, ControlLeft | ControlRight, true) if !shift => (DirChord::Ctrl, None),
         (DirChord::Ctrl, ShiftLeft, true) if ctrl => (DirChord::Armed(KeySide::Left), None),
         (DirChord::Ctrl, ShiftRight, true) if ctrl => (DirChord::Armed(KeySide::Right), None),
@@ -70,3 +70,7 @@ impl TextEdit {
         self.dir = FieldDir::Forced(flow);
     }
 }
+
+#[cfg(test)]
+#[path = "direction_keys_tests.rs"]
+mod tests;

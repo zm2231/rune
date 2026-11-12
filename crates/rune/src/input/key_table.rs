@@ -149,7 +149,7 @@ pub(crate) const fn web_mods(shift: bool, ctrl: bool, alt: bool, logo: bool) -> 
 /// Builds `Mods` for a headless script step: `"cmd"` sets the platform's primary key alongside
 /// `cmd`, so `"cmd": true` matches Super on macOS and Ctrl elsewhere.
 pub(crate) const fn mods_from_script(shift: bool, ctrl: bool, alt: bool, logo: bool, cmd: bool) -> Mods {
-    let mac = cfg!(target_os = "macos");
+    let mac = crate::edit::MAC_KEYS;
     Mods { shift, cmd, alt, ctrl: ctrl || (cmd && !mac), logo: logo || (cmd && mac) }
 }
 
@@ -179,7 +179,7 @@ pub(crate) fn modifier_label(m: ChordMod, platform: KeyPlatform) -> &'static str
 }
 
 fn held_mod_specs(m: Mods) -> impl Iterator<Item = &'static ModSpec> {
-    let mac = cfg!(target_os = "macos");
+    let mac = crate::edit::MAC_KEYS;
     [
         (m.ctrl || (!mac && m.cmd), ChordMod::Ctrl),
         (m.alt, ChordMod::Alt),

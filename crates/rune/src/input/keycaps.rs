@@ -271,7 +271,7 @@ mod tests {
         let cmd_k = KeyEvent { key: Key::Command('k'), mods: Mods { cmd: true, ..Mods::default() } };
         k.key(0.9, &cmd_k);
         k.key(1.0, &typed("x"));
-        let cmd_k = if cfg!(target_os = "macos") { "⌘K" } else { "⌃K" };
+        let cmd_k = if crate::edit::MAC_KEYS { "⌘K" } else { "⌃K" };
         assert_eq!(labels(&mut k, 1.0), ["Hi there", cmd_k, "x"], "a chord ends the burst");
         // A pause longer than the burst starts a new cap.
         k.key(2.1, &typed("y"));
@@ -292,7 +292,7 @@ mod tests {
         k.chord(0.8, &"cmd+space".parse().unwrap());
         k.key(0.9, &KeyEvent { key: Key::Escape, mods: Mods::default() });
         k.key(1.0, &KeyEvent { key: Key::Enter, mods: Mods::default() });
-        let cmd = if cfg!(target_os = "macos") { "⌘" } else { "⌃" };
+        let cmd = if crate::edit::MAC_KEYS { "⌘" } else { "⌃" };
         assert_eq!(labels(&mut k, 1.0), [format!("{cmd}␣"), "⎋".into(), "↩".into()]);
     }
 

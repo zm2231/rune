@@ -66,6 +66,11 @@ pub struct Mods {
     pub logo: bool,
 }
 
+/// Whether this build's keyboard follows the Mac's conventions: ⌘ is the primary modifier, ⌥
+/// moves by word, Control-letter moves as in AppKit. macOS, and iOS for a hardware keyboard.
+#[doc(hidden)]
+pub const MAC_KEYS: bool = cfg!(any(target_os = "macos", target_os = "ios"));
+
 impl Mods {
     /// Whether the platform's primary shortcut modifier is held: `cmd`.
     pub fn primary(self) -> bool { self.cmd }
@@ -80,14 +85,14 @@ pub fn fold(bits: u8, platform: KeyPlatform) -> u8 {
 }
 
 /// The keys `m` says are held, as chord bits for `platform`. `cmd` repeats the key this build
-/// reports as primary: ⌘ (`logo`) on macOS, Ctrl elsewhere (iOS too), Ctrl or ⌘ on the web. A `Mods`
+/// reports as primary: ⌘ (`logo`) on macOS and iOS, Ctrl elsewhere, Ctrl or ⌘ on the web. A `Mods`
 /// with `cmd` and neither key (a script, a test) holds `platform`'s primary.
 #[doc(hidden)]
 pub fn held(m: Mods, platform: KeyPlatform) -> u8 {
     let bare = m.cmd && !m.ctrl && !m.logo;
     let (ctrl, logo) = if bare || cfg!(target_arch = "wasm32") {
         (m.ctrl, m.logo)
-    } else if cfg!(target_os = "macos") {
+    } else if crate::MAC_KEYS {
         (m.ctrl, m.logo || m.cmd)
     } else {
         (m.ctrl || m.cmd, m.logo)
@@ -223,7 +228,7 @@ impl KeyEvent {
     #[doc(hidden)]
     pub fn is_command_chord(&self) -> bool {
         let m = self.mods;
-        matches!(self.key, Key::Text(_)) && (m.cmd || m.ctrl) && (cfg!(target_os = "macos") || !m.alt)
+        matches!(self.key, Key::Text(_)) && (m.cmd || m.ctrl) && (crate::MAC_KEYS || !m.alt)
     }
 
     /// The standard edit command this is (paste, copy, cut, select all, undo, redo, format):
@@ -241,7 +246,7 @@ impl KeyEvent {
     #[doc(hidden)]
     pub fn is_window_menu_chord(&self) -> bool {
         let m = self.mods;
-        !cfg!(target_os = "macos") && matches!(&self.key, Key::Text(t) if t == " ") && m.alt && !m.ctrl && !m.cmd && !m.logo
+        !crate::MAC_KEYS && matches!(&self.key, Key::Text(t) if t == " ") && m.alt && !m.ctrl && !m.cmd && !m.logo
     }
 
     /// A macOS Control-letter text binding (Ctrl-A, Ctrl-E, Ctrl-K, …), as in every AppKit field.
@@ -250,7 +255,7 @@ impl KeyEvent {
         let m = self.mods;
         let Key::Text(s) = &self.key else { return None };
         let c = s.chars().next().filter(|_| s.chars().count() == 1)?.to_ascii_lowercase();
-        (cfg!(target_os = "macos") && m.ctrl && !m.cmd && !m.alt && "abefpndhk".contains(c)).then_some(c)
+        (crate::MAC_KEYS && m.ctrl && !m.cmd && !m.alt && "abefpndhk".contains(c)).then_some(c)
     }
 }
 

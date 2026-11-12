@@ -9,13 +9,15 @@ pub mod embed;
 #[cfg(any(test, target_vendor = "apple"))]
 pub(crate) mod embed_frame;
 pub(crate) mod ime;
+#[cfg(any(test, target_os = "ios"))]
+pub mod ios;
 #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
 pub(crate) mod layer_shell;
 #[cfg(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))]
 pub(crate) mod layer_shell_machine;
 #[cfg(target_os = "macos")]
 pub(crate) mod macos;
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 pub(crate) use rune_core::main_queue;
 #[cfg(any(test, all(target_os = "linux", feature = "dbus")))]
 pub(crate) mod portal;

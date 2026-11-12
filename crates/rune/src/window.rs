@@ -41,7 +41,7 @@ pub(crate) mod titlebar;
 mod win32;
 
 pub use handle::WindowHandle;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub use event_loop::run;
 pub(crate) use event_loop::run_windows;
 #[cfg(any(target_os = "macos", target_os = "windows"))]

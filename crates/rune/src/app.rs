@@ -603,7 +603,13 @@ impl<S: 'static> App<S> {
         crate::platform::web::run(self)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    /// On iOS the app is the screen: this returns only when it can't start.
+    #[cfg(target_os = "ios")]
+    pub fn try_run(self) -> Result<(), String> {
+        crate::platform::ios::run(self)
+    }
+
+    #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
     pub fn try_run(mut self) -> Result<(), String> {
         // Windows' word dictionaries start loading now, on their own thread (`rune_text::segmenter`).
         #[cfg(all(target_os = "windows", not(feature = "segmenter-dictionaries")))]

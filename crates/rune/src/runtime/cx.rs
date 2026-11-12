@@ -52,6 +52,7 @@ pub(crate) struct CxCore {
     pub(super) env: Env,
     pub(super) titlebar_inset: f32,
     pub(super) safe_area: [f32; 4],
+    pub(super) system_text_scale: f32,
     pub(super) chrome: crate::ChromeInsets,
     /// `Cx::caption_color`, read once the view returns.
     pub(super) caption_color: Option<Color>,
@@ -125,6 +126,7 @@ impl CxCore {
     pub(crate) fn accent(&self) -> Color { self.system_accent.accent(self.env.system_dark) }
     pub(crate) fn focus_color(&self) -> Color { self.system_accent.focus(self.env.system_dark) }
     pub(crate) fn safe_area(&self) -> [f32; 4] { self.safe_area }
+    pub(crate) fn system_text_scale(&self) -> f32 { self.system_text_scale }
     pub(crate) fn hover_none(&self) -> bool {
         #[cfg(target_arch = "wasm32")]
         { crate::platform::web::hover_none() }
@@ -292,6 +294,12 @@ impl<S> Cx<S> {
     /// the screen edges. A `memo` closure that reads it needs nothing in its version.
     #[inline(always)]
     pub fn safe_area(&self) -> [f32; 4] { self.core.safe_area() }
+    /// How much larger or smaller than its default the system's text size setting is: iOS's
+    /// Dynamic Type, where the largest accessibility size is about three. 1 at the default,
+    /// and on platforms that report none. Scale the whole view by it with [`Cx::zoom`], or
+    /// only its type. A `memo` closure that reads it needs nothing in its version.
+    #[inline(always)]
+    pub fn system_text_scale(&self) -> f32 { self.core.system_text_scale() }
     /// The primary pointer can't hover: a browser's `(hover: none)`, a phone's or tablet's touch
     /// screen. What a mouse would reveal on hover (a code block's Copy, a row's actions) should
     /// show without it. False natively. A change re-runs the view.

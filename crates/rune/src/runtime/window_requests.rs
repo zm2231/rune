@@ -12,6 +12,8 @@ pub(crate) struct HostState {
     pub(in crate::runtime) titlebar_inset: f32,
     /// What [`Cx::safe_area`] reports, in the window's points.
     pub(in crate::runtime) safe_area: system_settings::SafeArea,
+    /// What [`Cx::system_text_scale`] reports: the system's text size setting.
+    pub(in crate::runtime) system_text_scale: f32,
     pub(in crate::runtime) system_reduced_motion: bool,
     pub(in crate::runtime) system_accent: crate::SystemAccent,
     /// What [`Cx::system_contrast`] reports.
@@ -72,6 +74,7 @@ impl HostState {
             titlebar: Default::default(),
             titlebar_inset: 0.0,
             safe_area: Default::default(),
+            system_text_scale: 1.0,
             system_reduced_motion: false,
             system_accent: crate::SystemAccent::DEFAULT,
             system_contrast: None,

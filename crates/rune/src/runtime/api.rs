@@ -209,6 +209,8 @@ impl<S: 'static> Runtime<S> {
     #[inline(always)]
     pub fn set_safe_area(&mut self, insets: [f32; 4]) -> bool { self.core_mut().set_safe_area(insets) }
     #[inline(always)]
+    pub fn set_system_text_scale(&mut self, scale: f32) -> bool { self.core_mut().set_system_text_scale(scale) }
+    #[inline(always)]
     pub(crate) fn system_accent(&self) -> crate::SystemAccent { self.core().system_accent() }
     #[inline(always)]
     pub fn set_system_accent(&mut self, accent: crate::SystemAccent) { self.core_mut().set_system_accent(accent); }

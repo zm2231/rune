@@ -84,6 +84,8 @@ struct LayerHostCore {
     clipboard: Option<crate::clipboard::Client>,
     /// The host shows pop-up menus itself.
     popup_menus: bool,
+    /// The host shows file dialogs itself.
+    file_dialogs: bool,
 }
 
 impl LayerHostCore {
@@ -122,6 +124,7 @@ impl LayerHostCore {
             meter: SurfaceMeter::new(title, Arc::default()),
             clipboard: None,
             popup_menus: false,
+            file_dialogs: false,
         };
         Ok((core, size, scale, now))
     }
@@ -314,6 +317,14 @@ impl<S: 'static> LayerHost<S> {
         self
     }
 
+    /// The host shows file dialogs itself: it reads [`Runtime::file_dialog`] after a frame,
+    /// shows its own picker and answers with [`Runtime::resolve_file_dialog`]. Without this
+    /// every dialog a handler asks for is refused.
+    pub fn with_file_dialogs(mut self) -> Self {
+        self.core.file_dialogs = true;
+        self
+    }
+
     /// A key from the host's keyboard. With [`LayerHost::with_system_clipboard`], the paste
     /// shortcut over something that takes a paste reads the system clipboard, as in an app's
     /// own window; every other key is [`Runtime::key`].
@@ -376,7 +387,7 @@ impl<S: 'static> EmbedSurface for LayerHost<S> {
     fn missed(&mut self, missed: Missed, now: Instant) -> bool { self.core.missed(missed, now) }
     fn retry_after(&self, now: Instant) -> Option<f64> { self.core.retry_after(now) }
     fn presented(&mut self, ticking: bool) { self.core.presented(ticking) }
-    fn serves(&self) -> Serves { Serves { clipboard: self.core.clipboard.is_some(), popup_menus: self.core.popup_menus } }
+    fn serves(&self) -> Serves { Serves { clipboard: self.core.clipboard.is_some(), popup_menus: self.core.popup_menus, file_dialogs: self.core.file_dialogs } }
     fn receive_clipboard(&mut self) {
         if let Some(clipboard) = &self.core.clipboard { clipboard.receive_core(self.rt.core_mut()); }
     }

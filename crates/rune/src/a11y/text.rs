@@ -229,6 +229,23 @@ impl RuntimeCore {
         Some((content, lines))
     }
 
+    /// The focused field's laid-out lines in window points, for a host whose keyboard asks
+    /// where its characters are. None while it composes (the composition draws at the caret,
+    /// outside the text), for a password, and before the field has drawn.
+    #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+    pub(crate) fn focused_field_lines(&self) -> Option<Vec<Line>> {
+        let i = self.live(self.kbd.focus.path()?)?;
+        let edit = &self.tree.nodes[i].input.as_deref()?.edit;
+        if edit.is_secure() || edit.preedit().is_some() || self.paint.drawn.len() != self.tree.nodes.len() { return None; }
+        let (_, mut lines) = self.a11y_lines(i)?;
+        let zoom = self.zoom();
+        for line in &mut lines {
+            line.rect = self.to_window(line.rect);
+            for x in line.positions.iter_mut().chain(&mut line.widths) { *x *= zoom; }
+        }
+        Some(lines)
+    }
+
     /// A field's caret or selection, in its lines.
     fn a11y_selection(&self, i: usize, content: &str, lines: &[Line]) -> Option<TextSelection> {
         let n = &self.tree.nodes[i];

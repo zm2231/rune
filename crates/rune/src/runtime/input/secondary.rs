@@ -30,6 +30,13 @@ impl RuntimeCore {
         self.secondary_target(x, y).is_some()
     }
 
+    /// Whether (x, y) is on the focused text field: a host whose fields show their menu for a
+    /// tap at the caret asks before it opens one.
+    #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+    pub(crate) fn on_focused_field(&self, x: f32, y: f32) -> bool {
+        self.focused_input().is_some() && self.secondary_target(x, y).is_some_and(|path| Some(path) == self.kbd.focus.path())
+    }
+
     /// Capture a secondary gesture without activating primary actions or text selection.
     pub fn secondary_down(&mut self, x: f32, y: f32) {
         self.pointer.pos = Some((x, y));

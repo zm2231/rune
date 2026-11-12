@@ -8,7 +8,7 @@ use crate::compose::{Compositor, Frame};
 use crate::frame::clock::FrameClock;
 use crate::frame::surface_stats::{Pacing, SurfaceMeter, SurfaceStats};
 use crate::frame::host_step::{self, Acquire};
-use crate::platform::embed_frame::{self, EmbedSurface, FrameSummary};
+use crate::platform::embed_frame::{self, EmbedSurface, FrameSummary, Serves};
 use crate::render::{Gpu, Renderer};
 use crate::runtime::{AppDriver, Env, Runtime, RuntimeCore, Waker};
 use crate::time::Instant;
@@ -80,6 +80,8 @@ struct LayerHostCore {
     /// The wait after a frame that got no drawable.
     backoff: Backoff,
     meter: SurfaceMeter,
+    /// The system clipboard, for a host that asked for it.
+    clipboard: Option<crate::clipboard::Client>,
 }
 
 impl LayerHostCore {
@@ -116,6 +118,7 @@ impl LayerHostCore {
             configured: true,
             backoff: Backoff::default(),
             meter: SurfaceMeter::new(title, Arc::default()),
+            clipboard: None,
         };
         Ok((core, size, scale, now))
     }
@@ -289,6 +292,27 @@ impl<S: 'static> LayerHost<S> {
         &mut self.rt
     }
 
+    /// Copies and pastes go to the system clipboard, as an app's own window sends them: a copy
+    /// after the frame whose handler made it, a paste when the clipboard's worker answers,
+    /// which calls `wake` for the frame that delivers it. Without this a host reads
+    /// [`Runtime::copy_request`] itself and pastes arrive only from a clipboard a test supplies.
+    pub fn with_system_clipboard(mut self, wake: Waker) -> Self {
+        let mut clipboard = crate::clipboard::Client::default();
+        clipboard.connect(wake);
+        self.core.clipboard = Some(clipboard);
+        self
+    }
+
+    /// A key from the host's keyboard. With [`LayerHost::with_system_clipboard`], the paste
+    /// shortcut over something that takes a paste reads the system clipboard, as in an app's
+    /// own window; every other key is [`Runtime::key`].
+    pub fn key(&mut self, key: crate::KeyEvent) {
+        match &self.core.clipboard {
+            Some(clipboard) if key.edit_command() == Some('v') && self.rt.accepts_paste() => clipboard.read_core(self.rt.core()),
+            _ => self.rt.key(key),
+        }
+    }
+
     /// What this surface asked for, drew and missed, as totals and per-second rates
     /// ([`Runtime::surface_stats`] reads the same counts).
     pub fn surface_stats(&self) -> SurfaceStats {
@@ -341,6 +365,13 @@ impl<S: 'static> EmbedSurface for LayerHost<S> {
     fn missed(&mut self, missed: Missed, now: Instant) -> bool { self.core.missed(missed, now) }
     fn retry_after(&self, now: Instant) -> Option<f64> { self.core.retry_after(now) }
     fn presented(&mut self, ticking: bool) { self.core.presented(ticking) }
+    fn serves(&self) -> Serves { Serves { clipboard: self.core.clipboard.is_some() } }
+    fn receive_clipboard(&mut self) {
+        if let Some(clipboard) = &self.core.clipboard { clipboard.receive_core(self.rt.core_mut()); }
+    }
+    fn flush_clipboard(&mut self) {
+        if let Some(clipboard) = &self.core.clipboard { clipboard.flush_core(self.rt.core_mut()); }
+    }
     fn prepare(&mut self, drawable: wgpu::SurfaceTexture) -> PreparedEmbedFrame {
         self.core.prepare_draw(self.rt.core_mut(), drawable)
     }

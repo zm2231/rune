@@ -17,7 +17,7 @@ fn compositor_animating_keeps_real_frame_gap_instead_of_clamping_to_resume_step(
     // First frame settles runtime (not animating).
     {
         let (core, mut app) = rt.split_mut();
-        step_and_flush(&mut clock, core, &mut app, start, false);
+        step_and_flush(&mut clock, core, &mut app, start, false, Serves::default());
     }
     assert!(!rt.animating);
 
@@ -25,7 +25,7 @@ fn compositor_animating_keeps_real_frame_gap_instead_of_clamping_to_resume_step(
     // gap, not clamp to RESUME_STEP (8.33 ms).
     let (_, dt, _) = {
         let (core, mut app) = rt.split_mut();
-        step_and_flush(&mut clock, core, &mut app, start + FRAME_60HZ, true)
+        step_and_flush(&mut clock, core, &mut app, start + FRAME_60HZ, true, Serves::default())
     };
     assert!(
         (dt - FRAME_60HZ.as_secs_f64()).abs() < 1e-5,
@@ -50,7 +50,7 @@ fn post_present_delays_overrunning_new_motion_and_reports_stale_and_requests_dro
         rt.wall_start = Some(start);
         {
             let (core, mut app) = rt.split_mut();
-            let (anim, _, _) = step_and_flush(&mut clock, core, &mut app, start, false);
+            let (anim, _, _) = step_and_flush(&mut clock, core, &mut app, start, false, Serves::default());
             if with_present { post_present(&mut clock, core, start, start, anim, false); }
         }
         // Start a spring on frame 1, which overruns by 50 ms before presenting.
@@ -62,7 +62,7 @@ fn post_present_delays_overrunning_new_motion_and_reports_stale_and_requests_dro
         let f1 = start + FRAME_60HZ;
         {
             let (core, mut app) = rt.split_mut();
-            let (anim, _, _) = step_and_flush(&mut clock, core, &mut app, f1, false);
+            let (anim, _, _) = step_and_flush(&mut clock, core, &mut app, f1, false, Serves::default());
             assert!(core.shell_request.is_none(), "unsupported shell request must be cleared");
             assert!(!core.host.minimize.field(), "unsupported minimize request must be cleared");
             if with_present { post_present(&mut clock, core, f1 + overrun, f1, anim, false); }
@@ -71,7 +71,7 @@ fn post_present_delays_overrunning_new_motion_and_reports_stale_and_requests_dro
         let f2 = f1 + overrun + FRAME_60HZ;
         {
             let (core, mut app) = rt.split_mut();
-            let (anim, _, _) = step_and_flush(&mut clock, core, &mut app, f2, false);
+            let (anim, _, _) = step_and_flush(&mut clock, core, &mut app, f2, false, Serves::default());
             if with_present { post_present(&mut clock, core, f2, f2, anim, false); }
         }
         rt.presented("box").unwrap().0[2]
@@ -98,7 +98,7 @@ fn missed_step_runs_poll_without_advancing_frame_clock() {
 
     let summary = {
         let (core, mut app) = rt.split_mut();
-        missed_step(core, &mut app, start + FRAME_60HZ, false, true)
+        missed_step(core, &mut app, start + FRAME_60HZ, false, true, Serves::default())
     };
     assert!(!summary.drew);
     assert!(summary.animating, "outdated/lost retry asks display link to keep ticking");
@@ -128,6 +128,8 @@ struct MockEmbedSurface {
     comp_animating: bool,
     /// The retry a missed drawable waits for, in seconds; `None` retries on the next tick.
     retry: Option<f64>,
+    /// The host serves the system clipboard.
+    clipboard: bool,
     log: Vec<String>,
 }
 
@@ -154,6 +156,7 @@ impl MockEmbedSurface {
             acquires: std::collections::VecDeque::from([Acquire::Ready(1)]),
             comp_animating: false,
             retry: None,
+            clipboard: false,
             log: Vec::new(),
         }
     }
@@ -192,6 +195,16 @@ impl EmbedSurface for MockEmbedSurface {
     }
 
     fn retry_after(&self, _now: Instant) -> Option<f64> { self.retry }
+
+    fn serves(&self) -> Serves { Serves { clipboard: self.clipboard } }
+
+    fn receive_clipboard(&mut self) {
+        if self.clipboard { self.log.push("receive".into()); }
+    }
+
+    fn flush_clipboard(&mut self) {
+        if self.clipboard { self.log.push("flush".into()); }
+    }
 
     fn presented(&mut self, ticking: bool) {
         self.log.push(format!("presented:{ticking}"));
@@ -307,4 +320,19 @@ fn a_frame_aimed_at_a_display_tick_steps_the_clock_to_it() {
     let target = Instant::now() + Duration::from_millis(8);
     assert!(run_embed_frame_at(&mut surface, Some(target)).drew);
     assert_eq!(surface.clock.last(), target, "the clock steps to when the frame will show");
+}
+
+#[test]
+fn a_host_serving_the_clipboard_receives_before_the_step_and_flushes_after_it() {
+    let start = Instant::now();
+    let mut surface = MockEmbedSurface::new(start);
+    surface.clipboard = true;
+    assert!(run_embed_frame(&mut surface).drew);
+    assert_eq!(surface.log[..4], ["acquire:ok:1", "receive", "step", "flush"]);
+
+    let mut surface = MockEmbedSurface::new(start);
+    surface.clipboard = true;
+    surface.acquires = std::collections::VecDeque::from([Acquire::Missed(Missed::Timeout)]);
+    assert!(!run_embed_frame(&mut surface).drew);
+    assert_eq!(surface.log, ["acquire:missed:Timeout", "missed:Timeout", "receive", "step", "flush"], "a missed frame still delivers pastes and copies");
 }

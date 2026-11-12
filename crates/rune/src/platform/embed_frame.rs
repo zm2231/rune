@@ -19,6 +19,14 @@ pub(crate) struct FrameSummary {
     pub(crate) cpu_us: u64,
 }
 
+/// What an embedded host serves itself. Everything else an app asks of its window is refused
+/// or dropped, since an embedded view has nothing of its own to show it with.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Serves {
+    /// Copies go to the system clipboard (`LayerHost::with_system_clipboard`), not to memory.
+    pub(crate) clipboard: bool,
+}
+
 /// Surface and draw callbacks supplied by [`super::embed::LayerHost`] (or a fake surface in
 /// off-Apple unit tests) to [`run_embed_frame`].
 pub(crate) trait EmbedSurface {
@@ -37,6 +45,12 @@ pub(crate) trait EmbedSurface {
     fn retry_after(&self, _now: Instant) -> Option<f64> { None }
     /// A frame presented; `ticking` says whether another follows on the next tick.
     fn presented(&mut self, _ticking: bool) {}
+    /// What the host serves itself instead of refusing.
+    fn serves(&self) -> Serves { Serves::default() }
+    /// Takes what the system clipboard answered since the last frame, before the runtime steps.
+    fn receive_clipboard(&mut self) {}
+    /// Sends what the frame copied to the system clipboard, once the runtime has stepped.
+    fn flush_clipboard(&mut self) {}
     fn prepare(&mut self, drawable: Self::Drawable) -> Self::Prepared;
     fn compositor_animating(&self) -> bool;
     fn render(&mut self, prepared: &mut Self::Prepared, dt: f64, update_ms: f64) -> bool;
@@ -88,9 +102,12 @@ impl<E: EmbedSurface> FrameHost for EmbedFrameHost<'_, E> {
         self.t0 = Some(t0);
         let target = self.target.unwrap_or(t0);
         let compositing = self.surface.compositor_animating();
+        let serves = self.surface.serves();
+        self.surface.receive_clipboard();
         let (animating, dt, _) = self.surface.with_driver(|clock, rt, app| {
-            step_and_flush(clock, rt, app, target, compositing)
+            step_and_flush(clock, rt, app, target, compositing, serves)
         });
+        self.surface.flush_clipboard();
         StepInfo {
             runtime_animating: animating,
             animating,
@@ -128,7 +145,11 @@ impl<E: EmbedSurface> FrameHost for EmbedFrameHost<'_, E> {
             let (_, rt) = self.surface.clock_and_rt_mut();
             missed_after_step(rt, t0, comp_animating, retry_now)
         } else {
-            self.surface.with_driver(|_, rt, app| missed_step(rt, app, t0, comp_animating, retry_now))
+            let serves = self.surface.serves();
+            self.surface.receive_clipboard();
+            let summary = self.surface.with_driver(|_, rt, app| missed_step(rt, app, t0, comp_animating, retry_now, serves));
+            self.surface.flush_clipboard();
+            summary
         };
         if waiting {
             summary.animating = false;
@@ -190,9 +211,12 @@ pub(crate) fn run_embed_frame_at<E: EmbedSurface>(surface: &mut E, target: Optio
 }
 
 /// Drains and discards host requests an embedded layer cannot serve (window close/minimize/frame,
-/// native pop-ups, native file dialogs) and flushes in-memory clipboard writes.
-pub(crate) fn flush_requests(rt: &mut RuntimeCore, app: &mut dyn AppDriver) {
-    crate::clipboard::flush_memory(rt);
+/// native pop-ups, native file dialogs) and flushes clipboard writes to memory unless the host
+/// `serves` the system clipboard.
+pub(crate) fn flush_requests(rt: &mut RuntimeCore, app: &mut dyn AppDriver, serves: Serves) {
+    if !serves.clipboard {
+        crate::clipboard::flush_memory(rt);
+    }
     if rt.popup_menu().is_some() {
         rt.cancel_popups(app);
     }
@@ -211,10 +235,11 @@ pub(crate) fn step_and_flush(
     app: &mut dyn AppDriver,
     t0: Instant,
     compositing: bool,
+    serves: Serves,
 ) -> (bool, f64, f64) {
     let (animating, dt) = clock.advance_core(rt, app, t0, compositing);
     let update_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    flush_requests(rt, app);
+    flush_requests(rt, app, serves);
     (animating, dt, update_ms)
 }
 
@@ -226,9 +251,10 @@ pub(crate) fn missed_step(
     t0: Instant,
     comp_animating: bool,
     retry_now: bool,
+    serves: Serves,
 ) -> FrameSummary {
     rt.covered_wake(app);
-    flush_requests(rt, app);
+    flush_requests(rt, app, serves);
     missed_after_step(rt, t0, comp_animating, retry_now)
 }
 

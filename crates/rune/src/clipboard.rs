@@ -23,6 +23,8 @@ use crate::Waker;
 
 mod content;
 mod html;
+#[cfg(target_os = "ios")]
+mod ios;
 mod secret;
 #[cfg(test)]
 mod secret_tests;
@@ -291,7 +293,7 @@ trait Backend {
 }
 /// How often the worker checks that a held secret is still on the clipboard. Where there is no
 /// change count (Linux) it compares the text's fingerprint, so it checks less often.
-const WATCH: Duration = if cfg!(any(target_os = "macos", target_os = "windows")) {
+const WATCH: Duration = if cfg!(any(target_os = "macos", target_os = "windows", target_os = "ios")) {
     Duration::from_millis(250)
 } else {
     Duration::from_secs(1)

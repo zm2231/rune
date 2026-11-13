@@ -282,6 +282,21 @@ define_class!(
             self.entered_background();
         }
 
+        #[unsafe(method(runeActive:))]
+        fn active(&self, _notification: &AnyObject) {
+            self.became_active();
+        }
+
+        #[unsafe(method(runeInactive:))]
+        fn inactive(&self, _notification: &AnyObject) {
+            self.resigning_active();
+        }
+
+        #[unsafe(method(runeTerminate:))]
+        fn terminate(&self, _notification: &AnyObject) {
+            self.terminating();
+        }
+
         /// The view is a container: a reader lands on its elements, never on it.
         #[unsafe(method(isAccessibilityElement))]
         fn is_accessibility_element(&self) -> bool {

@@ -262,7 +262,9 @@ impl<S: 'static> App<S> {
         self
     }
 
-    /// Called once per native focus transition, including while hidden or occluded.
+    /// Called once per native focus transition, including while hidden or occluded. On iOS
+    /// the focus is the view's scene being active: Control Center, the app switcher and a call
+    /// take it.
     /// Headless scripts deliver the same callback with `{"focus": false}`.
     pub fn on_focus(mut self, f: fn(&mut S, bool, &mut Tx)) -> Self {
         self.runtime.on_focus = Some(f);
@@ -288,17 +290,21 @@ impl<S: 'static> App<S> {
     /// where the system says so) and come back, with whether it shows now, as a web page's
     /// `visibilitychange` hears `document.hidden` change: for work that should wait while no
     /// one can see it, such as a notification's timer. Called once per change after the first
-    /// frame. Native windows only.
+    /// frame. Native windows, and on iOS the view's scene going to the background and back.
     pub fn on_visibility(mut self, f: fn(&mut S, bool, &mut Tx)) -> Self {
         self.runtime.on_visibility = Some(f);
         self
     }
 
-    /// Runs when a window rests: it has drawn nothing for 10 s (1 s while the system says memory
-    /// is low), or it was hidden, minimised or covered whole. By then its renderer and Rune's
-    /// own caches have given back what they keep for frames to come (`window::rest`); this is
-    /// for the app's caches of what isn't on screen. Return whether state the view reads changed
-    /// (normally false: nothing on screen should).
+    /// Runs when a window or an iOS view rests: it has drawn nothing for 10 s (1 s while the
+    /// system says memory is low), or it was hidden, minimised or covered whole. By then
+    /// Rune's own caches have given back what they keep for frames to come (`window::rest`),
+    /// and the renderer's follow; this is for the app's caches of what isn't on screen. Return
+    /// whether state the view reads changed (normally false: nothing on screen should).
+    ///
+    /// On iOS it runs as the app moves to the background (or the view leaves its window),
+    /// inside the system's notification, so keep it quick. A view on screen and idle does not
+    /// rest there, and one that has not drawn its first frame hears no rest.
     pub fn on_rest(mut self, f: fn(&mut S, &mut Tx) -> bool) -> Self {
         self.on_rest = Some(f);
         self
@@ -314,7 +320,8 @@ impl<S: 'static> App<S> {
     /// Typing reaches the editor once: a plain character arrives as a key, `Key::Text` in
     /// `on_key`, and `Ime::Commit` carries only what an input method composed (⌥E E's `é`, a
     /// CJK conversion, the emoji picker, dictation), as for `text_input`. While a composition
-    /// is open, Return and Escape go to the input method, not `on_key`. Native windows only.
+    /// is open, Return and Escape go to the input method, not `on_key`. Native windows and
+    /// iOS views only.
     pub fn on_ime(mut self, f: fn(&mut S, &crate::Ime, &mut Tx) -> bool) -> Self {
         self.runtime.on_ime = Some(f);
         self
@@ -426,7 +433,7 @@ impl<S: 'static> App<S> {
 
     /// Runs whenever the window closes (close button, `Tx::close_window`, `AppHandle::close`,
     /// macOS Quit from the menu, Cmd-Q or the Dock), before it goes: flush drafts, stop previews.
-    /// Its `Tx::quit` quits.
+    /// Its `Tx::quit` quits. Never called on iOS, where a view is no window.
     pub fn on_close(mut self, f: fn(&mut S, &mut Tx)) -> Self {
         self.on_close = Some(f);
         self
@@ -441,7 +448,9 @@ impl<S: 'static> App<S> {
     /// hooks returned. From then on [`crate::quitting`] holds, so an `on_close` that follows
     /// (macOS, the end of a Windows session) can tell the app ending from its window closing
     /// alone. A Windows shutdown another app refuses clears it, and a later quit runs this again.
-    /// What it asks of its `Tx` beyond state is moot once the loop ends. Native windows only.
+    /// What it asks of its `Tx` beyond state is moot once the loop ends. Native windows, and
+    /// on iOS when the app is about to terminate, which the system seldom announces: save when
+    /// `on_visibility` says the app went to the background.
     pub fn on_quit(mut self, f: fn(&mut S, &mut Tx)) -> Self {
         self.on_quit = Some(f);
         self
@@ -468,7 +477,7 @@ impl<S: 'static> App<S> {
     /// and any true skips the default. Windows: runs when the app is launched again without a
     /// link while it runs, once `rune::single_instance` made it the app's one process; the
     /// default then also brings the front window forward, restored. Never called on other
-    /// platforms. Headless scripts deliver it with `{"reopen": true}`.
+    /// platforms, iOS among them. Headless scripts deliver it with `{"reopen": true}`.
     pub fn on_reopen(mut self, f: fn(&mut S, bool, &mut Tx) -> bool) -> Self {
         self.on_reopen = Some(f);
         self

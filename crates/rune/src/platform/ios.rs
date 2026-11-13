@@ -9,6 +9,7 @@ mod app;
 pub(crate) mod edit_menu;
 pub(crate) mod field_touch;
 pub(crate) mod keys;
+pub(crate) mod lifecycle;
 pub(crate) mod links;
 pub(crate) mod pacing;
 #[cfg(target_os = "ios")]

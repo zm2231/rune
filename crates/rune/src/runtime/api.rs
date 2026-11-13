@@ -88,6 +88,15 @@ impl<S: 'static> Runtime<S> {
         core.window_focus(&mut app, focused);
     }
 
+    /// [`Self::window_focus`] for a host whose input method keeps its composition while the
+    /// focus is away, as an iOS scene's does under Control Center, the app switcher or a
+    /// system alert: everything a window's focus change does, but a composition stays open.
+    #[inline(always)]
+    pub fn scene_focus(&mut self, focused: bool) {
+        let (core, mut app) = self.split_mut();
+        core.scene_focus(&mut app, focused);
+    }
+
     #[inline(always)]
     pub(crate) fn keys_lost(&mut self) { self.core_mut().keys_lost(); }
     #[inline(always)]

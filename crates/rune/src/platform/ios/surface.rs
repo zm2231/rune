@@ -10,6 +10,7 @@ use accesskit::{ActionRequest, TreeUpdate};
 
 use super::field_touch;
 use super::keys::Stroke;
+use super::lifecycle;
 use super::text::doc::Snapshot;
 use super::text::geometry::Geometry;
 use crate::a11y::AccessibilityLink;
@@ -89,9 +90,13 @@ pub(crate) trait Surface {
     /// view's zoom: the tree is in the app's points, which the zoom scales to the view's.
     fn accessibility(&mut self) -> Option<(TreeUpdate, f32)>;
 
+    // The app's lifecycle.
+    /// The view joined or left a window, or its scene or app changed phase: the app's hooks
+    /// hear what changed for it (`lifecycle`). True when held keys were released, for the
+    /// view to stop its key repeat.
+    fn lifecycle(&mut self, event: lifecycle::Event) -> bool;
+
     // System settings.
-    /// Whether the app is in front, for `AppHandle::is_visible`.
-    fn set_visible(&mut self, visible: bool);
     /// The system's appearance.
     fn set_dark(&mut self, dark: bool);
     /// The Reduce Motion setting.
@@ -113,6 +118,13 @@ struct Hosted<S: 'static> {
     title: &'static str,
     /// `App::on_ready`, which runs once the first frame is on screen, as a window's does.
     on_ready: Option<OnWindow>,
+    /// `App::on_quit`, which runs when the app is about to terminate.
+    on_quit: Option<fn(&mut S, &mut crate::Tx)>,
+    /// `App::on_rest`, which runs when the view rests: its scene went to the background, or
+    /// it left its window.
+    on_rest: Option<fn(&mut S, &mut crate::Tx) -> bool>,
+    /// What the app's hooks were last told of the view's scene.
+    lifecycle: lifecycle::State,
     /// What a finger on the focused field is doing, and the field's menu.
     field: field_touch::State,
     /// Its place among the apps receiving links (`App::on_open_url`).
@@ -302,8 +314,44 @@ impl<S: 'static> Surface for Hosted<S> {
         self.accessibility.update(self.host.runtime_mut().core_mut()).map(|update| (update, zoom))
     }
 
+    // The app's lifecycle.
+    fn lifecycle(&mut self, event: lifecycle::Event) -> bool {
+        let mut released = false;
+        for effect in lifecycle::step(&mut self.lifecycle, event) {
+            let rt = self.host.runtime_mut();
+            match effect {
+                // As a window going off screen and back: live values rest, and
+                // `App::on_visibility` hears each change after the first frame.
+                lifecycle::Effect::Visibility(visible) => {
+                    self.shared.visible.store(visible, Ordering::Release);
+                    rt.set_live_visible(visible);
+                }
+                // As a window's focus event: `App::on_focus` runs, and a blur ends what the
+                // pointer had under way and then releases the held keys
+                // (`PhysicalInput::FocusLost`), in that order. The keyboard keeps an open
+                // composition.
+                lifecycle::Effect::Focus(focused) => {
+                    rt.scene_focus(focused);
+                    released |= !focused;
+                }
+                // As a window out of sight: everything kept between frames goes, and
+                // `App::on_rest` runs. Nothing here encodes or submits GPU work, which the
+                // background forbids, and no frame follows until the scene is in front again:
+                // a hook that changed state leaves the runtime's next frame to show it.
+                lifecycle::Effect::Rest => self.host.rest(self.on_rest, true),
+                lifecycle::Effect::Quit => {
+                    if let Some(quit) = self.on_quit { rt.update(quit); }
+                    // The hook runs inside the notification. No frame follows it, so what it
+                    // copied or cleared goes to the clipboard's worker here; the process may
+                    // end before the worker has written it.
+                    self.host.flush_clipboard();
+                }
+            }
+        }
+        released
+    }
+
     // System settings.
-    fn set_visible(&mut self, visible: bool) { self.shared.visible.store(visible, Ordering::Release); }
 
     fn set_dark(&mut self, dark: bool) { self.host.runtime_mut().set_system_dark(dark); }
 
@@ -330,6 +378,7 @@ pub(crate) fn mount<S: 'static>(mut app: App<S>) -> Mount {
     // From here, so a link the scene is handed before the view has a size waits among the
     // app's updates and runs before its first frame.
     let open_urls = crate::open_url::incoming::listen(&app);
+    let (on_quit, on_rest) = (app.on_quit, app.on_rest);
     let (spec, state, shared, config) = app.into_parts(None);
     Box::new(move |layer, size, scale, dark, wake| {
         // SAFETY: `layer` is the `CAMetalLayer` of the view that owns this surface, and the
@@ -338,10 +387,13 @@ pub(crate) fn mount<S: 'static>(mut app: App<S>) -> Mount {
         // The view is the app's whole host here: links open in the system, as from a window.
         let mut host = host.with_system_clipboard(wake.clone()).with_popup_menus().with_file_dialogs().with_system_links();
         host.runtime_mut().configure(config);
+        // `configure` handed the runtime the app's hooks, as a window's host does. The app is
+        // hidden until the view says where its scene is (`Surface::lifecycle`), as a window is
+        // until it is shown.
+        host.runtime_mut().set_live_visible(false);
         // The handles' requests wake the view, as they wake a window's event loop.
         shared.connect(wake.clone());
-        shared.visible.store(true, Ordering::Release);
         let menus = crate::native_menu::MenuGuard::attach(&shared, false);
-        Ok(Box::new(Hosted { host, shared, menus, accessibility: AccessibilityLink::with_wake(wake.clone()), wake, title: spec.title, on_ready, field: field_touch::State::default(), _open_urls: open_urls }))
+        Ok(Box::new(Hosted { host, shared, menus, accessibility: AccessibilityLink::with_wake(wake.clone()), wake, title: spec.title, on_ready, on_quit, on_rest, lifecycle: lifecycle::State::default(), field: field_touch::State::default(), _open_urls: open_urls }))
     })
 }

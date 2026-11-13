@@ -344,6 +344,36 @@ impl<S: 'static> LayerHost<S> {
         }
     }
 
+    /// Sends on what the app copied or cleared since the last frame, as a frame does: for a
+    /// hook that runs when no frame will follow it.
+    pub(crate) fn flush_clipboard(&mut self) {
+        match &self.core.clipboard {
+            Some(clipboard) => clipboard.flush_core(self.rt.core_mut()),
+            None => crate::clipboard::flush_memory(self.rt.core_mut()),
+        }
+    }
+
+    /// Rests the view, as a window rests that has drawn nothing for a while (`all` false) or
+    /// can't be seen (`all` true): the runtime's caches go back to what the screen on show
+    /// uses, `on_rest` (an app's `App::on_rest`) runs for the app's own, and the renderer
+    /// gives back what it keeps between frames, with `all` the targets of the layers on
+    /// screen and the staging chunks too, which the next frame makes again. For a view that
+    /// goes out of sight, as an iOS scene does when it enters the background.
+    ///
+    /// It only drops what is held: nothing is encoded, written to the queue or submitted, and
+    /// it waits for no submission, so it is safe after `didEnterBackground`, where Metal
+    /// takes no work. With `all` the device is polled without waiting, which frees what
+    /// finished submissions held and takes back the staging chunks they used. What a
+    /// submission still on the GPU holds goes at a later poll or the next frame. Call it
+    /// between frames.
+    pub fn rest(&mut self, on_rest: Option<fn(&mut S, &mut crate::Tx) -> bool>, all: bool) {
+        self.rt.rest(on_rest, Some(&mut self.core.renderer), all);
+        if all {
+            let _ = self.core.gpu.device.poll(wgpu::PollType::Poll);
+            self.core.renderer.trim_uploads();
+        }
+    }
+
     /// What this surface asked for, drew and missed, as totals and per-second rates
     /// ([`Runtime::surface_stats`] reads the same counts).
     pub fn surface_stats(&self) -> SurfaceStats {

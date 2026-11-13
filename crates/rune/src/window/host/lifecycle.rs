@@ -543,12 +543,7 @@ impl Host {
     }
 
     fn give_back(&mut self, all: bool) {
-        {
-            let rt = self.app.rt_mut();
-            rt.text.rest();
-            rt.images.rest();
-            if let Some(rewind) = rt.rewind() { rewind.rest(); }
-        }
+        self.app.rt_mut().rest_caches();
         self.app.run_on_rest();
         if let Some((gpu, renderer)) = &mut self.gpu {
             renderer.give_back(all, &mut self.app.rt_mut().text.atlas.resident_caches);

@@ -34,6 +34,33 @@ fn a_view_that_joins_a_window_in_the_background_waits_for_the_app_to_come_forwar
     assert_eq!(state, State::STARTED);
 }
 
+/// A launch: the view joins its window while the scene connects, which counts as the
+/// background, and the scene's first notification starts the link.
+#[test]
+fn a_view_that_joined_in_the_background_draws_on_the_first_tick_after_coming_forward() {
+    let (mut seq, mut state) = (Seq::default(), State::Detached);
+    assert_eq!(run(&mut seq, &mut state, Event::Attached { foreground: false }), [Effect::Create]);
+    assert_eq!(run(&mut seq, &mut state, Event::Tick), []);
+    assert_eq!(run(&mut seq, &mut state, Event::Foreground), [Effect::Resume]);
+    assert_eq!(run(&mut seq, &mut state, Event::Tick), [Effect::Draw]);
+    // The scene becoming active sends the same again, and a wake: neither restarts the link.
+    assert_eq!(run(&mut seq, &mut state, Event::Foreground), []);
+    assert_eq!(run(&mut seq, &mut state, Event::Wake), []);
+    assert_eq!(state, State::STARTED);
+}
+
+/// A launch whose connecting scene posts no will-enter-foreground: the scene becoming active
+/// brings the view forward and then wakes it, and the first tick draws.
+#[test]
+fn a_view_that_joined_in_the_background_draws_on_the_first_tick_after_its_scene_is_active() {
+    let (mut seq, mut state) = (Seq::default(), State::Detached);
+    assert_eq!(run(&mut seq, &mut state, Event::Attached { foreground: false }), [Effect::Create]);
+    assert_eq!(run(&mut seq, &mut state, Event::Foreground), [Effect::Resume]);
+    assert_eq!(run(&mut seq, &mut state, Event::Wake), []);
+    assert_eq!(state, State::STARTED);
+    assert_eq!(run(&mut seq, &mut state, Event::Tick), [Effect::Draw]);
+}
+
 #[test]
 fn a_frame_with_nothing_moving_rests_the_link() {
     let (mut seq, mut state) = running();

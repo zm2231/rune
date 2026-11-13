@@ -50,8 +50,18 @@ impl RuntimeCore {
     }
 
     /// Queue a native focus transition. Repeated notifications do not repeat the callback.
-    /// Losing focus is also `keys_lost`.
-    pub(crate) fn window_focus(&mut self, app: &mut dyn AppDriver, focused: bool) {
+    /// Losing focus is also `keys_lost`, and ends an open composition as text: a desktop's
+    /// input method drops its own copy when its window loses the focus.
+    pub(crate) fn window_focus(&mut self, app: &mut dyn AppDriver, focused: bool) { self.focus_changed(app, focused, true); }
+
+    /// [`Self::window_focus`] for a host whose input method keeps its composition while the
+    /// focus is away, as an iOS scene's does under Control Center, the app switcher or a
+    /// system alert: everything a window's focus change does, but a composition stays open.
+    pub(crate) fn scene_focus(&mut self, app: &mut dyn AppDriver, focused: bool) { self.focus_changed(app, focused, false); }
+
+    /// A focus transition. `ends_composition` says whether the input method lets go of what
+    /// it is composing when the focus goes.
+    fn focus_changed(&mut self, app: &mut dyn AppDriver, focused: bool, ends_composition: bool) {
         // Every focus gain, even one a hide without blur left unreported.
         if focused { self.kbd.keys_lost = false; }
         if self.host.window_focused != Some(focused) {
@@ -80,7 +90,7 @@ impl RuntimeCore {
                 self.frame.queue.push(Action::WindowFocus(focused));
             }
             if !focused {
-                self.finish_composition();
+                if ends_composition { self.finish_composition(); }
                 self.keys_lost();
                 // Losing the window ends hover, rather than waiting out an exit grace. A window
                 // that isn't key still hears the pointer, so its next move starts the wait again.

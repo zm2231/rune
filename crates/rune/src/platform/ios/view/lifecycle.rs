@@ -1,8 +1,13 @@
 //! A `RuneView` joining and leaving a window, and what the system tells it while it is in one.
 //! The view's first size starts its app on the view's layer. From then on its size, the safe
 //! area, the soft keyboard's frame, the appearance, the text size and Reduce Motion settings,
-//! and the app going to the background and coming back each reach the surface and wake the
-//! pacing.
+//! and its scene's phases (foreground and background, active and inactive) each reach the
+//! surface and wake the pacing.
+//!
+//! The phases are the view's own scene's, from `UIScene`'s notifications for that scene: on an
+//! iPad an app's scenes come forward, lose the focus and go away one by one, and
+//! `UIApplication`'s notifications speak for all of them at once. A window with no scene
+//! hears `UIApplication`'s instead. Termination is the app's alone.
 
 use std::ffi::c_void;
 
@@ -13,6 +18,7 @@ use objc2_video::{DefinedClass, Encode, Encoding, class, msg_send, sel};
 
 use super::super::accessibility::Accessibility;
 use super::super::keys;
+use super::super::lifecycle::{self, Phase};
 use super::super::pacing::Event;
 use super::{RuneView, Stage};
 use crate::platform::preferences::{reduced_motion, text_scale};
@@ -23,6 +29,13 @@ use crate::platform::preferences::{reduced_motion, text_scale};
 unsafe extern "C" {
     static UIApplicationDidEnterBackgroundNotification: &'static AnyObject;
     static UIApplicationWillEnterForegroundNotification: &'static AnyObject;
+    static UIApplicationDidBecomeActiveNotification: &'static AnyObject;
+    static UIApplicationWillResignActiveNotification: &'static AnyObject;
+    static UIApplicationWillTerminateNotification: &'static AnyObject;
+    static UISceneDidEnterBackgroundNotification: &'static AnyObject;
+    static UISceneWillEnterForegroundNotification: &'static AnyObject;
+    static UISceneDidActivateNotification: &'static AnyObject;
+    static UISceneWillDeactivateNotification: &'static AnyObject;
     static UIKeyboardWillChangeFrameNotification: &'static AnyObject;
     static UIKeyboardFrameEndUserInfoKey: &'static AnyObject;
     static UIAccessibilityReduceMotionStatusDidChangeNotification: &'static AnyObject;
@@ -31,9 +44,6 @@ unsafe extern "C" {
 
 /// `UIUserInterfaceStyleDark`.
 const STYLE_DARK: isize = 2;
-/// `UIApplicationStateBackground`.
-const STATE_BACKGROUND: isize = 2;
-
 /// `UIEdgeInsets`.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -90,6 +100,8 @@ impl RuneView {
                 let layer: Retained<AnyObject> = unsafe { msg_send![self, layer] };
                 match mount(Retained::as_ptr(&layer) as *mut c_void, size, scale, self.dark(), self.waker()) {
                     Ok(mut surface) => {
+                        // The app hears where the scene of the view's window is.
+                        if let Some((_, phase)) = self.scene() { surface.lifecycle(lifecycle::Event::Attached(phase)); }
                         surface.set_safe_area(self.safe_area());
                         surface.set_reduced_motion(reduced_motion());
                         surface.set_text_scale(text_scale());
@@ -113,20 +125,47 @@ impl RuneView {
         self.pace(Event::Wake);
     }
 
+    /// The scene of the view's window, when the window has one, and the phase it is in; none
+    /// for a view in no window.
+    fn scene(&self) -> Option<(Option<Retained<AnyObject>>, Phase)> {
+        // SAFETY: `UIView.window` and `UIWindow.windowScene` are nullable objects, a scene's
+        // `activationState` and the shared application's `applicationState` are `NSInteger`
+        // enums, and the application is a singleton.
+        unsafe {
+            let window: Option<Retained<AnyObject>> = msg_send![self, window];
+            let scene: Option<Retained<AnyObject>> = msg_send![&*window?, windowScene];
+            let scene_state: Option<isize> = scene.as_deref().map(|scene| msg_send![scene, activationState]);
+            let app: Retained<AnyObject> = msg_send![class!(UIApplication), sharedApplication];
+            let app_state: isize = msg_send![&*app, applicationState];
+            Some((scene, Phase::from_raw(scene_state, app_state)))
+        }
+    }
+
+    /// Tells the surface of a lifecycle event, and stops the key repeat when held keys were
+    /// released.
+    fn lifecycle(&self, event: lifecycle::Event) {
+        let released = self.with_surface(|surface| surface.lifecycle(event));
+        // With no app started nothing hears a key, and the repeat stops all the same.
+        if released.unwrap_or(true) { self.keys(keys::Event::Reset); }
+    }
+
     /// The view joined a window, or left the one it was in: in a window it draws at the
     /// screen's scale and hears the system's notifications.
     pub(super) fn moved_to_window(&self) {
         // SAFETY: `UIView.window` is a nullable object, a window's screen is never nil and its
-        // `nativeScale` is a `CGFloat`, the notification centre and the shared application are
-        // singletons, and each selector is a method of this class that takes the
-        // notification.
+        // `nativeScale` is a `CGFloat`, the notification centre is a singleton, each selector
+        // is a method of this class that takes the notification, and a notification's object
+        // is a nullable object, here the window's scene.
         unsafe {
             let centre: Retained<AnyObject> = msg_send![class!(NSNotificationCenter), defaultCenter];
             let _: () = msg_send![&*centre, removeObserver: self];
+            // In a window or out of one, an app that started hears the app end.
+            let _: () = msg_send![&*centre, addObserver: self, selector: sel!(runeTerminate:), name: UIApplicationWillTerminateNotification, object: None::<&AnyObject>];
             let window: Option<Retained<AnyObject>> = msg_send![self, window];
-            let Some(window) = window else {
+            let (Some(window), Some((scene, phase))) = (window, self.scene()) else {
                 // A view out of its window hears no key-up.
                 self.keys(keys::Event::Reset);
+                self.lifecycle(lifecycle::Event::Detached);
                 self.pace(Event::Detached);
                 return;
             };
@@ -136,14 +175,19 @@ impl RuneView {
             let scale: CGFloat = msg_send![&*screen, nativeScale];
             let _: () = msg_send![self, setContentScaleFactor: scale];
             let _: () = msg_send![self, setNeedsLayout];
-            let _: () = msg_send![&*centre, addObserver: self, selector: sel!(runeBackground:), name: UIApplicationDidEnterBackgroundNotification, object: None::<&AnyObject>];
-            let _: () = msg_send![&*centre, addObserver: self, selector: sel!(runeForeground:), name: UIApplicationWillEnterForegroundNotification, object: None::<&AnyObject>];
+            // The scene's own phases, or the app's for a window with no scene.
+            let phases = match &scene {
+                Some(_) => [UISceneDidEnterBackgroundNotification, UISceneWillEnterForegroundNotification, UISceneDidActivateNotification, UISceneWillDeactivateNotification],
+                None => [UIApplicationDidEnterBackgroundNotification, UIApplicationWillEnterForegroundNotification, UIApplicationDidBecomeActiveNotification, UIApplicationWillResignActiveNotification],
+            };
+            for (name, selector) in phases.into_iter().zip([sel!(runeBackground:), sel!(runeForeground:), sel!(runeActive:), sel!(runeInactive:)]) {
+                let _: () = msg_send![&*centre, addObserver: self, selector: selector, name: name, object: scene.as_deref()];
+            }
             let _: () = msg_send![&*centre, addObserver: self, selector: sel!(runeKeyboard:), name: UIKeyboardWillChangeFrameNotification, object: None::<&AnyObject>];
             let _: () = msg_send![&*centre, addObserver: self, selector: sel!(runeReduceMotion:), name: UIAccessibilityReduceMotionStatusDidChangeNotification, object: None::<&AnyObject>];
             let _: () = msg_send![&*centre, addObserver: self, selector: sel!(runeTextSize:), name: UIContentSizeCategoryDidChangeNotification, object: None::<&AnyObject>];
-            let app: Retained<AnyObject> = msg_send![class!(UIApplication), sharedApplication];
-            let state: isize = msg_send![&*app, applicationState];
-            self.pace(Event::Attached { foreground: state != STATE_BACKGROUND });
+            self.lifecycle(lifecycle::Event::Attached(phase));
+            self.pace(Event::Attached { foreground: phase != Phase::Background });
             // A reader already running reads the first frame.
             if Accessibility::reader_running() { self.accessibility_asked(); }
         }
@@ -197,17 +241,37 @@ impl RuneView {
         self.pace(Event::Wake);
     }
 
-    /// The app is coming back to the front.
+    /// The view's scene is coming back to the front.
     pub(super) fn entered_foreground(&self) {
-        self.with_surface(|surface| surface.set_visible(true));
+        self.lifecycle(lifecycle::Event::Foreground);
         self.pace(Event::Foreground);
     }
 
-    /// The app went to the background.
+    /// The view's scene went to the background.
     pub(super) fn entered_background(&self) {
         // The system sends no key-up to an app it puts away.
         self.keys(keys::Event::Reset);
-        self.with_surface(|surface| surface.set_visible(false));
+        self.lifecycle(lifecycle::Event::Background);
         self.pace(Event::Background);
+    }
+
+    /// The view's scene takes input again.
+    pub(super) fn became_active(&self) {
+        self.lifecycle(lifecycle::Event::Active);
+        // An active scene is in front, whether or not the notice of that came first.
+        self.pace(Event::Foreground);
+        self.pace(Event::Wake);
+    }
+
+    /// The view's scene is about to stop taking input: Control Center, the app switcher, a call.
+    pub(super) fn resigning_active(&self) {
+        self.lifecycle(lifecycle::Event::Inactive);
+        // The frame that shows the focus gone, and gives the runtime the keys' release.
+        self.pace(Event::Wake);
+    }
+
+    /// The app is about to terminate.
+    pub(super) fn terminating(&self) {
+        self.lifecycle(lifecycle::Event::Terminate);
     }
 }

@@ -88,6 +88,7 @@ mod motion;
 mod paint;
 mod paint_probe;
 mod playground;
+mod rest;
 mod scroll;
 mod selection;
 mod system_settings;
@@ -226,6 +227,8 @@ mod line_clamp_tests;
 mod safe_area_tests;
 #[cfg(test)]
 mod text_scale_tests;
+#[cfg(test)]
+mod window_focus_tests;
 #[cfg(test)]
 mod aspect_fit_tests;
 #[cfg(test)]

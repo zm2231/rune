@@ -36,6 +36,8 @@ What works:
   schemes' (`myapp://...`) and universal links, the one that launched it among them. An app
   `rune::run` started gets them from iOS; one that embeds a Rune view passes them on with
   `rune::ios::open_url`. See "Links into the app" below.
+- **Lifecycle hooks.** A view's scene tells the app what a window tells it on a desktop
+  ([Lifecycle hooks](#lifecycle-hooks)).
 - **Links and files.** `Tx::open_url` opens a link in the app that owns its scheme.
   A file dialog opens in its options' `directory` when the system can show that folder.
   `Tx::open_file` shows the system's document picker and answers with a copy of the file;
@@ -51,6 +53,55 @@ What doesn't yet:
 - `AppHandle`'s requests to show, move or quit a window, and the handle `on_ready` is given:
   a view is no window, so they are dropped.
 - Intel Macs' simulators: `scripts/ios-lib` builds for devices and Apple silicon simulators.
+
+## Lifecycle hooks
+
+A `RuneView` follows the scene of the window it is in, so on an iPad each of an app's scenes
+tells its own view, and a view inside a UIKit or SwiftUI app hears the same as one `rune::run`
+made:
+
+| The system says | The app hears |
+| --- | --- |
+| the scene enters the foreground, or the view joins a window in front | `App::on_visibility(true)`; `AppHandle::is_visible` is true |
+| the scene enters the background, or the view leaves its window | `App::on_visibility(false)`; `AppHandle::is_visible` is false. Then the view rests, and `App::on_rest` runs |
+| the scene becomes active | `App::on_focus(true)` |
+| the scene resigns active: Control Center, the app switcher, a call | `App::on_focus(false)` |
+| the app will terminate | `App::on_focus(false)` and `App::on_visibility(false)` if it had not heard them, then `App::on_quit`, once. No rest |
+
+Each hook hears a value once. Coming forward the app is visible before it has the focus, and
+going away it loses the focus before it hides, which it has done by the time `on_quit` runs. As
+in a window, `on_visibility` hears changes after the first frame, and `on_focus` hears the first
+focus too. A composition the keyboard has open (Japanese, Pinyin) stays open while the focus is
+away.
+
+When the scene stops being active (and so before it hides, its view leaves the window or the
+app terminates) what was held ends, in a desktop window's order: a drag under a finger hears
+its cancelled `Phase::Up`, then every key held on a hardware keyboard is released, so
+`El::on_physical_input` hears `PhysicalInput::FocusLost` and the key stops repeating. iOS
+sends no key-up to an app it puts away.
+
+A view that goes out of sight rests, as a desktop window does when it is hidden: once each time
+its scene enters the background or it leaves its window, after `on_visibility(false)`. Rune's
+caches go back to what the screen on show uses (the text layouts the last two commits didn't use
+and their glyph runs, the images no element showed in the last frame, the elements a rewind
+recording no longer refers to), then `App::on_rest` runs for the app's own caches (in an app
+whose view has drawn its first frame, as `on_visibility` is heard), and the
+renderer gives back everything it keeps between frames: `El::cache` textures no layer drew last
+frame, spare and scratch layer targets, the backdrop copies and blur pyramid, and the staging
+chunks finished frames have handed back. The first frame back in front makes again what it
+draws with. All of it happens inside the system's notification, so keep `on_rest` quick; an app
+in the background draws no frame to do it later. Nothing is submitted to the GPU there, and
+nothing waits on it: the rest only drops what is held, since Metal takes no work from an app in
+the background. An `on_rest` that returns true is shown by the first frame after the app comes
+forward. iOS does not rest a view that is on screen and idle, as a desktop window rests after
+10 s without a frame, and an app that terminates does not rest.
+
+iOS announces termination only to an app that is running when it ends, never to a suspended one,
+so `on_quit` is a last chance: save when `on_visibility` says false. An app ended while in front
+loses the focus and hides before `on_quit`, which a desktop app that quits does not.
+`App::on_close` and `App::on_reopen` are never called, since a view is no window to close and
+iOS reopens no running app. `App::on_ime` hears the keyboard for an editor the app draws itself
+(`El::ime_cursor`).
 
 ## Build and run in a simulator
 

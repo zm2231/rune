@@ -340,10 +340,9 @@ pub(crate) fn mount<S: 'static>(mut app: App<S>) -> Mount {
         // SAFETY: `layer` is the `CAMetalLayer` of the view that owns this surface, and the
         // view calls this on the main thread.
         let host = unsafe { LayerHost::from_core_animation_layer(layer, &spec, state, size, scale, dark, wake.clone())? };
-        let mut host = host.with_system_clipboard(wake.clone()).with_popup_menus().with_file_dialogs();
-        host.runtime_mut().configure(config);
         // The view is the app's whole host here: links open in the system, as from a window.
-        host.runtime_mut().host.open_urls_natively = true;
+        let mut host = host.with_system_clipboard(wake.clone()).with_popup_menus().with_file_dialogs().with_system_links();
+        host.runtime_mut().configure(config);
         // The handles' requests wake the view, as they wake a window's event loop.
         shared.connect(wake.clone());
         shared.visible.store(true, Ordering::Release);

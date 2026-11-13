@@ -140,7 +140,8 @@ fn valid_authority(authority: &str) -> bool {
 
 impl crate::runtime::RuntimeCore {
     /// Takes the links handlers asked to open that this runtime didn't open: all of them in a
-    /// headless run or test, none in a window. Each was already checked.
+    /// headless run or test and in an embedded host without `LayerHost::with_system_links`,
+    /// none in a window. Each was already checked.
     pub(crate) fn take_url_requests(&mut self) -> Vec<String> { std::mem::take(&mut self.host.url_requests) }
 
     pub(crate) fn open_urls(&mut self, links: Vec<Link>) {

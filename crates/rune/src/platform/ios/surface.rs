@@ -94,6 +94,8 @@ struct Hosted<S: 'static> {
     host: LayerHost<S>,
     /// What the app's handles reach it through: `AppHandle::update` and `wake` from any thread.
     shared: Arc<Shared<S>>,
+    /// The app's menu items, in UIKit's main menu.
+    menus: crate::native_menu::MenuGuard,
     accessibility: AccessibilityLink,
     /// The app's name, which names the accessibility tree's root.
     title: &'static str,
@@ -134,6 +136,8 @@ impl<S: 'static> Surface for Hosted<S> {
         // to show, move or quit one have nothing to act on, and only the updates run.
         let host = &mut self.host;
         let _ = self.shared.drain(|update| { host.runtime_mut().update_if(update); });
+        // An update may have set the menu (`AppHandle::set_menu`).
+        self.menus.drain();
         let frame = self.host.frame_at(target);
         // There is no window to hand over: the handle is one no window answers, as on the web.
         if frame.drew && let Some(mut ready) = self.on_ready.take() { ready(&crate::WindowHandle::new("main")); }
@@ -277,7 +281,11 @@ impl<S: 'static> Surface for Hosted<S> {
         match code {
             // The physical key first, with the logical one for when no handler takes it. A
             // release carries its logical key too, for `on_key_up`.
-            Some(code) => { rt.physical_then(PhysicalInput::Key { key: code, mods, pressed, repeat }, key, base, None); }
+            Some(code) => {
+                // A `keys_first` menu item's chord runs the item when no handler takes it.
+                let unhandled = key.as_ref().filter(|_| pressed).and_then(crate::native_menu::keys_first);
+                rt.physical_then(PhysicalInput::Key { key: code, mods, pressed, repeat }, key, base, unhandled);
+            }
             // A key with no physical code still edits and moves.
             None => if let Some(key) = key.filter(|_| pressed) { self.host.key(key) },
         }
@@ -339,6 +347,7 @@ pub(crate) fn mount<S: 'static>(mut app: App<S>) -> Mount {
         // The handles' requests wake the view, as they wake a window's event loop.
         shared.connect(wake.clone());
         shared.visible.store(true, Ordering::Release);
-        Ok(Box::new(Hosted { host, shared, accessibility: AccessibilityLink::with_wake(wake.clone()), wake, title: spec.title, on_ready, selected: None, tap: Tap::None, field_menu: None, reopen: None }))
+        let menus = crate::native_menu::MenuGuard::attach(&shared, false);
+        Ok(Box::new(Hosted { host, shared, menus, accessibility: AccessibilityLink::with_wake(wake.clone()), wake, title: spec.title, on_ready, selected: None, tap: Tap::None, field_menu: None, reopen: None }))
     })
 }

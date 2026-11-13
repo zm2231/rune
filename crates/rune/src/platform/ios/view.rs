@@ -272,6 +272,11 @@ define_class!(
             self.reduce_motion_changed();
         }
 
+        #[unsafe(method(runeMemoryWarning:))]
+        fn memory_warning(&self, _notification: &AnyObject) {
+            self.memory_warned();
+        }
+
         #[unsafe(method(runeForeground:))]
         fn foreground(&self, _notification: &AnyObject) {
             self.entered_foreground();

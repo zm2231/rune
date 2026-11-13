@@ -342,6 +342,22 @@ impl Atlas {
         }
     }
 
+    /// Starts over every page the last frame drew nothing from, the first page too, and gives
+    /// back the pages after the last one still in use; of the first page only its pixel buffer
+    /// stays. A glyph on a page that went or started over is rasterised again when it next
+    /// draws.
+    pub(super) fn trim(&mut self) {
+        for page in 0..self.page_count() {
+            let shelf = self.shelf(page);
+            if shelf.used != Use::ThisFrame && shelf.non_empty() {
+                self.evict_page(page);
+            }
+        }
+        while self.pages.last().is_some_and(|page| !page.shelf.non_empty()) {
+            self.pages.pop();
+        }
+    }
+
     pub(crate) fn begin_frame(&mut self, pinned_mask: u32) {
         // A text flight's glyphs keep their outline records until it lands.
         if self.outlines.begin_frame(pinned_mask != 0) {
@@ -476,5 +492,23 @@ impl Atlas {
         self.rasterized += 1;
         self.touch(page as u16, w * h);
         Some(AtlasGlyph { page: page as u16, x: ax, y: ay, w, h, left, top, lcd: false })
+    }
+}
+
+impl TextSystem {
+    /// Drops the colour glyphs the last frame didn't draw. Only those go: clearing the emoji
+    /// on screen would rasterise the whole visible set again every frame once that set alone
+    /// is over [`COLOR_GLYPH_BUDGET`].
+    pub(super) fn retire_color_glyphs(&mut self) {
+        let before = self.color_glyphs.len();
+        self.color_glyphs.retain(|_, c| c.used);
+        if self.color_glyphs.len() == before { return; }
+        let old = std::mem::take(&mut self.color_pixels);
+        self.color_bytes = 0;
+        for c in self.color_glyphs.values_mut() {
+            self.color_pixels.push(old[c.index as usize - 1].clone());
+            c.index = self.color_pixels.len() as u32;
+            self.color_bytes += c.w as usize * c.h as usize * 4;
+        }
     }
 }

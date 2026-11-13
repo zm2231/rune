@@ -84,6 +84,7 @@ mod input;
 mod interaction;
 mod key_index;
 pub(crate) mod layout_read;
+mod memory;
 mod motion;
 mod paint;
 mod paint_probe;

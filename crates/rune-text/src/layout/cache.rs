@@ -93,7 +93,37 @@ fn evict_to<T>(cache: &mut Cache<T>, g: u32, budget: usize) {
     });
 }
 
+/// Drops from `cache` what the last commit didn't use and no element `held`s, whatever it
+/// costs. `g` is the commit to come.
+fn drop_stale<T>(cache: &mut Cache<T>, g: u32, held: impl Fn(&T) -> bool) {
+    cache.retain(|_, e| g.wrapping_sub(e.used) < 2 || held(&e.value));
+    cache.shrink_to_fit();
+}
+
 impl TextSystem {
+    /// For a system short of memory, after a window's rest ([`Self::rest`]: the layouts the
+    /// last two commits didn't use, and the glyph runs of layouts that are gone): what a rest
+    /// keeps for a view shown again goes too. That is the layouts of the commit before the
+    /// last that no element holds (a view just left), the glyph runs and colour glyphs the last frame laid no quads
+    /// from, and the atlas pages it drew nothing from. A still text draws its last frame's
+    /// quads again without its glyph run, so its run and colour glyphs go too and are laid
+    /// again from its layout when it next repaints; the pages its quads sample stay, so
+    /// nothing on screen is shaped or rasterised again. Call it between frames.
+    #[doc(hidden)]
+    pub fn trim_memory(&mut self) {
+        let g = self.generation;
+        // A layout goes last: an elision, a run and a field's paragraphs each hold theirs.
+        drop_stale(&mut self.elisions, g, |_| false);
+        drop_stale(&mut self.runs, g, |r| Rc::strong_count(r) > 1);
+        drop_stale(&mut self.paragraphs, g, |p| Rc::strong_count(p) > 1);
+        drop_stale(&mut self.layouts, g, |l| Rc::strong_count(l) > 1);
+        let layouts = &self.layouts;
+        self.shapes.retain(|_, key| layouts.contains_key(key));
+        self.glyph_cache.trim();
+        self.atlas.trim();
+        self.retire_color_glyphs();
+    }
+
     /// Marks the layouts of `shape` as replaced by an edit of its text, as typing or streaming
     /// makes. Unless this commit used them, they go when it ends, rather than each edit's copy
     /// taking the stale budget from views that may be shown again.
@@ -220,3 +250,7 @@ impl TextSystem {
     #[doc(hidden)]
     pub fn cached_elision_count(&self) -> usize { self.elisions.len() }
 }
+
+#[cfg(test)]
+#[path = "trim_tests.rs"]
+mod trim_tests;

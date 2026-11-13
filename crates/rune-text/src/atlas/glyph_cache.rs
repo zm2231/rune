@@ -153,6 +153,16 @@ impl GlyphCache {
         self.bytes = self.entries.values().map(Entry::size).sum();
     }
 
+    /// Drops every entry the last frame laid no quads from, and the spare one
+    /// (`TextSystem::trim_memory`).
+    pub(crate) fn trim(&mut self) {
+        let frame = self.frame;
+        self.entries.retain(|_, e| e.used == frame);
+        self.entries.shrink_to_fit();
+        self.spare = None;
+        self.bytes = self.entries.values().map(Entry::size).sum();
+    }
+
     /// Drops entries whose layout is gone, then the least recently painted while over budget.
     pub(crate) fn begin_frame(&mut self) {
         self.frame += 1;

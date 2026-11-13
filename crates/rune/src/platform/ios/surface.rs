@@ -106,6 +106,9 @@ pub(crate) trait Surface {
     fn set_text_scale(&mut self, scale: f32);
     /// What the screen keeps at the view's top, right, bottom and left edges, in points.
     fn set_safe_area(&mut self, insets: [f32; 4]);
+    /// The system is short of memory: the caches the last frame didn't draw from go, and
+    /// `App::on_rest` runs for the app's own. True when the hook left a frame work to do.
+    fn memory_warning(&mut self) -> bool;
 }
 
 struct Hosted<S: 'static> {
@@ -375,6 +378,8 @@ impl<S: 'static> Surface for Hosted<S> {
     fn set_text_scale(&mut self, scale: f32) { self.host.runtime_mut().set_system_text_scale(scale); }
 
     fn set_safe_area(&mut self, insets: [f32; 4]) { self.host.runtime_mut().set_safe_area(insets); }
+
+    fn memory_warning(&mut self) -> bool { self.host.trim_memory_with(self.on_rest) }
 }
 
 /// Starts an app on a `CAMetalLayer`, once its view has a size: the layer, the view's size in

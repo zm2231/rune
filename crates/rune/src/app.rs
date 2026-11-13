@@ -303,8 +303,9 @@ impl<S: 'static> App<S> {
     /// whether state the view reads changed (normally false: nothing on screen should).
     ///
     /// On iOS it runs as the app moves to the background (or the view leaves its window),
-    /// inside the system's notification, so keep it quick. A view on screen and idle does not
-    /// rest there, and one that has not drawn its first frame hears no rest.
+    /// inside the system's notification, so keep it quick, and at once on a memory warning.
+    /// A view on screen and idle does not rest there, and one that has not drawn its first
+    /// frame hears no rest.
     pub fn on_rest(mut self, f: fn(&mut S, &mut Tx) -> bool) -> Self {
         self.on_rest = Some(f);
         self

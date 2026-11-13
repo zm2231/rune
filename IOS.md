@@ -38,6 +38,13 @@ What works:
   `rune::ios::open_url`. See "Links into the app" below.
 - **Lifecycle hooks.** A view's scene tells the app what a window tells it on a desktop
   ([Lifecycle hooks](#lifecycle-hooks)).
+- **Memory warnings.** When iOS says memory is short, the view rests at once, on screen or not:
+  it rests as a window at rest does, `App::on_rest` included for the app's own caches, and then
+  frees the caches its last frame didn't draw from (text layouts, glyphs, image and layer
+  textures). Rune's part draws nothing and submits nothing to the GPU, so it does the same in
+  the background and out of its window, and makes what went again when it next shows. An
+  `on_rest` that changes what the view shows gets a frame at once when the view is in front. An
+  app that embeds a `LayerHost` itself calls `LayerHost::trim_memory`.
 - **Links and files.** `Tx::open_url` opens a link in the app that owns its scheme.
   A file dialog opens in its options' `directory` when the system can show that folder.
   `Tx::open_file` shows the system's document picker and answers with a copy of the file;
@@ -99,7 +106,8 @@ in the background draws no frame to do it later. Nothing is submitted to the GPU
 nothing waits on it: the rest only drops what is held, since Metal takes no work from an app in
 the background. An `on_rest` that returns true is shown by the first frame after the app comes
 forward. iOS does not rest a view that is on screen and idle, as a desktop window rests after
-10 s without a frame, and an app that terminates does not rest.
+10 s without a frame: there it rests only on a memory warning. An app that terminates does not
+rest.
 
 iOS announces termination only to an app that is running when it ends, never to a suspended one,
 so `on_quit` is a last chance: save when `on_visibility` says false. An app ended while in front

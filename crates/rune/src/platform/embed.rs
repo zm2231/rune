@@ -374,6 +374,23 @@ impl<S: 'static> LayerHost<S> {
         }
     }
 
+    /// Gives back what a window at rest gives back and the caches the last frame didn't draw
+    /// from, the runtime's and the renderer's ([`Runtime::trim_memory`],
+    /// [`Renderer::trim_memory`]), textures included. For the system's notice that memory is
+    /// short, as `UIApplicationDidReceiveMemoryWarningNotification` is on iOS. It draws
+    /// nothing and asks for no frame, so it is safe in the background; call it between frames.
+    pub fn trim_memory(&mut self) {
+        self.trim_memory_with(None);
+    }
+
+    /// [`Self::trim_memory`] for a host that has the app's `App::on_rest`, which runs where
+    /// a window's rest runs it: after the caches a rest takes from the runtime, before what
+    /// the renderer gives back and what a trim frees on top. True when the hook left a frame
+    /// work to do, for the host to ask for one if its view is on screen.
+    pub(crate) fn trim_memory_with(&mut self, on_rest: Option<fn(&mut S, &mut crate::Tx) -> bool>) -> bool {
+        self.rt.trim_memory_with(on_rest, &mut self.core.renderer)
+    }
+
     /// What this surface asked for, drew and missed, as totals and per-second rates
     /// ([`Runtime::surface_stats`] reads the same counts).
     pub fn surface_stats(&self) -> SurfaceStats {

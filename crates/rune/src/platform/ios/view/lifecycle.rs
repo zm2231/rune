@@ -8,6 +8,9 @@
 //! iPad an app's scenes come forward, lose the focus and go away one by one, and
 //! `UIApplication`'s notifications speak for all of them at once. A window with no scene
 //! hears `UIApplication`'s instead. Termination is the app's alone.
+//!
+//! A memory warning reaches the surface in or out of a window. It wakes the pacing only when
+//! the app's `App::on_rest` left a frame work to do.
 
 use std::ffi::c_void;
 
@@ -36,6 +39,7 @@ unsafe extern "C" {
     static UISceneWillEnterForegroundNotification: &'static AnyObject;
     static UISceneDidActivateNotification: &'static AnyObject;
     static UISceneWillDeactivateNotification: &'static AnyObject;
+    static UIApplicationDidReceiveMemoryWarningNotification: &'static AnyObject;
     static UIKeyboardWillChangeFrameNotification: &'static AnyObject;
     static UIKeyboardFrameEndUserInfoKey: &'static AnyObject;
     static UIAccessibilityReduceMotionStatusDidChangeNotification: &'static AnyObject;
@@ -150,7 +154,8 @@ impl RuneView {
     }
 
     /// The view joined a window, or left the one it was in: in a window it draws at the
-    /// screen's scale and hears the system's notifications.
+    /// screen's scale and hears the system's notifications. Out of one it hears only a memory
+    /// warning.
     pub(super) fn moved_to_window(&self) {
         // SAFETY: `UIView.window` is a nullable object, a window's screen is never nil and its
         // `nativeScale` is a `CGFloat`, the notification centre is a singleton, each selector
@@ -161,6 +166,9 @@ impl RuneView {
             let _: () = msg_send![&*centre, removeObserver: self];
             // In a window or out of one, an app that started hears the app end.
             let _: () = msg_send![&*centre, addObserver: self, selector: sel!(runeTerminate:), name: UIApplicationWillTerminateNotification, object: None::<&AnyObject>];
+            // A view out of its window keeps its surface and its caches (a screen under a
+            // pushed one), so it hears a memory warning there too.
+            let _: () = msg_send![&*centre, addObserver: self, selector: sel!(runeMemoryWarning:), name: UIApplicationDidReceiveMemoryWarningNotification, object: None::<&AnyObject>];
             let window: Option<Retained<AnyObject>> = msg_send![self, window];
             let (Some(window), Some((scene, phase))) = (window, self.scene()) else {
                 // A view out of its window hears no key-up.
@@ -239,6 +247,15 @@ impl RuneView {
     pub(super) fn reduce_motion_changed(&self) {
         self.with_surface(|surface| surface.set_reduced_motion(reduced_motion()));
         self.pace(Event::Wake);
+    }
+
+    /// The system is short of memory: the surface frees what it can make again, and the app's
+    /// `App::on_rest` runs. The frame on screen draws from nothing Rune freed, so that alone
+    /// asks for no frame. A hook that changed what the view shows, or asked for work a frame
+    /// does, wakes the pacing, which draws only for a view in a window in front.
+    pub(super) fn memory_warned(&self) {
+        let stale = self.with_surface(|surface| surface.memory_warning()).unwrap_or(false);
+        if stale { self.pace(Event::Wake); }
     }
 
     /// The view's scene is coming back to the front.

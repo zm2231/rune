@@ -128,6 +128,30 @@ fn the_background_pauses_the_link_and_holds_it_until_the_app_comes_forward() {
     }
 }
 
+/// The wake a memory warning sends when the app's rest hook left a frame work to do: a view
+/// in front draws at its link's next tick, and one in the background or out of its window
+/// draws nothing, then or later.
+#[test]
+fn a_wake_draws_for_a_view_in_front_and_nothing_in_the_background_or_out_of_a_window() {
+    let (mut seq, mut state) = running();
+    assert_eq!(still_frame(&mut seq, &mut state, None), [Effect::Pause]);
+    assert_eq!(run(&mut seq, &mut state, Event::Wake), [Effect::Resume]);
+    assert_eq!(run(&mut seq, &mut state, Event::Tick), [Effect::Draw]);
+
+    assert_eq!(run(&mut seq, &mut state, Event::Background), [Effect::Pause]);
+    assert_eq!(run(&mut seq, &mut state, Event::Wake), []);
+    assert_eq!(run(&mut seq, &mut state, Event::Tick), []);
+    assert_eq!(state, State::Background);
+    // The first tick back in front draws, wake or no wake.
+    assert_eq!(run(&mut seq, &mut state, Event::Foreground), [Effect::Resume]);
+    assert_eq!(run(&mut seq, &mut state, Event::Tick), [Effect::Draw]);
+
+    assert_eq!(run(&mut seq, &mut state, Event::Detached), [Effect::Destroy]);
+    assert_eq!(run(&mut seq, &mut state, Event::Wake), []);
+    assert_eq!(run(&mut seq, &mut state, Event::Tick), []);
+    assert_eq!(state, State::Detached);
+}
+
 #[test]
 fn leaving_the_window_destroys_the_link_from_any_state() {
     for prepare in [None, Some(Event::Background), Some(Event::Frame { animating: false, wake_after: Some(1.0) })] {

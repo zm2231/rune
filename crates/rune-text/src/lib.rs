@@ -649,22 +649,7 @@ impl TextSystem {
         self.paths.begin_frame();
         self.glyph_cache.begin_frame();
         self.ink_spans.clear();
-        if self.color_bytes > COLOR_GLYPH_BUDGET {
-            let before = self.color_glyphs.len();
-            self.color_glyphs.retain(|_, c| c.used);
-            if self.color_glyphs.len() != before {
-                // Only retire scales unused in the last frame. Clearing active emoji
-                // would rerasterize the entire visible working set every frame once
-                // that working set alone exceeds the soft budget.
-                let old = std::mem::take(&mut self.color_pixels);
-                self.color_bytes = 0;
-                for c in self.color_glyphs.values_mut() {
-                    self.color_pixels.push(old[c.index as usize - 1].clone());
-                    c.index = self.color_pixels.len() as u32;
-                    self.color_bytes += c.w as usize * c.h as usize * 4;
-                }
-            }
-        }
+        if self.color_bytes > COLOR_GLYPH_BUDGET { self.retire_color_glyphs(); }
         for c in self.color_glyphs.values_mut() { c.used = false; }
         self.color_icons.begin_frame();
         wake

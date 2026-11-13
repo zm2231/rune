@@ -26,7 +26,6 @@ impl<S: 'static> Runtime<S> {
     /// It drops and forgets, and no more: nothing is encoded, written to a queue or submitted,
     /// so it is safe where the GPU takes no work, as in an iOS app in the background. What the
     /// GPU still holds for a submission goes when the host next polls its device.
-    #[cfg_attr(not(target_vendor = "apple"), allow(dead_code))]
     pub(crate) fn rest(&mut self, on_rest: Option<fn(&mut S, &mut Tx) -> bool>, renderer: Option<&mut crate::render::Renderer>, all: bool) {
         self.core_mut().rest_caches();
         if let Some(f) = on_rest && self.commit.commits > 0 { self.update_if(f); }

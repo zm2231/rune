@@ -61,9 +61,10 @@ scripts/ios-app --name Hello --id com.example.hello --bin target/aarch64-apple-i
 ```
 
 The script stages `target/ios/Hello.app` (the binary and an `Info.plist`), signs it ad hoc,
-installs it on the booted simulator and launches it. `--simulator NAME_OR_UDID` picks another
-simulator and boots it first; `--no-launch` and `--no-install` stop earlier; arguments after
-`--` go to the app. No Xcode project is involved.
+installs it on the booted simulator and launches it. With no simulator booted the install
+fails with `No devices are booted`: `--simulator NAME_OR_UDID` picks a simulator and boots it
+first (`xcrun simctl list devices available` lists them). `--no-launch` and `--no-install` stop
+earlier; arguments after `--` go to the app. No Xcode project is involved.
 
 ```text
 usage: ios-app [-h] --name NAME --id ID --bin BIN [--exe EXE] [--out OUT]
@@ -71,6 +72,23 @@ usage: ios-app [-h] --name NAME --id ID --bin BIN [--exe EXE] [--out OUT]
                [--no-install] [--no-launch]
                ...
 ```
+
+## Before sending a change to the iOS code
+
+Launch a debug build in a simulator once, and watch it reach its first frame:
+
+```sh
+cargo build -p web-hello --target aarch64-apple-ios-sim
+scripts/ios-app --name WebHello --id com.example.webhello \
+    --bin target/aarch64-apple-ios-sim/debug/web-hello --no-launch
+xcrun simctl launch --console --terminate-running-process booted com.example.webhello
+```
+
+objc2 checks the classes Rune defines only in a debug build: that a block implementing a
+protocol registers every required method of it, and only methods the protocol has. A class that
+fails the check panics as it is registered, at launch, and the console shows which method. A
+release build skips the check, so it launches and proves nothing about it. `web-hello` has a
+text field, so the class the keyboard talks to is registered too.
 
 ## Run on a device
 

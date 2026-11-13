@@ -40,7 +40,8 @@ extern_class!(
 );
 
 extern_protocol!(
-    /// The methods are declared where `RuneTextInput` implements them.
+    /// Declared without its methods: `RuneTextInput`'s `unsafe impl` block registers them by
+    /// selector, and nothing in Rust calls them.
     #[name = "UITextInput"]
     unsafe trait TextInput: NSObjectProtocol {}
 );
@@ -138,31 +139,10 @@ define_class!(
     // SAFETY: the superclass chain ends in `NSObject`, which implements the protocol.
     unsafe impl NSObjectProtocol for RuneTextInput {}
 
-    // SAFETY: the protocol's required methods are the ones below.
-    unsafe impl TextInput for RuneTextInput {}
-
     impl RuneTextInput {
         #[unsafe(method(canBecomeFirstResponder))]
         fn can_become_first_responder(&self) -> bool {
             true
-        }
-
-        // The space bar as a trackpad. UIKit moves the selection through
-        // `closestPositionToPoint:` as the finger moves, and asks the view to draw the cursor
-        // that floats under the finger between those positions.
-        #[unsafe(method(beginFloatingCursorAtPoint:))]
-        fn begin_floating_cursor(&self, point: CGPoint) {
-            self.float(Some(point), false);
-        }
-
-        #[unsafe(method(updateFloatingCursorAtPoint:))]
-        fn update_floating_cursor(&self, point: CGPoint) {
-            self.float(Some(point), false);
-        }
-
-        #[unsafe(method(endFloatingCursor))]
-        fn end_floating_cursor(&self) {
-            self.float(None, true);
         }
 
         // The standard edit actions, which UIKit sends a first responder for the three-finger
@@ -227,7 +207,12 @@ define_class!(
         fn delete_backward(&self) {
             self.edit(Event::DeleteBackward);
         }
+    }
 
+    // SAFETY: this block implements every required method of `UITextInput`, each with the
+    // signature `UITextInput.h` declares, and the floating cursor's three optional ones. The
+    // required methods of `UIKeyInput`, which the protocol inherits, are in the block above.
+    unsafe impl TextInput for RuneTextInput {
         #[unsafe(method_id(textInRange:))]
         fn text_in_range(&self, range: &Span) -> Option<Retained<NSString>> {
             Some(NSString::from_str(&self.ivars().doc.borrow().slice(range.range())))
@@ -389,6 +374,24 @@ define_class!(
         #[unsafe(method_id(characterRangeAtPoint:))]
         fn character_range_at(&self, _point: CGPoint) -> Option<Retained<Span>> {
             None
+        }
+
+        // The space bar as a trackpad. UIKit moves the selection through
+        // `closestPositionToPoint:` as the finger moves, and asks the view to draw the cursor
+        // that floats under the finger between those positions.
+        #[unsafe(method(beginFloatingCursorAtPoint:))]
+        fn begin_floating_cursor(&self, point: CGPoint) {
+            self.float(Some(point), false);
+        }
+
+        #[unsafe(method(updateFloatingCursorAtPoint:))]
+        fn update_floating_cursor(&self, point: CGPoint) {
+            self.float(Some(point), false);
+        }
+
+        #[unsafe(method(endFloatingCursor))]
+        fn end_floating_cursor(&self) {
+            self.float(None, true);
         }
     }
 );

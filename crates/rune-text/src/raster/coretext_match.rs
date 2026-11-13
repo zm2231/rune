@@ -107,6 +107,7 @@ impl FontSmoothing {
     /// `DirectWrite` on Windows and `Off` elsewhere. Where it's `On` it stays the default; an
     /// app's setting offers it as the way back elsewhere.
     pub fn classic() -> FontSmoothing {
+        // macOS only, not iOS: `On` reproduces CoreGraphics as measured on a Mac, not on iOS.
         if cfg!(target_os = "macos") {
             FontSmoothing::On
         } else if cfg!(target_os = "windows") {

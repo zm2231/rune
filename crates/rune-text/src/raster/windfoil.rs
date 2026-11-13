@@ -97,6 +97,7 @@ impl TextSystem {
             outline::Hinting::Auto(ppem)
         } else if kind == FaceKind::Cjk && ppem <= CJK_HINT_MAX {
             outline::Hinting::TrueType(ppem)
+        // iOS takes this branch with the other platforms: the macOS exception is unmeasured there.
         } else if cfg!(not(target_os = "macos")) && look == Some(coretext_match::OutlineHint::DirectWrite) && kind == FaceKind::Hinted && gasp_grid_fits(font_ref, ppem) {
             outline::Hinting::Vertical(ppem)
         } else {

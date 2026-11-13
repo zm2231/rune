@@ -159,6 +159,7 @@ fn post_glyph(font: FontRef<'_>, (standard, name): (u16, &[u8])) -> Option<u16> 
 /// macOS 15.3 reports for the faces measured; other TrueType faces, Inter among them, report 0.
 fn descriptor_stem_height(font: FontRef<'_>) -> f64 {
     let name = font.localized_strings().find_by_id(swash::StringId::PostScript, None).map(|s| s.chars().collect::<String>()).unwrap_or_default();
-    // SF Pro (SFNS.ttf) at every weight and optical size tried, and Helvetica Regular.
+    // SF Pro (SFNS.ttf) at every weight and optical size tried, and Helvetica Regular. iOS's
+    // file names the same design `.SFUI-...`; its stemH is unmeasured, so it reports 0 here.
     if name.starts_with(".SFNS") { 79.0 } else if name == "Helvetica" { 85.0 } else { 0.0 }
 }

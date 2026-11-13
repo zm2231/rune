@@ -1,7 +1,12 @@
 //! What CoreText resolves on this Mac: the system font's families by file, and the fallbacks
 //! for scripts the app's fonts lack. A Mac without a font skips what is said about it.
 
-use super::core_text::*;
+use super::core_text::{Chinese, family_files};
+
+/// A first lookup: nothing kept from an earlier one.
+fn fallback_family_files(chars: &[char], locale: Option<&str>) -> Vec<std::path::PathBuf> {
+    super::core_text::fallback_family_files(chars, locale, &mut Chinese::default())
+}
 
 fn names(files: &[std::path::PathBuf]) -> Vec<String> {
     files.iter().map(|p| p.to_string_lossy().into_owned()).collect()
@@ -99,4 +104,27 @@ fn a_character_the_system_font_has_or_no_font_has_adds_nothing() {
     assert!(fallback_family_files(&['\u{0378}'], None).is_empty());
     assert!(fallback_family_files(&['\u{0378}', '\u{2318}'], Some("en")).is_empty());
     assert!(fallback_family_files(&[], None).is_empty());
+}
+
+/// CoreText offers PingFang for Chinese, which Rune can't draw: Simplified takes Hiragino Sans
+/// GB and Traditional Heiti TC, once however many characters ask.
+#[test]
+fn chinese_loads_a_family_that_is_not_pingfang() {
+    if let Some(simplified) = installed(&["Hiragino Sans GB.ttc"]) {
+        assert_eq!(names(&fallback_family_files(&['\u{4E2D}'], Some("zh-Hans"))), simplified);
+        assert_eq!(names(&fallback_family_files(&['\u{4E2D}', '\u{4EEC}', '\u{9F8D}'], Some("zh-Hans"))), simplified);
+    }
+    if let Some(traditional) = installed(&["STHeiti Light.ttc", "STHeiti Medium.ttc"]) {
+        assert_eq!(names(&fallback_family_files(&['\u{4E2D}'], Some("zh-Hant"))), traditional);
+    }
+}
+
+/// What the first Chinese character found answers the later ones, through one kept state.
+#[test]
+fn later_chinese_characters_take_the_family_already_found() {
+    let Some(simplified) = installed(&["Hiragino Sans GB.ttc"]) else { return };
+    let mut chinese = Chinese::default();
+    for ch in ['\u{4E2D}', '\u{4EEC}', '\u{9F8D}'] {
+        assert_eq!(names(&super::core_text::fallback_family_files(&[ch], Some("zh-Hans"), &mut chinese)), simplified, "{ch}");
+    }
 }

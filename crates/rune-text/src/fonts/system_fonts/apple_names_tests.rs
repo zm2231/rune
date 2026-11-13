@@ -69,3 +69,41 @@ fn the_last_resort_font_is_known_by_its_hidden_and_public_names() {
         assert!(!is_last_resort(family), "{family}");
     }
 }
+
+#[test]
+fn pingfang_is_known_by_the_resolved_fonts_family_or_file() {
+    use std::path::Path;
+    for family in ["PingFang SC", "PingFang HK", ".PingFang UI SC", ".PingFang UI TC"] {
+        assert!(is_pingfang(family, None), "{family}");
+        assert!(is_pingfang(family, Some(Path::new("/System/Library/Fonts/Hiragino Sans GB.ttc"))), "{family}");
+    }
+    // Another family's name over PingFang's file.
+    for file in ["/System/Library/PrivateFrameworks/FontServices.framework/CorePrivate/PingFangUI.ttc", "/System/Library/Fonts/PingFang.ttc"] {
+        assert!(is_pingfang("Heiti SC", Some(Path::new(file))), "{file}");
+    }
+    for family in ["Hiragino Sans GB", "Heiti SC", ".Hiragino Kaku Gothic Interface", ".AppleSimplifiedChineseFont"] {
+        assert!(!is_pingfang(family, None), "{family}");
+        assert!(!is_pingfang(family, Some(Path::new("/System/Library/Fonts/STHeiti Light.ttc"))), "{family}");
+        // A folder's name is not the file's.
+        assert!(!is_pingfang(family, Some(Path::new("/Fonts/PingFang/Other.ttc"))), "{family}");
+    }
+}
+
+#[test]
+fn chinese_candidates_follow_the_locale_then_pingfangs_variant() {
+    const SIMPLIFIED: &[&str] = &["Hiragino Sans GB", "Heiti SC", "Heiti TC"];
+    const TRADITIONAL: &[&str] = &["Heiti TC", "Heiti SC", "Hiragino Sans GB"];
+    // No locale: the variant CoreText offered.
+    assert_eq!(cjk_candidates(".PingFang UI SC", None), SIMPLIFIED);
+    assert_eq!(cjk_candidates("PingFang SC", None), SIMPLIFIED);
+    assert_eq!(cjk_candidates(".PingFang UI TC", None), TRADITIONAL);
+    assert_eq!(cjk_candidates("PingFang HK", None), TRADITIONAL);
+    for locale in ["zh-Hans", "zh-Hans-CN", "zh-CN", "zh", "en"] {
+        assert_eq!(cjk_candidates(".PingFang UI SC", Some(locale)), SIMPLIFIED, "{locale}");
+    }
+    // A Traditional locale wins over a Simplified variant.
+    for locale in ["zh-Hant", "zh-Hant-TW", "zh-TW", "zh-HK", "zh-MO"] {
+        assert_eq!(cjk_candidates(".PingFang UI SC", Some(locale)), TRADITIONAL, "{locale}");
+        assert_eq!(cjk_candidates(".PingFang UI TC", Some(locale)), TRADITIONAL, "{locale}");
+    }
+}

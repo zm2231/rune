@@ -13,6 +13,10 @@ use crate::*;
 mod apple_names;
 #[cfg(test)]
 mod apple_names_tests;
+#[cfg(any(target_vendor = "apple", test))]
+mod chinese;
+#[cfg(test)]
+mod chinese_tests;
 #[cfg(target_vendor = "apple")]
 mod core_text;
 #[cfg(all(test, target_os = "macos"))]
@@ -200,6 +204,21 @@ pub(crate) struct Fallbacks {
     /// Segoe UI Symbol is loaded, for symbols with a text form (Windows).
     #[cfg_attr(not(windows), allow(dead_code))]
     text_symbols: bool,
+    /// What Chinese falls back to in place of PingFang (Apple platforms), found once: the
+    /// family and each locale's cascade, both bounded (`chinese`).
+    #[cfg(target_vendor = "apple")]
+    chinese: core_text::Chinese,
+}
+
+/// The files of the fonts the platform falls back to for `chars` in `locale`. `fallbacks`
+/// keeps what an earlier call found out about Chinese, so a later call doesn't ask again.
+#[cfg(target_vendor = "apple")]
+fn fallback_family_files(fallbacks: &mut Fallbacks, chars: &[char], locale: Option<&str>) -> Vec<std::path::PathBuf> {
+    core_text::fallback_family_files(chars, locale, &mut fallbacks.chinese)
+}
+#[cfg(not(target_vendor = "apple"))]
+fn fallback_family_files(_: &mut Fallbacks, chars: &[char], locale: Option<&str>) -> Vec<std::path::PathBuf> {
+    platform::fallback_family_files(chars, locale)
 }
 
 impl Fallbacks {
@@ -286,7 +305,9 @@ impl TextSystem {
         // The first system font a launch loads, for its trace (`marks`).
         rune_core::marks::mark("text.fallback.begin");
         for (i, ch) in scripts {
-            register_script_fallbacks(&mut self.font_cx.collection, &mut self.font_files, &fallback::SCRIPT_FONTS[i], ch, locale.as_deref());
+            // The font the platform falls back to for the script's character in `locale`.
+            let files = fallback_family_files(&mut self.fallbacks, &[ch], locale.as_deref());
+            register_script_fallbacks(&mut self.font_cx.collection, &mut self.font_files, &fallback::SCRIPT_FONTS[i], files);
             if self.mono_scripts.is_none() && matches!(fallback::SCRIPT_FONTS[i].script, b"Arab" | b"Hebr") {
                 self.mono_scripts = Some(load_families(&mut self.font_cx.collection, fallback::MONO_SCRIPT_FILES, fallback::MONO_SCRIPT_FAMILIES));
             }
@@ -297,7 +318,7 @@ impl TextSystem {
         if !cjk.is_empty() || !cjk_more.is_empty() {
             self.fallbacks.asked.extend(cjk.iter().chain(&cjk_more).copied());
             cjk.extend(cjk_more);
-            let files = platform::fallback_family_files(&cjk, locale.as_deref());
+            let files = fallback_family_files(&mut self.fallbacks, &cjk, locale.as_deref());
             if !cjk_done { self.fallbacks.cjk.push(locale.clone()); }
             let families = (self.families.0.clone(), self.families.1.clone());
             register_system_cjk(&mut self.font_cx.collection, &mut self.font_files, files, (&families.0, &families.1), &mut self.fallbacks.cjk_families);
@@ -341,7 +362,8 @@ impl TextSystem {
             // fallback, once per character.
             if !missing.is_empty() {
                 self.fallbacks.asked.extend(missing.iter().copied());
-                self.add_symbol_files(platform::fallback_family_files(&missing, locale.as_deref()));
+                let files = fallback_family_files(&mut self.fallbacks, &missing, locale.as_deref());
+                self.add_symbol_files(files);
             }
         }
         rune_core::marks::mark("text.fallback.loaded");
@@ -461,11 +483,10 @@ fn load_files(collection: &mut Collection, loaded: &mut LoadedFiles, paths: impl
     families
 }
 
-/// Appends the system fonts for `fonts.script` as that script's fallbacks.
-/// The font is the one the platform falls back to for `sample` in `locale`, its family whole.
-fn register_script_fallbacks(collection: &mut Collection, loaded: &mut LoadedFiles, fonts: &fallback::ScriptFonts, sample: char, locale: Option<&str>) {
-    // The whole family, so a medium label takes its Semibold and a heading its Bold.
-    let files = platform::fallback_family_files(&[sample], locale);
+/// Appends the system fonts in `files` as `fonts.script`'s fallbacks: the font the platform
+/// falls back to for the script, its family whole, so a medium label takes its Semibold and a
+/// heading its Bold.
+fn register_script_fallbacks(collection: &mut Collection, loaded: &mut LoadedFiles, fonts: &fallback::ScriptFonts, files: Vec<std::path::PathBuf>) {
     let added = load_files(collection, loaded, files.into_iter().take(16));
     if !added.is_empty() {
         // The Arabic comma, semicolon and question mark (and Urdu's full stop) are Common

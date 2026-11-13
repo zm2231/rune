@@ -3,7 +3,7 @@
 //! iOS), so a name here says which face of the system UI font is meant, and the face's file is
 //! found from the UI font's own, never by matching the name.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A face of the system UI font.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,4 +74,27 @@ pub(super) fn fallback_files(own: Option<PathBuf>, family: &str, by_name: impl F
         }
     }
     files
+}
+
+/// Whether a font is PingFang, CoreText's Chinese fallback, whose outlines are in an `hvgl`
+/// table Rune has no reader for. `family` is the font's own family once CoreText has resolved
+/// it (`PingFang SC`, `.PingFang UI TC`) and `file` the file it is in: a system can answer a
+/// request for another Chinese family (Heiti SC) with PingFang, so the name asked for says
+/// nothing.
+pub(super) fn is_pingfang(family: &str, file: Option<&Path>) -> bool {
+    let named = |name: &str| name.to_ascii_lowercase().contains("pingfang");
+    named(family) || file.and_then(Path::file_name).is_some_and(|name| named(&name.to_string_lossy()))
+}
+
+/// The families to draw Chinese in where CoreText offers the PingFang `family` for text in
+/// `locale` (a BCP 47 tag), most preferred first: Hiragino Sans GB for Simplified and Heiti TC
+/// for Traditional, as fontique picks, then the other Chinese families a system may have
+/// instead. Traditional is what the locale or PingFang's own variant says; without either,
+/// Simplified. A system may have none of them, or only as another name for PingFang.
+pub(super) fn cjk_candidates(family: &str, locale: Option<&str>) -> &'static [&'static str] {
+    let traditional = family.contains("TC")
+        || family.contains("HK")
+        || family.contains("MO")
+        || locale.is_some_and(|l| ["Hant", "TW", "HK", "MO"].iter().any(|tag| l.contains(tag)));
+    if traditional { &["Heiti TC", "Heiti SC", "Hiragino Sans GB"] } else { &["Hiragino Sans GB", "Heiti SC", "Heiti TC"] }
 }

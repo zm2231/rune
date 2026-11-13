@@ -28,7 +28,9 @@ What works:
   after any marked text is closed. A field that sets none of them answers UIKit's defaults.
 - **System fonts.** Text draws in the fonts the app bundles (Inter by default).
   `Family::Named("System Font")` is San Francisco and `Family::SystemMono` SF Mono, loaded
-  from the files of the system's UI font the first time a text asks for them.
+  from the files of the system's UI font the first time a text asks for them. A character the
+  app's fonts lack (emoji, Arabic, Hebrew, Devanagari, Thai, kana, hangul...) draws in the
+  font CoreText falls back to for it, loaded the same way.
 - **Hardware keyboard.** Arrows, Return, Escape, Tab and the function keys with their
   modifiers, key repeat, and shortcuts with ⌘ as on a Mac. Every key is also a physical key,
   for `El::on_physical_input`.
@@ -75,6 +77,10 @@ What doesn't yet:
   `Tx::close_window`, `Tx::minimize`, `Tx::quit` and `Tx::relaunch`, and the handle `on_ready`
   is given. The first dropped request of each kind prints one `rune: ... ignored: ...` line on
   stderr, which Xcode's console and `devicectl --console` show.
+- Chinese in the system's own font. iOS's Chinese font is PingFang, whose glyphs are in a
+  table (`hvgl`) Rune has no reader for. A Chinese character goes to the first other font in
+  CoreText's cascade that has it (a Japanese font, for a character Japanese shares), and to no
+  font when there is none. An app with Chinese text bundles a font for it (`AppSpec::fonts`).
 - Intel Macs' simulators: `scripts/ios-lib` builds for devices and Apple silicon simulators.
 
 ## Lifecycle hooks

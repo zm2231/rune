@@ -57,3 +57,46 @@ fn a_public_family_is_still_matched_by_name() {
         assert_eq!(names(&family_files(&[family])), files, "{family}");
     }
 }
+
+#[test]
+fn a_hidden_name_that_is_not_the_system_fonts_has_no_files() {
+    for name in [".SF Arabic", ".SF Compact", ".PingFang UI SC", ".Hiragino Kaku Gothic Interface", ".LastResort"] {
+        assert!(family_files(&[name]).is_empty(), "{name}");
+    }
+}
+
+/// Japanese falls back to a hidden face of Hiragino Sans; the family's public name brings its
+/// other weights, each file once.
+#[test]
+fn kana_loads_the_weights_of_hiragino_sans() {
+    let files = names(&fallback_family_files(&['\u{3042}'], Some("ja")));
+    if !files.iter().any(|f| f.ends_with(" W3.ttc")) {
+        eprintln!("skipping: Japanese doesn't fall back to Hiragino Sans here ({files:?})");
+        return;
+    }
+    assert!(files.len() > 1, "the family, not one weight: {files:?}");
+    for (i, file) in files.iter().enumerate() {
+        let weight = file.strip_suffix(".ttc").and_then(|f| f.rsplit_once(" W")).map(|(_, w)| w);
+        assert!(weight.is_some_and(|w| w.len() == 1 && w.chars().all(|c| c.is_ascii_digit())), "{file}");
+        assert!(!files[..i].contains(file), "{file} twice");
+    }
+}
+
+/// These fallbacks are hidden families whose file has no public face: the file alone.
+#[test]
+fn a_hidden_fallback_loads_the_file_coretext_names() {
+    for (ch, locale, file) in [('\u{0639}', "ar", "SFArabic.ttf"), ('\u{05D0}', "he", "SFHebrew.ttf"), ('\u{0915}', "hi", "SFIndia.ttc"), ('\u{0E01}', "th", "ThonburiUI.ttc"), ('\u{10D0}', "ka", "SFGeorgian.ttf")] {
+        let Some(files) = installed(&[file]) else { continue };
+        assert_eq!(names(&fallback_family_files(&[ch], Some(locale))), files, "{ch}");
+    }
+}
+
+/// The system font has ⌘; no font has the unassigned U+0378, for which CoreText offers its
+/// last-resort font of placeholder boxes.
+#[test]
+fn a_character_the_system_font_has_or_no_font_has_adds_nothing() {
+    assert!(fallback_family_files(&['\u{2318}'], None).is_empty());
+    assert!(fallback_family_files(&['\u{0378}'], None).is_empty());
+    assert!(fallback_family_files(&['\u{0378}', '\u{2318}'], Some("en")).is_empty());
+    assert!(fallback_family_files(&[], None).is_empty());
+}

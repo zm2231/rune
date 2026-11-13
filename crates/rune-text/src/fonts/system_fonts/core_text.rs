@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use objc2_core_foundation::{CFDictionary, CFRange, CFRetained, CFString, CFType, CFURL, CFURLPathStyle};
 use objc2_core_text::{CTFont, CTFontDescriptor, CTFontManagerCreateFontDescriptorsFromURL, CTFontSymbolicTraits, CTFontUIFontType, kCTFontFamilyNameAttribute, kCTFontURLAttribute};
 
-use super::apple_names::{SystemFace, sibling_file, system_family};
+use super::apple_names::{SystemFace, fallback_files, is_hidden, is_last_resort, sibling_file, system_family};
 
 /// The file behind a CoreText attribute holder's `kCTFontURLAttribute`.
 fn path_of(url: Option<CFRetained<CFType>>) -> Option<PathBuf> {
@@ -52,10 +52,14 @@ fn system_face_paths(face: SystemFace<'_>) -> Vec<PathBuf> {
 
 /// Every face file of family `name`, as CoreText matches the family name. The system UI font's
 /// families (`System Font`, `.SF NS`, `.SF UI Mono`...) are hidden from CoreText's lists and
-/// come from the UI font's file instead.
+/// come from the UI font's file instead. Any other hidden name has no files: it is never
+/// given to CoreText to match.
 fn family_paths(name: &str) -> Vec<PathBuf> {
     if let Some(face) = system_family(name) {
         return system_face_paths(face);
+    }
+    if is_hidden(name) {
+        return Vec::new();
     }
     // SAFETY: CoreText descriptors built from and read for their attributes only.
     unsafe {
@@ -81,7 +85,8 @@ fn family_paths(name: &str) -> Vec<PathBuf> {
 
 /// The files of the fonts CoreText falls back to for `chars` in `locale` (a BCP 47 tag), each
 /// with the rest of its family's files, so a bold label draws in the family's own bold (Hiragino
-/// Sans W6, not W3 emboldened). Chars no installed font covers add nothing.
+/// Sans W6, not W3 emboldened). A char no installed font covers adds nothing: CoreText answers
+/// with its last-resort font, which is skipped.
 pub(super) fn fallback_family_files(chars: &[char], locale: Option<&str>) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     let mut families: Vec<String> = Vec::new();
@@ -95,6 +100,7 @@ pub(super) fn fallback_family_files(chars: &[char], locale: Option<&str>) -> Vec
             let range = CFRange { location: 0, length: text.length() };
             let font = CTFont::for_string_with_language(&base, &text, range, language.as_deref());
             let family = font.family_name().to_string();
+            if is_last_resort(&family) { continue; }
             // PingFang (CoreText's Chinese fallback) draws with `hvgl` outlines, which no
             // outline reader here can draw: Chinese takes Hiragino Sans GB, or Heiti TC for
             // Traditional, as fontique does.
@@ -110,17 +116,13 @@ pub(super) fn fallback_family_files(chars: &[char], locale: Option<&str>) -> Vec
                 continue;
             }
             // A hidden family (`.Hiragino Kaku Gothic Interface`, CoreText's Japanese fallback)
-            // matches no descriptors, so its weights would never load: take the family of its
-            // file's first public face instead (Hiragino Sans, W0-W9).
-            let family = if family.starts_with('.') { public_family(&font).unwrap_or(family) } else { family };
+            // can't be asked for by name, so its weights would never load: take the family of
+            // its file's first public face instead (Hiragino Sans, W0-W9). A file with no
+            // public face (`.SF Arabic`'s) is loaded as the font says where it is, and no more.
+            let family = if is_hidden(&family) { public_family(&font).unwrap_or(family) } else { family };
             // The system font itself: it had the character, nothing to add.
             if family == base_name || families.contains(&family) { continue; }
-            if let Some(path) = path_of(font.attribute(kCTFontURLAttribute))
-                && !out.contains(&path)
-            {
-                out.push(path);
-            }
-            for path in family_paths(&family) {
+            for path in fallback_files(path_of(font.attribute(kCTFontURLAttribute)), &family, family_paths) {
                 if !out.contains(&path) { out.push(path); }
             }
             families.push(family);
@@ -139,7 +141,7 @@ fn public_family(font: &CTFont) -> Option<String> {
         let faces: CFRetained<objc2_core_foundation::CFArray<CTFontDescriptor>> = CFRetained::cast_unchecked(faces);
         (0..faces.len()).filter_map(|i| faces.get(i)).find_map(|d| {
             let name = d.attribute(kCTFontFamilyNameAttribute)?.downcast::<CFString>().ok()?.to_string();
-            (!name.starts_with('.')).then_some(name)
+            (!is_hidden(&name)).then_some(name)
         })
     }
 }

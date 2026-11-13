@@ -50,8 +50,13 @@ What doesn't yet:
 - An App's menu items in the menu bar of a UIKit or SwiftUI app that embeds a Rune view. That
   app's own delegate builds its main menu, so on an iPad only a `keys_first` item's shortcut
   runs there; on an iPhone every item's does.
-- `AppHandle`'s requests to show, move or quit a window, and the handle `on_ready` is given:
-  a view is no window, so they are dropped.
+- More than one surface an app: a `RuneView` is one view, so `App::window`'s other windows,
+  `App::overlay`'s overlays and `rune::open_window`'s windows never open. Requests of a window
+  are dropped: `AppHandle`'s `open`, `show`, `activate`, `hide`, `close`, `focus`, `minimize`,
+  `set_position`, `place`, `set_dock_icon`, `quit` and `relaunch`, a handler's
+  `Tx::close_window`, `Tx::minimize`, `Tx::quit` and `Tx::relaunch`, and the handle `on_ready`
+  is given. The first dropped request of each kind prints one `rune: ... ignored: ...` line on
+  stderr, which Xcode's console and `devicectl --console` show.
 - Intel Macs' simulators: `scripts/ios-lib` builds for devices and Apple silicon simulators.
 
 ## Lifecycle hooks

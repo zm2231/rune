@@ -8,6 +8,7 @@ use std::sync::atomic::Ordering;
 
 use accesskit::{ActionRequest, TreeUpdate};
 
+use super::dropped::{self, Kind, Reported};
 use super::field_touch;
 use super::keys::Stroke;
 use super::lifecycle;
@@ -118,6 +119,8 @@ struct Hosted<S: 'static> {
     title: &'static str,
     /// `App::on_ready`, which runs once the first frame is on screen, as a window's does.
     on_ready: Option<OnWindow>,
+    /// The kinds of request this view has said it drops.
+    dropped: Reported,
     /// `App::on_quit`, which runs when the app is about to terminate.
     on_quit: Option<fn(&mut S, &mut crate::Tx)>,
     /// `App::on_rest`, which runs when the view rests: its scene went to the background, or
@@ -152,12 +155,24 @@ impl<S: 'static> Surface for Hosted<S> {
     fn frame(&mut self, target: Instant) -> EmbedFrame {
         self.accessibility.receive(self.host.runtime_mut().core_mut(), self.title);
         // What the app's handles asked since the last frame. A view is not a window: requests
-        // to show, move or quit one have nothing to act on, and only the updates run.
+        // to show, move or quit one have nothing to act on, and only the updates run. The
+        // first dropped request of each kind says so.
         let host = &mut self.host;
-        let _ = self.shared.drain(|update| { host.runtime_mut().update_if(update); });
+        let requests = self.shared.drain(|update| { host.runtime_mut().update_if(update); });
+        for (kind, asked) in dropped::asked(&requests) {
+            if asked { report(&mut self.dropped, kind); }
+        }
         // An update may have set the menu (`AppHandle::set_menu`).
         self.menus.drain();
         let frame = self.host.frame_at(target);
+        // What handlers asked of a window in this frame, or in a hook since the last, is
+        // taken and dropped the same way: none of it waits or piles up.
+        let rt = self.host.runtime_mut();
+        let (shell, minimize) = (rt.shell_request.take(), rt.host.minimize.field());
+        if minimize { rt.minimize_step(crate::window::MinimizeEvent::Lost); }
+        for (kind, asked) in dropped::asked_by_handlers(shell, minimize, dropped::take_opened()) {
+            if asked { report(&mut self.dropped, kind); }
+        }
         // There is no window to hand over: the handle is one no window answers, as on the web.
         if frame.drew && let Some(mut ready) = self.on_ready.take() { ready(&crate::WindowHandle::new("main")); }
         // A tap that left the field's caret where it was, or Select All, opens the field's menu.
@@ -373,11 +388,21 @@ impl<S: 'static> Hosted<S> {
     }
 }
 
+/// Says on stderr that a request of this kind is dropped, the first time the view drops one.
+fn report(reported: &mut Reported, kind: Kind) {
+    if reported.first(kind) { eprintln!("rune: {}", kind.message()); }
+}
+
 pub(crate) fn mount<S: 'static>(mut app: App<S>) -> Mount {
     let on_ready = app.on_ready.take();
     // From here, so a link the scene is handed before the view has a size waits among the
     // app's updates and runs before its first frame.
     let open_urls = crate::open_url::incoming::listen(&app);
+    // A view is one app's one surface: the other windows and the overlays it asked for go
+    // with the `App`.
+    let mut dropped = Reported::default();
+    if !app.windows.is_empty() { report(&mut dropped, Kind::Windows); }
+    if !app.overlays.is_empty() { report(&mut dropped, Kind::Overlays); }
     let (on_quit, on_rest) = (app.on_quit, app.on_rest);
     let (spec, state, shared, config) = app.into_parts(None);
     Box::new(move |layer, size, scale, dark, wake| {
@@ -394,6 +419,6 @@ pub(crate) fn mount<S: 'static>(mut app: App<S>) -> Mount {
         // The handles' requests wake the view, as they wake a window's event loop.
         shared.connect(wake.clone());
         let menus = crate::native_menu::MenuGuard::attach(&shared, false);
-        Ok(Box::new(Hosted { host, shared, menus, accessibility: AccessibilityLink::with_wake(wake.clone()), wake, title: spec.title, on_ready, on_quit, on_rest, lifecycle: lifecycle::State::default(), field: field_touch::State::default(), _open_urls: open_urls }))
+        Ok(Box::new(Hosted { host, shared, menus, accessibility: AccessibilityLink::with_wake(wake.clone()), wake, title: spec.title, on_ready, dropped, on_quit, on_rest, lifecycle: lifecycle::State::default(), field: field_touch::State::default(), _open_urls: open_urls }))
     })
 }

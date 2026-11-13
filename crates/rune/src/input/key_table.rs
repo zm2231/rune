@@ -198,7 +198,7 @@ pub(crate) fn modifier_glyphs(m: Mods) -> String {
 
 /// Keycaps for held modifiers (`rune::modifier_keycaps`): glyphs on macOS, words elsewhere.
 pub(crate) fn modifier_keycaps(m: Mods) -> Vec<String> {
-    let mac = cfg!(target_os = "macos");
+    let mac = crate::edit::MAC_KEYS;
     held_mod_specs(m).map(|s| if mac { s.glyph } else { s.word }.to_owned()).collect()
 }
 
@@ -268,7 +268,7 @@ pub(crate) fn shortcut_named_label(name: &str) -> Option<String> {
     if name == "space" { return Some("Space".into()); }
     if let Some(n) = parse_function_key(name, 'f') { return Some(format!("F{n}")); }
     let spec = named_by_alias(name)?;
-    Some(if cfg!(target_os = "macos") { spec.mac_label } else { spec.shortcut_pc_label }.into())
+    Some(if crate::edit::MAC_KEYS { spec.mac_label } else { spec.shortcut_pc_label }.into())
 }
 
 /// Compact cap glyph for a named `Key` in the `--keys` overlay.
@@ -416,7 +416,7 @@ mod tests {
         assert_eq!(modifier_label(ChordMod::Super, KeyPlatform::Linux), "Super");
         assert_eq!(chord_key_label(ChordKey::Enter, KeyPlatform::Mac), "↩");
         assert_eq!(chord_key_label(ChordKey::Enter, KeyPlatform::Windows), "Enter");
-        assert_eq!(shortcut_named_label("enter").as_deref(), Some(if cfg!(target_os = "macos") { "↩" } else { "Return" }));
+        assert_eq!(shortcut_named_label("enter").as_deref(), Some(if crate::edit::MAC_KEYS { "↩" } else { "Return" }));
         assert_eq!(overlay_named_label("space"), "␣");
         assert_eq!(overlay_named_label("insert"), "Ins");
         assert_eq!(overlay_named_label("contextmenu"), "≣");

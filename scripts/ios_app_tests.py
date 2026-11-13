@@ -16,7 +16,7 @@ def args(tmp, **over):
     binary.write_text("binary")
     binary.chmod(0o755)
     base = dict(name="Hello", id="com.example.hello", bin=str(binary), exe="hello",
-                simulator="booted", device=None, profile=None, no_launch=False, args=[])
+                simulator="booted", device=None, profile=None, url_scheme=[], no_launch=False, args=[])
     return SimpleNamespace(**{**base, **over})
 
 
@@ -34,6 +34,31 @@ class BundleRegression(unittest.TestCase):
             self.assertIn("UIApplicationSceneManifest", plist)
             self.assertEqual(len(plist["UISupportedInterfaceOrientations~ipad"]), 4, "an iPad app turns every way, so it can share the screen")
             self.assertEqual(command.call_args.args[:4], ("codesign", "--force", "--sign", "-"))
+
+    def test_url_schemes_are_declared_under_the_apps_id_and_a_bundle_without_any_declares_none(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command"):
+            stage = Path(tmp) / "out/Hello.app"
+            ios_app.build(stage, args(tmp))
+            self.assertNotIn("CFBundleURLTypes", plistlib.loads((stage / "Info.plist").read_bytes()))
+            ios_app.build(stage, args(tmp, url_scheme=["myapp", "myapp-dev"]))
+            plist = plistlib.loads((stage / "Info.plist").read_bytes())
+            self.assertEqual(plist["CFBundleURLTypes"], [dict(CFBundleURLName="com.example.hello", CFBundleURLSchemes=["myapp", "myapp-dev"])])
+
+    def test_the_url_scheme_flag_repeats_and_refuses_what_is_not_a_scheme(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "build") as build, \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as errors:
+            binary = args(tmp).bin
+            base = ["ios-app", "--name", "Hello", "--id", "com.example.hello", "--bin", binary, "--out", tmp, "--no-install"]
+            with patch.object(ios_app.sys, "argv", base + ["--url-scheme", "myapp", "--url-scheme", "my.app+dev-2"]):
+                ios_app.main()
+            self.assertEqual(build.call_args.args[1].url_scheme, ["myapp", "my.app+dev-2"])
+            build.reset_mock()
+            for refused in ("myapp://", "", "my app", "2app"):
+                with patch.object(ios_app.sys, "argv", base + ["--url-scheme", "myapp", f"--url-scheme={refused}"]), \
+                        self.assertRaises(SystemExit, msg=refused):
+                    ios_app.main()
+            build.assert_not_called()
+            self.assertIn("the part before ://", errors.getvalue())
 
     def test_staging_again_replaces_the_old_bundle(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command"):

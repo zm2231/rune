@@ -140,6 +140,73 @@ fn a_handler_that_cant_install_listens_to_nothing() {
     assert!(inbox.listen(&app, &Fake::default()).is_some());
 }
 
+/// iOS: the app's view listens as it is made, with no `prepare`, and the scene's links arrive
+/// before the view has a size or a waker.
+#[test]
+fn a_view_listening_before_its_first_frame_gets_the_launch_links_in_order_and_later_ones_wake_it() {
+    let (inbox, glue, app) = (inbox(), Fake::default(), app());
+    let _listening = inbox.listen(&app, &glue).unwrap();
+    inbox.settle(&glue);
+    inbox.receive("myapp://launch".into());
+    inbox.receive("https://example.com/item/7".into());
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let w = wakes.clone();
+    app.shared.connect(Arc::new(move || { w.fetch_add(1, Ordering::SeqCst); }));
+    assert_eq!(wakes.load(Ordering::SeqCst), 1, "connecting wakes for what waited");
+    let mut rt = runtime();
+    assert_eq!(deliver(&app, &mut rt), 2);
+    assert_eq!(rt.state, ["myapp://launch", "https://example.com/item/7"]);
+    inbox.receive("myapp://warm".into());
+    assert_eq!(wakes.load(Ordering::SeqCst), 2);
+    assert_eq!(deliver(&app, &mut rt), 1);
+    assert_eq!(rt.state.last().unwrap(), "myapp://warm");
+    assert_eq!(glue.removes.get(), 0);
+}
+
+#[test]
+fn a_view_without_the_hook_keeps_no_links_once_settled() {
+    let (inbox, glue) = (inbox(), Fake::default());
+    assert!(inbox.listen(&plain(), &glue).is_none());
+    inbox.settle(&glue);
+    inbox.receive("myapp://dropped".into());
+    let late = app();
+    let _listening = inbox.listen(&late, &glue).unwrap();
+    assert!(late.shared.take_updates().is_empty());
+}
+
+/// iOS, a view in another app: that app hands the links over (`ios::open_url`), the first of
+/// them perhaps before it has made the view, and each view settles as it is made.
+#[test]
+fn links_a_host_hands_over_reach_its_view_in_order_from_before_the_view_was_made() {
+    let (inbox, glue, app) = (inbox(), Fake::default(), app());
+    inbox.receive("myapp://launch".into());
+    let _listening = inbox.listen(&app, &glue).unwrap();
+    inbox.settle(&glue);
+    inbox.receive("https://example.com/item/7".into());
+    inbox.receive("myapp://later".into());
+    let mut rt = runtime();
+    assert_eq!(deliver(&app, &mut rt), 3);
+    assert_eq!(rt.state, ["myapp://launch", "https://example.com/item/7", "myapp://later"]);
+}
+
+#[test]
+fn links_a_host_hands_a_view_without_the_hook_are_dropped_not_kept() {
+    let (inbox, glue) = (inbox(), Fake::default());
+    inbox.receive("myapp://launch".into());
+    assert!(inbox.listen(&plain(), &glue).is_none());
+    inbox.settle(&glue);
+    inbox.receive("myapp://later".into());
+    // A second view, with the hook, hears only what comes after it.
+    let second = app();
+    let _listening = inbox.listen(&second, &glue).unwrap();
+    inbox.settle(&glue);
+    assert!(second.shared.take_updates().is_empty(), "nothing was kept for it");
+    inbox.receive("myapp://third".into());
+    let mut rt = runtime();
+    assert_eq!(deliver(&second, &mut rt), 1);
+    assert_eq!(rt.state, ["myapp://third"]);
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn the_url_is_the_events_direct_object() {

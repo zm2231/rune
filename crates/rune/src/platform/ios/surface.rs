@@ -115,6 +115,8 @@ struct Hosted<S: 'static> {
     on_ready: Option<OnWindow>,
     /// What a finger on the focused field is doing, and the field's menu.
     field: field_touch::State,
+    /// Its place among the apps receiving links (`App::on_open_url`).
+    _open_urls: Option<crate::open_url::incoming::Listening>,
     wake: Waker,
 }
 
@@ -325,6 +327,9 @@ impl<S: 'static> Hosted<S> {
 
 pub(crate) fn mount<S: 'static>(mut app: App<S>) -> Mount {
     let on_ready = app.on_ready.take();
+    // From here, so a link the scene is handed before the view has a size waits among the
+    // app's updates and runs before its first frame.
+    let open_urls = crate::open_url::incoming::listen(&app);
     let (spec, state, shared, config) = app.into_parts(None);
     Box::new(move |layer, size, scale, dark, wake| {
         // SAFETY: `layer` is the `CAMetalLayer` of the view that owns this surface, and the
@@ -337,6 +342,6 @@ pub(crate) fn mount<S: 'static>(mut app: App<S>) -> Mount {
         shared.connect(wake.clone());
         shared.visible.store(true, Ordering::Release);
         let menus = crate::native_menu::MenuGuard::attach(&shared, false);
-        Ok(Box::new(Hosted { host, shared, menus, accessibility: AccessibilityLink::with_wake(wake.clone()), wake, title: spec.title, on_ready, field: field_touch::State::default() }))
+        Ok(Box::new(Hosted { host, shared, menus, accessibility: AccessibilityLink::with_wake(wake.clone()), wake, title: spec.title, on_ready, field: field_touch::State::default(), _open_urls: open_urls }))
     })
 }

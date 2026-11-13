@@ -18,8 +18,15 @@
 //! Windows hands a link to a new process as a launch argument: the links among the first
 //! process's arguments are kept as the launching link is on macOS, and `single_instance` sends
 //! a later launch's links here from the first process's pipe (`instance`). Links that arrive
-//! before the loop starts are kept too. Linux does the same through a Unix socket. iOS (the
-//! scene delegate Rune makes takes no links) is a follow-up.
+//! before the loop starts are kept too. Linux does the same through a Unix socket.
+//!
+//! On iOS there is no handler to install either: the scene delegate of an app `run` started
+//! (`platform::ios::app`) is handed the links, at launch and while the app runs, and passes
+//! them here. The app's view listens from when it is made, before UIKit starts, so a link
+//! waits among the app's updates until the view's first frame. A view in another app
+//! (`ios::view`) listens too, and settles as it is made, since no event loop here says when
+//! that app has made its views; that app's own scene delegate is the one handed the links, and
+//! passes them here with `ios::open_url`.
 // The web build runs no native window, so nothing here is reached there.
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 use std::sync::{Arc, Mutex};
@@ -139,7 +146,7 @@ impl Inbox {
     }
 
     /// A link arrived: to the first listener, kept before one exists, else dropped.
-    #[cfg_attr(not(any(test, target_os = "macos", target_os = "windows", target_os = "linux")), allow(dead_code))]
+    #[cfg_attr(not(any(test, target_os = "macos", target_os = "windows", target_os = "linux", target_os = "ios")), allow(dead_code))]
     pub(crate) fn receive(&self, url: String) {
         let sink = {
             let mut state = self.state.lock().unwrap();
@@ -192,8 +199,9 @@ pub(crate) fn prepare() {
 }
 
 /// A link from a later launch of the app (Windows, Linux, `single_instance`), or the Dock menu's
-/// jump list entry (macOS, `native_menu`).
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+/// jump list entry (macOS, `native_menu`), or what a scene was handed (iOS: Rune's own, or a
+/// host's through `ios::open_url`).
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos", target_os = "ios"))]
 pub(crate) fn receive(url: String) { INBOX.receive(url); }
 
 /// For a starting window: its app's links, while the guard lives.
@@ -206,15 +214,16 @@ pub(crate) fn settle() { INBOX.settle(&Native); }
 use mac as platform;
 
 /// Windows and Linux: links come in launch arguments and down `single_instance`'s pipe or socket,
-/// so there is no handler to install, and nothing else can have taken it.
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+/// so there is no handler to install, and nothing else can have taken it. iOS: the scene
+/// delegate is handed them.
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "ios"))]
 mod platform {
     pub(super) fn handled_elsewhere() -> bool { false }
     pub(super) fn install() -> bool { true }
     pub(super) fn remove() {}
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux", target_os = "ios")))]
 mod platform {
     pub(super) fn handled_elsewhere() -> bool { false }
     pub(super) fn install() -> bool { false }

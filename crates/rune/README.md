@@ -669,8 +669,13 @@ app.run();
 
   Launch Services learns the scheme when the bundle is opened or registered (`lsregister -f
   MyApp.app`); then `open 'myapp://x'` launches or reaches the app. A bare `cargo run` binary has
-  no bundle and gets no links. iOS isn't wired yet (the scene delegate Rune makes takes no links), and Linux
-  passes a link to a new process as a launch argument, so the hook never runs there.
+  no bundle and gets no links. Linux passes a link to a new process as a launch argument, so
+  the hook never runs there.
+- Links opened with the app (iOS): the same hook gets the links iOS opens with an app `run`
+  started, the launching one before the first frame: its own schemes' (`scripts/ios-app
+  --url-scheme myapp` declares one) and universal links, which arrive as their `https://` URL.
+  A view in another app (`rune::ios::view`) gets none, since that app's scene delegate is handed
+  them; it passes one on with `AppHandle::update`. `IOS.md` has the steps.
 - Links and relaunches on Windows: Windows starts a new process for each launch, passing a link
   as an argument. The hook receives the links among the first process's arguments
   (`scheme://…`) like the launching link on macOS. Call `rune::single_instance("com.example.myapp")`

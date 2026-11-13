@@ -3,6 +3,7 @@ import argparse
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import sys
 import tempfile
@@ -15,7 +16,10 @@ SLOW = 180
 
 def info(args):
     """The bundle's Info.plist: a full-screen app on one window scene Rune configures in code."""
+    # The schemes whose links iOS opens with the app (`App::on_open_url`).
+    links = dict(CFBundleURLTypes=[dict(CFBundleURLName=args.id, CFBundleURLSchemes=list(args.url_scheme))]) if args.url_scheme else {}
     return dict(
+        **links,
         CFBundleName=args.name, CFBundleDisplayName=args.name, CFBundleIdentifier=args.id,
         CFBundleExecutable=args.exe, CFBundlePackageType="APPL",
         CFBundleShortVersionString="0.0.1", CFBundleVersion="1",
@@ -99,6 +103,8 @@ def main():
     parser.add_argument("--simulator", default="booted", help="a simulator's UDID or name (default: the booted one)")
     parser.add_argument("--device", help="a paired device's UDID or name, instead of a simulator; needs --profile")
     parser.add_argument("--profile", type=Path, help="a development .mobileprovision that covers --id and the device")
+    parser.add_argument("--url-scheme", action="append", default=[], metavar="SCHEME",
+                        help="a scheme whose links open the app (myapp for myapp://...); repeat for more")
     parser.add_argument("--no-install", action="store_true", help="stage the bundle only")
     parser.add_argument("--no-launch", action="store_true", help="install without launching")
     parser.add_argument("args", nargs=argparse.REMAINDER, help="after --, passed to the app")
@@ -107,6 +113,9 @@ def main():
         args.args = args.args[1:]
     if not os.access(args.bin, os.X_OK):
         parser.error(f"no executable binary at {args.bin}")
+    for scheme in args.url_scheme:
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9+.-]*", scheme):
+            parser.error(f"--url-scheme {scheme!r}: a scheme is the part before ://, a letter then letters, digits, + . or -")
     if bool(args.device) != bool(args.profile):
         parser.error("--device and --profile go together: a device runs only what a profile covers")
     args.exe = args.exe or Path(args.bin).name

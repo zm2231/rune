@@ -32,6 +32,10 @@ What works:
 - **Handles.** `AppHandle::update` and `wake` from a background thread reach the app, as from
   a window; `is_visible` follows the app going to the background. `App::on_ready` runs once
   the first frame is on screen.
+- **Links into the app.** `App::on_open_url` gets the links iOS opens with the app: its own
+  schemes' (`myapp://...`) and universal links, the one that launched it among them. An app
+  `rune::run` started gets them from iOS; one that embeds a Rune view passes them on with
+  `rune::ios::open_url`. See "Links into the app" below.
 - **Links and files.** `Tx::open_url` opens a link in the app that owns its scheme.
   A file dialog opens in its options' `directory` when the system can show that folder.
   `Tx::open_file` shows the system's document picker and answers with a copy of the file;
@@ -46,7 +50,6 @@ What doesn't yet:
   runs there; on an iPhone every item's does.
 - `AppHandle`'s requests to show, move or quit a window, and the handle `on_ready` is given:
   a view is no window, so they are dropped.
-- Links into the app: `App::on_open_url` is never called.
 - Intel Macs' simulators: `scripts/ios-lib` builds for devices and Apple silicon simulators.
 
 ## Build and run in a simulator
@@ -69,7 +72,7 @@ earlier; arguments after `--` go to the app. No Xcode project is involved.
 ```text
 usage: ios-app [-h] --name NAME --id ID --bin BIN [--exe EXE] [--out OUT]
                [--simulator SIMULATOR] [--device DEVICE] [--profile PROFILE]
-               [--no-install] [--no-launch]
+               [--url-scheme SCHEME] [--no-install] [--no-launch]
                ...
 ```
 
@@ -173,6 +176,92 @@ thread: it returns null anywhere else. The view reports the safe area of where i
 that doesn't reach the screen's edges reads zero. `examples/web-hello` exports
 `web_hello_view` this way (`examples/web-hello/include/web_hello.h`).
 
+## Links into the app
+
+`App::on_open_url(|s, url: &str, tx| ..)` runs on the main thread for each link iOS opens with
+an app `rune::run` or `App::run` started, as it does on a Mac. A link that launches the app
+runs before the first frame; one that reaches the running app wakes it and redraws. Each runs
+as an `AppHandle::update`, in the order iOS handed them over. Links it hands over together
+(several at launch) come as sets with no order of their own: Rune runs the opened URLs before
+the universal links. The string is the URL as iOS gave it: it comes from any app or web page,
+so parse and validate it before acting on it.
+
+**A scheme of the app's own.** `scripts/ios-app --url-scheme myapp` declares it in the bundle's
+`Info.plist`; repeat the flag for more than one:
+
+```sh
+scripts/ios-app --name Hello --id com.example.hello --bin target/aarch64-apple-ios-sim/debug/hello \
+    --url-scheme myapp
+xcrun simctl openurl booted 'myapp://item/7'
+```
+
+On a device, open the link from Safari or Notes, or launch the app with it:
+`xcrun devicectl device process launch --device DEVICE_UDID --payload-url 'myapp://item/7' com.example.hello`.
+An app with its own bundle declares the same thing:
+
+```xml
+<key>CFBundleURLTypes</key>
+<array>
+  <dict>
+    <key>CFBundleURLName</key>
+    <string>com.example.hello</string>
+    <key>CFBundleURLSchemes</key>
+    <array><string>myapp</string></array>
+  </dict>
+</array>
+```
+
+**Universal links** (`https://example.com/item/7` opens the app instead of Safari) arrive at
+the same hook with the web URL. Rune delivers them; the app and its web server say which
+links they are, and `scripts/ios-app` sets none of this up:
+
+1. Give the app's identifier the Associated Domains capability in the developer account, and
+   make a provisioning profile that carries it.
+2. Sign the app with the `com.apple.developer.associated-domains` entitlement listing each
+   domain as `applinks:example.com`.
+3. Serve `https://example.com/.well-known/apple-app-site-association` (no file extension, no
+   redirect, `Content-Type: application/json`) naming the app and the paths it takes:
+
+   ```json
+   {"applinks": {"details": [{"appIDs": ["TEAMID.com.example.hello"], "components": [{"/": "/item/*"}]}]}}
+   ```
+
+iOS fetches that file through Apple's servers when the app is installed, so a new domain can
+take a while to work. A link typed into Safari's address bar stays in Safari; one tapped in
+another app or on another site's page opens the app.
+
+**A Rune view in another app** gets no links from iOS: that app's own scene delegate is handed
+them. It passes each on with `rune::ios::open_url(url)`, which runs `on_open_url` exactly as
+above. With more than one Rune view in an app, a link that arrives before the views are made
+goes to the first view made, and is dropped if that view's app has no `on_open_url`. Export a
+function for it beside the one that makes the view, and declare it in the header:
+
+```rust,ignore
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn my_open_url(url: *const std::ffi::c_char) {
+    // SAFETY: the caller passes a NUL-terminated string that lives until this returns.
+    if let Ok(url) = unsafe { std::ffi::CStr::from_ptr(url) }.to_str() { rune::ios::open_url(url); }
+}
+```
+
+```c
+void my_open_url(const char *url);
+```
+
+A SwiftUI app calls it from `onOpenURL`, which gets both kinds of link:
+
+```swift
+RuneView(my_screen)
+    .onOpenURL { url in my_open_url(url.absoluteString) }
+```
+
+A UIKit app calls it from its scene delegate: with each context's `url.absoluteString` in
+`scene(_:openURLContexts:)`, with the activity's `webpageURL` in `scene(_:continue:)`, and
+with both from the connection options in `scene(_:willConnectTo:options:)`. The first view
+made whose app has the hook gets the link. One passed on before any view is made waits for
+the first view; once a view is made, a link no view has a hook for is dropped.
+
 ## What the `Info.plist` needs
 
 `scripts/ios-app` writes these, with the bundle's name, identifier, executable and versions.
@@ -188,3 +277,4 @@ An app with its own bundle needs the same:
 - `UISupportedInterfaceOrientations` with portrait and both landscapes, for an iPhone.
 - `UISupportedInterfaceOrientations~ipad` with all four orientations, or an iPad runs the app
   full screen only, never in Split View or a Stage Manager window.
+- `CFBundleURLTypes` with the app's schemes, when it takes links (`--url-scheme`).

@@ -1186,12 +1186,19 @@ ranges, carets and copies are unchanged; elsewhere a tab is one space wide.
 
 `.family(Family::SystemMono)` uses the platform's monospaced UI font without bundling it:
 SF Mono on macOS (the face AppKit's `monospacedSystemFont` returns, matched to within
-0.05 pt per glyph at 8 to 34 pt), Cascadia Mono, then Consolas, on Windows, and whatever
+0.05 pt per glyph at 8 to 34 pt) and on iOS, Cascadia Mono, then Consolas, on Windows, and whatever
 fontconfig resolves `monospace` to on Linux (then DejaVu Sans Mono, Liberation Mono, Noto
 Sans Mono). Its files load the first time a text asks for it. Where none is installed it
 falls back to the mono slot. SF Mono has no `trak` table, so it is untracked, as in AppKit;
 `tracking` still adds, and glyphs that fall back to the system font get that font's own
 tracking. Mono rich spans keep using the mono slot.
+
+`Family::Named("System Font")` is San Francisco on macOS and iOS. Its families are hidden
+and named per platform (`.SF NS` and `.SF NS Mono` on macOS, `.SF UI` and `.SF UI Mono` on
+iOS), so Rune takes the file the system's UI font says it is in, its italic's, and SF Mono's
+beside them, and never asks CoreText for those names. `System Font` is the name both
+platforms' files carry, so it is the one to write; `.SF NS` is a family only in the macOS
+file and `.SF UI` only in the iOS one.
 
 To put the mono slot itself (so `Family::Mono`, `.mono()` and mono rich spans) in that
 font, name CSS's `ui-monospace` in it: `families: ("Inter", "ui-monospace")`. It stands for

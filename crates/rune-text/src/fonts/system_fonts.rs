@@ -9,8 +9,14 @@
 
 use crate::*;
 
+#[cfg(any(target_vendor = "apple", test))]
+mod apple_names;
+#[cfg(test)]
+mod apple_names_tests;
 #[cfg(target_vendor = "apple")]
 mod core_text;
+#[cfg(all(test, target_os = "macos"))]
+mod core_text_tests;
 #[cfg(windows)]
 mod direct_write;
 #[cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))]
@@ -30,15 +36,15 @@ mod platform {
 
 // Common-script symbols can inherit the script of adjacent letters. Put these families at
 // the end of the requested family list, rather than registering only a Zyyy fallback.
-// On macOS the system font comes first: its keyboard symbols (⌘⇧⏎⌫⎋⌥⌃) sit on the baseline at
+// On Apple platforms the system font comes first (`.SF NS` on macOS, `.SF UI` on iOS): its keyboard symbols (⌘⇧⏎⌫⎋⌥⌃) sit on the baseline at
 // cap height and follow the requested weight through its `wght` axis. Apple Symbols draws
 // them light, small and (⇧) below the baseline next to app fonts' capitals.
 // The colour emoji family comes last, so symbols with a text form keep it.
 #[cfg(target_vendor = "apple")]
-pub(crate) const SYMBOL_FAMILIES: &[&str] = &["System Font", ".SF NS", "Apple Symbols", ".SF NS Symbols", "Menlo", "Apple Color Emoji"];
+pub(crate) const SYMBOL_FAMILIES: &[&str] = &["System Font", ".SF NS", ".SF UI", "Apple Symbols", ".SF NS Symbols", "Menlo", "Apple Color Emoji"];
 #[cfg(target_vendor = "apple")]
 // SF italic rides along so `Family::Named("System Font").italic()` gets the real face.
-pub(crate) const SYMBOL_FONT_FILES: &[&str] = &["sfnsttf", "sfnsitalic", "applesymbols", "sfnssymbols", "menlo", "applecoloremoji"];
+pub(crate) const SYMBOL_FONT_FILES: &[&str] = &["sfnsttf", "sfnsitalic", "sfuittf", "sfuiitalic", "applesymbols", "sfnssymbols", "menlo", "applecoloremoji"];
 // Windows loads its symbol fonts as its own fallback names them (`direct_write::fallback_files`),
 // and this colour emoji family for a `U+FE0F` sequence.
 #[cfg(windows)]
@@ -51,11 +57,12 @@ pub(crate) const SYMBOL_FAMILIES: &[&str] =
 pub(crate) const SYMBOL_FONT_FILES: &[&str] = &["dejavusans", "notosanssymbols", "notocoloremoji"];
 
 // `Family::SystemMono`: the platform's monospaced UI families, most preferred first, and the
-// files they're in. SF Mono's family name is `.SF NS Mono`, as SF's is `.SF NS`.
+// files they're in. SF Mono's family name is `.SF NS Mono` on macOS and `.SF UI Mono` on iOS,
+// as SF's is `.SF NS` and `.SF UI`.
 #[cfg(target_vendor = "apple")]
-const SYSTEM_MONO_FAMILIES: &[&str] = &[".SF NS Mono", "Menlo"];
+const SYSTEM_MONO_FAMILIES: &[&str] = &[".SF NS Mono", ".SF UI Mono", "Menlo"];
 #[cfg(target_vendor = "apple")]
-const SYSTEM_MONO_FILES: &[&str] = &["sfnsmono", "menlo"];
+const SYSTEM_MONO_FILES: &[&str] = &["sfnsmono", "sfuimono", "menlo"];
 #[cfg(windows)]
 const SYSTEM_MONO_FAMILIES: &[&str] = &["Cascadia Mono", "Consolas", "Courier New"];
 #[cfg(windows)]

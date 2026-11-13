@@ -1,13 +1,16 @@
-//! macOS: system font files found through CoreText, as DirectWrite finds them on Windows
+//! Apple platforms: system font files found through CoreText, as DirectWrite finds them on Windows
 //! (`direct_write`), so no font folder is walked and no font is parsed until a text needs it.
 //! A text the app's fonts lack goes to CoreText's own fallback (`CTFontCreateForStringWithLanguage`,
 //! what Safari and AppKit fall back with), which names the font that covers it; a family's
-//! files come from CoreText's descriptors for the family name.
+//! files come from CoreText's descriptors for the family name. The system UI font's own
+//! families are found from its file (`system_face_paths`).
 
 use std::path::PathBuf;
 
 use objc2_core_foundation::{CFDictionary, CFRange, CFRetained, CFString, CFType, CFURL, CFURLPathStyle};
-use objc2_core_text::{CTFont, CTFontDescriptor, CTFontManagerCreateFontDescriptorsFromURL, CTFontUIFontType, kCTFontFamilyNameAttribute, kCTFontURLAttribute};
+use objc2_core_text::{CTFont, CTFontDescriptor, CTFontManagerCreateFontDescriptorsFromURL, CTFontSymbolicTraits, CTFontUIFontType, kCTFontFamilyNameAttribute, kCTFontURLAttribute};
+
+use super::apple_names::{SystemFace, sibling_file, system_family};
 
 /// The file behind a CoreText attribute holder's `kCTFontURLAttribute`.
 fn path_of(url: Option<CFRetained<CFType>>) -> Option<PathBuf> {
@@ -26,16 +29,33 @@ pub(super) fn family_files(names: &[&str]) -> Vec<PathBuf> {
     out
 }
 
-/// Every face file of family `name`, as CoreText matches the family name. San Francisco's
-/// families (`.SF NS`, `.SF NS Mono`) are hidden from CoreText's lists: their files sit beside
-/// the system UI font's, by name (`SFNS.ttf`, `SFNSMono.ttf`, `SFNSItalic.ttf`).
+/// The files of `face` of the system UI font. The UI font and its italic say where their own
+/// files are; SF Mono and the other families named after it report no file, and sit beside the
+/// UI font's, named after it (`SFNS.ttf` and `SFNSMono.ttf` on macOS, `SFUI.ttf` and
+/// `SFUIMono.ttf` on iOS). A family with no such file has none.
+fn system_face_paths(face: SystemFace<'_>) -> Vec<PathBuf> {
+    // SAFETY: the system UI font and its italic, read for their files only.
+    let (file, italic) = unsafe {
+        let Some(ui) = CTFont::new_ui_font_for_language(CTFontUIFontType::System, 0.0, None) else { return Vec::new() };
+        let Some(file) = path_of(ui.attribute(kCTFontURLAttribute)) else { return Vec::new() };
+        let italic = ui
+            .copy_with_symbolic_traits(0.0, std::ptr::null(), CTFontSymbolicTraits::TraitItalic, CTFontSymbolicTraits::TraitItalic)
+            .and_then(|f| path_of(f.attribute(kCTFontURLAttribute)));
+        (file, italic)
+    };
+    let Some(suffix) = face.suffix() else {
+        return std::iter::once(file.clone()).chain(italic.filter(|p| *p != file)).collect();
+    };
+    let Some(stem) = file.file_stem().and_then(|s| s.to_str()) else { return Vec::new() };
+    [suffix.clone(), format!("{suffix}Italic")].into_iter().map(|suffix| file.with_file_name(sibling_file(stem, &suffix))).filter(|p| p.exists()).collect()
+}
+
+/// Every face file of family `name`, as CoreText matches the family name. The system UI font's
+/// families (`System Font`, `.SF NS`, `.SF UI Mono`...) are hidden from CoreText's lists and
+/// come from the UI font's file instead.
 fn family_paths(name: &str) -> Vec<PathBuf> {
-    if let Some(rest) = name.strip_prefix(".SF NS").or(if name == "System Font" { Some("") } else { None }) {
-        let stem = format!("SFNS{}", rest.replace(' ', ""));
-        // SAFETY: the system UI font, read for its file only.
-        let ui = unsafe { CTFont::new_ui_font_for_language(CTFontUIFontType::System, 0.0, None) };
-        let Some(dir) = ui.and_then(|f| path_of(unsafe { f.attribute(kCTFontURLAttribute) })).and_then(|p| p.parent().map(PathBuf::from)) else { return Vec::new() };
-        return [format!("{stem}.ttf"), format!("{stem}Italic.ttf")].into_iter().map(|f| dir.join(f)).filter(|p| p.exists()).collect();
+    if let Some(face) = system_family(name) {
+        return system_face_paths(face);
     }
     // SAFETY: CoreText descriptors built from and read for their attributes only.
     unsafe {

@@ -26,6 +26,9 @@ What works:
   system may offer a saved password, a strong new one or a code from a message; whether it
   does is its decision. The keyboard is reloaded when the focused field's traits change,
   after any marked text is closed. A field that sets none of them answers UIKit's defaults.
+- **System fonts.** Text draws in the fonts the app bundles (Inter by default).
+  `Family::Named("System Font")` is San Francisco and `Family::SystemMono` SF Mono, loaded
+  from the files of the system's UI font the first time a text asks for them.
 - **Hardware keyboard.** Arrows, Return, Escape, Tab and the function keys with their
   modifiers, key repeat, and shortcuts with ⌘ as on a Mac. Every key is also a physical key,
   for `El::on_physical_input`.

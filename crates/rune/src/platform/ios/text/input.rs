@@ -9,6 +9,10 @@
 //! field's lines as last drawn (`geometry`), which place the keyboard's own bubbles and move
 //! the space bar's cursor. While the keyboard composes or the field is a password, the copy
 //! is not the field's text, and every position has the caret's rect.
+//!
+//! The keyboard reads the field's traits (which keys, capitals, correction, the Return key's
+//! caption, what the system may offer) when it attaches, so it is reloaded when they change
+//! under it, once any marked text is closed (`traits::Reload`).
 
 use std::cell::{Cell, RefCell};
 
@@ -20,6 +24,8 @@ use objc2_video::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_
 
 use super::doc::{Document, Effect, Event, Snapshot};
 use super::geometry::Geometry;
+use super::traits::{self, ContentType, Frame, Reload, ReloadEffect};
+use crate::input::traits::InputTraits;
 use super::super::view::{RuneView, UIResponder, UIView};
 
 extern_class!(
@@ -45,6 +51,53 @@ extern_protocol!(
     #[name = "UITextInput"]
     unsafe trait TextInput: NSObjectProtocol {}
 );
+
+// SAFETY: UIKit's headers declare each as a `UITextContentType`, an `NSString` that lives for
+// the process.
+#[link(name = "UIKit", kind = "framework")]
+unsafe extern "C" {
+    static UITextContentTypeUsername: &'static NSString;
+    static UITextContentTypePassword: &'static NSString;
+    static UITextContentTypeNewPassword: &'static NSString;
+    static UITextContentTypeOneTimeCode: &'static NSString;
+    static UITextContentTypeEmailAddress: &'static NSString;
+    static UITextContentTypeTelephoneNumber: &'static NSString;
+    static UITextContentTypeURL: &'static NSString;
+    static UITextContentTypeName: &'static NSString;
+    static UITextContentTypeGivenName: &'static NSString;
+    static UITextContentTypeFamilyName: &'static NSString;
+    static UITextContentTypeOrganizationName: &'static NSString;
+    static UITextContentTypeFullStreetAddress: &'static NSString;
+    static UITextContentTypeAddressCity: &'static NSString;
+    static UITextContentTypeAddressState: &'static NSString;
+    static UITextContentTypePostalCode: &'static NSString;
+    static UITextContentTypeCountryName: &'static NSString;
+}
+
+/// UIKit's constant for `content`.
+fn content_type(content: ContentType) -> &'static NSString {
+    // SAFETY: each is an immutable static that UIKit sets before any of its views exists.
+    unsafe {
+        match content {
+            ContentType::Username => UITextContentTypeUsername,
+            ContentType::Password => UITextContentTypePassword,
+            ContentType::NewPassword => UITextContentTypeNewPassword,
+            ContentType::OneTimeCode => UITextContentTypeOneTimeCode,
+            ContentType::EmailAddress => UITextContentTypeEmailAddress,
+            ContentType::TelephoneNumber => UITextContentTypeTelephoneNumber,
+            ContentType::URL => UITextContentTypeURL,
+            ContentType::Name => UITextContentTypeName,
+            ContentType::GivenName => UITextContentTypeGivenName,
+            ContentType::FamilyName => UITextContentTypeFamilyName,
+            ContentType::OrganizationName => UITextContentTypeOrganizationName,
+            ContentType::FullStreetAddress => UITextContentTypeFullStreetAddress,
+            ContentType::AddressCity => UITextContentTypeAddressCity,
+            ContentType::AddressState => UITextContentTypeAddressState,
+            ContentType::PostalCode => UITextContentTypePostalCode,
+            ContentType::CountryName => UITextContentTypeCountryName,
+        }
+    }
+}
 
 /// `NSOrderedAscending`, `NSOrderedSame` and `NSOrderedDescending`.
 const ORDER: [isize; 3] = [-1, 0, 1];
@@ -121,6 +174,10 @@ pub(crate) struct Ivars {
     caret: Cell<CGRect>,
     /// The focused field is a password.
     secure: Cell<bool>,
+    /// What the focused field asks of the keyboard.
+    traits: Cell<InputTraits>,
+    /// Whether the attached keyboard has read `secure` and `traits`.
+    reload: Cell<Reload>,
     /// UIKit's `inputDelegate`, which hears that the text or selection changed under it.
     delegate: RefCell<Option<Weak<AnyObject>>>,
     tokenizer: RefCell<Option<Retained<AnyObject>>>,
@@ -191,6 +248,36 @@ define_class!(
         #[unsafe(method(isSecureTextEntry))]
         fn is_secure(&self) -> bool {
             self.ivars().secure.get()
+        }
+
+        #[unsafe(method(keyboardType))]
+        fn keyboard_type(&self) -> isize {
+            traits::keyboard_type(self.ivars().traits.get().mode)
+        }
+
+        #[unsafe(method(textContentType))]
+        fn text_content_type(&self) -> Option<&'static NSString> {
+            traits::content_type(self.ivars().traits.get().autocomplete).map(content_type)
+        }
+
+        #[unsafe(method(autocapitalizationType))]
+        fn autocapitalization_type(&self) -> isize {
+            traits::autocapitalization_type(self.ivars().traits.get().autocapitalize)
+        }
+
+        #[unsafe(method(autocorrectionType))]
+        fn autocorrection_type(&self) -> isize {
+            traits::correction_type(self.ivars().traits.get().autocorrect)
+        }
+
+        #[unsafe(method(spellCheckingType))]
+        fn spell_checking_type(&self) -> isize {
+            traits::correction_type(self.ivars().traits.get().spellcheck)
+        }
+
+        #[unsafe(method(returnKeyType))]
+        fn return_key_type(&self) -> isize {
+            traits::return_key_type(self.ivars().traits.get().enter_key_hint)
         }
 
         #[unsafe(method(hasText))]
@@ -415,6 +502,8 @@ impl RuneTextInput {
             doc: RefCell::new(Document::default()),
             caret: Cell::new(zero),
             secure: Cell::new(false),
+            traits: Cell::new(InputTraits::default()),
+            reload: Cell::new(Reload::default()),
             delegate: RefCell::new(None),
             tokenizer: RefCell::new(None),
             floating: RefCell::new(None),
@@ -513,14 +602,15 @@ impl RuneTextInput {
     }
 
     /// After a frame: whether a field wants the keyboard, what it holds, where its caret is in
-    /// the host's points and whether it is a password. Takes or gives up the keyboard, and
-    /// tells it when the runtime's text is not what it believed.
-    pub(crate) fn sync(&self, wanted: bool, snapshot: Snapshot, caret: Option<[f32; 4]>, secure: bool) {
+    /// the host's points, whether it is a password and what it asks of the keyboard. Takes or
+    /// gives up the keyboard, and tells it when the runtime's text is not what it believed.
+    pub(crate) fn sync(&self, wanted: bool, snapshot: Snapshot, caret: Option<[f32; 4]>, secure: bool, traits: InputTraits) {
         let ivars = self.ivars();
         if let Some([x, y, w, h]) = caret {
             ivars.caret.set(CGRect::new(CGPoint::new(x as CGFloat, y as CGFloat), CGSize::new(w as CGFloat, h as CGFloat)));
         }
-        let was_secure = ivars.secure.replace(secure);
+        ivars.secure.set(secure);
+        ivars.traits.set(traits);
         let effects = if wanted { ivars.doc.borrow_mut().step(Event::Runtime(snapshot)) } else { Default::default() };
         let delegate = self.delegate();
         for effect in effects {
@@ -547,6 +637,12 @@ impl RuneTextInput {
         // SAFETY: `UIResponder` methods of these signatures.
         unsafe {
             let first: bool = msg_send![self, isFirstResponder];
+            // A keyboard that attaches now reads the traits as it does; one that stays may
+            // need to read them again.
+            let mut reload = ivars.reload.get();
+            let composing = ivars.doc.borrow().marked().is_some();
+            let effects = reload.step(Frame { asked: (traits, secure), attached: wanted && first, composing });
+            ivars.reload.set(reload);
             if wanted && !first {
                 let _: bool = msg_send![self, becomeFirstResponder];
             } else if !wanted && first {
@@ -555,9 +651,10 @@ impl RuneTextInput {
                     Some(host) => { let _: bool = msg_send![&*host, becomeFirstResponder]; }
                     None => { let _: bool = msg_send![self, resignFirstResponder]; }
                 }
-            } else if first && was_secure != secure {
-                // The keyboard reads the field's traits when it attaches.
-                let _: () = msg_send![self, reloadInputViews];
+            } else {
+                for ReloadEffect::Reload in effects {
+                    let _: () = msg_send![self, reloadInputViews];
+                }
             }
         }
     }

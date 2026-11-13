@@ -18,6 +18,14 @@ What works:
   return, predictions, autocorrection, dictation and marked text edit the field; a secure
   field shows the keyboard none of its text. The keyboard is told where the field's
   characters are, so the space bar's trackpad moves the caret.
+- **Keyboard traits.** The focused field answers UIKit's `UITextInputTraits`: `El::input_mode`
+  is its `keyboardType` (a number pad on an iPhone, the decimal and phone pads, the email, URL
+  and search keyboards), `El::autocomplete` its `textContentType`, and `El::autocapitalize`,
+  `El::autocorrect` and `El::enter_key_hint` its capitalization, autocorrection and Return key.
+  A secure field's content type is a password, or a new password. With a content type the
+  system may offer a saved password, a strong new one or a code from a message; whether it
+  does is its decision. The keyboard is reloaded when the focused field's traits change,
+  after any marked text is closed. A field that sets none of them answers UIKit's defaults.
 - **Hardware keyboard.** Arrows, Return, Escape, Tab and the function keys with their
   modifiers, key repeat, and shortcuts with ⌘ as on a Mac. Every key is also a physical key,
   for `El::on_physical_input`.

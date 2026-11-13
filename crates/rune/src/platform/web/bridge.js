@@ -66,10 +66,12 @@ export function mount(canvas, callback, embedded, fitHeight, page) {
     // It is 1 px wide: wrapped, its every character would be a line to a screen reader reading by
     // line. Unwrapped, a line is what a line break ends.
     textarea.wrap = 'off';
+    // The textarea mirrors the app's text: no form restore or autofill popup on a field nobody sees.
+    textarea.autocomplete = 'off';
     const password = document.createElement('input');
     password.type = 'password';
     password.setAttribute('aria-label', 'Password input');
-    password.autocomplete = 'off';
+    password.autocomplete = 'current-password';
     password.setAttribute('autocorrect', 'off');
     password.setAttribute('autocapitalize', 'off');
     password.spellcheck = false;
@@ -110,7 +112,7 @@ export function mount(canvas, callback, embedded, fitHeight, page) {
     const h = { canvas, textarea, password, a11y, a11yNodes: new Map(), field: textarea, key: '', base: 0, value: '',
         copyText: '', composing: false, composition: '', shift: false, modBits: 0, listeners: [], syncing: false, disposed: false,
         embedded, fitHeight, page, focused: false, presented: false, swapped: false, touchDown: false,
-        lastScrollAt: 0, staticTimer: 0, scrollEls: new Map(), band };
+        lastScrollAt: 0, staticTimer: 0, scrollEls: new Map(), band, inputMode: 'text' };
     const send = event => {
         const message = JSON.stringify(event);
         if (h.syncing) queueMicrotask(() => { if (!h.disposed) callback(message); });
@@ -390,6 +392,25 @@ export function sync(h, key, text, base, anchor, focus, secure) {
 export function cancelIme(h) {
     h.composing = false;
     h.composition = '';
+}
+
+// The focused field's keyboard traits, sent when they change and before `sync` moves the focus.
+// A password's go on the password input, which keeps the capitals, correction and spell checking
+// it was made without. An empty `autocorrect`, `spellcheck` or `enterkeyhint` takes the attribute
+// off, which leaves that one to the browser.
+export function syncTraits(h, secure, inputMode, autocomplete, autocapitalize, autocorrect, spellcheck, enterKeyHint) {
+    const field = secure ? h.password : h.textarea;
+    h.inputMode = inputMode;
+    // 'none' holds a touch keyboard down until a tap asks for it (`activate`).
+    if (field.inputMode !== 'none') field.inputMode = inputMode;
+    field.autocomplete = autocomplete;
+    const optional = secure ? [['enterkeyhint', enterKeyHint]]
+        : [['enterkeyhint', enterKeyHint], ['autocorrect', autocorrect], ['spellcheck', spellcheck]];
+    for (const [name, value] of optional) {
+        if (value) field.setAttribute(name, value);
+        else field.removeAttribute(name);
+    }
+    if (!secure) field.setAttribute('autocapitalize', autocapitalize);
 }
 
 export function syncCopy(h, text) {
@@ -1009,7 +1030,7 @@ export function activate(h) {
     // selection or a link's focus. An input that took the keyboard still gets it.
     if (h.page && !h.key) return;
     const field = h.key ? h.field : h.canvas;
-    if (h.key) field.inputMode = 'text';
+    if (h.key) field.inputMode = h.inputMode;
     if (document.activeElement !== field) field.focus({ preventScroll: true });
 }
 

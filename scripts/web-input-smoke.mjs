@@ -54,7 +54,12 @@ export async function inputSmoke(page, url) {
     assert.equal((await snapshot()).plain, 'hello\n');
     assert.equal((await snapshot()).submits, 1);
 
-    await page.keyboard.press('Tab'); // Single-line editor.
+    await page.keyboard.press('Tab'); // Single-line editor, an email field.
+    const editor = page.locator('textarea');
+    assert.equal(await editor.getAttribute('inputmode'), 'email');
+    assert.equal(await editor.getAttribute('autocomplete'), 'email');
+    assert.equal(await editor.getAttribute('autocapitalize'), 'none');
+    assert.equal(await editor.getAttribute('autocorrect'), 'off');
     await page.keyboard.insertText('one line');
     assert.equal(await lineBreak('insertLineBreak', true), true);
     await settle();
@@ -64,7 +69,7 @@ export async function inputSmoke(page, url) {
     await page.keyboard.press('Tab'); // Secure editor must activate a password sink.
     assert.equal(await page.evaluate(() => document.activeElement.type), 'password');
     const password = page.locator('input[type=password]');
-    assert.equal(await password.getAttribute('autocomplete'), 'off');
+    assert.equal(await password.getAttribute('autocomplete'), 'current-password');
     assert.equal(await password.getAttribute('autocorrect'), 'off');
     assert.equal(await password.evaluate(p => p.spellcheck), false);
     await page.keyboard.insertText('sëcret');
@@ -121,6 +126,6 @@ export async function inputSmoke(page, url) {
     await settle();
     assert.equal((await snapshot()).visible, true);
     console.log(JSON.stringify({ inputRegressions: 'passed', checks: ['stable editor focus', 'recomposition range',
-        'beforeinput Enter', 'multiline vs single-line', 'password sink and deletion', 'Tab to canvas',
+        'beforeinput Enter', 'multiline vs single-line', 'keyboard traits', 'password sink and deletion', 'Tab to canvas',
         'Escape shortcuts', 'outside dismiss', 'coalesced pointer frames', 'visibility', 'app title', 'nonfatal window requests'] }));
 }

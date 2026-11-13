@@ -14,3 +14,4 @@ pub(crate) mod physical_input;
 pub(crate) mod pointer_observer;
 pub(crate) mod secure_input;
 pub(crate) mod time;
+pub(crate) mod traits;

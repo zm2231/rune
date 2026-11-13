@@ -396,6 +396,13 @@ impl RuntimeCore {
         self.focused_input().is_some_and(|i| i.edit.is_secure())
     }
 
+    /// What the focused text field tells a soft keyboard, a secure field's as a password's.
+    /// None when no text field has the focus.
+    #[cfg_attr(not(any(test, target_os = "ios")), allow(dead_code))]
+    pub(crate) fn focused_input_traits(&self) -> Option<crate::input::traits::InputTraits> {
+        self.focused_input().map(|i| i.traits.resolve(i.edit.is_secure(), i.spellcheck))
+    }
+
     pub fn has_focus(&self) -> bool {
         self.kbd.focus.path().is_some()
     }

@@ -159,6 +159,31 @@ impl TextInput {
         self.edits.visual(move |e| e.spellcheck(on));
         self
     }
+    /// The soft keyboard the field asks for (`El::input_mode`).
+    pub fn input_mode(mut self, mode: rune::InputMode) -> Self {
+        self.edits.visual(move |e| e.input_mode(mode));
+        self
+    }
+    /// What the field holds, which the system may offer to fill in (`El::autocomplete`).
+    pub fn autocomplete(mut self, kind: rune::Autocomplete) -> Self {
+        self.edits.visual(move |e| e.autocomplete(kind));
+        self
+    }
+    /// Which letters the soft keyboard capitalizes (`El::autocapitalize`).
+    pub fn autocapitalize(mut self, how: rune::Autocapitalize) -> Self {
+        self.edits.visual(move |e| e.autocapitalize(how));
+        self
+    }
+    /// Whether the soft keyboard corrects and predicts words (`El::autocorrect`).
+    pub fn autocorrect(mut self, on: bool) -> Self {
+        self.edits.visual(move |e| e.autocorrect(on));
+        self
+    }
+    /// The Return key's caption on a soft keyboard (`El::enter_key_hint`).
+    pub fn enter_key_hint(mut self, hint: rune::EnterKeyHint) -> Self {
+        self.edits.visual(move |e| e.enter_key_hint(hint));
+        self
+    }
     pub fn animate_edit_layout(mut self) -> Self {
         self.edits.handlers.push(Box::new(El::animate_edit_layout));
         self
@@ -420,6 +445,31 @@ impl TextArea {
         self.edits.visual(move |e| e.spellcheck(on));
         self
     }
+    /// The soft keyboard the field asks for (`El::input_mode`).
+    pub fn input_mode(mut self, mode: rune::InputMode) -> Self {
+        self.edits.visual(move |e| e.input_mode(mode));
+        self
+    }
+    /// What the field holds, which the system may offer to fill in (`El::autocomplete`).
+    pub fn autocomplete(mut self, kind: rune::Autocomplete) -> Self {
+        self.edits.visual(move |e| e.autocomplete(kind));
+        self
+    }
+    /// Which letters the soft keyboard capitalizes (`El::autocapitalize`).
+    pub fn autocapitalize(mut self, how: rune::Autocapitalize) -> Self {
+        self.edits.visual(move |e| e.autocapitalize(how));
+        self
+    }
+    /// Whether the soft keyboard corrects and predicts words (`El::autocorrect`).
+    pub fn autocorrect(mut self, on: bool) -> Self {
+        self.edits.visual(move |e| e.autocorrect(on));
+        self
+    }
+    /// The Return key's caption on a soft keyboard (`El::enter_key_hint`).
+    pub fn enter_key_hint(mut self, hint: rune::EnterKeyHint) -> Self {
+        self.edits.visual(move |e| e.enter_key_hint(hint));
+        self
+    }
     pub fn new(edit: &TextEdit) -> TextArea {
         TextArea {
             edit: edit.clone(),
@@ -631,6 +681,31 @@ impl TextField {
         self.edits.edit(f);
         self
     }
+    /// The soft keyboard the field asks for (`El::input_mode`).
+    pub fn input_mode(mut self, mode: rune::InputMode) -> Self {
+        self.edits.visual(move |e| e.input_mode(mode));
+        self
+    }
+    /// What the field holds, which the system may offer to fill in (`El::autocomplete`).
+    pub fn autocomplete(mut self, kind: rune::Autocomplete) -> Self {
+        self.edits.visual(move |e| e.autocomplete(kind));
+        self
+    }
+    /// Which letters the soft keyboard capitalizes (`El::autocapitalize`).
+    pub fn autocapitalize(mut self, how: rune::Autocapitalize) -> Self {
+        self.edits.visual(move |e| e.autocapitalize(how));
+        self
+    }
+    /// Whether the soft keyboard corrects and predicts words (`El::autocorrect`).
+    pub fn autocorrect(mut self, on: bool) -> Self {
+        self.edits.visual(move |e| e.autocorrect(on));
+        self
+    }
+    /// The Return key's caption on a soft keyboard (`El::enter_key_hint`).
+    pub fn enter_key_hint(mut self, hint: rune::EnterKeyHint) -> Self {
+        self.edits.visual(move |e| e.enter_key_hint(hint));
+        self
+    }
     rich_forwarders!();
 
     pub fn build(self, k: &Kit) -> El {
@@ -693,3 +768,7 @@ impl TextField {
         k.disabled_dim(root, self.state == State::Disabled)
     }
 }
+
+#[cfg(test)]
+#[path = "text_input_tests.rs"]
+mod tests;

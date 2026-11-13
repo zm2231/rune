@@ -9,6 +9,9 @@ extern "C" {
     fn is_mac() -> bool;
     fn mount(canvas: &web_sys::HtmlCanvasElement, callback: &js_sys::Function, embedded: bool, fit_height: bool, document: bool) -> JsValue;
     fn sync(handle: &JsValue, key: &str, text: &str, base: usize, anchor: u32, focus: u32, secure: bool);
+    #[wasm_bindgen(js_name = syncTraits)]
+    fn sync_traits(handle: &JsValue, secure: bool, input_mode: &str, autocomplete: &str, autocapitalize: &str,
+        autocorrect: &str, spellcheck: &str, enter_key_hint: &str);
     #[wasm_bindgen(js_name = syncCopy)]
     fn sync_copy(handle: &JsValue, text: &str);
     #[wasm_bindgen(js_name = syncA11y)]
@@ -68,6 +71,9 @@ pub(super) struct Bridge {
     mirror: crate::runtime::web_runtime::Mirror,
     a11y: crate::runtime::web_a11y::A11yMirror,
     copy_cache: String,
+    /// The keyboard traits the page's text field was last given, and whether for a password.
+    /// None until the first frame gives it an untouched field's.
+    traits: Option<(crate::input::traits::InputTraits, bool)>,
     fit_height: bool,
     document: bool,
     /// The page height and control focus the page last heard.
@@ -112,7 +118,7 @@ impl Bridge {
         let handle = mount(canvas, callback.as_ref().unchecked_ref(), embedded, fit_height, document);
         Self { handle, _callback: callback, dispose_viewport, mods: ModifiersState::empty(), is_mac: is_mac(), control_click: false,
             mirror: Default::default(), a11y: Default::default(),
-            copy_cache: String::new(), fit_height, document, page: None, scroll_x: Vec::new(), caret: None, a11y_at: None, announced: 0, a11y_first: First::Unasked, families: Default::default() }
+            copy_cache: String::new(), traits: None, fit_height, document, page: None, scroll_x: Vec::new(), caret: None, a11y_at: None, announced: 0, a11y_first: First::Unasked, families: Default::default() }
     }
 
     /// The first frame is on screen: a page swaps its static export for the live mirror.
@@ -135,6 +141,14 @@ impl Running {
         let (reset, caret) = crate::input::host_events::ime_sync_state(self.app.rt_mut());
         if reset {
             cancel_ime(&self.input.handle);
+        }
+        // Before the page's field takes the focus: a browser reads a field's keyboard as it does.
+        let traits = self.app.rt().web_input_traits();
+        if self.input.traits != Some(traits) {
+            self.input.traits = Some(traits);
+            let t = crate::runtime::web_traits::Tokens::of(&traits.0);
+            sync_traits(&self.input.handle, traits.1, t.input_mode, t.autocomplete, t.autocapitalize,
+                t.autocorrect, t.spellcheck, t.enter_key_hint);
         }
         if self.app.rt().web_context(&mut self.input.mirror) || reset {
             let m = &self.input.mirror;

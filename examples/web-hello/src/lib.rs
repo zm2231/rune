@@ -1,4 +1,4 @@
-use rune::{AppSpec, Cx, El, ScrollSpec, TextEdit, Tx, col, el, row, text, text_input};
+use rune::{AppSpec, Cx, El, EnterKeyHint, ScrollSpec, TextEdit, Tx, col, el, row, text, text_input};
 use rune::tok::{self, type_};
 #[cfg(target_arch = "wasm32")]
 mod image_proof;
@@ -40,6 +40,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
     let composer = text_input(&state.draft, type_::BODY).key("composer")
         .placeholder("Message", t.text_secondary).color(t.text)
         .grow(1.0).h(48.0).padding(12.0).radius(12.0).fill(t.card)
+        .enter_key_hint(EnterKeyHint::Send)
         .on_edit(|s: &mut State| &mut s.draft).on_submit(send);
     let send_button = el().key("send").h(48.0).px(16.0).center().radius(12.0).fill(t.control_off)
         .child(text("Send").font(type_::LABEL).color(t.text)).on_press_tx(send);

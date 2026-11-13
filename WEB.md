@@ -233,9 +233,22 @@ Mobile `beforeinput` line breaks use Rune's Enter rules: submit, or Shift/Alt+En
 in a multiline field. A completed touch tap focuses the editor synchronously;
 a pan scrolls instead, with momentum and a damped edge return.
 
-Secure fields use an `<input type="password">` with autocomplete, autocorrect and spellcheck
-disabled. It receives only new keystrokes and is emptied after every input; the model's
-secret is never mirrored into the DOM. Leaving a field returns focus to the canvas so
+The hidden field carries the focused field's keyboard traits as attributes: `inputmode`
+(`El::input_mode`), `autocomplete` (`El::autocomplete`), `autocapitalize`, `autocorrect`,
+`spellcheck` and `enterkeyhint` (`El::enter_key_hint`), set when they change and before the
+field takes the focus; a browser's touch keyboard may follow them. A field that sets none
+leaves `autocorrect`, `spellcheck` and `enterkeyhint` off the textarea and gives it
+`autocomplete="off"`: the textarea mirrors the app's text, and `off` keeps form restore and
+autofill popups away from a field nobody sees. Autofill is best effort where a field does
+name a kind: the textarea is outside any form, which browsers and password managers seldom
+fill, so a saved address or a one-time code may not be offered.
+
+Secure fields use an `<input type="password">` with autocorrect and spellcheck disabled and
+`autocomplete="current-password"`, or `new-password` for `Autocomplete::NewPassword`. It
+receives only new keystrokes and is emptied after every input; the model's
+secret is never mirrored into the DOM. So what a password manager fills arrives as typed
+text: in a field that already holds something it is inserted at the caret, not put in its
+place. Leaving a field returns focus to the canvas so
 shortcuts and Tab keep working. Continuous pointer movement and wheel events wait for rAF.
 
 `Tx::copy` and `Tx::request_paste` use the browser clipboard. Call them from a user input

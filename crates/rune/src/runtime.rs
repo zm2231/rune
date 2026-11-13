@@ -199,6 +199,8 @@ use selection::{caret, click as input_click, links, select_all, text_marks};
 pub(crate) use web::{a11y as web_a11y, export as web_export, page as web_page};
 #[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) use web::runtime as web_runtime;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use web::traits as web_traits;
 
 pub(crate) use anchor::anchor_position;
 use anchor::{anchor_index, step_up};

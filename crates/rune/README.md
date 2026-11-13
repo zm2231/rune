@@ -1312,6 +1312,30 @@ selection and caret positions mapped to those bullets.
 Secure fields have no undo, copy, cut, IME composition, or inspector text. macOS
 Secure Event Input is held only while their native window is focused and visible.
 
+A text field tells a soft keyboard what it holds, in the web's terms. `.input_mode(InputMode::Numeric)`
+asks for a keyboard (`Text`, `Decimal`, `Numeric`, `Tel`, `Search`, `Email`, `Url`);
+`.autocomplete(Autocomplete::OneTimeCode)` names what the field holds (a username, a
+current or new password, a code from a message, a name, an address), which the system may
+then offer to fill in, and brings the keyboard
+and capitalization that suit it, with autocorrection off; `.autocapitalize(Autocapitalize::Words)`
+and `.autocorrect(false)` set those two outright; `.enter_key_hint(EnterKeyHint::Send)` captions
+the Return key. What the field sets wins over what its `autocomplete` kind brings, and a
+keyboard other than `Text` and `Search` drops capitals and correction on its own. A `secure`
+field is a current password (or `Autocomplete::NewPassword`) with no capitals, correction or
+spell checking whatever else it sets, and keeps only `InputMode::Numeric`, for a PIN. The
+caption changes nothing about Return: a field captioned `Next` moves on in its `on_submit`
+with `tx.focus(..)`. The keyboard is asked to check spelling when the field's `.spellcheck(true)`
+is on and not to when autocorrection is off. Kit's `TextInput`, `TextArea` and `TextField` pass all five
+through. iOS and the web read them (`IOS.md`, `WEB.md`); desktop platforms have no soft keyboard
+and ignore them, and an editor the app draws itself (`.ime_cursor()`) gets the system's defaults.
+
+```rust,ignore
+text_input(&s.email, style).single_line().autocomplete(Autocomplete::Email).enter_key_hint(EnterKeyHint::Next)
+text_input(&s.code, style).single_line().autocomplete(Autocomplete::OneTimeCode)
+text_input(&s.amount, style).single_line().input_mode(InputMode::Decimal)
+text_input(&s.password, style).single_line().secure().autocomplete(Autocomplete::NewPassword)
+```
+
 An editor the app draws itself (not a `text_input`) gets the input method too: mark the caret
 it draws with `.ime_cursor()` while the editor has the keyboard, and hear the events with
 `App::on_ime(|s, ime, tx| ..)`. While that caret is drawn and no field has focus, the window

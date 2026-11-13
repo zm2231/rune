@@ -32,6 +32,8 @@ pub struct InputSpec {
     pub(crate) paste: Option<InputPasteFn>,
     /// `El::spellcheck`: the platform's checker marks misspelled words.
     pub(crate) spellcheck: bool,
+    /// What the field asked of a soft keyboard ([`El::input_mode`] and its neighbours).
+    pub(crate) traits: crate::input::traits::Asked,
     /// [`El::selection_style`]: the selection's highlight and ink, by window focus, over `selection`.
     pub(crate) selection_style: Option<SelectionStyle>,
 }
@@ -92,6 +94,7 @@ pub fn text_input(edit: &TextEdit, style: TextStyle) -> El {
         change: None,
         paste: None,
         spellcheck: false,
+        traits: crate::input::traits::Asked::default(),
         selection_style: None,
     }));
     e.sync_input_pills();
@@ -185,6 +188,60 @@ impl El {
             self.sync_input_rich();
         } else if let Some(text) = &mut self.text {
             text.cold.secure_revealed = revealed;
+        }
+        self
+    }
+    /// The soft keyboard this text field asks for, as the web's `inputmode` does: digits for a
+    /// quantity, `@` in reach for an email address. Like the four builders after it, it is read
+    /// on iOS and the web; desktop platforms have no soft keyboard and ignore it, and it does
+    /// nothing on an element that is not a text field. A [`secure`](Self::secure) field keeps
+    /// only [`InputMode::Numeric`](crate::InputMode::Numeric), for a PIN.
+    pub fn input_mode(mut self, mode: crate::InputMode) -> Self {
+        if let Some(input) = self.cold.get_mut_if_some().and_then(|c| c.input.as_deref_mut()) {
+            input.traits.mode = Some(mode);
+        }
+        self
+    }
+    /// What this text field holds, as the web's `autocomplete` does, so the system may offer
+    /// a saved value: a password, a code from a message, an address. The kind brings the keyboard
+    /// and capitalization that suit it and turns autocorrection off; [`input_mode`](Self::input_mode),
+    /// [`autocapitalize`](Self::autocapitalize) and [`autocorrect`](Self::autocorrect) win. A
+    /// [`secure`](Self::secure) field is a current password unless it says
+    /// [`Autocomplete::NewPassword`](crate::Autocomplete::NewPassword); a password kind masks
+    /// nothing without `secure`. On the web a browser may offer nothing: see `WEB.md`.
+    pub fn autocomplete(mut self, kind: crate::Autocomplete) -> Self {
+        if let Some(input) = self.cold.get_mut_if_some().and_then(|c| c.input.as_deref_mut()) {
+            input.traits.autocomplete = kind;
+        }
+        self
+    }
+    /// Which letters the soft keyboard capitalizes on its own, as the web's `autocapitalize`
+    /// does. Sentences by default; none in a [`secure`](Self::secure) field.
+    pub fn autocapitalize(mut self, how: crate::Autocapitalize) -> Self {
+        if let Some(input) = self.cold.get_mut_if_some().and_then(|c| c.input.as_deref_mut()) {
+            input.traits.autocapitalize = Some(how);
+        }
+        self
+    }
+    /// Whether the soft keyboard corrects and predicts words, as the web's `autocorrect` does.
+    /// Unset, the system decides, except that a keyboard other than
+    /// [`InputMode::Text`](crate::InputMode::Text) and [`Search`](crate::InputMode::Search), an
+    /// [`autocomplete`](Self::autocomplete) kind and a [`secure`](Self::secure) field turn it
+    /// off. With it off the keyboard checks no spelling either, unless the field's own
+    /// [`spellcheck`](Self::spellcheck) is on.
+    pub fn autocorrect(mut self, on: bool) -> Self {
+        if let Some(input) = self.cold.get_mut_if_some().and_then(|c| c.input.as_deref_mut()) {
+            input.traits.autocorrect = Some(on);
+        }
+        self
+    }
+    /// The Return key's caption on a soft keyboard, as the web's `enterkeyhint` does. Only the
+    /// caption changes: Return still submits as [`text_input`] describes, so a field captioned
+    /// [`EnterKeyHint::Next`](crate::EnterKeyHint::Next) moves on in its [`El::on_submit`]
+    /// (`tx.focus(..)`).
+    pub fn enter_key_hint(mut self, hint: crate::EnterKeyHint) -> Self {
+        if let Some(input) = self.cold.get_mut_if_some().and_then(|c| c.input.as_deref_mut()) {
+            input.traits.enter_key_hint = hint;
         }
         self
     }

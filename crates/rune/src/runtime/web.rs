@@ -6,3 +6,5 @@ pub(crate) mod export;
 pub(crate) mod page;
 #[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) mod runtime;
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) mod traits;

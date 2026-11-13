@@ -32,6 +32,8 @@ pub(crate) struct TextState {
     pub(crate) caret: Option<[f32; 4]>,
     /// The field is a password.
     pub(crate) secure: bool,
+    /// What the field asks of the keyboard; an editor the app draws asks for nothing.
+    pub(crate) traits: crate::input::traits::InputTraits,
 }
 
 pub(crate) trait Surface {
@@ -315,7 +317,8 @@ impl<S: 'static> Surface for Hosted<S> {
             Some(text) => Snapshot::Field { text: text.text, start: text.start, selection: text.selection },
             None => Snapshot::Hidden,
         };
-        TextState { wanted: rt.core().wants_text(), snapshot, caret: rt.ime_area.map(|area| rt.to_window(area)), secure }
+        let traits = rt.core().focused_input_traits().unwrap_or_default();
+        TextState { wanted: rt.core().wants_text(), snapshot, caret: rt.ime_area.map(|area| rt.to_window(area)), secure, traits }
     }
 
     fn text_geometry(&self) -> Option<Geometry> {

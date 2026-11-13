@@ -2,7 +2,7 @@
 use std::{cell::Cell, rc::Rc};
 
 use rune::{
-    App, AppHandle, AppSpec, Cx, Drag, El, Key, Phase, PhysicalInput, ScrollPos, TextEdit, col, el,
+    App, AppHandle, AppSpec, Autocomplete, Cx, Drag, El, Key, Phase, PhysicalInput, ScrollPos, TextEdit, col, el,
     row, text, text_input, tok,
 };
 use wasm_bindgen::prelude::*;
@@ -62,7 +62,8 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
     col().w_full().h_full().padding(16.0).gap(8.0)
         .child(field(&s.plain).key("plain").on_edit(|s: &mut State| &mut s.plain)
             .on_submit(|s: &mut State, _| s.submits += 1))
-        .child(field(&s.single).key("single").single_line().on_edit(|s: &mut State| &mut s.single)
+        .child(field(&s.single).key("single").single_line().autocomplete(Autocomplete::Email)
+            .on_edit(|s: &mut State| &mut s.single)
             .on_submit(|s: &mut State, _| s.submits += 1))
         .child(field(&s.secret).key("secret").single_line().on_edit(|s: &mut State| &mut s.secret)
             .on_submit(|s: &mut State, _| s.submits += 1))

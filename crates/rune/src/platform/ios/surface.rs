@@ -52,6 +52,10 @@ pub(crate) trait Surface {
     /// its speed in points a second when the scroll ends.
     fn scroll(&mut self, phase: GesturePhase, at: (f32, f32), moved: (f32, f32), velocity: (f32, f32));
 
+    /// The status bar was tapped: the main list goes to its top. True when there was one to
+    /// send.
+    fn scroll_to_top(&mut self) -> bool;
+
     // Gestures.
     /// Two fingers pinched: scale by `1.0 + delta` about (x, y) in the view's points.
     fn magnify(&mut self, delta: f32, x: f32, y: f32, phase: GesturePhase);
@@ -231,6 +235,8 @@ impl<S: 'static> Surface for Hosted<S> {
             }
         }
     }
+
+    fn scroll_to_top(&mut self) -> bool { self.host.runtime_mut().scroll_main_to_top() }
 
     // Gestures.
     fn magnify(&mut self, delta: f32, x: f32, y: f32, phase: GesturePhase) {

@@ -30,6 +30,7 @@ mod lifecycle;
 mod link;
 mod menu;
 mod tint;
+mod top;
 
 use link::MainOnly;
 
@@ -49,6 +50,12 @@ extern_protocol!(
     /// An edit menu interaction asks its delegate for the menu, its place, and says when it goes.
     #[name = "UIEditMenuInteractionDelegate"]
     unsafe trait EditMenuInteractionDelegate: NSObjectProtocol {}
+);
+
+extern_protocol!(
+    /// A scroll view asks its delegate whether a tap on the status bar scrolls it to its top.
+    #[name = "UIScrollViewDelegate"]
+    unsafe trait ScrollViewDelegate: NSObjectProtocol {}
 );
 
 extern_class!(
@@ -157,6 +164,16 @@ define_class!(
         #[unsafe(method(editMenuInteraction:willDismissMenuForConfiguration:animator:))]
         fn edit_menu_dismissed(&self, _interaction: &AnyObject, _configuration: &AnyObject, _animator: &AnyObject) {
             self.menu_dismissed();
+        }
+    }
+
+    // SAFETY: every method of the protocol is optional.
+    unsafe impl ScrollViewDelegate for RuneView {
+        /// The strip at the view's top stays put: the runtime scrolls the app's own list.
+        #[unsafe(method(scrollViewShouldScrollToTop:))]
+        fn should_scroll_to_top(&self, _strip: &AnyObject) -> bool {
+            self.status_bar_tapped();
+            false
         }
     }
 
@@ -381,6 +398,7 @@ impl RuneView {
         // SAFETY: `addSubview:` takes a view, which the text input is.
         let _: () = unsafe { msg_send![&*view, addSubview: &*text] };
         *view.ivars().text.borrow_mut() = Some(text);
+        view.watch_status_bar(mtm);
         view.recognize(class!(UIPinchGestureRecognizer), sel!(runePinch:));
         view.recognize(class!(UIRotationGestureRecognizer), sel!(runeRotate:));
         view.recognize(class!(UILongPressGestureRecognizer), sel!(runeLongPress:));

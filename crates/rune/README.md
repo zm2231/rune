@@ -364,6 +364,11 @@ policy changes are applied in the same mutation phase.
   `tx.scroll_page(key, pages)` pages the viewport keyed `key` (or containing it) by `pages` × 90%
   of its height, as Page Up and Page Down do; a `stick_bottom` viewport that lands on its end
   follows it again.
+  On iOS, when UIKit tells the view of a tap on the status bar, the main list glides to its
+  top (`Runtime::scroll_main_to_top`): the first vertical viewport down the view's centre line
+  from the status bar, the outermost where they nest. Reduced motion jumps, and a
+  `stick_bottom` viewport stops following its end. Shown on the iOS simulator; a real tap on
+  a device is not yet verified.
   `.scroll_edge_fade(w)` fades a viewport's top and bottom only while content is hidden under
   them (strength = hidden extent / 15 pt), and `.scroll_margin(pts)` stops revealed rows clear of it.
 - **Sticky headers and bars** (`.sticky_top(inset)`, `.sticky_bottom(inset)`, `.stuck_shadow(shadow)`,

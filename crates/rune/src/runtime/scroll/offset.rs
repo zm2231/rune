@@ -38,48 +38,58 @@ impl RuntimeCore {
                 continue;
             }
             let Some(i) = self.scroll_viewport_on(&r.key, r.x.is_some(), r.y.is_some()) else { continue };
-            let (id, axes) = (self.tree.nodes[i].id, self.tree.nodes[i].scroll_axes);
-            let (view_w, view_h) = (f64::from(self.tree.nodes[i].local.w), f64::from(self.tree.nodes[i].local.h));
-            let Some(st) = self.scroll.scrolls.get_mut(&id) else { continue };
-            let glide = r.glide.filter(|_| animate);
-            if glide.is_some() { st.spring = glide; }
-            if let Some(x) = r.x.filter(|_| axes.x()) {
-                let to = f64::from(x).max(0.0);
-                // A glide that starts during a wheel's ease keeps the ease's speed.
-                let v = match st.x.motion { XMotion::Glide { v, .. } => v, XMotion::Wheel(c) => c.velocity() as f32, _ => 0.0 };
-                if let Some(spring) = glide && (to.min(st.x.max) - st.x.offset).abs() > 0.5 {
-                    // A long trip cuts to a couple of viewports out first, as a glide to the bottom does.
-                    let reach = scroll_bottom::GLIDE_REACH * view_w;
-                    let end = to.min(st.x.max);
-                    st.x.offset = st.x.offset.clamp(end - reach, end + reach);
-                    st.x.motion = XMotion::Glide { v: retarget_v(spring, st.x.offset, v, end), aim: to };
-                } else {
-                    st.x.motion = XMotion::Rest;
-                    jumps.push((id, true, to));
-                }
-            }
-            if let Some(y) = r.y.filter(|_| axes.y()) {
-                let to = f64::from(y).max(0.0);
-                if let Some(spring) = glide && (to.min(st.max) - st.offset).abs() > 0.5 {
-                    let reach = scroll_bottom::GLIDE_REACH * view_h;
-                    let end = to.min(st.max);
-                    st.offset = st.offset.clamp(end - reach, end + reach);
-                    let v = retarget_v(spring, st.offset, st.glide().or_else(|| st.mode.wheel().map(|c| c.velocity() as f32)).unwrap_or(0.0), end);
-                    st.mode = st.mode.to_glide(v, GlideTo::Offset(to));
-                } else {
-                    st.halt();
-                    jumps.push((id, false, to));
-                }
+            self.send_viewport(i, (r.x, r.y), r.glide.filter(|_| animate), &mut jumps);
+        }
+        self.land_jumps(app, jumps, &anchors);
+    }
+
+    /// Sends viewport `i` to an offset on the axes it scrolls: on `glide`, or as a jump queued
+    /// in `jumps` when there is none or the offset is where it stands.
+    pub(super) fn send_viewport(&mut self, i: usize, (x, y): (Option<f32>, Option<f32>), glide: Option<Spring>, jumps: &mut Vec<(NodeId, bool, f64)>) {
+        let (id, axes) = (self.tree.nodes[i].id, self.tree.nodes[i].scroll_axes);
+        let (view_w, view_h) = (f64::from(self.tree.nodes[i].local.w), f64::from(self.tree.nodes[i].local.h));
+        let Some(st) = self.scroll.scrolls.get_mut(&id) else { return };
+        if glide.is_some() { st.spring = glide; }
+        if let Some(x) = x.filter(|_| axes.x()) {
+            let to = f64::from(x).max(0.0);
+            // A glide that starts during a wheel's ease keeps the ease's speed.
+            let v = match st.x.motion { XMotion::Glide { v, .. } => v, XMotion::Wheel(c) => c.velocity() as f32, _ => 0.0 };
+            if let Some(spring) = glide && (to.min(st.x.max) - st.x.offset).abs() > 0.5 {
+                // A long trip cuts to a couple of viewports out first, as a glide to the bottom does.
+                let reach = scroll_bottom::GLIDE_REACH * view_w;
+                let end = to.min(st.x.max);
+                st.x.offset = st.x.offset.clamp(end - reach, end + reach);
+                st.x.motion = XMotion::Glide { v: retarget_v(spring, st.x.offset, v, end), aim: to };
+            } else {
+                st.x.motion = XMotion::Rest;
+                jumps.push((id, true, to));
             }
         }
+        if let Some(y) = y.filter(|_| axes.y()) {
+            let to = f64::from(y).max(0.0);
+            if let Some(spring) = glide && (to.min(st.max) - st.offset).abs() > 0.5 {
+                let reach = scroll_bottom::GLIDE_REACH * view_h;
+                let end = to.min(st.max);
+                st.offset = st.offset.clamp(end - reach, end + reach);
+                let v = retarget_v(spring, st.offset, st.glide().or_else(|| st.mode.wheel().map(|c| c.velocity() as f32)).unwrap_or(0.0), end);
+                st.mode = st.mode.to_glide(v, GlideTo::Offset(to));
+            } else {
+                st.halt();
+                jumps.push((id, false, to));
+            }
+        }
+    }
+
+    /// Applies `jumps`, and again while landing mounts virtual rows, which measure and can
+    /// move the end a jump clamped to; `anchors` are placed again from each new layout.
+    pub(super) fn land_jumps(&mut self, app: &mut dyn AppDriver, mut jumps: Vec<(NodeId, bool, f64)>, anchors: &[(usize, String, f32)]) {
         self.apply_jumps(&jumps);
-        // Landing mounts the virtual rows there, which measure and can move the end it clamped to.
         for _ in 0..3 {
             if !self.virtual_window_changed() { break; }
             // A jump is at once, and so are the rows it mounts: none fades in where it lands.
             self.commit(app, &Tx { commit: Commit::Instant, ..Tx::default() });
             self.step_scroll(0.0);
-            for (j, key, at) in &anchors {
+            for (j, key, at) in anchors {
                 if let Some((_, to)) = self.anchor_offset(key, *at) { jumps[*j].2 = to; }
             }
             self.apply_jumps(&jumps);
@@ -302,3 +312,6 @@ impl RuntimeCore {
         due
     }
 }
+
+#[path = "top.rs"]
+mod top;

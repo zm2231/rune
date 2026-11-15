@@ -11,6 +11,14 @@ What works:
 - **Touch.** One finger taps, drags and pans with momentum; two fingers pinch (`on_magnify`)
   and turn (`on_rotate`); a long press is the secondary press, so it opens what a right-click
   opens on a desktop.
+- **Scroll to top.** When UIKit tells the view of a tap on the status bar, the app's main list
+  glides to its top, or jumps there with Reduce Motion on. The main list is the first vertical
+  scroll view down the view's centre line from the status bar: the list under a title bar, the
+  column under the centre where columns sit side by side, a pager's showing page, a modal's own
+  list rather than the one behind it, and the outermost of nested lists that has anywhere to go.
+  A list already at its top, and a view with no list there, do nothing; a list that follows its
+  end (`stick_bottom`) stops following it. This was shown on the iOS simulator; a real tap on a
+  device is not yet verified. See "Scroll to top" below.
 - **Pointer.** A mouse or trackpad on an iPad hovers, clicks, right-clicks and scrolls.
 - **Safe area.** `Cx::safe_area` holds what the status bar, the home indicator and the soft
   keyboard take: pad a full-screen root by it.
@@ -264,6 +272,26 @@ struct Screen: View {
 thread: it returns null anywhere else. The view reports the safe area of where it sits, so one
 that doesn't reach the screen's edges reads zero. `examples/web-hello` exports
 `web_hello_view` this way (`examples/web-hello/include/web_hello.h`).
+
+## Scroll to top
+
+UIKit tells scroll views of a tap on the status bar, not views, so a `RuneView` keeps a scroll
+view for it to ask: a strip one point high across the view's top edge, with nothing in it,
+that no touch lands on and no reader sees. Asked, it stays where it is and
+`Runtime::scroll_main_to_top` scrolls the app's list.
+
+What UIKit does with the tap was shown on the iOS simulator only:
+
+- UIKit asked every scroll view under the tap's x, the strip and a host's own among them,
+  and a host's scroll view that agreed scrolled to its top as the app's list did;
+- a scroll view that didn't reach the tap's x wasn't asked, and one that sat below the
+  status bar was.
+
+A real tap on a device is not yet verified. Nor is a Rune view in one column of a split
+view, which by the above would scroll for a tap above that column only.
+
+The strip is told only that the status bar was tapped, not where. A Rune view that draws
+several columns itself scrolls the one under its centre, wherever above it the tap was.
 
 ## Links into the app
 

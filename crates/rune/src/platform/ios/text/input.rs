@@ -380,7 +380,7 @@ define_class!(
 
         #[unsafe(method(comparePosition:toPosition:))]
         fn compare(&self, a: &Position, b: &Position) -> isize {
-            ORDER[a.at().cmp(&b.at()) as usize + 1]
+            ORDER[(a.at().cmp(&b.at()) as isize + 1) as usize]
         }
 
         #[unsafe(method(offsetFromPosition:toPosition:))]

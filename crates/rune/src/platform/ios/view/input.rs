@@ -255,7 +255,7 @@ impl RuneView {
 
     pub(super) fn touches(&self, touches: &AnyObject, phase: TouchPhase) {
         if phase == TouchPhase::Started { self.take_keys(); }
-        let mut count = 0;
+        let mut count = 0usize;
         self.with_surface(|surface| {
             // SAFETY: `touches` is the `NSSet<UITouch *>` UIKit passes; a touch's location and
             // timestamp are a `CGPoint` and an `NSTimeInterval`.

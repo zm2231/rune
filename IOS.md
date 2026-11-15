@@ -185,9 +185,49 @@ earlier; arguments after `--` go to the app. No Xcode project is involved.
 ```text
 usage: ios-app [-h] --name NAME --id ID --bin BIN [--exe EXE] [--out OUT]
                [--simulator SIMULATOR] [--device DEVICE] [--profile PROFILE]
-               [--url-scheme SCHEME] [--no-install] [--no-launch]
+               [--min-os X.Y] [--url-scheme SCHEME] [--no-install]
+               [--no-launch]
                ...
 ```
+
+### The deployment target
+
+Rune runs on iOS 16 and later: its Metal backend writes MSL 3.0. The binary and the bundle
+each say the oldest iOS the app runs on, and they have to say the same. The binary's comes
+from `IPHONEOS_DEPLOYMENT_TARGET` when it is built. Without it rustc links a device build for
+iOS 10, where a debug build fails to link (`___chkstk_darwin`, from blake3's NEON objects),
+and a simulator build for iOS 14. Rune's own `.cargo/config.toml` sets it, which is why the
+commands here need nothing more. A workspace config is not inherited by an app that depends
+on Rune, so the app sets it in its own `.cargo/config.toml`:
+
+```toml
+[env]
+IPHONEOS_DEPLOYMENT_TARGET = "16.0"
+```
+
+or in the shell, which wins over the file:
+
+```sh
+IPHONEOS_DEPLOYMENT_TARGET=16.0 cargo build -p my-app --target aarch64-apple-ios --release
+```
+
+The bundle's is `MinimumOSVersion`, which `scripts/ios-app --min-os X.Y` writes (16.0 unless
+told; below 16.0 is refused). Before signing, the script reads what the staged binary was
+built for (`xcrun vtool -show-build`) and stops when it is not `--min-os`, whichever of the
+two is higher:
+
+```text
+ios-app: target/aarch64-apple-ios-sim/debug/hello was built for the iOS simulator 14.0 but the bundle says 16.0: build with IPHONEOS_DEPLOYMENT_TARGET=16.0 (see IOS.md)
+```
+
+That is all the script checks of `--bin`. A Mach-O object file with the executable bit set
+names a build version too, and is staged as if it were an app's binary. A fat binary whose
+architectures are for iOS and for another platform is refused as one whose `architectures
+were not built for one platform and minimum OS`, not as one that is not for iOS.
+
+`scripts/ios-lib` builds with `IPHONEOS_DEPLOYMENT_TARGET=16.0` unless the caller set it, and
+refuses a value below 16.0. A static library is not linked, so its objects each keep a
+minimum of their own ("A Rune view in a UIKit or SwiftUI app" below).
 
 ## Before sending a change to the iOS code
 
@@ -205,6 +245,14 @@ protocol registers every required method of it, and only methods the protocol ha
 fails the check panics as it is registered, at launch, and the console shows which method. A
 release build skips the check, so it launches and proves nothing about it. `web-hello` has a
 text field, so the class the keyboard talks to is registered too.
+
+The scripts' own tests are run by hand, and need no Xcode:
+
+```sh
+python3 scripts/ios_bundle_tests.py
+python3 scripts/ios_app_tests.py
+python3 scripts/ios_lib_tests.py
+```
 
 ## Run on a device
 
@@ -267,9 +315,13 @@ usage: ios-lib [-h] --package PACKAGE --module MODULE --header HEADER
 ```
 
 It builds with `cargo rustc --crate-type staticlib`, so the package's manifest needs no
-`staticlib` crate type. The module map links the system frameworks Rune uses, so the host app
-adds no linker flags. In Xcode, add `target/ios/MyApp.xcframework` to the app target's
-frameworks and add the `ios/RuneView` Swift package, then:
+`staticlib` crate type. The crates' objects in the library say iOS 16.0; the objects of
+Rust's prebuilt standard library keep the minimum they were built with (10.0 in the device
+slice, 14.0 in the simulator's). That is no disagreement of the kind "The deployment
+target" above refuses: the minimum that has to match a bundle's is the one the linked binary
+names, which the host app's own link sets. The module map links the system frameworks Rune
+uses, so the host app adds no linker flags. In Xcode, add `target/ios/MyApp.xcframework` to
+the app target's frameworks and add the `ios/RuneView` Swift package, then:
 
 ```swift
 import SwiftUI
@@ -464,7 +516,8 @@ An app with its own bundle needs the same:
   configurations: Rune supplies the scene's in code, and shows one window.
 - `UILaunchScreen` (an empty dictionary will do), or iOS letterboxes the app.
 - `CADisableMinimumFrameDurationOnPhone` set to true, or an iPhone holds the app at 60 Hz.
-- `MinimumOSVersion` 16.0 or later.
+- `MinimumOSVersion` 16.0 or later (`--min-os`), the same as the binary was built for
+  ("The deployment target" above).
 - `UIDeviceFamily` `[1, 2]` (iPhone and iPad): without the 2 an iPad runs the app as an
   iPhone app, in a phone-sized frame.
 - `UISupportedInterfaceOrientations` with portrait and both landscapes, for an iPhone.

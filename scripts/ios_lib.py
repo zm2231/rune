@@ -7,6 +7,7 @@ import re
 import shutil
 import sys
 
+from ios_bundle import TARGET_VAR, deployment_target
 from mac_app_install import command
 
 # A release build of Rune from cold.
@@ -55,6 +56,9 @@ def cargo():
 
 def build(args):
     """Build the static library for each target; returns each one's path and what they link."""
+    # rustc and the C compilers cargo runs read the minimum iOS from the environment. Unset, a
+    # device build is linked for iOS 10 and a simulator build for 14, neither of which Rune runs on.
+    os.environ[TARGET_VAR] = deployment_target(os.environ)
     name, target_dir = library(args.package)
     profile = ("--release",) if not args.debug else ()
     built, links = [], None

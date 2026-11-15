@@ -44,6 +44,27 @@ class ModuleRegression(unittest.TestCase):
         self.assertEqual([argv[argv.index("--target") + 1] for argv in rustc], list(ios_lib.TARGETS))
         self.assertTrue(all(argv[argv.index("--crate-type") + 1] == "staticlib" for argv in rustc))
 
+    def test_the_builds_get_rune_minimum_ios_unless_the_caller_set_one_and_one_below_it_is_refused(self):
+        seen = []
+
+        def command(*argv, **_):
+            seen.append(ios_lib.os.environ.get("IPHONEOS_DEPLOYMENT_TARGET"))
+            return SimpleNamespace(stdout='{"packages": [{"name": "demo-app", "targets": [{"name": "demo-app", "kind": ["lib"]}]}], "target_directory": "/work/target"}', stderr=RUSTC)
+
+        build = SimpleNamespace(package="demo-app", debug=True)
+        with patch.object(ios_lib, "command", command):
+            with patch.dict(ios_lib.os.environ, {"CARGO": "cargo"}):
+                ios_lib.os.environ.pop("IPHONEOS_DEPLOYMENT_TARGET", None)
+                ios_lib.build(build)
+                self.assertEqual(seen, ["16.0"] * 3, "cargo metadata and a build a target")
+            with patch.dict(ios_lib.os.environ, {"CARGO": "cargo", "IPHONEOS_DEPLOYMENT_TARGET": "17.0"}):
+                ios_lib.build(build)
+                self.assertEqual(seen[-2:], ["17.0", "17.0"])
+            ran = len(seen)
+            with patch.dict(ios_lib.os.environ, {"CARGO": "cargo", "IPHONEOS_DEPLOYMENT_TARGET": "15.0"}), self.assertRaises(ValueError):
+                ios_lib.build(build)
+            self.assertEqual(len(seen), ran, "cargo was not run")
+
     def test_the_framework_gets_one_slice_a_library_and_an_old_one_is_replaced(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(ios_lib, "command") as command:
             out = Path(tmp) / "ios"

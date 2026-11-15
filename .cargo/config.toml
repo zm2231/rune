@@ -6,3 +6,16 @@ linker = "rust-lld"
 
 [target.aarch64-pc-windows-msvc]
 linker = "rust-lld"
+
+# The deployment target of an iOS build of this workspace. Rune's Metal backend
+# writes MSL 3.0, which needs iOS 16. Without a deployment target rustc links a
+# debug device build for iOS 10, which fails on ___chkstk_darwin from blake3's
+# NEON objects, and a simulator build for 14.0, which scripts/ios-app refuses.
+# Cargo sets this for every build script and for what `cargo run` and
+# `cargo test` start, whatever the target. It matters only to tools building
+# for an Apple mobile target, and nothing in this workspace runs a bare clang
+# that would take a platform from it, so every other target builds as before.
+# A value already in the environment wins. An app that depends on Rune does
+# not inherit this file: it sets its own (see IOS.md).
+[env]
+IPHONEOS_DEPLOYMENT_TARGET = "16.0"

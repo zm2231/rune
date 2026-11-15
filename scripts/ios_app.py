@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 
+from ios_bundle import MIN_OS, build_version, min_os_mismatch, min_os_problem
 from mac_app_install import command
 
 # Booting a simulator and installing an app on it take far longer than the Mac installer's steps.
@@ -23,8 +24,7 @@ def info(args):
         CFBundleName=args.name, CFBundleDisplayName=args.name, CFBundleIdentifier=args.id,
         CFBundleExecutable=args.exe, CFBundlePackageType="APPL",
         CFBundleShortVersionString="0.0.1", CFBundleVersion="1",
-        # Rune's Metal backend writes MSL 3.0, which needs iOS 16.
-        MinimumOSVersion="16.0",
+        MinimumOSVersion=args.min_os,
         UIDeviceFamily=[1, 2],
         # An empty launch screen is what makes iOS give the app the whole display.
         UILaunchScreen={},
@@ -62,12 +62,33 @@ def sign(stage, args):
         command("codesign", "--force", "--sign", identity, "--entitlements", file.name, str(stage), timeout=SLOW)
 
 
+def built_for(args):
+    """The platform the binary was linked for, once its minimum OS is the bundle's."""
+    shown = command("xcrun", "vtool", "-show-build", str(args.bin), check=False)
+    if shown.returncode:
+        raise RuntimeError(f"{args.bin} is not a Mach-O binary vtool can read\n{shown.stderr.strip()}".strip())
+    try:
+        built = build_version(shown.stdout)
+    except ValueError as error:
+        raise RuntimeError(f"{args.bin}: {error}") from None
+    problem = min_os_mismatch(args.bin, built, args.min_os)
+    if problem:
+        raise RuntimeError(problem)
+    return built[0]
+
+
 def build(stage, args):
     """Stage `<out>/<name>.app` from the built binary and sign it."""
+    # Asked of the binary before anything is staged, so a refused one leaves no bundle behind.
+    built_for(args)
     if stage.exists():
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
-    shutil.copy2(args.bin, stage / args.exe)
+    try:
+        shutil.copy2(args.bin, stage / args.exe)
+    except OSError as error:
+        shutil.rmtree(stage)
+        raise RuntimeError(f"{args.bin} could not be copied into the bundle: {error.strerror}") from None
     with (stage / "Info.plist").open("wb") as file:
         plistlib.dump(info(args), file)
     sign(stage, args)
@@ -103,6 +124,8 @@ def main():
     parser.add_argument("--simulator", default="booted", help="a simulator's UDID or name (default: the booted one)")
     parser.add_argument("--device", help="a paired device's UDID or name, instead of a simulator; needs --profile")
     parser.add_argument("--profile", type=Path, help="a development .mobileprovision that covers --id and the device")
+    parser.add_argument("--min-os", default=MIN_OS, metavar="X.Y",
+                        help=f"the oldest iOS the app runs on, which the binary must have been built for (default: {MIN_OS})")
     parser.add_argument("--url-scheme", action="append", default=[], metavar="SCHEME",
                         help="a scheme whose links open the app (myapp for myapp://...); repeat for more")
     parser.add_argument("--no-install", action="store_true", help="stage the bundle only")
@@ -116,6 +139,8 @@ def main():
     for scheme in args.url_scheme:
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9+.-]*", scheme):
             parser.error(f"--url-scheme {scheme!r}: a scheme is the part before ://, a letter then letters, digits, + . or -")
+    if min_os_problem(args.min_os):
+        parser.error(f"--min-os: {min_os_problem(args.min_os)}")
     if bool(args.device) != bool(args.profile):
         parser.error("--device and --profile go together: a device runs only what a profile covers")
     args.exe = args.exe or Path(args.bin).name

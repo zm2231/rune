@@ -67,7 +67,7 @@ def args(tmp, **over):
     binary.chmod(0o755)
     base = dict(name="Hello", id="com.example.hello", bin=str(binary), exe="hello",
                 simulator="booted", device=None, profile=None, url_scheme=[], no_launch=False, args=[],
-                min_os="16.0", wait=0)
+                min_os="16.0", wait=0, version="0.0.1", build="1", display_name="Hello")
     return SimpleNamespace(**{**base, **over})
 
 
@@ -164,6 +164,50 @@ class BundleRegression(unittest.TestCase):
                     ios_app.main()
             build.assert_not_called()
             self.assertIn("the part before ://", errors.getvalue())
+
+    def staged(self, tmp, *flags):
+        """The Info.plist of a bundle staged by the command line with these flags, signing aside."""
+        argv = ["ios-app", "--name", "Hello", "--id", "com.example.hello", "--bin", args(tmp).bin, "--out", tmp, "--no-install", *flags]
+        with patch.object(ios_app.sys, "argv", argv), patch.object(ios_app, "command", Tools()):
+            ios_app.main()
+        return plistlib.loads((Path(tmp) / "Hello.app/Info.plist").read_bytes())
+
+    def test_the_versions_and_the_name_under_the_icon_default_to_what_they_were_and_follow_their_flags(self):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            plist = self.staged(tmp)
+            self.assertEqual([plist[key] for key in ("CFBundleShortVersionString", "CFBundleVersion", "CFBundleName", "CFBundleDisplayName")],
+                             ["0.0.1", "1", "Hello", "Hello"])
+            plist = self.staged(tmp, "--version", "2.1", "--build", "2026.11.15", "--display-name", " Hello World ")
+            self.assertEqual([plist[key] for key in ("CFBundleShortVersionString", "CFBundleVersion", "CFBundleName", "CFBundleDisplayName")],
+                             ["2.1", "2026.11.15", "Hello", "Hello World"])
+
+    def test_a_name_or_an_executable_that_is_a_path_is_refused_and_nothing_outside_out_is_removed(self):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()) as errors:
+            out, kept = Path(tmp) / "out", Path(tmp) / "x.app/kept"
+            kept.parent.mkdir()
+            kept.write_text("mine")
+            base = ["ios-app", "--id", "com.example.hello", "--bin", args(tmp).bin, "--out", str(out), "--no-install"]
+            for refused in (["--name", "../x"], ["--name", ""], ["--name", ".x"], ["--name", "Hello", "--exe", "../hello"], ["--name", "Hello", "--exe", ".hello"]):
+                with patch.object(ios_app.sys, "argv", base + refused), patch.object(ios_app, "command", Tools()), \
+                        self.assertRaises(SystemExit, msg=refused):
+                    ios_app.main()
+            self.assertEqual(kept.read_text(), "mine")
+            self.assertFalse(out.exists())
+            self.assertIn("--name '../x': it is a file's name, so it has no / in it", errors.getvalue())
+            self.assertIn("--name '': it is empty", errors.getvalue())
+            self.assertIn("--exe '.hello': it can't start with a dot", errors.getvalue())
+
+    def test_a_version_that_is_not_numbers_and_an_empty_display_name_are_refused(self):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()) as errors:
+            for refused in (["--version=1.0-beta"], ["--build=1.2.3.4"], ["--build="], ["--display-name=  "]):
+                with self.assertRaises(SystemExit, msg=refused):
+                    self.staged(tmp, *refused)
+                self.assertFalse((Path(tmp) / "Hello.app").exists(), refused)
+            self.assertIn("--version '1.0-beta': a version is one to three whole numbers", errors.getvalue())
+            self.assertIn("--build '1.2.3.4'", errors.getvalue())
+            self.assertIn("--display-name: the name under the icon can't be empty", errors.getvalue())
 
     def test_staging_again_replaces_the_old_bundle(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command", Tools()):

@@ -12,8 +12,8 @@ import sys
 import tempfile
 import time
 
-from ios_bundle import (MIN_OS, alive_device, alive_simulator, build_version, device_crash_logs, launched_pid,
-                        min_os_mismatch, min_os_problem, simulator_crash_log, simulator_pid)
+from ios_bundle import (MIN_OS, alive_device, alive_simulator, build_version, device_crash_logs, file_name_problem, launched_pid,
+                        min_os_mismatch, min_os_problem, simulator_crash_log, simulator_pid, version_problem)
 from mac_app_install import command
 
 # Booting a simulator and installing an app on it take far longer than the Mac installer's steps.
@@ -28,9 +28,9 @@ def info(args):
     links = dict(CFBundleURLTypes=[dict(CFBundleURLName=args.id, CFBundleURLSchemes=list(args.url_scheme))]) if args.url_scheme else {}
     return dict(
         **links,
-        CFBundleName=args.name, CFBundleDisplayName=args.name, CFBundleIdentifier=args.id,
+        CFBundleName=args.name, CFBundleDisplayName=args.display_name, CFBundleIdentifier=args.id,
         CFBundleExecutable=args.exe, CFBundlePackageType="APPL",
-        CFBundleShortVersionString="0.0.1", CFBundleVersion="1",
+        CFBundleShortVersionString=args.version, CFBundleVersion=args.build,
         MinimumOSVersion=args.min_os,
         UIDeviceFamily=[1, 2],
         # An empty launch screen is what makes iOS give the app the whole display.
@@ -161,11 +161,16 @@ def install_device(stage, args):
                 lambda pid: alive_device(devicectl("info", "processes", "--device", args.device).json, pid), lambda: device_crash_logs(args.device))
 
 
-def main():
+def flags():
+    """The command line's parser."""
     parser = argparse.ArgumentParser(prog="ios-app", description=__doc__)
     for name in ("name", "id", "bin"):
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--exe", help="the executable's name in the bundle (default: the binary's)")
+    parser.add_argument("--display-name", metavar="TEXT", help="the name under the app's icon (default: --name)")
+    parser.add_argument("--version", default="0.0.1", metavar="X.Y.Z", help="the version users see (default: 0.0.1)")
+    parser.add_argument("--build", default="1", metavar="N",
+                        help="the build's own number, which the App Store wants higher for each upload of a version (default: 1)")
     parser.add_argument("--out", type=Path, default=Path("target/ios"), help="where the bundle is staged")
     parser.add_argument("--simulator", default="booted", help="a simulator's UDID or name (default: the booted one)")
     parser.add_argument("--device", help="a paired device's UDID or name, instead of a simulator; needs --profile")
@@ -179,21 +184,45 @@ def main():
     parser.add_argument("--wait", type=float, default=3, metavar="SECONDS",
                         help="how long a launched app must stay running, or the launch failed (default: 3; 0 skips the check)")
     parser.add_argument("args", nargs=argparse.REMAINDER, help="after --, passed to the app")
+    return parser
+
+
+def refusal(args):
+    """Why the flags can't be used as given, or None when they can."""
+    if not os.access(args.bin, os.X_OK):
+        return f"no executable binary at {args.bin}"
+    for scheme in args.url_scheme:
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9+.-]*", scheme):
+            return f"--url-scheme {scheme!r}: a scheme is the part before ://, a letter then letters, digits, + . or -"
+    # Each names a file or folder the script makes, and removes before it makes it again.
+    for flag, value in (("--name", args.name), ("--exe", args.exe)):
+        if file_name_problem(value):
+            return f"{flag} {value!r}: {file_name_problem(value)}"
+    for flag, value in (("--version", args.version), ("--build", args.build)):
+        if version_problem(value):
+            return f"{flag} {value!r}: {version_problem(value)}"
+    if not args.display_name.strip():
+        return "--display-name: the name under the icon can't be empty"
+    if min_os_problem(args.min_os):
+        return f"--min-os: {min_os_problem(args.min_os)}"
+    if not 0 <= args.wait < math.inf:
+        return f"--wait {args.wait:g}: a number of seconds to wait, 0 or more"
+    if bool(args.device) != bool(args.profile):
+        return "--device and --profile go together: a device runs only what a profile covers"
+    return None
+
+
+def main():
+    parser = flags()
     args = parser.parse_args()
     if args.args[:1] == ["--"]:
         args.args = args.args[1:]
-    if not os.access(args.bin, os.X_OK):
-        parser.error(f"no executable binary at {args.bin}")
-    for scheme in args.url_scheme:
-        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9+.-]*", scheme):
-            parser.error(f"--url-scheme {scheme!r}: a scheme is the part before ://, a letter then letters, digits, + . or -")
-    if min_os_problem(args.min_os):
-        parser.error(f"--min-os: {min_os_problem(args.min_os)}")
-    if not 0 <= args.wait < math.inf:
-        parser.error(f"--wait {args.wait:g}: a number of seconds to wait, 0 or more")
-    if bool(args.device) != bool(args.profile):
-        parser.error("--device and --profile go together: a device runs only what a profile covers")
     args.exe = args.exe or Path(args.bin).name
+    args.display_name = args.name if args.display_name is None else args.display_name
+    problem = refusal(args)
+    if problem:
+        parser.error(problem)
+    args.display_name = args.display_name.strip()
     stage = args.out / f"{args.name}.app"
     build(stage, args)
     print(stage)

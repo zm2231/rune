@@ -11,7 +11,7 @@ PLATFORMS = {"IOS": "iOS", "IOSSIMULATOR": "the iOS simulator"}
 
 def os_version(text):
     """`16`, `16.0` and `16.0.0` as one comparable tuple; None for what is not an OS version."""
-    if not re.fullmatch(r"\d+(\.\d+){0,2}", text or ""):
+    if not re.fullmatch(r"[0-9]+(\.[0-9]+){0,2}", text or ""):
         return None
     parts = [int(part) for part in text.split(".")]
     return tuple(parts + [0] * (3 - len(parts)))
@@ -24,6 +24,34 @@ def min_os_problem(text):
         return f"{text!r} is not an iOS version: write it as {MIN_OS}"
     if version < os_version(MIN_OS):
         return f"{text} is below {MIN_OS}: Rune's Metal backend writes MSL 3.0, which needs iOS 16"
+    return None
+
+
+def file_name_problem(text):
+    """Why a bundle's name or its executable's can't be this, or None when it can.
+
+    `<name>.app` is a folder under `--out` and the executable a file in it: a name that is a
+    path would put either, and the removal of the old one, somewhere else.
+    """
+    if not text:
+        return "it is empty"
+    if "/" in text:
+        return "it is a file's name, so it has no / in it"
+    if text.startswith("."):
+        return "it can't start with a dot"
+    return None
+
+
+def version_problem(text):
+    """Why a bundle's version or build number can't be this, or None when it can.
+
+    The App Store takes one to three whole numbers joined by dots, 18 characters at most, for
+    both `CFBundleShortVersionString` and `CFBundleVersion`.
+    """
+    if len(text) > 18:
+        return "a version is 18 characters at most"
+    if not re.fullmatch(r"[0-9]+(\.[0-9]+){0,2}", text):
+        return "a version is one to three whole numbers joined by dots, as in 1, 1.2 or 1.2.3"
     return None
 
 

@@ -183,7 +183,8 @@ first (`xcrun simctl list devices available` lists them). `--no-launch` and `--n
 earlier; arguments after `--` go to the app. No Xcode project is involved.
 
 ```text
-usage: ios-app [-h] --name NAME --id ID --bin BIN [--exe EXE] [--out OUT]
+usage: ios-app [-h] --name NAME --id ID --bin BIN [--exe EXE]
+               [--display-name TEXT] [--version X.Y.Z] [--build N] [--out OUT]
                [--simulator SIMULATOR] [--device DEVICE] [--profile PROFILE]
                [--min-os X.Y] [--url-scheme SCHEME] [--no-install]
                [--no-launch] [--wait SECONDS]
@@ -530,10 +531,39 @@ with both from the connection options in `scene(_:willConnectTo:options:)`. The 
 made whose app has the hook gets the link. One passed on before any view is made waits for
 the first view; once a view is made, a link no view has a hook for is dropped.
 
+## Ship an app
+
+What `scripts/ios-app` puts in a bundle beyond what a test run needs.
+
+### Versions and names
+
+```sh
+scripts/ios-app --name Hello --id com.example.hello --bin target/aarch64-apple-ios/release/hello \
+    --display-name "Hello World" --version 1.2.0 --build 42 --no-install
+```
+
+| Flag | `Info.plist` key | Unless told |
+| --- | --- | --- |
+| `--name` | `CFBundleName`, and the bundle is `<name>.app` | required |
+| `--display-name` | `CFBundleDisplayName`, the name under the icon | `--name` |
+| `--version` | `CFBundleShortVersionString`, the version users see | `0.0.1` |
+| `--build` | `CFBundleVersion`, the build's own number | `1` |
+| `--id` | `CFBundleIdentifier` | required |
+| `--exe` | `CFBundleExecutable`, the binary's name in the bundle | the binary's file name |
+
+`--name` and `--exe` are file names: an empty one, one with a `/` in it and one that starts
+with a dot are refused.
+
+A version and a build number are each one to three whole numbers joined by dots (`7`, `1.2`,
+`1.2.3`), 18 characters at most; anything else is refused, since the App Store refuses it.
+The App Store also wants each upload of one version to carry a higher build number than the
+last, which is the app's to keep count of.
+
 ## What the `Info.plist` needs
 
-`scripts/ios-app` writes these, with the bundle's name, identifier, executable and versions.
-An app with its own bundle needs the same:
+`scripts/ios-app` writes these, with the bundle's name, identifier, executable and versions
+("Versions and names" above), and `CFBundlePackageType` `APPL`. An app with its own bundle
+needs the same:
 
 - `UIApplicationSceneManifest` with `UIApplicationSupportsMultipleScenes` false and no
   configurations: Rune supplies the scene's in code, and shows one window.

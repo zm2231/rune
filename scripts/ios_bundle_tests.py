@@ -127,6 +127,24 @@ class DeploymentTarget(unittest.TestCase):
         self.assertIn("IPHONEOS_DEPLOYMENT_TARGET: 14.0 is below 16.0", str(raised.exception))
 
 
+class Versions(unittest.TestCase):
+    def test_a_bundles_name_and_its_executables_are_file_names_not_paths(self):
+        for accepted in ("Hello", "Hello World", "web-hello", "My.App", "héllo"):
+            self.assertIsNone(ios_bundle.file_name_problem(accepted), accepted)
+        self.assertEqual(ios_bundle.file_name_problem(""), "it is empty")
+        for path in ("../x", "a/b", "/tmp/x", "x/"):
+            self.assertIn("no / in it", ios_bundle.file_name_problem(path), path)
+        for hidden in (".", "..", ".hidden"):
+            self.assertIn("can't start with a dot", ios_bundle.file_name_problem(hidden), hidden)
+
+    def test_a_version_is_one_to_three_whole_numbers_of_18_characters_at_most(self):
+        for accepted in ("1", "0", "1.2", "1.2.3", "0.0.1", "2026.11.15", "20261115.1042", "123456.123456.1234"):
+            self.assertIsNone(ios_bundle.version_problem(accepted), accepted)
+        for refused in ("", ".", "1.", ".1", "1..2", "1.2.3.4", "-1", "+1", "1.-2", "1.0b2", "v1", "1 .2", "1,2", "١.٢"):
+            self.assertIn("one to three whole numbers", ios_bundle.version_problem(refused), refused)
+        self.assertIn("18 characters at most", ios_bundle.version_problem("123456.123456.12345"))
+
+
 class Liveness(unittest.TestCase):
     def test_the_simulators_pid_is_the_number_after_the_bundle_id(self):
         pid = ios_bundle.simulator_pid

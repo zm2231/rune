@@ -176,7 +176,8 @@ cargo build -p hello --target aarch64-apple-ios-sim
 scripts/ios-app --name Hello --id com.example.hello --bin target/aarch64-apple-ios-sim/debug/hello
 ```
 
-The script stages `target/ios/Hello.app` (the binary and an `Info.plist`), signs it ad hoc,
+The script stages `target/ios/Hello.app` (the binary, an `Info.plist` and, with `--icon`,
+the icon's files), signs it ad hoc,
 installs it on the booted simulator and launches it. With no simulator booted the install
 fails with `No devices are booted`: `--simulator NAME_OR_UDID` picks a simulator and boots it
 first (`xcrun simctl list devices available` lists them). `--no-launch` and `--no-install` stop
@@ -184,10 +185,11 @@ earlier; arguments after `--` go to the app. No Xcode project is involved.
 
 ```text
 usage: ios-app [-h] --name NAME --id ID --bin BIN [--exe EXE]
-               [--display-name TEXT] [--version X.Y.Z] [--build N] [--out OUT]
-               [--simulator SIMULATOR] [--device DEVICE] [--profile PROFILE]
-               [--min-os X.Y] [--url-scheme SCHEME] [--no-install]
-               [--no-launch] [--wait SECONDS]
+               [--display-name TEXT] [--version X.Y.Z] [--build N]
+               [--icon PNG] [--out OUT] [--simulator SIMULATOR]
+               [--device DEVICE] [--profile PROFILE] [--min-os X.Y]
+               [--url-scheme SCHEME] [--no-install] [--no-launch]
+               [--wait SECONDS]
                ...
 ```
 
@@ -559,6 +561,36 @@ A version and a build number are each one to three whole numbers joined by dots 
 The App Store also wants each upload of one version to carry a higher build number than the
 last, which is the app's to keep count of.
 
+### The icon
+
+`--icon PNG` takes one image, 1024×1024 and opaque, and the system makes every size from it:
+
+```sh
+scripts/ios-app --name WebHello --id com.example.webhello \
+    --bin target/aarch64-apple-ios-sim/debug/web-hello --icon examples/web-hello/ios/icon.png
+```
+
+The script reads the PNG's header itself and refuses a file that is not a PNG, one of another
+size, and one with an alpha channel or a transparency chunk (`tRNS`), since the App Store
+rejects an icon that can be see-through. A failed compile shows what `actool` said.
+Without `--icon` the bundle has no icon and iOS shows a blank one.
+
+It stages an asset catalog beside the bundle and compiles it into the bundle with
+`xcrun actool`, for the platform the binary was built for and for `--min-os`:
+
+| File | What it is |
+| --- | --- |
+| `<out>/<name>.assets/Assets.xcassets/Contents.json` | the catalog |
+| `<out>/<name>.assets/Assets.xcassets/AppIcon.appiconset/Contents.json` | the icon set: one `universal` `ios` image of `1024x1024` |
+| `<out>/<name>.assets/Assets.xcassets/AppIcon.appiconset/icon-1024.png` | a copy of `--icon` |
+| `<out>/<name>.assets/partial.plist` | the `Info.plist` keys `actool` wrote |
+| `<name>.app/Assets.car` | the compiled catalog |
+| `<name>.app/AppIcon60x60@2x.png`, `<name>.app/AppIcon76x76@2x~ipad.png` | the icons iOS reads without the catalog |
+
+Every key of `partial.plist` goes into the bundle's `Info.plist`: `CFBundleIcons` and
+`CFBundleIcons~ipad`, each a `CFBundlePrimaryIcon` with its `CFBundleIconFiles` and the
+`CFBundleIconName` `AppIcon`. A bundle staged again without `--icon` has none of these.
+
 ## What the `Info.plist` needs
 
 `scripts/ios-app` writes these, with the bundle's name, identifier, executable and versions
@@ -577,3 +609,5 @@ needs the same:
 - `UISupportedInterfaceOrientations~ipad` with all four orientations, or an iPad runs the app
   full screen only, never in Split View or a Stage Manager window.
 - `CFBundleURLTypes` with the app's schemes, when it takes links (`--url-scheme`).
+- `CFBundleIcons` and `CFBundleIcons~ipad` naming the icon in the bundle's `Assets.car`, when
+  it has an icon (`--icon`; "The icon" above).

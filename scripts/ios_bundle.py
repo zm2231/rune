@@ -1,10 +1,17 @@
 """What `ios-app` and `ios-lib` decide about an iOS bundle from text and bytes alone, so each
 rule is tested on captured tool output without Xcode."""
+import json
 import re
+import struct
 
 # Rune's Metal backend writes MSL 3.0, which needs iOS 16.
 MIN_OS = "16.0"
 TARGET_VAR = "IPHONEOS_DEPLOYMENT_TARGET"
+# The bytes every PNG file starts with.
+PNG = b"\x89PNG\r\n\x1a\n"
+# The one size an icon set needs since Xcode 14, and the name it has in the staged set.
+ICON_SIZE = 1024
+ICON_FILE = "icon-1024.png"
 # What `vtool` calls the platforms an iOS bundle can hold.
 PLATFORMS = {"IOS": "iOS", "IOSSIMULATOR": "the iOS simulator"}
 
@@ -53,6 +60,51 @@ def version_problem(text):
     if not re.fullmatch(r"[0-9]+(\.[0-9]+){0,2}", text):
         return "a version is one to three whole numbers joined by dots, as in 1, 1.2 or 1.2.3"
     return None
+
+
+def png_chunks(data):
+    """Each chunk's type and bytes, in file order, up to the end mark or where the file is cut short."""
+    offset = len(PNG)
+    while offset + 8 <= len(data):
+        length, kind = struct.unpack(">I4s", data[offset:offset + 8])
+        yield kind, data[offset + 8:offset + 8 + length]
+        if kind == b"IEND":
+            return
+        # A chunk is its length, its type, its bytes and a checksum.
+        offset += 12 + length
+
+
+def icon_problem(data):
+    """Why a file's bytes can't be an app's icon, or None when they can.
+
+    Read from the PNG's signature, its header chunk and the types of the chunks after it, which
+    is all the format needs to say an image's size and whether any pixel can be see-through.
+    """
+    chunks = list(png_chunks(data)) if data.startswith(PNG) else []
+    if not chunks or chunks[0][0] != b"IHDR" or len(chunks[0][1]) != 13:
+        return "it is not a PNG file"
+    width, height, _depth, colour = struct.unpack(">IIBB", chunks[0][1][:10])
+    if (width, height) != (ICON_SIZE, ICON_SIZE):
+        return f"it is {width}x{height}: an app's icon is one {ICON_SIZE}x{ICON_SIZE} image, which the system scales down"
+    # Colour types 4 and 6 carry an alpha channel.
+    if colour in (4, 6):
+        return "it has an alpha channel: the App Store rejects an icon that can be see-through, so save it opaque"
+    # A tRNS chunk can make colours of the other types see-through. Whether it does is in its
+    # bytes; an icon needs no such chunk, so having one is refused.
+    if any(kind == b"tRNS" for kind, _ in chunks):
+        return "it has a transparency chunk (tRNS): the App Store rejects an icon that can be see-through, so save it without one"
+    return None
+
+
+def icon_catalog():
+    """The `Contents.json` of an icon set that makes every size of an iOS icon from one image."""
+    image = dict(filename=ICON_FILE, idiom="universal", platform="ios", size=f"{ICON_SIZE}x{ICON_SIZE}")
+    return json.dumps(dict(images=[image], info=dict(author="xcode", version=1)), indent=2) + "\n"
+
+
+def actool_platform(platform):
+    """What `actool --platform` calls the platform `vtool` says a binary was built for."""
+    return {"IOS": "iphoneos", "IOSSIMULATOR": "iphonesimulator"}[platform]
 
 
 def build_version(vtool_output):

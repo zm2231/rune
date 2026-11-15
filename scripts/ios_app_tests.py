@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import ios_app
+from ios_bundle_tests import png
 
 VTOOL = """{path}:
 Load command 11
@@ -30,6 +31,11 @@ NO_HANDLE = """An error was encountered processing the command (domain=NSPOSIXEr
 Simulator device failed to launch com.example.hello.
 [...] did not return a process handle nor launch error.
 """
+# The keys `actool --output-partial-info-plist` wrote for an icon set of one 1024x1024 image.
+ICON_KEYS = {
+    "CFBundleIcons": {"CFBundlePrimaryIcon": {"CFBundleIconFiles": ["AppIcon60x60"], "CFBundleIconName": "AppIcon"}},
+    "CFBundleIcons~ipad": {"CFBundlePrimaryIcon": {"CFBundleIconFiles": ["AppIcon60x60", "AppIcon76x76"], "CFBundleIconName": "AppIcon"}},
+}
 
 
 class Tools:
@@ -50,6 +56,10 @@ class Tools:
             return SimpleNamespace(stdout="", stderr=failure, returncode=3)
         stdout = VTOOL.format(path=argv[-1], platform=self.platform, minos=self.minos) if "vtool" in argv else ""
         stdout = next((text for word, text in self.stdout.items() if word in argv), stdout)
+        if "actool" in argv:
+            # As actool does: the keys in a plist of their own, the compiled catalog in the bundle.
+            Path(argv[argv.index("--output-partial-info-plist") + 1]).write_bytes(plistlib.dumps(ICON_KEYS))
+            (Path(argv[argv.index("--compile") + 1]) / "Assets.car").write_text("car")
         if "--json-output" in argv:
             written = next(value for word, value in self.json.items() if word in argv)
             Path(argv[argv.index("--json-output") + 1]).write_text(json.dumps(written))
@@ -67,7 +77,7 @@ def args(tmp, **over):
     binary.chmod(0o755)
     base = dict(name="Hello", id="com.example.hello", bin=str(binary), exe="hello",
                 simulator="booted", device=None, profile=None, url_scheme=[], no_launch=False, args=[],
-                min_os="16.0", wait=0, version="0.0.1", build="1", display_name="Hello")
+                min_os="16.0", wait=0, version="0.0.1", build="1", display_name="Hello", icon=None)
     return SimpleNamespace(**{**base, **over})
 
 
@@ -208,6 +218,65 @@ class BundleRegression(unittest.TestCase):
             self.assertIn("--version '1.0-beta': a version is one to three whole numbers", errors.getvalue())
             self.assertIn("--build '1.2.3.4'", errors.getvalue())
             self.assertIn("--display-name: the name under the icon can't be empty", errors.getvalue())
+
+    def test_an_icon_is_compiled_into_the_bundle_for_the_binarys_platform_and_its_keys_join_the_plist(self):
+        for platform, compiled_for in (("IOSSIMULATOR", "iphonesimulator"), ("IOS", "iphoneos")):
+            with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command", Tools(platform)) as tools:
+                image = Path(tmp) / "art.png"
+                image.write_bytes(png())
+                stage = Path(tmp) / "out/Hello.app"
+                ios_app.build(stage, args(tmp, icon=image, min_os="16.0"))
+                catalog = Path(tmp) / "out/Hello.assets/Assets.xcassets"
+                self.assertEqual((catalog / "AppIcon.appiconset/icon-1024.png").read_bytes(), png())
+                self.assertEqual(json.loads((catalog / "AppIcon.appiconset/Contents.json").read_text())["images"][0]["filename"], "icon-1024.png")
+                self.assertEqual(tools.ran("actool"), [(
+                    "actool", "--compile", str(stage), "--app-icon", "AppIcon", "--platform", compiled_for,
+                    "--minimum-deployment-target", "16.0", "--target-device", "iphone", "--target-device", "ipad",
+                    "--output-partial-info-plist", str(Path(tmp) / "out/Hello.assets/partial.plist"),
+                    "--output-format", "human-readable-text", "--errors", "--warnings", str(catalog))])
+                plist = plistlib.loads((stage / "Info.plist").read_bytes())
+                self.assertEqual({key: plist[key] for key in ICON_KEYS}, ICON_KEYS)
+                self.assertEqual(plist["CFBundleIdentifier"], "com.example.hello")
+                self.assertEqual([argv[1] for argv in tools.calls if argv[0] != "xcrun"], ["--force"], "signed once")
+                self.assertEqual(tools.calls[-1][0], "codesign", "after the catalog is in the bundle")
+
+    def test_a_bundle_without_an_icon_has_no_icon_keys_and_no_stale_catalog(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command", Tools()) as tools:
+            image = Path(tmp) / "art.png"
+            image.write_bytes(png())
+            stage = Path(tmp) / "out/Hello.app"
+            ios_app.build(stage, args(tmp, icon=image))
+            ios_app.build(stage, args(tmp))
+            self.assertEqual(len(tools.ran("actool")), 1)
+            self.assertFalse(ICON_KEYS.keys() & plistlib.loads((stage / "Info.plist").read_bytes()).keys())
+            self.assertFalse((Path(tmp) / "out/Hello.assets").exists())
+            self.assertFalse((stage / "Assets.car").exists())
+
+    def test_a_catalog_actool_cannot_compile_stops_the_build_with_what_actool_said(self):
+        def command(*argv, **_):
+            if "actool" in argv:
+                return SimpleNamespace(stdout="error: The app icon set has an unassigned child.", stderr="", returncode=1)
+            return Tools()(*argv)
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command", command):
+            image = Path(tmp) / "art.png"
+            image.write_bytes(png())
+            with self.assertRaises(RuntimeError) as raised:
+                ios_app.build(Path(tmp) / "out/Hello.app", args(tmp, icon=image))
+            self.assertIn("unassigned child", str(raised.exception))
+
+    def test_the_icon_flag_refuses_a_missing_file_a_wrong_size_and_transparency(self):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()) as errors:
+            for name, data in (("small.png", png(512, 512)), ("clear.png", png(colour=6)), ("photo.png", b"\xff\xd8\xff\xe0")):
+                (Path(tmp) / name).write_bytes(data)
+            for refused in ("missing.png", "small.png", "clear.png", "photo.png"):
+                with self.assertRaises(SystemExit, msg=refused):
+                    self.staged(tmp, "--icon", str(Path(tmp) / refused))
+            for reason in ("no icon at", "it is 512x512", "it has an alpha channel: the App Store rejects", "it is not a PNG file"):
+                self.assertIn(reason, errors.getvalue())
+            (Path(tmp) / "icon.png").write_bytes(png())
+            self.assertIn("CFBundleIcons", self.staged(tmp, "--icon", str(Path(tmp) / "icon.png")))
 
     def test_staging_again_replaces_the_old_bundle(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command", Tools()):

@@ -1,5 +1,8 @@
 """Bundle rules on captured tool output and made-up files: never runs an Xcode tool."""
+import json
+import struct
 import unittest
+import zlib
 
 import ios_bundle
 
@@ -143,6 +146,49 @@ class Versions(unittest.TestCase):
         for refused in ("", ".", "1.", ".1", "1..2", "1.2.3.4", "-1", "+1", "1.-2", "1.0b2", "v1", "1 .2", "1,2", "١.٢"):
             self.assertIn("one to three whole numbers", ios_bundle.version_problem(refused), refused)
         self.assertIn("18 characters at most", ios_bundle.version_problem("123456.123456.12345"))
+
+
+def png(width=1024, height=1024, colour=2, trns=False):
+    """A valid one-colour PNG of this size and colour type, made here so no test reads an image."""
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[colour]
+    rows = (b"\0" + bytes(channels * width)) * height
+    palette = chunk(b"PLTE", bytes((40, 90, 200))) if colour == 3 else b""
+    see_through = chunk(b"tRNS", bytes(1 if colour == 3 else 2 * channels)) if trns else b""
+    header = chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, colour, 0, 0, 0))
+    return ios_bundle.PNG + header + palette + see_through + chunk(b"IDAT", zlib.compress(rows, 9)) + chunk(b"IEND", b"")
+
+
+class Icon(unittest.TestCase):
+    def test_an_opaque_1024_png_of_any_colour_type_is_an_icon(self):
+        for colour in (0, 2, 3):
+            self.assertIsNone(ios_bundle.icon_problem(png(colour=colour)), colour)
+
+    def test_an_icon_of_another_size_is_refused_with_its_size(self):
+        self.assertIn("it is 512x512: an app's icon is one 1024x1024 image", ios_bundle.icon_problem(png(512, 512)))
+        self.assertIn("it is 1024x1023", ios_bundle.icon_problem(png(1024, 1023)))
+
+    def test_an_icon_that_can_be_see_through_is_refused_as_the_app_store_refuses_it(self):
+        for colour in (4, 6):
+            self.assertIn("it has an alpha channel: the App Store rejects an icon that can be see-through", ios_bundle.icon_problem(png(colour=colour)))
+        for colour in (0, 2, 3):
+            self.assertIn("it has a transparency chunk (tRNS): the App Store rejects", ios_bundle.icon_problem(png(colour=colour, trns=True)))
+
+    def test_what_is_not_a_png_is_refused(self):
+        whole = png(8, 8)
+        for other in (b"", b"\xff\xd8\xff\xe0 a JPEG", whole[:8], whole[:20], whole[1:], ios_bundle.PNG + whole[8 + 25:]):
+            self.assertEqual(ios_bundle.icon_problem(other), "it is not a PNG file", other[:24])
+
+    def test_the_icon_set_makes_every_size_from_the_one_image(self):
+        self.assertEqual(json.loads(ios_bundle.icon_catalog()), {
+            "images": [{"filename": "icon-1024.png", "idiom": "universal", "platform": "ios", "size": "1024x1024"}],
+            "info": {"author": "xcode", "version": 1}})
+
+    def test_the_catalog_is_compiled_for_the_platform_the_binary_was_built_for(self):
+        self.assertEqual(ios_bundle.actool_platform("IOS"), "iphoneos")
+        self.assertEqual(ios_bundle.actool_platform("IOSSIMULATOR"), "iphonesimulator")
 
 
 class Liveness(unittest.TestCase):

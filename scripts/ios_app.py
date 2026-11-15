@@ -12,8 +12,9 @@ import sys
 import tempfile
 import time
 
-from ios_bundle import (MIN_OS, alive_device, alive_simulator, build_version, device_crash_logs, file_name_problem, launched_pid,
-                        min_os_mismatch, min_os_problem, simulator_crash_log, simulator_pid, version_problem)
+from ios_bundle import (ICON_FILE, MIN_OS, actool_platform, alive_device, alive_simulator, build_version, device_crash_logs,
+                        file_name_problem, icon_catalog, icon_problem, launched_pid, min_os_mismatch, min_os_problem,
+                        simulator_crash_log, simulator_pid, version_problem)
 from mac_app_install import command
 
 # Booting a simulator and installing an app on it take far longer than the Mac installer's steps.
@@ -84,10 +85,39 @@ def built_for(args):
     return built[0]
 
 
+def icon(stage, args, platform):
+    """Compile `--icon` into the bundle as an asset catalog; returns the Info.plist keys that name it.
+
+    The catalog is staged beside the bundle, in `<out>/<name>.assets`, with the one image an
+    icon set needs. `actool` writes `Assets.car` and the two icon files iOS reads without the
+    catalog into the bundle, and the keys naming them into a plist of their own.
+    """
+    assets = stage.parent / f"{args.name}.assets"
+    if assets.exists():
+        shutil.rmtree(assets)
+    if not args.icon:
+        return {}
+    catalog, partial = assets / "Assets.xcassets", assets / "partial.plist"
+    (catalog / "AppIcon.appiconset").mkdir(parents=True)
+    (catalog / "Contents.json").write_text(json.dumps(dict(info=dict(author="xcode", version=1)), indent=2) + "\n")
+    (catalog / "AppIcon.appiconset/Contents.json").write_text(icon_catalog())
+    shutil.copyfile(args.icon, catalog / "AppIcon.appiconset" / ICON_FILE)
+    # The platform is the binary's own: a catalog compiled for the other one is not read.
+    compiled = command("xcrun", "actool", "--compile", str(stage), "--app-icon", "AppIcon", "--platform", actool_platform(platform),
+                       "--minimum-deployment-target", args.min_os, "--target-device", "iphone", "--target-device", "ipad",
+                       "--output-partial-info-plist", str(partial), "--output-format", "human-readable-text", "--errors", "--warnings",
+                       str(catalog), check=False, timeout=SLOW)
+    if compiled.returncode:
+        # actool reports its errors on stdout, as the result of the compile: as text when
+        # asked, where it would be a property list.
+        raise RuntimeError(f"actool could not compile {args.icon}\n{(compiled.stdout + compiled.stderr).strip()}")
+    return plistlib.loads(partial.read_bytes())
+
+
 def build(stage, args):
     """Stage `<out>/<name>.app` from the built binary and sign it."""
     # Asked of the binary before anything is staged, so a refused one leaves no bundle behind.
-    built_for(args)
+    platform = built_for(args)
     if stage.exists():
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
@@ -96,8 +126,9 @@ def build(stage, args):
     except OSError as error:
         shutil.rmtree(stage)
         raise RuntimeError(f"{args.bin} could not be copied into the bundle: {error.strerror}") from None
-    with (stage / "Info.plist").open("wb") as file:
-        plistlib.dump(info(args), file)
+    # Written once, whole: actool has run by the time the file exists.
+    plist = {**info(args), **icon(stage, args, platform)}
+    (stage / "Info.plist").write_bytes(plistlib.dumps(plist))
     sign(stage, args)
 
 
@@ -171,6 +202,7 @@ def flags():
     parser.add_argument("--version", default="0.0.1", metavar="X.Y.Z", help="the version users see (default: 0.0.1)")
     parser.add_argument("--build", default="1", metavar="N",
                         help="the build's own number, which the App Store wants higher for each upload of a version (default: 1)")
+    parser.add_argument("--icon", type=Path, metavar="PNG", help="the app's icon: one opaque 1024x1024 PNG (default: no icon)")
     parser.add_argument("--out", type=Path, default=Path("target/ios"), help="where the bundle is staged")
     parser.add_argument("--simulator", default="booted", help="a simulator's UDID or name (default: the booted one)")
     parser.add_argument("--device", help="a paired device's UDID or name, instead of a simulator; needs --profile")
@@ -203,6 +235,11 @@ def refusal(args):
             return f"{flag} {value!r}: {version_problem(value)}"
     if not args.display_name.strip():
         return "--display-name: the name under the icon can't be empty"
+    if args.icon and not args.icon.is_file():
+        return f"no icon at {args.icon}"
+    problem = args.icon and icon_problem(args.icon.read_bytes())
+    if problem:
+        return f"--icon {args.icon}: {problem}"
     if min_os_problem(args.min_os):
         return f"--min-os: {min_os_problem(args.min_os)}"
     if not 0 <= args.wait < math.inf:

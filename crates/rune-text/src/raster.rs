@@ -1,6 +1,6 @@
 //! Glyph rasterization, font smoothing and platform pipelines.
 
-pub(crate) mod colr;
+pub(crate) mod color_glyph;
 #[doc(hidden)]
 pub mod coretext_match;
 pub(crate) mod macos;

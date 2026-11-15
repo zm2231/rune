@@ -17,6 +17,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[doc(hidden)]
 pub mod pause;
+mod words;
+use words::{Checker, Words};
 #[cfg(target_os = "macos")]
 #[path = "macos.rs"]
 mod platform;
@@ -58,9 +60,6 @@ thread_local! {
     /// long draft checks the one word it changed, not the draft.
     static WORDS: RefCell<Words> = RefCell::new(Words::default());
 }
-
-/// The most words [`WORDS`] keeps before it starts over.
-const MAX_WORDS: usize = 8192;
 
 /// The dictionaries a field's Spellcheck Languages menu offers, as language tags (`en-US`).
 /// Empty where the platform finds each text's language itself (macOS) or has no checker.
@@ -270,70 +269,25 @@ pub fn misspelled(text: &str, wake: Option<&std::sync::Arc<rune_core::live::Wake
     })
 }
 
-/// `text`'s misspelled words, from each line's and word's cached answers, and whether every word
-/// had one. The words not yet checked go to the platform together, one per line (on the checker
-/// thread where it's slow to call). Words are what whitespace separates: the checker marks
-/// nothing across it, and repeated words, its only check that reads neighbours, go unmarked. A
-/// line's answer is kept once all its words have one, so a key in a long draft looks up the
-/// lines it didn't change, not their words.
+/// `text`'s misspelled words from the thread's checked words (`Words::scan`), and whether
+/// every word had an answer. Where the platform's checker is slow to call, the words not yet
+/// checked go to the checker thread, which wakes `wake` when they are back.
 fn by_words(text: &str, wake: Option<&std::sync::Arc<rune_core::live::Wake>>) -> (Vec<(usize, usize)>, bool) {
-    use std::hash::{Hash, Hasher};
-    let line_key = |line: &str| {
-        let mut h = rustc_hash::FxHasher::default();
-        line.hash(&mut h);
-        h.finish()
-    };
     WORDS.with_borrow_mut(|w| {
         if w.generation != self::generation() {
-            *w = Words { generation: self::generation(), ..Words::default() };
+            *w = Words::of(self::generation());
         }
-        w.take_done();
-        if w.lines.len() > MAX_WORDS { w.lines.clear(); }
-        // The lines without a kept answer, and their words.
-        // Each line is hashed once: a key in a 2,000-line draft hashes its lines, not twice.
-        let keys: Vec<u64> = text.split('\n').map(line_key).collect();
-        let mut open: Vec<(usize, &str, u64)> = Vec::new();
-        let mut at = 0;
-        for (line, &k) in text.split('\n').zip(&keys) {
-            if !w.lines.contains_key(&k) { open.push((at, line, k)); }
-            at += line.len() + 1;
+        let done = std::mem::take(&mut *worker::DONE.lock().unwrap_or_else(|e| e.into_inner()));
+        for (generation, word, parts) in done {
+            w.learned(word, (generation == w.generation).then_some(parts));
         }
-        let mut fresh: Vec<&str> = open.iter().flat_map(|&(_, l, _)| words(l).map(|(_, s)| s)).filter(|s| !w.known.contains_key(*s) && !w.asked.contains(*s)).collect();
-        fresh.sort_unstable();
-        fresh.dedup();
-        if !fresh.is_empty() {
-            if w.known.len() + fresh.len() > MAX_WORDS { w.known.clear(); }
-            if platform::OFF_THREAD {
-                w.asked.extend(fresh.iter().map(|&s| Box::<str>::from(s)));
-                worker::ask(w.generation, fresh.iter().map(|&s| s.to_owned()).collect(), wake);
-            } else {
-                w.known.extend(check_words(&fresh));
-            }
+        if platform::OFF_THREAD {
+            let generation = w.generation;
+            w.scan(text, Checker::Later(&mut |words| worker::ask(generation, words, wake)))
+        } else {
+            w.scan(text, Checker::Now(&mut |words| check_words(words)))
         }
-        let mut whole = true;
-        for &(_, line, k) in &open {
-            if words(line).all(|(_, s)| w.known.contains_key(s)) {
-                let parts: Box<[(u32, u32)]> = words(line).flat_map(|(o, s)| w.known.get(s).into_iter().flatten().map(move |&(a, b)| (o as u32 + a, o as u32 + b))).collect();
-                w.lines.insert(k, parts);
-            } else {
-                whole = false;
-            }
-        }
-        let mut found = Vec::new();
-        let mut at = 0;
-        for (line, k) in text.split('\n').zip(&keys) {
-            match w.lines.get(k) {
-                Some(parts) => found.extend(parts.iter().map(|&(a, b)| (at + a as usize, at + b as usize))),
-                None => found.extend(words(line).flat_map(|(o, s)| w.known.get(s).into_iter().flatten().map(move |&(a, b)| (at + o + a as usize, at + o + b as usize)))),
-            }
-            at += line.len() + 1;
-        }
-        (found, whole)
     })
-}
-/// `line`'s words and where each starts in it.
-fn words(line: &str) -> impl Iterator<Item = (usize, &str)> + '_ {
-    line.split_whitespace().map(move |s| (s.as_ptr() as usize - line.as_ptr() as usize, s))
 }
 
 /// `words`' misspelled parts, as byte ranges in each word, from one call to the checker: each
@@ -349,31 +303,6 @@ fn check_words<S: AsRef<str>>(words: &[S]) -> Vec<(Box<str>, Box<[(u32, u32)]>)>
         start = end + 1;
         (word.into(), parts)
     }).collect()
-}
-
-/// A thread's checked words, for one generation of the chosen dictionaries.
-#[derive(Default)]
-struct Words {
-    generation: u64,
-    /// Each checked word's misspelled parts, as byte ranges in the word.
-    known: HashMap<Box<str>, Box<[(u32, u32)]>>,
-    /// Each line's misspelled words once all its words are checked, by the line's hash.
-    lines: HashMap<u64, Box<[(u32, u32)]>>,
-    /// Words on the checker thread.
-    asked: std::collections::HashSet<Box<str>>,
-}
-
-impl Words {
-    /// Takes in what the checker thread brought back for this generation.
-    fn take_done(&mut self) {
-        let done = std::mem::take(&mut *worker::DONE.lock().unwrap_or_else(|e| e.into_inner()));
-        for (generation, word, parts) in done {
-            self.asked.remove(&word);
-            if generation == self.generation {
-                self.known.insert(word, parts);
-            }
-        }
-    }
 }
 
 /// How many times the checker thread has brought words back, for a window to draw them.

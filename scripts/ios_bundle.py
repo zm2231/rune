@@ -25,6 +25,15 @@ PRIVACY = Path(__file__).resolve().parent.parent / "ios/RuneView/Sources/RuneVie
 PRIVACY_KEYS = ("NSPrivacyTracking", "NSPrivacyTrackingDomains", "NSPrivacyCollectedDataTypes", "NSPrivacyAccessedAPITypes")
 # What `vtool` calls the platforms an iOS bundle can hold.
 PLATFORMS = {"IOS": "iOS", "IOSSIMULATOR": "the iOS simulator"}
+# Each one's SDK, as `xcrun --sdk` and `actool --platform` name it, and its name in
+# `CFBundleSupportedPlatforms`.
+SDKS = {"IOS": ("iphoneos", "iPhoneOS"), "IOSSIMULATOR": ("iphonesimulator", "iPhoneSimulator")}
+# The keys Xcode writes the same into an iOS app's Info.plist, for a device and for a simulator.
+BUILD_KEYS = dict(
+    DTCompiler="com.apple.compilers.llvm.clang.1_0", LSRequiresIPhoneOS=True,
+    CFBundleInfoDictionaryVersion="6.0", CFBundleDevelopmentRegion="en")
+# The one Xcode writes for a device build and leaves out of a simulator's.
+DEVICE_KEYS = dict(UIRequiredDeviceCapabilities=["arm64"])
 
 
 def os_version(text):
@@ -115,7 +124,37 @@ def icon_catalog():
 
 def actool_platform(platform):
     """What `actool --platform` calls the platform `vtool` says a binary was built for."""
-    return {"IOS": "iphoneos", "IOSSIMULATOR": "iphonesimulator"}[platform]
+    return SDKS[platform][0]
+
+
+def xcode_version(xcodebuild_output):
+    """`DTXcode` and `DTXcodeBuild` from the two lines `xcodebuild -version` prints.
+
+    Xcode writes its version as four digits: the major number, padded to two, then the minor
+    and the patch number as a digit each, so 27.2 is 2720 and 9.4.1 is 0941.
+    """
+    version = re.search(r"^Xcode ([0-9]+)(?:\.([0-9]+))?(?:\.([0-9]+))?\s*$", xcodebuild_output, flags=re.M)
+    build = re.search(r"^Build version (\S+)\s*$", xcodebuild_output, flags=re.M)
+    if not version or not build:
+        raise ValueError(f"xcodebuild -version named no Xcode version and build: {xcodebuild_output.strip()!r}")
+    major, minor, patch = (int(part or 0) for part in version.groups())
+    return f"{major:02d}{minor}{patch}", build[1]
+
+
+def build_keys(platform, sdk_version, sdk_build, xcodebuild_output, os_build):
+    """The Info.plist keys Xcode writes to say what a bundle runs on and what built it.
+
+    Taken from the platform the binary was built for and from what `xcrun --show-sdk-version`,
+    `xcrun --show-sdk-build-version`, `xcodebuild -version` and `sw_vers -buildVersion` print.
+    """
+    sdk, supported = SDKS[platform]
+    xcode, xcode_build = xcode_version(xcodebuild_output)
+    sdk_version, sdk_build = sdk_version.strip(), sdk_build.strip()
+    return dict(
+        BUILD_KEYS, **(DEVICE_KEYS if platform == "IOS" else {}),
+        CFBundleSupportedPlatforms=[supported], DTPlatformName=sdk, DTSDKName=f"{sdk}{sdk_version}",
+        DTPlatformVersion=sdk_version, DTSDKBuild=sdk_build, DTPlatformBuild=sdk_build,
+        DTXcode=xcode, DTXcodeBuild=xcode_build, BuildMachineOSBuild=os_build.strip())
 
 
 def privacy_problem(data):

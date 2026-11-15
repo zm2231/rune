@@ -772,6 +772,30 @@ needs the same:
 - `CFBundleIcons` and `CFBundleIcons~ipad` naming the icon in the bundle's `Assets.car`, when
   it has an icon (`--icon`; "The icon" above).
 
+The script also writes the keys Xcode writes to say what the bundle runs on
+and what built it. An app with its own bundle gets them from Xcode. The script reads them on
+the Mac it runs on, before it stages anything:
+
+| Key | Value | From |
+| --- | --- | --- |
+| `CFBundleSupportedPlatforms` | `["iPhoneOS"]`, or `["iPhoneSimulator"]` | the platform the binary was built for |
+| `DTPlatformName` | `iphoneos`, or `iphonesimulator` | the same |
+| `DTPlatformVersion` | the SDK's version, as `27.2` | `xcrun --sdk <sdk> --show-sdk-version` |
+| `DTSDKName` | the SDK's name and version, as `iphoneos27.2` | the same |
+| `DTSDKBuild`, `DTPlatformBuild` | the SDK's build, as `24B8118` | `xcrun --sdk <sdk> --show-sdk-build-version` |
+| `DTXcode` | Xcode's version as four digits: `2720` for 27.2 | `xcodebuild -version` |
+| `DTXcodeBuild` | Xcode's build, as `27B52` | the same |
+| `BuildMachineOSBuild` | the Mac's macOS build | `sw_vers -buildVersion` |
+| `DTCompiler` | `com.apple.compilers.llvm.clang.1_0` | fixed |
+| `LSRequiresIPhoneOS` | true | fixed |
+| `UIRequiredDeviceCapabilities` | `["arm64"]`, in a device build only | the platform the binary was built for |
+| `CFBundleInfoDictionaryVersion` | `6.0` | fixed |
+| `CFBundleDevelopmentRegion` | `en` | fixed |
+
+The keys and their values are the ones Xcode writes: they were checked against an app Xcode
+built on the same Mac, for a device build and for a simulator build. No upload has been made
+with a bundle from this script.
+
 Beside the `Info.plist` and the binary the bundle holds `PrivacyInfo.xcprivacy`, which the
 App Store reads ("The privacy manifest" above), the icon's files when it has one, and
 `embedded.mobileprovision` when it was signed with a profile.

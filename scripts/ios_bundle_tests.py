@@ -327,6 +327,32 @@ class Distribution(unittest.TestCase):
                 self.assertNotIn("Payload/Hello.app/hello", archive.namelist())
 
 
+class BuildKeys(unittest.TestCase):
+    def test_xcode_version_is_four_digits_and_its_build_is_the_second_line(self):
+        self.assertEqual(ios_bundle.xcode_version("Xcode 27.2\nBuild version 27B52\n"), ("2720", "27B52"))
+        self.assertEqual(ios_bundle.xcode_version("Xcode 15.0.1\nBuild version 15A507\n"), ("1501", "15A507"))
+        self.assertEqual(ios_bundle.xcode_version("Xcode 9.4.1\nBuild version 9F2000\n"), ("0941", "9F2000"))
+        self.assertEqual(ios_bundle.xcode_version("Xcode 16\nBuild version 16A242\n"), ("1600", "16A242"))
+
+    def test_output_that_names_no_xcode_is_an_error_that_quotes_it(self):
+        for output in ("", "Xcode 27.2\n", "Build version 27B52\n", "xcode-select: error: tool 'xcodebuild' requires Xcode\n"):
+            with self.assertRaises(ValueError, msg=output) as raised:
+                ios_bundle.xcode_version(output)
+            self.assertIn(repr(output.strip()), str(raised.exception))
+
+    def test_the_keys_name_the_binarys_platform_its_sdk_and_what_built_it(self):
+        keys = ios_bundle.build_keys("IOS", "27.2\n", "24B8118\n", "Xcode 27.2\nBuild version 27B52\n", "26A434\n")
+        self.assertEqual(keys, dict(
+            CFBundleSupportedPlatforms=["iPhoneOS"], DTPlatformName="iphoneos", DTSDKName="iphoneos27.2", DTPlatformVersion="27.2",
+            DTSDKBuild="24B8118", DTPlatformBuild="24B8118", DTXcode="2720", DTXcodeBuild="27B52", BuildMachineOSBuild="26A434",
+            DTCompiler="com.apple.compilers.llvm.clang.1_0", LSRequiresIPhoneOS=True, UIRequiredDeviceCapabilities=["arm64"],
+            CFBundleInfoDictionaryVersion="6.0", CFBundleDevelopmentRegion="en"))
+        simulator = ios_bundle.build_keys("IOSSIMULATOR", "27.2\n", "24B8118\n", "Xcode 27.2\nBuild version 27B52\n", "26A434\n")
+        self.assertEqual(set(keys) - set(simulator), {"UIRequiredDeviceCapabilities"}, "Xcode writes it for a device build only")
+        changed = {key: value for key, value in simulator.items() if keys[key] != value}
+        self.assertEqual(changed, dict(CFBundleSupportedPlatforms=["iPhoneSimulator"], DTPlatformName="iphonesimulator", DTSDKName="iphonesimulator27.2"))
+
+
 class Liveness(unittest.TestCase):
     def test_the_simulators_pid_is_the_number_after_the_bundle_id(self):
         pid = ios_bundle.simulator_pid

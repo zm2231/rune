@@ -12,10 +12,10 @@ import sys
 import tempfile
 import time
 
-from ios_bundle import (ICON_FILE, MIN_OS, PLATFORMS, PRIVACY, actool_platform, alive_device, alive_simulator, build_version,
-                        device_crash_logs, distribution_profile_problem, file_name_problem, icon_catalog, icon_problem, launched_pid,
-                        min_os_mismatch,
-                        min_os_problem, privacy_problem, profile_problem, simulator_crash_log, simulator_pid, version_problem, write_ipa)
+from ios_bundle import (ICON_FILE, MIN_OS, PLATFORMS, PRIVACY, actool_platform, alive_device, alive_simulator, build_keys,
+                        build_version, device_crash_logs, distribution_profile_problem, file_name_problem, icon_catalog,
+                        icon_problem, launched_pid, min_os_mismatch, min_os_problem, privacy_problem, profile_problem,
+                        simulator_crash_log, simulator_pid, version_problem, write_ipa)
 from mac_app_install import command
 
 # Booting a simulator and installing an app on it take far longer than the Mac installer's steps.
@@ -137,6 +137,15 @@ def built_for(args):
     return built[0]
 
 
+def toolchain(platform):
+    """The Info.plist keys that say what the bundle runs on and what built it, as Xcode writes
+    them: read from the platform's SDK, Xcode and macOS on this Mac."""
+    sdk = ("xcrun", "--sdk", actool_platform(platform))
+    return build_keys(platform, command(*sdk, "--show-sdk-version", timeout=SLOW).stdout,
+                      command(*sdk, "--show-sdk-build-version", timeout=SLOW).stdout,
+                      command("xcodebuild", "-version", timeout=SLOW).stdout, command("sw_vers", "-buildVersion").stdout)
+
+
 def icon(stage, args, platform):
     """Compile `--icon` into the bundle as an asset catalog; returns the Info.plist keys that name it.
 
@@ -179,6 +188,7 @@ def build(stage, args):
     platform = built_for(args)
     if args.distribution and platform != "IOS":
         raise RuntimeError(f"{args.bin} was built for {PLATFORMS[platform]}: the App Store takes a device build (--target aarch64-apple-ios)")
+    built_with = toolchain(platform)
     if stage.exists():
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
@@ -188,7 +198,7 @@ def build(stage, args):
         shutil.rmtree(stage)
         raise RuntimeError(f"{args.bin} could not be copied into the bundle: {error.strerror}") from None
     # Written once, whole: actool has run by the time the file exists.
-    plist = {**info(args), **icon(stage, args, platform)}
+    plist = {**info(args), **built_with, **icon(stage, args, platform)}
     (stage / "Info.plist").write_bytes(plistlib.dumps(plist))
     # What the app declares to the App Store: its own manifest, or what Rune alone accounts for.
     shutil.copyfile(args.privacy or PRIVACY, stage / PRIVACY.name)

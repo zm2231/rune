@@ -40,6 +40,11 @@ ICON_KEYS = {
     "CFBundleIcons~ipad": {"CFBundlePrimaryIcon": {"CFBundleIconFiles": ["AppIcon60x60", "AppIcon76x76"], "CFBundleIconName": "AppIcon"}},
 }
 
+# What the tools that describe the toolchain print: the SDK's version and build, Xcode's
+# version and build, and the build of macOS.
+TOOLCHAIN = {"--show-sdk-version": "27.2\n", "--show-sdk-build-version": "24B8118\n",
+             "xcodebuild": "Xcode 27.2\nBuild version 27B52\n", "sw_vers": "26A434\n"}
+
 
 class Tools:
     """Stands in for `command`: keeps each call and answers vtool as a binary built this way.
@@ -61,6 +66,7 @@ class Tools:
         if failure is not None:
             return SimpleNamespace(stdout="", stderr=failure, returncode=3)
         stdout = VTOOL.format(path=argv[-1], platform=self.platform, minos=self.minos) if "vtool" in argv else ""
+        stdout = next((text for word, text in TOOLCHAIN.items() if word in argv), stdout)
         if "--entitlements" in argv:
             self.entitlements = plistlib.loads(Path(argv[argv.index("--entitlements") + 1]).read_bytes())
         stdout = next((text for word, text in self.stdout.items() if word in argv), stdout)
@@ -78,6 +84,11 @@ class Tools:
         """The calls of one tool, each without a leading `xcrun`."""
         calls = [argv[1:] if argv[0] == "xcrun" else argv for argv in self.calls]
         return [argv for argv in calls if argv[0] == tool]
+
+    def steps(self):
+        """Each call without a leading `xcrun`, in order, leaving out the questions about the toolchain."""
+        calls = [argv[1:] if argv[0] == "xcrun" else argv for argv in self.calls]
+        return [argv for argv in calls if argv[0] not in ("--sdk", "xcodebuild", "sw_vers")]
 
 
 def args(tmp, **over):
@@ -106,11 +117,37 @@ class BundleRegression(unittest.TestCase):
             self.assertEqual(plist["MinimumOSVersion"], "16.0")
             self.assertEqual(tools.calls[-1][:4], ("codesign", "--force", "--sign", "-"))
 
+    def test_the_plist_says_what_the_bundle_runs_on_and_what_built_it_as_xcode_writes_it(self):
+        for platform, sdk, supported in (("IOS", "iphoneos", "iPhoneOS"), ("IOSSIMULATOR", "iphonesimulator", "iPhoneSimulator")):
+            with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command", Tools(platform)) as tools:
+                stage = Path(tmp) / "out/Hello.app"
+                ios_app.build(stage, args(tmp))
+                plist = plistlib.loads((stage / "Info.plist").read_bytes())
+                expected = dict(
+                    CFBundleSupportedPlatforms=[supported], DTPlatformName=sdk, DTSDKName=f"{sdk}27.2", DTPlatformVersion="27.2",
+                    DTSDKBuild="24B8118", DTPlatformBuild="24B8118", DTXcode="2720", DTXcodeBuild="27B52", BuildMachineOSBuild="26A434",
+                    DTCompiler="com.apple.compilers.llvm.clang.1_0", LSRequiresIPhoneOS=True,
+                    CFBundleInfoDictionaryVersion="6.0", CFBundleDevelopmentRegion="en")
+                self.assertEqual({key: plist[key] for key in expected}, expected)
+                # Xcode writes this one for a device build and leaves it out of a simulator's.
+                self.assertEqual(plist.get("UIRequiredDeviceCapabilities"), ["arm64"] if platform == "IOS" else None)
+                self.assertEqual(tools.ran("--sdk"), [("--sdk", sdk, "--show-sdk-version"), ("--sdk", sdk, "--show-sdk-build-version")])
+                self.assertEqual(tools.ran("xcodebuild") + tools.ran("sw_vers"), [("xcodebuild", "-version"), ("sw_vers", "-buildVersion")])
+                self.assertEqual(plist["CFBundleIdentifier"], "com.example.hello")
+
+    def test_a_toolchain_that_does_not_answer_stops_the_build_before_anything_is_staged(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(TOOLCHAIN, {"xcodebuild": "xcode-select: error: tool 'xcodebuild' requires Xcode\n"}), \
+                patch.object(ios_app, "command", Tools()):
+            with self.assertRaises(ValueError) as raised:
+                ios_app.build(Path(tmp) / "out/Hello.app", args(tmp))
+            self.assertIn("xcodebuild -version named no Xcode version and build", str(raised.exception))
+            self.assertFalse((Path(tmp) / "out").exists())
+
     def test_the_binary_is_asked_what_it_was_built_for_before_it_is_signed(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command", Tools(minos="17.0")) as tools:
             stage = Path(tmp) / "out/Hello.app"
             ios_app.build(stage, args(tmp, min_os="17.0"))
-            self.assertEqual([argv[:2] for argv in tools.calls], [("xcrun", "vtool"), ("codesign", "--force")])
+            self.assertEqual([argv[:2] for argv in tools.steps()], [("vtool", "-show-build"), ("codesign", "--force")])
             self.assertEqual(tools.ran("vtool"), [("vtool", "-show-build", args(tmp).bin)])
             self.assertEqual(plistlib.loads((stage / "Info.plist").read_bytes())["MinimumOSVersion"], "17.0")
 
@@ -246,7 +283,7 @@ class BundleRegression(unittest.TestCase):
                 plist = plistlib.loads((stage / "Info.plist").read_bytes())
                 self.assertEqual({key: plist[key] for key in ICON_KEYS}, ICON_KEYS)
                 self.assertEqual(plist["CFBundleIdentifier"], "com.example.hello")
-                self.assertEqual([argv[1] for argv in tools.calls if argv[0] != "xcrun"], ["--force"], "signed once")
+                self.assertEqual(len(tools.ran("codesign")), 1, "signed once")
                 self.assertEqual(tools.calls[-1][0], "codesign", "after the catalog is in the bundle")
 
     def test_a_bundle_without_an_icon_has_no_icon_keys_and_no_stale_catalog(self):
@@ -346,6 +383,8 @@ class BundleRegression(unittest.TestCase):
                 return Tools("IOS")(*argv)
             if argv[0] == "security":
                 return SimpleNamespace(stdout=plistlib.dumps(granted).decode(), stderr="", returncode=0)
+            if argv[0] != "codesign":
+                return Tools("IOS")(*argv)
             signed["identity"] = argv[argv.index("--sign") + 1]
             signed["entitlements"] = plistlib.loads(Path(argv[argv.index("--entitlements") + 1]).read_bytes())
 
@@ -398,7 +437,7 @@ class DistributionRegression(unittest.TestCase):
             out = Path(tmp) / "out"
             tools, printed = self.run_main(tmp, *self.store(tmp))
             binary = str(out / "Hello.app/hello")
-            steps = [argv[1:] if argv[0] == "xcrun" else argv for argv in tools.calls]
+            steps = tools.steps()
             self.assertEqual([step[0] for step in steps], ["security", "vtool", "actool", "dsymutil", "strip", "codesign", "codesign", "plutil"])
             steps = steps[3:]
             self.assertEqual(steps[0], ("dsymutil", binary, "-o", str(out / "Hello.app.dSYM")))
@@ -464,7 +503,7 @@ class DistributionRegression(unittest.TestCase):
     def test_signing_ad_hoc_tries_every_step_without_a_profile(self):
         with tempfile.TemporaryDirectory() as tmp:
             tools, printed = self.run_main(tmp, "--distribution", sign="-")
-            self.assertEqual([argv[1] if argv[0] == "xcrun" else argv[0] for argv in tools.calls],
+            self.assertEqual([argv[0] for argv in tools.steps()],
                              ["vtool", "dsymutil", "strip", "codesign", "codesign", "plutil"], "no profile and no icon")
             self.assertEqual(tools.ran("codesign")[0], ("codesign", "--force", "--sign", "-", str(Path(tmp) / "out/Hello.app")))
             self.assertFalse((Path(tmp) / "out/Hello.app/embedded.mobileprovision").exists())

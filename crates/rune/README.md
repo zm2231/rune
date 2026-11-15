@@ -1324,6 +1324,13 @@ snapshots and retains at most 128 edits / 1 MiB of text (oversized edits drop hi
 Call `TextEdit::clear()` after submission to clear history while retaining focus;
 call `break_history_group()` when setting a selection from custom pointer handling.
 
+`.spellcheck(true)` marks a field's misspelled words with the platform's checker: Windows'
+spell checking API, AppKit's `NSSpellChecker` on macOS and UIKit's `UITextChecker` on iOS
+(`IOS.md`); Linux and the web have none. A word the caret has left gets a red marker, and the
+field's menu (a right-click, a long press on iOS) leads with its suggestions and Learn
+Spelling. Where the checker takes one language at a time (Windows, iOS) it uses a dictionary
+per system language, or the ones `rune::spell::set_languages` names.
+
 Use `TextEdit::new("").secure()` with `text_input(&edit, style).single_line()` for
 passwords, or mark the element `.single_line().secure()`; kit's `TextInput::secure()`
 passes it through. Each Unicode scalar displays as one bullet, with model-byte

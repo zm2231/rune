@@ -34,6 +34,10 @@ What works:
   system may offer a saved password, a strong new one or a code from a message; whether it
   does is its decision. The keyboard is reloaded when the focused field's traits change,
   after any marked text is closed. A field that sets none of them answers UIKit's defaults.
+- **Spell checking.** A field with `El::spellcheck(true)` gets a row of red dots under each
+  misspelled word the caret has left, from UIKit's `UITextChecker`, and its long-press menu
+  leads with the word's suggestions and Learn Spelling, as a right-click does on a Mac. See
+  "Spell checking" below.
 - **System fonts.** Text draws in the fonts the app bundles (Inter by default).
   `Family::Named("System Font")` is San Francisco and `Family::SystemMono` SF Mono, loaded
   from the files of the system's UI font the first time a text asks for them. A character the
@@ -292,6 +296,36 @@ view, which by the above would scroll for a tap above that column only.
 
 The strip is told only that the status bar was tapped, not where. A Rune view that draws
 several columns itself scrolls the one under its centre, wherever above it the tap was.
+
+## Spell checking
+
+`UITextChecker` checks one language at a time, where AppKit's checker finds each text's
+language itself. So iOS checks as Windows does: with the dictionaries `rune::spell::languages()`
+names, and a word is marked when every one of them calls it misspelled. Unless the app chose
+(`rune::spell::set_languages`, or a field's Spellcheck Languages menu where the app has
+`El::on_spellcheck_languages`), those are one dictionary for each of the user's languages
+(`NSLocale.preferredLanguages`, in order) that `UITextChecker.availableLanguages` has, matched
+by its whole tag, else by its bare language (`de-AT` to `de`), else the first dictionary of
+that language (`es-419` to `es-ES`), and US English as well when none of them is English.
+UIKit writes a dictionary as `en_US`; Rune's tags are `en-US`.
+
+The checker is asked on the main thread, which is where UIKit keeps it: `available_languages`
+answers an empty list from any other thread. Each word is checked once and its answer kept,
+so a key typed into a long draft checks the word it changed. A field's paint gives the
+checker at most 32 words it has not seen and asks for another frame while the field has
+more, so a long text's marks fill in from its start over frames, and a field whose words
+are all checked asks for nothing. A word over 128 bytes (a URL, pasted data) is not checked.
+The first check loads the dictionary, and a menu's suggestions are asked for as it opens,
+both on the main thread, as on a Mac. Learn Spelling adds the word to the words UIKit has
+learned, for every language.
+
+On the iOS simulator, a field that started with `helo 🙂 wrold café 日本語 mispeled` showed
+dots under `helo`, `wrold` and `mispeled` only; a long press on `wrold` offered `world` and
+`wold`, picking `world` replaced the word, and Learn Spelling on `mispeled` cleared its dots.
+A field of 2,000 different words filled in a batch of words a frame, after which the view
+drew no more; in that debug build the first check, which loads the dictionary, took 0.47 s.
+That run gave the checker 64 words a frame; with 32 it has not been run.
+None of this is yet verified on a device, nor is any language but English.
 
 ## Links into the app
 

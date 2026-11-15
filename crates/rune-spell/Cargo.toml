@@ -13,6 +13,11 @@ rustc-hash = { workspace = true }
 objc2-app-kit = { version = "0.2.2", features = ["NSSpellChecker"] }
 objc2-foundation = { version = "0.2.2", features = ["NSArray", "NSEnumerator", "NSObject", "NSRange", "NSString"] }
 
+# UIKit's `UITextChecker` (`ios.rs`), through the objc2 0.6 line Rune's iOS code uses.
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2-video = { package = "objc2", version = "0.6" }
+objc2-foundation-video = { package = "objc2-foundation", version = "0.3", default-features = false, features = ["std", "NSArray", "NSEnumerator", "NSLocale", "NSRange", "NSString"] }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { workspace = true, features = ["Win32_Foundation", "Win32_Globalization", "Win32_System_Com"] }
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }

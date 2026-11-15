@@ -1,12 +1,13 @@
 //! The platform's spell checker for text fields that ask for it (`El::spellcheck`): Windows'
-//! spell checking API (`ISpellChecker`), AppKit's `NSSpellChecker` on macOS, Hunspell
-//! dictionaries a page fetches in a browser (`web.rs`), none elsewhere.
-//! A field's misspelled words get a red marker under them and their suggestions in its menu.
+//! spell checking API (`ISpellChecker`), AppKit's `NSSpellChecker` on macOS, UIKit's
+//! `UITextChecker` on iOS, Hunspell dictionaries a page fetches in a browser (`web.rs`),
+//! none elsewhere. A field's misspelled words get a red marker under them and their suggestions
+//! in its menu.
 //!
-//! Where the platform checks one language at a time (Windows), an app picks the dictionaries:
-//! [`available_languages`], [`set_languages`] and the fields' Spellcheck Languages menu
-//! (`El::on_spellcheck_languages`). A word is misspelled when every chosen dictionary says so,
-//! as Chromium's multilingual checking does. macOS picks each text's language itself.
+//! Where the platform checks one language at a time (Windows, iOS), an app picks the
+//! dictionaries: [`available_languages`], [`set_languages`] and the fields' Spellcheck Languages
+//! menu (`El::on_spellcheck_languages`). A word is misspelled when every chosen dictionary says
+//! so, as Chromium's multilingual checking does. macOS picks each text's language itself.
 //! Apps normally reach this crate through `rune::spell`.
 
 use std::cell::RefCell;
@@ -22,13 +23,19 @@ use words::{Checker, Words};
 #[cfg(target_os = "macos")]
 #[path = "macos.rs"]
 mod platform;
+#[cfg(target_os = "ios")]
+#[path = "ios.rs"]
+mod platform;
+#[cfg(any(test, target_os = "macos", target_os = "ios"))]
+#[path = "convert.rs"]
+mod convert;
 #[cfg(target_arch = "wasm32")]
 #[path = "web.rs"]
 mod platform;
 #[cfg(target_os = "windows")]
 #[path = "windows.rs"]
 mod platform;
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_arch = "wasm32")))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "ios", target_arch = "wasm32")))]
 mod platform {
     pub(super) const OFF_THREAD: bool = false;
     pub(super) fn misspelled(_: &str) -> Vec<(usize, usize)> { Vec::new() }
@@ -62,7 +69,8 @@ thread_local! {
 }
 
 /// The dictionaries a field's Spellcheck Languages menu offers, as language tags (`en-US`).
-/// Empty where the platform finds each text's language itself (macOS) or has no checker.
+/// Empty where the platform finds each text's language itself (macOS) or has no checker, and
+/// on iOS off the main thread, where UIKit's checker can't be asked.
 pub fn available_languages() -> Vec<String> {
     let mut found = platform::available();
     found.sort_by_key(|tag| language_name(tag));
@@ -105,7 +113,8 @@ pub fn language_name(tag: &str) -> String {
 
 /// A language tag's name in `locale`'s language as a browser's `Intl.DisplayNames(locale)`
 /// gives it, from the platform's ICU: `en-US` in `de` is "Amerikanisches Englisch". `None`
-/// where the platform has no ICU to ask (only Windows has dictionaries to name).
+/// where the platform has nothing to ask. iOS asks Foundation, which names a dialect as its
+/// language and region ("Englisch (Vereinigte Staaten)").
 #[doc(hidden)]
 pub fn language_name_in(tag: &str, locale: &str) -> Option<String> {
     platform::name_in(tag, locale)
@@ -251,14 +260,15 @@ pub fn misspelled(text: &str, wake: Option<&std::sync::Arc<rune_core::live::Wake
         if checked.len() > 256 {
             checked.clear();
         }
-        // macOS finds each text's language from the text, so it checks the whole of it.
+        // macOS finds each text's language from the text, so it checks the whole of it. A
+        // checker with dictionaries to choose checks word by word, and keeps each word's answer.
         // A page fetches its dictionaries the first time it checks: until they're in, nothing is
         // marked and nothing kept, and the window asking is woken when they arrive.
         #[cfg(target_arch = "wasm32")]
         let ready = platform::prepare(wake);
         #[cfg(not(target_arch = "wasm32"))]
         let ready = true;
-        let (found, whole) = if cfg!(any(target_os = "windows", target_arch = "wasm32")) { by_words(text, wake) } else { (platform::misspelled(text), true) };
+        let (found, whole) = if cfg!(any(target_os = "windows", target_os = "ios", target_arch = "wasm32")) { by_words(text, key, wake) } else { (platform::misspelled(text), true) };
         let whole = whole && ready;
         let found = Rc::new(found);
         // A text with words still on the checker thread is put together again when they're back.
@@ -271,8 +281,10 @@ pub fn misspelled(text: &str, wake: Option<&std::sync::Arc<rune_core::live::Wake
 
 /// `text`'s misspelled words from the thread's checked words (`Words::scan`), and whether
 /// every word had an answer. Where the platform's checker is slow to call, the words not yet
-/// checked go to the checker thread, which wakes `wake` when they are back.
-fn by_words(text: &str, wake: Option<&std::sync::Arc<rune_core::live::Wake>>) -> (Vec<(usize, usize)>, bool) {
+/// checked go to the checker thread, which wakes `wake` when they are back. Where it answers
+/// at once it is given a few words a scan, and `wake` is asked for another frame while the
+/// text has more, so a long text fills in over frames and a whole one asks for nothing.
+fn by_words(text: &str, key: u64, wake: Option<&std::sync::Arc<rune_core::live::Wake>>) -> (Vec<(usize, usize)>, bool) {
     WORDS.with_borrow_mut(|w| {
         if w.generation != self::generation() {
             *w = Words::of(self::generation());
@@ -283,9 +295,13 @@ fn by_words(text: &str, wake: Option<&std::sync::Arc<rune_core::live::Wake>>) ->
         }
         if platform::OFF_THREAD {
             let generation = w.generation;
-            w.scan(text, Checker::Later(&mut |words| worker::ask(generation, words, wake)))
+            w.scan(text, key, Checker::Later(&mut |words| worker::ask(generation, words, wake)))
         } else {
-            w.scan(text, Checker::Now(&mut |words| check_words(words)))
+            let scanned = w.scan(text, key, Checker::Now { check: &mut |words| check_words(words), budget: words::MAX_FRESH });
+            if !scanned.1 && let Some(wake) = wake {
+                wake.notify();
+            }
+            scanned
         }
     })
 }

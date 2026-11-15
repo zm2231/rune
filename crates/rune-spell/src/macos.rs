@@ -10,28 +10,20 @@ pub(super) const OFF_THREAD: bool = false;
 const NOT_FOUND: usize = isize::MAX as usize;
 
 pub(super) fn misspelled(text: &str) -> Vec<(usize, usize)> {
-    // Each UTF-16 unit's byte offset, and the text's end.
-    let mut bytes = Vec::with_capacity(text.len() + 1);
-    for (i, c) in text.char_indices() {
-        bytes.extend(std::iter::repeat_n(i, c.len_utf16()));
-    }
-    bytes.push(text.len());
+    let offsets = super::convert::offsets(text);
     let string = NSString::from_str(text);
     let mut found = Vec::new();
     let mut from = 0usize;
     // SAFETY: the shared checker is AppKit's own, and `string` outlives each call on it.
     unsafe {
         let checker = NSSpellChecker::sharedSpellChecker();
-        while from < bytes.len() - 1 {
+        while from < offsets.len() - 1 {
             let range = checker.checkSpellingOfString_startingAt(&string, from as isize);
             if range.location == NOT_FOUND || range.length == 0 || range.location < from {
                 break;
             }
-            let (a, b) = (range.location, range.location + range.length);
-            if let (Some(&a), Some(&b)) = (bytes.get(a), bytes.get(b)) {
-                found.push((a, b));
-            }
-            from = b;
+            found.extend(super::convert::byte_range(&offsets, range.location, range.length));
+            from = range.location + range.length;
         }
     }
     found

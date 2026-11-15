@@ -1,9 +1,10 @@
-//! A thread's checked words, for a checker with dictionaries to choose (Windows, a page in a
-//! browser): each word's answer is kept, so a key typed into a long draft checks the word it
-//! changed.
+//! A thread's checked words, for a checker with dictionaries to choose (Windows, iOS, a page
+//! in a browser): each word's answer is kept, so a key typed into a long draft checks the word
+//! it changed.
 //!
 //! The caches are bounded: a word over [`MAX_WORD_BYTES`] is never checked or kept, and past
-//! [`MAX_WORDS`] words or lines a cache starts over.
+//! [`MAX_WORDS`] words or lines a cache starts over, except while a text is still being
+//! checked a few words a frame, whose progress it would throw away.
 //!
 //! A cap is where a cache starts over, not a ceiling. The words' is looked at when a scan
 //! finds words with no answer, and counts the words kept then and that scan's; the lines' is
@@ -13,12 +14,24 @@
 //! word starts them over. What a text adds is bounded by the text, which has no cap of its
 //! own: its different words of at most [`MAX_WORD_BYTES`] bytes, and its lines.
 //!
+//! Where the checker answers at once (iOS), a text is checked [`MAX_FRESH`] words a scan, and
+//! while it is part-way through the caches are held for it: its scans look at neither cap,
+//! since starting over would check its first words again each time and a text of more than
+//! [`MAX_WORDS`] words would never be whole. The caches are held for [`MAX_PARTIAL`] texts at
+//! most. So the words kept can reach [`MAX_WORDS`] and the different words of up to
+//! [`MAX_PARTIAL`] such texts, and stay there once those are whole, until a scan of a text
+//! not held for finds a new word and starts the cache over. That is bounded by the fields'
+//! texts and by no constant. The input that reaches it is a field holding a long run of
+//! different words, such as a pasted log or word list.
+//!
 //! A kept word costs its own bytes, 8 bytes for each misspelled part (most words have one or
 //! none) and 38 to 75 bytes of map: a 32-byte entry and a control byte, at a load between 7/8
 //! and 7/16. That is at most 211 bytes for a word with one part, before the allocator's
 //! rounding, so [`MAX_WORDS`] of the longest are about 1.7 MB (8192 × 211) and 8192 words of
 //! prose well under 1 MB. A kept line costs 29 to 57 bytes of map (a 24-byte entry and a
-//! control byte) and 8 bytes for each misspelled part in it.
+//! control byte) and 8 bytes for each misspelled part in it. A held text therefore costs at
+//! most its own bytes and 83 bytes for each different word: a megabyte of different 8-byte
+//! words, about 116,000 of them, keeps about 10 MB until the cache starts over.
 use std::collections::{HashMap, HashSet};
 
 /// A word's misspelled parts, as byte ranges in the word.
@@ -31,10 +44,20 @@ pub(super) const MAX_WORDS: usize = 8192;
 /// a hash or pasted data, which goes unmarked, and never becomes a key of the cache.
 pub(super) const MAX_WORD_BYTES: usize = 128;
 
+/// The most words a checker that answers at once is given in one scan of a text, which is one
+/// field's paint. In a debug build on the iOS simulator `UITextChecker` took about 80 µs for
+/// each word it rejected and next to nothing for one it accepted, so 32 words are under 3 ms
+/// of a frame when every one is misspelled and far less for prose. A field of 8,000 different
+/// words fills in over 250 frames.
+pub(super) const MAX_FRESH: usize = 32;
+
+/// The most texts whose checking is under way that the caches are held for.
+const MAX_PARTIAL: usize = 8;
+
 /// How a scan gets the words it hasn't seen checked.
 pub(super) enum Checker<'a> {
-    /// The checker answers at once, on this thread.
-    Now(&'a mut dyn FnMut(&[&str]) -> Vec<(Box<str>, Parts)>),
+    /// The checker answers at once, on this thread: at most `budget` words a scan.
+    Now { check: &'a mut dyn FnMut(&[&str]) -> Vec<(Box<str>, Parts)>, budget: usize },
     /// The checker answers on another thread: every word is asked for, and comes back
     /// through [`Words::learned`].
     Later(&'a mut dyn FnMut(Vec<String>)),
@@ -50,6 +73,8 @@ pub(super) struct Words {
     lines: HashMap<u64, Parts>,
     /// Words on the checker thread.
     asked: HashSet<Box<str>>,
+    /// The texts a scan left with words still to check, by their hashes.
+    partial: Vec<u64>,
 }
 
 /// `line`'s words and where each starts in it.
@@ -92,25 +117,34 @@ impl Words {
     }
 
     /// `text`'s misspelled words, from each line's and word's kept answers, and whether every
-    /// word had one. The words not yet checked go to `checker` together. Words are what
-    /// whitespace separates: the checker marks nothing across it, and repeated words, its only
-    /// check that reads neighbours, go unmarked. A line's answer is kept once all its words
-    /// have one, so a key in a long draft looks up the lines it didn't change, not their words.
-    pub(super) fn scan(&mut self, text: &str, checker: Checker) -> (Vec<(usize, usize)>, bool) {
-        if self.lines.len() > MAX_WORDS { self.lines.clear(); }
+    /// word had one. `key` is the text's hash. The words not yet checked go to `checker`
+    /// together: all of them where it answers later, and the first `budget` of the text where
+    /// it answers now, so a long text is whole after as many scans as that takes. Words are
+    /// what whitespace separates: the checker marks nothing across it, and repeated words,
+    /// its only check that reads neighbours, go unmarked. A line's answer is kept once all its
+    /// words have one, so a key in a long draft looks up the lines it didn't change, not their
+    /// words.
+    pub(super) fn scan(&mut self, text: &str, key: u64, checker: Checker) -> (Vec<(usize, usize)>, bool) {
+        // A text part-way through its words keeps the answers it has until it is whole.
+        let held = self.partial.contains(&key);
+        if !held && self.lines.len() > MAX_WORDS { self.lines.clear(); }
         // The lines without a kept answer.
         // Each line is hashed once: a key in a 2,000-line draft hashes its lines, not twice.
         let keys: Vec<u64> = text.split('\n').map(line_key).collect();
         let open: Vec<(&str, u64)> = text.split('\n').zip(keys.iter().copied()).filter(|(_, k)| !self.lines.contains_key(k)).collect();
         let mut fresh = self.fresh(&open);
+        let now = matches!(checker, Checker::Now { .. });
         if !fresh.is_empty() {
-            if self.known.len() + fresh.len() > MAX_WORDS {
+            if !held && self.known.len() + fresh.len() > MAX_WORDS {
                 // The open lines' other words went with the cache: they are asked for again.
                 self.known.clear();
                 fresh = self.fresh(&open);
             }
             match checker {
-                Checker::Now(check) => self.known.extend(check(&fresh)),
+                Checker::Now { check, budget } => {
+                    fresh.truncate(budget.max(1));
+                    self.known.extend(check(&fresh));
+                }
                 Checker::Later(ask) => {
                     self.asked.extend(fresh.iter().map(|&s| Box::<str>::from(s)));
                     ask(fresh.iter().map(|&s| s.to_owned()).collect());
@@ -134,6 +168,11 @@ impl Words {
                 None => found.extend(checked(line).flat_map(|(o, s)| self.known.get(s).into_iter().flatten().map(move |&(a, b)| (at + o + a as usize, at + o + b as usize)))),
             }
             at += line.len() + 1;
+        }
+        self.partial.retain(|k| *k != key);
+        if now && !whole {
+            if self.partial.len() >= MAX_PARTIAL { self.partial.clear(); }
+            self.partial.push(key);
         }
         (found, whole)
     }

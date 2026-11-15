@@ -1,8 +1,8 @@
 //! A `RuneView` joining and leaving a window, and what the system tells it while it is in one.
 //! The view's first size starts its app on the view's layer. From then on its size, the safe
-//! area, the soft keyboard's frame, the appearance, the text size and Reduce Motion settings,
-//! and its scene's phases (foreground and background, active and inactive) each reach the
-//! surface and wake the pacing.
+//! area, the soft keyboard's frame, the appearance, the tint, the text size and Reduce Motion
+//! settings, and its scene's phases (foreground and background, active and inactive) each
+//! reach the surface and wake the pacing.
 //!
 //! The phases are the view's own scene's, from `UIScene`'s notifications for that scene: on an
 //! iPad an app's scenes come forward, lose the focus and go away one by one, and
@@ -46,8 +46,9 @@ unsafe extern "C" {
     static UIContentSizeCategoryDidChangeNotification: &'static AnyObject;
 }
 
-/// `UIUserInterfaceStyleDark`.
-const STYLE_DARK: isize = 2;
+/// `UIUserInterfaceStyleLight` and `UIUserInterfaceStyleDark`.
+pub(super) const STYLE_LIGHT: isize = 1;
+pub(super) const STYLE_DARK: isize = 2;
 /// `UIEdgeInsets`.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -96,6 +97,11 @@ impl RuneView {
     pub(super) fn laid_out(&self) {
         let (size, scale) = self.metrics();
         if size.0 <= 0.0 || size.1 <= 0.0 { return; }
+        // Only the size that starts the app reads the tint; later it arrives with its own
+        // change or the traits'. Read before the stage is borrowed for the swap, as the tint's
+        // own change borrows it.
+        let waiting = matches!(*self.ivars().stage.borrow(), Stage::Waiting(_));
+        let accent = waiting.then(|| self.tint());
         let mut stage = self.ivars().stage.borrow_mut();
         *stage = match std::mem::replace(&mut *stage, Stage::Failed) {
             Stage::Waiting(mount) => {
@@ -107,6 +113,7 @@ impl RuneView {
                         // The app hears where the scene of the view's window is.
                         if let Some((_, phase)) = self.scene() { surface.lifecycle(lifecycle::Event::Attached(phase)); }
                         surface.set_safe_area(self.safe_area());
+                        if let Some(accent) = accent { surface.set_accent(accent); }
                         surface.set_reduced_motion(reduced_motion());
                         surface.set_text_scale(text_scale());
                         // A client that asked before the app started still gets its tree.
@@ -201,10 +208,14 @@ impl RuneView {
         }
     }
 
-    /// The system's appearance, or another of the view's traits, changed.
+    /// The system's appearance, or another of the view's traits, changed: the tint is resolved
+    /// for the new traits.
     pub(super) fn traits_changed(&self) {
-        let dark = self.dark();
-        self.with_surface(|surface| surface.set_dark(dark));
+        let (dark, accent) = (self.dark(), self.tint());
+        self.with_surface(|surface| {
+            surface.set_dark(dark);
+            surface.set_accent(accent);
+        });
         self.pace(Event::Wake);
     }
 

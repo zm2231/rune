@@ -31,6 +31,14 @@ What works:
   from the files of the system's UI font the first time a text asks for them. A character the
   app's fonts lack (emoji, Arabic, Hebrew, Devanagari, Thai, kana, hangul...) draws in the
   font CoreText falls back to for it, loaded the same way.
+- **Accent.** `Cx::accent` is the view's `tintColor` and `Cx::focus_color` that colour at half
+  its alpha. A view inherits its tint from the views above it, which is where a UIKit host's
+  `tintColor` and a SwiftUI host's `.tint()` land; where none is set it is iOS's system blue, as
+  in an app `rune::run` started. The accent is whatever UIKit reports as the view's tint,
+  including its dimmed tint while an alert or sheet is over the view. A tint that differs in
+  dark or with Increase Contrast follows them, and the view redraws when its accent changes. A
+  colour outside sRGB (Display P3) is clipped to sRGB. `rune::system_accent()` knows no view, so
+  on iOS it answers the built-in default blue, not the tint.
 - **Hardware keyboard.** Arrows, Return, Escape, Tab and the function keys with their
   modifiers, key repeat, and shortcuts with ⌘ as on a Mac. Every key is also a physical key,
   for `El::on_physical_input`.

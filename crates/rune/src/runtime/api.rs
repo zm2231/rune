@@ -222,7 +222,7 @@ impl<S: 'static> Runtime<S> {
     #[inline(always)]
     pub(crate) fn system_accent(&self) -> crate::SystemAccent { self.core().system_accent() }
     #[inline(always)]
-    pub fn set_system_accent(&mut self, accent: crate::SystemAccent) { self.core_mut().set_system_accent(accent); }
+    pub fn set_system_accent(&mut self, accent: crate::SystemAccent) -> bool { self.core_mut().set_system_accent(accent) }
     #[inline(always)]
     pub fn set_full_keyboard_access(&mut self, on: bool) { self.core_mut().set_full_keyboard_access(on); }
     #[inline(always)]

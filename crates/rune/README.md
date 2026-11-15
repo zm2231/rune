@@ -1245,6 +1245,13 @@ setting when available. The preference lives on Runtime/Cx, so existing
 false; tests can call `rt.set_system_reduced_motion(value)` and inspect
 `rt.system_reduced_motion()`.
 
+`cx.accent()` and `cx.focus_color()` are the user's accent and the colour of focus rings for
+the window's appearance: on macOS the accent picked in System Settings, on iOS the
+`tintColor` of the view the app draws in (a view inherits its tint from the views above it,
+which is where a UIKit host's `tintColor` and a SwiftUI host's `.tint()` land, and it is
+iOS's system blue with none set) with focus rings in it at half its alpha, and
+macOS's default blue elsewhere. The view re-runs when either changes.
+
 `cx.system_text_scale()` is how much larger or smaller than its default the system's text
 size setting is: iOS's Dynamic Type, and 1 on platforms that report none.
 `cx.zoom(cx.system_text_scale())` scales a whole view by it. `cx.safe_area()` is what the

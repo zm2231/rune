@@ -278,9 +278,9 @@ impl<S> Cx<S> {
     /// next frame on. A window without `App::titlebar` keeps its native frame.
     #[inline(always)]
     pub fn set_titlebar(&mut self, titlebar: crate::Titlebar) { self.core.set_titlebar(titlebar); }
-    /// The user's accent colour (System Settings › Appearance on macOS) for this window's
-    /// appearance, [`SystemAccent::DEFAULT`](crate::SystemAccent::DEFAULT)'s blue elsewhere and
-    /// headless. The view re-runs, memos included, when the user picks another accent.
+    /// The user's accent colour (System Settings › Appearance on macOS, the tint of the app's
+    /// view on iOS) for this window's appearance, [`SystemAccent::DEFAULT`](crate::SystemAccent::DEFAULT)'s
+    /// blue elsewhere and headless. The view re-runs, memos included, when the accent changes.
     #[inline(always)]
     pub fn accent(&self) -> Color { self.core.accent() }
     /// The keyboard focus ring colour for this window's appearance: AppKit's

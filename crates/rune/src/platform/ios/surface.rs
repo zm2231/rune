@@ -102,6 +102,8 @@ pub(crate) trait Surface {
     // System settings.
     /// The system's appearance.
     fn set_dark(&mut self, dark: bool);
+    /// The view's tint, the app's accent. True when it is not the accent the app had.
+    fn set_accent(&mut self, accent: crate::SystemAccent) -> bool;
     /// The Reduce Motion setting.
     fn set_reduced_motion(&mut self, reduced: bool);
     /// The text size setting, as a scale of its default.
@@ -375,6 +377,8 @@ impl<S: 'static> Surface for Hosted<S> {
     // System settings.
 
     fn set_dark(&mut self, dark: bool) { self.host.runtime_mut().set_system_dark(dark); }
+
+    fn set_accent(&mut self, accent: crate::SystemAccent) -> bool { self.host.runtime_mut().set_system_accent(accent) }
 
     fn set_reduced_motion(&mut self, reduced: bool) { self.host.runtime_mut().set_system_reduced_motion(reduced); }
 

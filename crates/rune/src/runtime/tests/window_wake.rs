@@ -227,10 +227,24 @@ fn a_new_system_accent_rebuilds_the_view_and_its_memos() {
     let w = |rt: &Runtime<()>, key: &str| (rt.presented(key).unwrap().0[2] * 10.0).round() / 10.0;
     assert_eq!((w(&rt, "accent"), w(&rt, "ring")), (23.1, 50.0), "macOS's dark blue, rings at 50%");
     let pink = crate::Color { r: 1.0, g: 0.2, b: 0.6, a: 1.0 };
-    rt.set_system_accent(crate::SystemAccent::new(pink, pink).with_focus(pink, pink.alpha(0.7)));
+    let accent = crate::SystemAccent::new(pink, pink).with_focus(pink, pink.alpha(0.7));
+    assert!(rt.set_system_accent(accent), "a new accent is a change");
     rt.frame(0.1);
     rt.frame(5.0);
     assert_eq!((w(&rt, "accent"), w(&rt, "ring")), (20.0, 70.0));
+}
+
+#[test]
+fn the_accent_it_has_is_no_change_and_asks_for_no_frame() {
+    let mut rt = Runtime::new((), |_: &(), _: &mut Cx<()>| el().size(10.0, 10.0), (300.0, 40.0), Env::new(false, 1.0));
+    assert!(!rt.set_system_accent(crate::SystemAccent::DEFAULT), "the default is what it starts with");
+    let pink = crate::Color { r: 1.0, g: 0.2, b: 0.6, a: 1.0 };
+    assert!(rt.set_system_accent(crate::SystemAccent::new(pink, pink)));
+    rt.frame(0.0);
+    rt.frame(5.0);
+    assert!(!rt.commit.dirty, "at rest");
+    assert!(!rt.set_system_accent(crate::SystemAccent::new(pink, pink)), "the same accent again");
+    assert!(!rt.commit.dirty, "nothing to draw");
 }
 
 #[test]

@@ -29,6 +29,7 @@ mod input;
 mod lifecycle;
 mod link;
 mod menu;
+mod tint;
 
 use link::MainOnly;
 
@@ -184,6 +185,13 @@ define_class!(
             // SAFETY: `UIView` implements it with this signature.
             let _: () = unsafe { msg_send![super(self), traitCollectionDidChange: previous] };
             self.traits_changed();
+        }
+
+        #[unsafe(method(tintColorDidChange))]
+        fn tint_color_did_change(&self) {
+            // SAFETY: `UIView` implements it with this signature.
+            let _: () = unsafe { msg_send![super(self), tintColorDidChange] };
+            self.tint_changed();
         }
 
         #[unsafe(method(safeAreaInsetsDidChange))]

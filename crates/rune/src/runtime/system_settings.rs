@@ -73,17 +73,19 @@ impl RuntimeCore {
 
     /// What [`Cx::accent`] and [`Cx::focus_color`] report, and the colour of default focus
     /// rings. Native windows set it from [`system_accent`](crate::system_accent) and again when
-    /// the user picks another accent; a change re-runs the view. Headless runs keep
-    /// [`SystemAccent::DEFAULT`](crate::SystemAccent::DEFAULT) unless a test sets one.
+    /// the user picks another accent, and an iOS view from its `tintColor`; a change re-runs
+    /// the view. Headless runs keep [`SystemAccent::DEFAULT`](crate::SystemAccent::DEFAULT)
+    /// unless a test sets one.
     pub(crate) fn system_accent(&self) -> crate::SystemAccent {
         self.host.system_accent
     }
 
-    pub fn set_system_accent(&mut self, accent: crate::SystemAccent) {
-        if accent != self.host.system_accent {
-            self.host.system_accent = accent;
-            self.commit.dirty = true;
-        }
+    /// Sets the accent. Returns whether it changed.
+    pub fn set_system_accent(&mut self, accent: crate::SystemAccent) -> bool {
+        if accent == self.host.system_accent { return false; }
+        self.host.system_accent = accent;
+        self.commit.dirty = true;
+        true
     }
 
     /// Tab visits every control when on, else only text fields and lists, like macOS with

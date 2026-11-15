@@ -1,5 +1,6 @@
 //! The user's accent colour and keyboard focus ring colour. macOS reads `controlAccentColor` and
-//! `keyboardFocusIndicatorColor` and follows changes; other platforms use macOS's default blue.
+//! `keyboardFocusIndicatorColor` and follows changes; on iOS each view gives its runtime its own
+//! tint (`platform/ios/tint.rs`); other platforms use macOS's default blue.
 
 use crate::Color;
 
@@ -54,6 +55,10 @@ impl Default for SystemAccent {
 /// The user's accent and focus ring colours. On macOS, the accent picked in System Settings
 /// (`NSColor.controlAccentColor` and `keyboardFocusIndicatorColor`), read on the main thread
 /// and kept up to date while a window is open; elsewhere [`SystemAccent::DEFAULT`].
+///
+/// On iOS the accent is a view's tint, and this function has no view to read: it returns
+/// [`SystemAccent::DEFAULT`] there. A view reads its own accent with
+/// [`Cx::accent`](crate::Cx::accent) and [`Cx::focus_color`](crate::Cx::focus_color).
 pub fn system_accent() -> SystemAccent {
     #[cfg(target_os = "macos")]
     return mac::current();

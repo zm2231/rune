@@ -16,6 +16,7 @@ pub(crate) mod pacing;
 #[cfg(target_os = "ios")]
 mod surface;
 pub(crate) mod text;
+pub(crate) mod tint;
 #[cfg(target_os = "ios")]
 mod view;
 pub(crate) mod zoom;

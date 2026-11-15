@@ -12,8 +12,8 @@ import sys
 import tempfile
 import time
 
-from ios_bundle import (ICON_FILE, MIN_OS, actool_platform, alive_device, alive_simulator, build_version, device_crash_logs,
-                        file_name_problem, icon_catalog, icon_problem, launched_pid, min_os_mismatch, min_os_problem,
+from ios_bundle import (ICON_FILE, MIN_OS, PRIVACY, actool_platform, alive_device, alive_simulator, build_version, device_crash_logs,
+                        file_name_problem, icon_catalog, icon_problem, launched_pid, min_os_mismatch, min_os_problem, privacy_problem,
                         simulator_crash_log, simulator_pid, version_problem)
 from mac_app_install import command
 
@@ -129,6 +129,8 @@ def build(stage, args):
     # Written once, whole: actool has run by the time the file exists.
     plist = {**info(args), **icon(stage, args, platform)}
     (stage / "Info.plist").write_bytes(plistlib.dumps(plist))
+    # What the app declares to the App Store: its own manifest, or what Rune alone accounts for.
+    shutil.copyfile(args.privacy or PRIVACY, stage / PRIVACY.name)
     sign(stage, args)
 
 
@@ -203,6 +205,8 @@ def flags():
     parser.add_argument("--build", default="1", metavar="N",
                         help="the build's own number, which the App Store wants higher for each upload of a version (default: 1)")
     parser.add_argument("--icon", type=Path, metavar="PNG", help="the app's icon: one opaque 1024x1024 PNG (default: no icon)")
+    parser.add_argument("--privacy", type=Path, metavar="FILE",
+                        help="the app's own PrivacyInfo.xcprivacy (default: Rune's, which declares what Rune itself uses)")
     parser.add_argument("--out", type=Path, default=Path("target/ios"), help="where the bundle is staged")
     parser.add_argument("--simulator", default="booted", help="a simulator's UDID or name (default: the booted one)")
     parser.add_argument("--device", help="a paired device's UDID or name, instead of a simulator; needs --profile")
@@ -240,6 +244,11 @@ def refusal(args):
     problem = args.icon and icon_problem(args.icon.read_bytes())
     if problem:
         return f"--icon {args.icon}: {problem}"
+    if args.privacy and not args.privacy.is_file():
+        return f"no privacy manifest at {args.privacy}"
+    problem = args.privacy and privacy_problem(args.privacy.read_bytes())
+    if problem:
+        return f"--privacy {args.privacy}: {problem}"
     if min_os_problem(args.min_os):
         return f"--min-os: {min_os_problem(args.min_os)}"
     if not 0 <= args.wait < math.inf:

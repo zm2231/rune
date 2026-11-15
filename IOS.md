@@ -176,8 +176,8 @@ cargo build -p hello --target aarch64-apple-ios-sim
 scripts/ios-app --name Hello --id com.example.hello --bin target/aarch64-apple-ios-sim/debug/hello
 ```
 
-The script stages `target/ios/Hello.app` (the binary, an `Info.plist` and, with `--icon`,
-the icon's files), signs it ad hoc,
+The script stages `target/ios/Hello.app` (the binary, an `Info.plist`, a privacy manifest
+and, with `--icon`, the icon's files), signs it ad hoc,
 installs it on the booted simulator and launches it. With no simulator booted the install
 fails with `No devices are booted`: `--simulator NAME_OR_UDID` picks a simulator and boots it
 first (`xcrun simctl list devices available` lists them). `--no-launch` and `--no-install` stop
@@ -186,10 +186,10 @@ earlier; arguments after `--` go to the app. No Xcode project is involved.
 ```text
 usage: ios-app [-h] --name NAME --id ID --bin BIN [--exe EXE]
                [--display-name TEXT] [--version X.Y.Z] [--build N]
-               [--icon PNG] [--out OUT] [--simulator SIMULATOR]
-               [--device DEVICE] [--profile PROFILE] [--min-os X.Y]
-               [--url-scheme SCHEME] [--no-install] [--no-launch]
-               [--wait SECONDS]
+               [--icon PNG] [--privacy FILE] [--out OUT]
+               [--simulator SIMULATOR] [--device DEVICE] [--profile PROFILE]
+               [--min-os X.Y] [--url-scheme SCHEME] [--no-install]
+               [--no-launch] [--wait SECONDS]
                ...
 ```
 
@@ -346,8 +346,12 @@ Rust's prebuilt standard library keep the minimum they were built with (10.0 in 
 slice, 14.0 in the simulator's). That is no disagreement of the kind "The deployment
 target" above refuses: the minimum that has to match a bundle's is the one the linked binary
 names, which the host app's own link sets. The module map links the system frameworks Rune
-uses, so the host app adds no linker flags. In Xcode, add `target/ios/MyApp.xcframework` to
-the app target's frameworks and add the `ios/RuneView` Swift package, then:
+uses, so the host app adds no linker flags. The script also writes
+`target/ios/PrivacyInfo.xcprivacy`, Rune's privacy manifest ("The privacy manifest" below):
+the `ios/RuneView` package carries the same file as a resource, so only a host app that
+doesn't use the package adds this copy to its target, or merges it into a manifest of its
+own. In Xcode, add `target/ios/MyApp.xcframework` to the app target's frameworks and add the
+`ios/RuneView` Swift package, then:
 
 ```swift
 import SwiftUI
@@ -591,6 +595,53 @@ Every key of `partial.plist` goes into the bundle's `Info.plist`: `CFBundleIcons
 `CFBundleIcons~ipad`, each a `CFBundlePrimaryIcon` with its `CFBundleIconFiles` and the
 `CFBundleIconName` `AppIcon`. A bundle staged again without `--icon` has none of these.
 
+### The privacy manifest
+
+The App Store wants an app to say, in a `PrivacyInfo.xcprivacy` file in its bundle, whether
+it tracks, what data it collects and why it calls each API on Apple's required-reason list.
+`scripts/ios-app` copies one to `<name>.app/PrivacyInfo.xcprivacy`: Rune's own,
+`ios/RuneView/Sources/RuneView/PrivacyInfo.xcprivacy`, unless `--privacy FILE` names the
+app's. Rune's is the only copy in the repository: the `RuneView` package ships it as a
+resource, and `scripts/ios-lib` copies it to `<out>/PrivacyInfo.xcprivacy`.
+
+Rune tracks nothing and collects nothing, so `NSPrivacyTracking` is false and
+`NSPrivacyTrackingDomains` and `NSPrivacyCollectedDataTypes` are empty. Under
+`NSPrivacyAccessedAPITypes` it declares the two listed APIs a Rune app's binary links:
+
+- **File timestamp** (`NSPrivacyAccessedAPICategoryFileTimestamp`, reason `C617.1`), for
+  `stat` and `fstat`. Rune reads no timestamp. The calls are:
+  - `prefs.json` in the app's Application Support folder: a read, and creating the folder;
+  - the files an app names to `ImageCache::file`, a `file:` image URL or `App::font_url`:
+    reads, which ask the file's size first;
+  - the system's font files: existence, is-directory and size checks made through fontique
+    and memmap2 when a system font is loaded, and one existence check of Rune's own on the
+    font files beside the system UI font. These files are outside the app's container, so
+    this use fits none of Apple's reasons exactly; `C617.1` is the closest.
+- **System boot time** (`NSPrivacyAccessedAPICategorySystemBootTime`, reason `35F9.1`), for
+  `mach_absolute_time`, linked from wgpu-hal's Metal presentation timestamp.
+
+Rune uses none of the other listed APIs: not disk space, not user defaults, not the active
+keyboards.
+
+Rune itself reads nothing the user picks in a file picker. `Tx::open_file` hands the app a
+copy inside its container; `Tx::open_folder` and `Tx::save_file` hand it a path under a
+security-scoped folder. An app that reads files inside a picked folder declares `3B52.1` for
+the file timestamp category itself.
+
+That and everything else an app does on its own (user defaults, a crate that asks for free
+disk space, data it collects, tracking) goes in the app's own manifest: start from a copy of
+Rune's file, add the app's entries and pass it with `--privacy`. The script refuses a file
+that is not a property list or lacks one of the four top-level keys; what the entries say is
+the app's to get right. To see which listed APIs an app's own binary links, list the symbols
+it imports and look them up in Apple's list
+([Describing use of required reason API](https://developer.apple.com/documentation/bundleresources/describing-use-of-required-reason-api)):
+
+```sh
+cargo build -p my-app --target aarch64-apple-ios --release
+nm -u target/aarch64-apple-ios/release/my-app | \
+    grep -E 'stat|getattrlist|utimes|mach_absolute_time|statfs|statvfs|NSUserDefaults|activeInputModes'
+```
+
 ## What the `Info.plist` needs
 
 `scripts/ios-app` writes these, with the bundle's name, identifier, executable and versions
@@ -611,3 +662,6 @@ needs the same:
 - `CFBundleURLTypes` with the app's schemes, when it takes links (`--url-scheme`).
 - `CFBundleIcons` and `CFBundleIcons~ipad` naming the icon in the bundle's `Assets.car`, when
   it has an icon (`--icon`; "The icon" above).
+
+Beside the `Info.plist` the bundle holds `PrivacyInfo.xcprivacy`, which the App Store reads
+("The privacy manifest" above), and the icon's files when it has one.

@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import ios_app
+import ios_bundle
 from ios_bundle_tests import png
 
 VTOOL = """{path}:
@@ -77,7 +78,7 @@ def args(tmp, **over):
     binary.chmod(0o755)
     base = dict(name="Hello", id="com.example.hello", bin=str(binary), exe="hello",
                 simulator="booted", device=None, profile=None, url_scheme=[], no_launch=False, args=[],
-                min_os="16.0", wait=0, version="0.0.1", build="1", display_name="Hello", icon=None)
+                min_os="16.0", wait=0, version="0.0.1", build="1", display_name="Hello", icon=None, privacy=None)
     return SimpleNamespace(**{**base, **over})
 
 
@@ -277,6 +278,36 @@ class BundleRegression(unittest.TestCase):
                 self.assertIn(reason, errors.getvalue())
             (Path(tmp) / "icon.png").write_bytes(png())
             self.assertIn("CFBundleIcons", self.staged(tmp, "--icon", str(Path(tmp) / "icon.png")))
+
+    def test_the_bundle_carries_rune_privacy_manifest_or_the_apps_own_and_it_is_there_before_signing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stage = Path(tmp) / "out/Hello.app"
+            placed = []
+
+            def command(*argv, **_):
+                if argv[0] == "codesign":
+                    placed.append((stage / "PrivacyInfo.xcprivacy").read_bytes())
+                return Tools()(*argv)
+
+            own = Path(tmp) / "Own.xcprivacy"
+            own.write_bytes(plistlib.dumps({**plistlib.loads(ios_bundle.PRIVACY.read_bytes()), "NSPrivacyTracking": True}))
+            with patch.object(ios_app, "command", command):
+                ios_app.build(stage, args(tmp))
+                ios_app.build(stage, args(tmp, privacy=own))
+            self.assertEqual(placed, [ios_bundle.PRIVACY.read_bytes(), own.read_bytes()])
+
+    def test_the_privacy_flag_refuses_a_missing_file_and_one_that_is_no_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()) as errors:
+            (Path(tmp) / "notes.txt").write_text("we collect nothing")
+            (Path(tmp) / "short.xcprivacy").write_bytes(plistlib.dumps({"NSPrivacyTracking": False}))
+            for refused in ("missing.xcprivacy", "notes.txt", "short.xcprivacy"):
+                with self.assertRaises(SystemExit, msg=refused):
+                    self.staged(tmp, "--privacy", str(Path(tmp) / refused))
+            for reason in ("no privacy manifest at", "it is not a property list", "it has no NSPrivacyTrackingDomains, NSPrivacyCollectedDataTypes, NSPrivacyAccessedAPITypes"):
+                self.assertIn(reason, errors.getvalue())
+            self.staged(tmp, "--privacy", str(ios_bundle.PRIVACY))
+            self.assertEqual((Path(tmp) / "Hello.app/PrivacyInfo.xcprivacy").read_bytes(), ios_bundle.PRIVACY.read_bytes())
 
     def test_staging_again_replaces_the_old_bundle(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command", Tools()):

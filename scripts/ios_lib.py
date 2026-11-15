@@ -7,7 +7,7 @@ import re
 import shutil
 import sys
 
-from ios_bundle import TARGET_VAR, deployment_target
+from ios_bundle import PRIVACY, TARGET_VAR, deployment_target
 from mac_app_install import command
 
 # A release build of Rune from cold.
@@ -89,6 +89,12 @@ def assemble(out, module, header, libraries, links):
     return framework
 
 
+def privacy(out):
+    """Rune's privacy manifest beside the framework, for a host app that doesn't use the RuneView
+    package, which carries the same file."""
+    return Path(shutil.copyfile(PRIVACY, out / PRIVACY.name))
+
+
 def main():
     parser = argparse.ArgumentParser(prog="ios-lib", description=__doc__)
     parser.add_argument("--package", required=True, help="the workspace package whose library exports the views")
@@ -101,6 +107,7 @@ def main():
         parser.error(f"no header at {args.header}")
     libraries, links = build(args)
     print(assemble(args.out, args.module, args.header, libraries, links))
+    privacy(args.out)
 
 
 if __name__ == "__main__":

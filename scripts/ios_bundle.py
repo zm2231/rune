@@ -1,6 +1,8 @@
 """What `ios-app` and `ios-lib` decide about an iOS bundle from text and bytes alone, so each
 rule is tested on captured tool output without Xcode."""
 import json
+from pathlib import Path
+import plistlib
 import re
 import struct
 
@@ -12,6 +14,10 @@ PNG = b"\x89PNG\r\n\x1a\n"
 # The one size an icon set needs since Xcode 14, and the name it has in the staged set.
 ICON_SIZE = 1024
 ICON_FILE = "icon-1024.png"
+# What Rune itself declares to the App Store: the one copy, which the RuneView package carries
+# as a resource and both scripts copy from. An app's own manifest starts from it.
+PRIVACY = Path(__file__).resolve().parent.parent / "ios/RuneView/Sources/RuneView/PrivacyInfo.xcprivacy"
+PRIVACY_KEYS = ("NSPrivacyTracking", "NSPrivacyTrackingDomains", "NSPrivacyCollectedDataTypes", "NSPrivacyAccessedAPITypes")
 # What `vtool` calls the platforms an iOS bundle can hold.
 PLATFORMS = {"IOS": "iOS", "IOSSIMULATOR": "the iOS simulator"}
 
@@ -105,6 +111,18 @@ def icon_catalog():
 def actool_platform(platform):
     """What `actool --platform` calls the platform `vtool` says a binary was built for."""
     return {"IOS": "iphoneos", "IOSSIMULATOR": "iphonesimulator"}[platform]
+
+
+def privacy_problem(data):
+    """Why a file's bytes can't be an app's privacy manifest, or None when they can."""
+    try:
+        manifest = plistlib.loads(data)
+    except Exception:
+        return "it is not a property list"
+    missing = [key for key in PRIVACY_KEYS if not isinstance(manifest, dict) or key not in manifest]
+    if missing:
+        return f"it has no {', '.join(missing)}: a privacy manifest says all of {', '.join(PRIVACY_KEYS)}"
+    return None
 
 
 def build_version(vtool_output):

@@ -83,6 +83,13 @@ class ModuleRegression(unittest.TestCase):
             self.assertFalse(stale.exists())
             self.assertFalse((out / "Demo-headers").exists())
 
+    def test_rune_privacy_manifest_is_placed_beside_the_framework(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            placed = ios_lib.privacy(Path(tmp))
+            self.assertEqual(placed, Path(tmp) / "PrivacyInfo.xcprivacy")
+            self.assertEqual(placed.read_bytes(), ios_lib.PRIVACY.read_bytes())
+            self.assertIn(b"NSPrivacyAccessedAPITypes", placed.read_bytes())
+
 
 if __name__ == "__main__":
     unittest.main()

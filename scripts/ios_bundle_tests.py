@@ -1,10 +1,17 @@
 """Bundle rules on captured tool output and made-up files: never runs an Xcode tool."""
 import json
+import plistlib
 import struct
 import unittest
 import zlib
 
 import ios_bundle
+
+# What Rune's privacy manifest declares: each required-reason API Rune reaches, and why.
+REASONS = {
+    "NSPrivacyAccessedAPICategoryFileTimestamp": ["C617.1"],
+    "NSPrivacyAccessedAPICategorySystemBootTime": ["35F9.1"],
+}
 
 # `xcrun vtool -show-build` on a debug device build made with IPHONEOS_DEPLOYMENT_TARGET=16.0.
 DEVICE = """target/aarch64-apple-ios/debug/web-hello:
@@ -189,6 +196,30 @@ class Icon(unittest.TestCase):
     def test_the_catalog_is_compiled_for_the_platform_the_binary_was_built_for(self):
         self.assertEqual(ios_bundle.actool_platform("IOS"), "iphoneos")
         self.assertEqual(ios_bundle.actool_platform("IOSSIMULATOR"), "iphonesimulator")
+
+
+class Privacy(unittest.TestCase):
+    def test_rune_manifest_tracks_and_collects_nothing_and_gives_each_api_its_reason(self):
+        manifest = plistlib.loads(ios_bundle.PRIVACY.read_bytes())
+        self.assertEqual(sorted(manifest), sorted(ios_bundle.PRIVACY_KEYS))
+        self.assertIs(manifest["NSPrivacyTracking"], False)
+        self.assertEqual(manifest["NSPrivacyTrackingDomains"], [])
+        self.assertEqual(manifest["NSPrivacyCollectedDataTypes"], [])
+        declared = {api["NSPrivacyAccessedAPIType"]: api["NSPrivacyAccessedAPITypeReasons"] for api in manifest["NSPrivacyAccessedAPITypes"]}
+        self.assertEqual(declared, REASONS)
+        self.assertEqual(len(manifest["NSPrivacyAccessedAPITypes"]), len(REASONS), "each API once")
+        self.assertTrue(all(sorted(api) == ["NSPrivacyAccessedAPIType", "NSPrivacyAccessedAPITypeReasons"] for api in manifest["NSPrivacyAccessedAPITypes"]))
+        self.assertIsNone(ios_bundle.privacy_problem(ios_bundle.PRIVACY.read_bytes()))
+
+    def test_a_manifest_is_a_property_list_with_the_four_keys(self):
+        whole = {"NSPrivacyTracking": False, "NSPrivacyTrackingDomains": [], "NSPrivacyCollectedDataTypes": [], "NSPrivacyAccessedAPITypes": []}
+        self.assertIsNone(ios_bundle.privacy_problem(plistlib.dumps(whole)))
+        self.assertIsNone(ios_bundle.privacy_problem(plistlib.dumps(whole, fmt=plistlib.FMT_BINARY)))
+        for other in (b"", b"{}", b"NSPrivacyTracking = NO;", png(8, 8)):
+            self.assertEqual(ios_bundle.privacy_problem(other), "it is not a property list", other[:24])
+        short = {key: value for key, value in whole.items() if key != "NSPrivacyCollectedDataTypes"}
+        self.assertIn("it has no NSPrivacyCollectedDataTypes:", ios_bundle.privacy_problem(plistlib.dumps(short)))
+        self.assertIn("it has no NSPrivacyTracking, ", ios_bundle.privacy_problem(plistlib.dumps(["NSPrivacyTracking"])))
 
 
 class Liveness(unittest.TestCase):

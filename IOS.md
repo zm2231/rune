@@ -91,10 +91,16 @@ What works:
   app that embeds a `LayerHost` itself calls `LayerHost::trim_memory`.
 - **Links and files.** `Tx::open_url` opens a link in the app that owns its scheme.
   A file dialog opens in its options' `directory` when the system can show that folder.
-  `Tx::open_file` shows the system's document picker and answers with a copy of the file;
-  `Tx::open_folder` answers with a folder the app may use until it quits, and `Tx::save_file`
-  asks for the folder and answers with the dialog's file name inside it. An iOS app has no
-  Downloads folder, so `AppDirs::downloads` is `None`: save through `Tx::save_file`.
+  `Tx::open_file` shows the system's document picker and answers with a copy of the file.
+  `Tx::open_folder` answers with the folder picked, and `Tx::save_file` asks for a folder and
+  answers with the dialog's file name inside it. After either, the app may read and write in
+  the picked folder until it quits: Rune starts the access the pick grants and never stops
+  it, and it ends with the process. It doesn't carry to the next launch, so ask again then.
+  A save asks nothing before it replaces: the answer is only a path, and a file of that name
+  already in the folder is replaced by what the app writes there. A dialog's `title` isn't
+  shown: the picker has none.
+  An iOS app has no Downloads folder, so `AppDirs::downloads` is `None`: save through
+  `Tx::save_file`.
 
 What doesn't yet:
 

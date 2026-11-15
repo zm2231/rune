@@ -6,7 +6,8 @@
 //!   it runs (the access the system scopes to the pick is started and kept), so it may read
 //!   and write there.
 //! - Save: iOS has no dialog that names a file not yet written, so the user picks the folder
-//!   and the answer is the dialog's file name inside it.
+//!   and the answer is the dialog's file name inside it. The folder is the app's for as long
+//!   as it runs, exactly as a Folder pick's is.
 
 use std::path::PathBuf;
 
@@ -75,11 +76,17 @@ impl RuneView {
     pub(super) fn file_picked(&self, urls: Option<&AnyObject>) {
         let Some(Picking { id, kind, file_name }) = self.ivars().file_dialog.borrow_mut().take() else { return };
         // SAFETY: the array's first object is an `NSURL`, whose `path` is an `NSString` or
-        // nil. A folder's URL carries the access the user gave, which starts here and is
-        // never stopped: the app may use the folder until it quits.
+        // nil. `startAccessingSecurityScopedResource` takes nothing and answers a `BOOL`.
         let path = urls.and_then(|urls| unsafe {
             let first: Option<Retained<AnyObject>> = msg_send![urls, firstObject];
             let first = first?;
+            // A picked folder's URL (a Folder's and a Save's alike) carries the access the user
+            // gave. It starts here and is never stopped: the app gets a plain path, with no
+            // handle to end the access through and no word from it that it is done writing.
+            // Each start is balanced only by the process exiting, when the system releases what
+            // it holds for it. The same folder picked again starts again, and the starts nest.
+            // NO is not a failure to report: it is also the answer for a folder that needs no
+            // such access (one inside the app's own container), whose path works as it is.
             if kind != FileDialogKind::Open { let _: bool = msg_send![&*first, startAccessingSecurityScopedResource]; }
             let path: Option<Retained<NSString>> = msg_send![&*first, path];
             path.map(|path| PathBuf::from(path.to_string()))

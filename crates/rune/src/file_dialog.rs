@@ -253,6 +253,13 @@ impl Tx {
     }
 
     /// [`Tx::open_file`] for a Save dialog: the path to write, which may not exist yet.
+    ///
+    /// On iOS, which has no dialog that names a new file, the user picks a folder and the path
+    /// is `options`' file name inside it (`Untitled` when it has none). The app may read and
+    /// write in that folder until it quits, as after [`Tx::open_folder`], and not after a
+    /// relaunch: ask again then. No prompt asks before a file is replaced there: the answer is
+    /// only a path, and a file of that name already in the folder is replaced by what the app
+    /// writes. `options`' title isn't shown, by this dialog or the other two: the picker has none.
     pub fn save_file<S: 'static>(&mut self, options: FileDialogOptions, on_answer: impl FnOnce(&mut S, FileDialogResult, &mut Tx) + 'static) {
         self.file_dialog(FileDialogKind::Save, options, on_answer);
     }
@@ -260,6 +267,9 @@ impl Tx {
     /// [`Tx::open_file`] for a folder: an Open dialog that picks an existing folder, as an app
     /// opening a project or choosing where exports go. `options`' title and directory apply;
     /// its filters and file name don't. A script answers it as it does a file dialog.
+    ///
+    /// On iOS the app may read and write in the picked folder until it quits, and not after a
+    /// relaunch: a path kept from an earlier run is refused, so ask again then.
     pub fn open_folder<S: 'static>(&mut self, options: FileDialogOptions, on_answer: impl FnOnce(&mut S, FileDialogResult, &mut Tx) + 'static) {
         self.file_dialog(FileDialogKind::Folder, options, on_answer);
     }

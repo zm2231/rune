@@ -1,5 +1,6 @@
 """Staged-bundle regressions: never boots a simulator."""
 import contextlib
+from datetime import datetime
 import io
 import json
 from pathlib import Path
@@ -8,6 +9,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+import zipfile
 
 import ios_app
 import ios_bundle
@@ -46,9 +48,12 @@ class Tools:
     its `--json-output` file; `fails` maps one to what a command that exits non-zero says.
     """
 
-    def __init__(self, platform="IOSSIMULATOR", minos="16.0", stdout=None, json=None, fails=None):
+    def __init__(self, platform="IOSSIMULATOR", minos="16.0", stdout=None, json=None, profile=None, fails=None, stderr=None):
         self.calls, self.platform, self.minos = [], platform, minos
-        self.stdout, self.json, self.fails = stdout or {}, json or {}, fails or {}
+        self.stdout, self.json, self.fails, self.stderr = stdout or {}, json or {}, fails or {}, stderr or {}
+        if profile:
+            # What `security cms -D` prints: the profile out of its signed envelope.
+            self.stdout["security"] = plistlib.dumps(profile).decode()
 
     def __call__(self, *argv, **_):
         self.calls.append(argv)
@@ -56,6 +61,8 @@ class Tools:
         if failure is not None:
             return SimpleNamespace(stdout="", stderr=failure, returncode=3)
         stdout = VTOOL.format(path=argv[-1], platform=self.platform, minos=self.minos) if "vtool" in argv else ""
+        if "--entitlements" in argv:
+            self.entitlements = plistlib.loads(Path(argv[argv.index("--entitlements") + 1]).read_bytes())
         stdout = next((text for word, text in self.stdout.items() if word in argv), stdout)
         if "actool" in argv:
             # As actool does: the keys in a plist of their own, the compiled catalog in the bundle.
@@ -64,7 +71,8 @@ class Tools:
         if "--json-output" in argv:
             written = next(value for word, value in self.json.items() if word in argv)
             Path(argv[argv.index("--json-output") + 1]).write_text(json.dumps(written))
-        return SimpleNamespace(stdout=stdout, stderr="", returncode=0)
+        warned = next((text for word, text in self.stderr.items() if word in argv), "")
+        return SimpleNamespace(stdout=stdout, stderr=warned, returncode=0)
 
     def ran(self, tool):
         """The calls of one tool, each without a leading `xcrun`."""
@@ -78,7 +86,7 @@ def args(tmp, **over):
     binary.chmod(0o755)
     base = dict(name="Hello", id="com.example.hello", bin=str(binary), exe="hello",
                 simulator="booted", device=None, profile=None, url_scheme=[], no_launch=False, args=[],
-                min_os="16.0", wait=0, version="0.0.1", build="1", display_name="Hello", icon=None, privacy=None)
+                min_os="16.0", wait=0, version="0.0.1", build="1", display_name="Hello", icon=None, privacy=None, distribution=False)
     return SimpleNamespace(**{**base, **over})
 
 
@@ -337,7 +345,7 @@ class BundleRegression(unittest.TestCase):
             if "vtool" in argv:
                 return Tools("IOS")(*argv)
             if argv[0] == "security":
-                return SimpleNamespace(stdout=plistlib.dumps(granted).decode())
+                return SimpleNamespace(stdout=plistlib.dumps(granted).decode(), stderr="", returncode=0)
             signed["identity"] = argv[argv.index("--sign") + 1]
             signed["entitlements"] = plistlib.loads(Path(argv[argv.index("--entitlements") + 1]).read_bytes())
 
@@ -358,6 +366,149 @@ class BundleRegression(unittest.TestCase):
             install, launch = tools.ran("devicectl")
             self.assertEqual(install[2:6], ("install", "app", "--device", "phone"))
             self.assertEqual(launch[2:5] + launch[6:], ("process", "launch", "--json-output", "--device", "phone", "--terminate-existing", "com.example.hello", "--flag"))
+
+
+# An App Store profile: no devices, no debugger, a wildcard-free identifier. All made up.
+STORE = {"Name": "Hello App Store", "Entitlements": {
+    "application-identifier": "TEAM123456.*", "com.apple.developer.team-identifier": "TEAM123456", "get-task-allow": False}}
+
+
+class DistributionRegression(unittest.TestCase):
+    def store(self, tmp):
+        """The flags of a build for the App Store: its profile and the icon the store wants."""
+        return "--distribution", "--profile", str(Path(tmp) / "store.mobileprovision"), "--icon", str(Path(tmp) / "icon.png")
+
+    def run_main(self, tmp, *flags, tools=None, sign=None):
+        """Run the command line with these flags and `IOS_APP_SIGN` as given; returns the fake tools and what was printed."""
+        tools = tools or Tools("IOS", profile=STORE)
+        (Path(tmp) / "store.mobileprovision").write_text("profile")
+        (Path(tmp) / "icon.png").write_bytes(png())
+        argv = ["ios-app", "--name", "Hello", "--id", "com.example.hello", "--bin", args(tmp).bin, "--out", str(Path(tmp) / "out"), *flags]
+        printed = io.StringIO()
+        with patch.object(ios_app.sys, "argv", argv), patch.object(ios_app, "command", tools), \
+                patch.dict(ios_app.os.environ), contextlib.redirect_stdout(printed):
+            ios_app.os.environ.pop("IOS_APP_SIGN", None)
+            if sign:
+                ios_app.os.environ["IOS_APP_SIGN"] = sign
+            ios_app.main()
+        return tools, printed.getvalue().split()
+
+    def test_a_distribution_build_is_stripped_signed_for_distribution_checked_and_zipped_and_nothing_is_installed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out"
+            tools, printed = self.run_main(tmp, *self.store(tmp))
+            binary = str(out / "Hello.app/hello")
+            steps = [argv[1:] if argv[0] == "xcrun" else argv for argv in tools.calls]
+            self.assertEqual([step[0] for step in steps], ["security", "vtool", "actool", "dsymutil", "strip", "codesign", "codesign", "plutil"])
+            steps = steps[3:]
+            self.assertEqual(steps[0], ("dsymutil", binary, "-o", str(out / "Hello.app.dSYM")))
+            self.assertEqual(steps[1], ("strip", "-S", "-x", binary))
+            self.assertEqual(steps[2][:4], ("codesign", "--force", "--sign", "Apple Distribution"))
+            self.assertEqual(steps[3], ("codesign", "--verify", "--deep", "--strict", str(out / "Hello.app")))
+            self.assertEqual(steps[4], ("plutil", "-lint", str(out / "Hello.app/Info.plist")))
+            self.assertEqual(tools.entitlements["application-identifier"], "TEAM123456.com.example.hello")
+            self.assertIs(tools.entitlements["get-task-allow"], False)
+            self.assertEqual(printed, [str(out / "Hello.app"), str(out / "Hello.app.dSYM"), str(out / "Hello.ipa")])
+            with zipfile.ZipFile(out / "Hello.ipa") as archive:
+                self.assertEqual(sorted(archive.namelist()), ["Payload/", "Payload/Hello.app/"] + [
+                    f"Payload/Hello.app/{name}" for name in ("Assets.car", "Info.plist", "PrivacyInfo.xcprivacy", "embedded.mobileprovision", "hello")])
+                self.assertEqual(archive.getinfo("Payload/Hello.app/hello").external_attr >> 16 & 0o777, 0o755)
+
+    def test_ios_app_sign_names_the_distribution_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tools, _ = self.run_main(tmp, *self.store(tmp), sign="Apple Distribution: Example Org")
+            self.assertEqual(tools.ran("codesign")[0][3], "Apple Distribution: Example Org")
+
+    def test_a_development_identity_is_refused_for_distribution(self):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(io.StringIO()) as errors:
+            for identity in ("Apple Development: Someone", "Apple Development", "iPhone Developer: Someone (ABCDE12345)"):
+                with self.assertRaises(SystemExit, msg=identity):
+                    self.run_main(tmp, *self.store(tmp), sign=identity)
+            self.assertEqual(errors.getvalue().count("is a development identity: --distribution signs with an Apple Distribution one"), 3)
+            self.assertFalse((Path(tmp) / "out").exists())
+
+    def test_an_old_archive_and_its_symbols_do_not_outlive_the_next_build_of_any_kind(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out"
+            self.run_main(tmp, *self.store(tmp))
+            (out / "Hello.app.dSYM").mkdir()
+            self.assertTrue((out / "Hello.ipa").exists())
+            self.run_main(tmp, "--no-install", tools=Tools())
+            self.assertFalse((out / "Hello.ipa").exists() or (out / "Hello.app.dSYM").exists())
+            self.run_main(tmp, *self.store(tmp))
+            (out / "Hello.app.dSYM").mkdir()
+            with self.assertRaises(RuntimeError):
+                self.run_main(tmp, *self.store(tmp), tools=Tools("IOSSIMULATOR", profile=STORE))
+            self.assertFalse((out / "Hello.ipa").exists() or (out / "Hello.app.dSYM").exists())
+
+    def test_what_dsymutil_warns_of_is_passed_on(self):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(io.StringIO()) as errors:
+            tools = Tools("IOS", profile=STORE, stderr={"dsymutil": "warning: no debug symbols in executable (-arch arm64)\n"})
+            self.run_main(tmp, *self.store(tmp), tools=tools)
+            self.assertEqual(errors.getvalue(), "warning: no debug symbols in executable (-arch arm64)\n")
+
+    def test_a_profile_security_cannot_decode_or_that_grants_nothing_is_refused_by_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = str(Path(tmp) / "store.mobileprovision")
+            cases = ((Tools("IOS", fails={"security": "security: problem decoding\n"}), f"--profile {profile} is not a provisioning profile `security cms` can read\nsecurity: problem decoding"),
+                     (Tools("IOS", stdout={"security": "not a plist"}), "is not a provisioning profile"),
+                     (Tools("IOS", profile={"Name": "Hello"}), f"--profile {profile}: it grants no entitlements"),
+                     (Tools("IOS", profile={**STORE, "ExpirationDate": datetime(2020, 1, 1)}), "it expired on 2020-01-01"),
+                     (Tools("IOS", profile={**STORE, "Entitlements": {**STORE["Entitlements"], "application-identifier": "TEAM123456.com.example.other"}}), "does not cover TEAM123456.com.example.hello"))
+            for tools, reason in cases:
+                with self.assertRaises(RuntimeError) as raised:
+                    self.run_main(tmp, *self.store(tmp), tools=tools)
+                self.assertIn(reason, str(raised.exception))
+                self.assertFalse((Path(tmp) / "out").exists())
+
+    def test_signing_ad_hoc_tries_every_step_without_a_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tools, printed = self.run_main(tmp, "--distribution", sign="-")
+            self.assertEqual([argv[1] if argv[0] == "xcrun" else argv[0] for argv in tools.calls],
+                             ["vtool", "dsymutil", "strip", "codesign", "codesign", "plutil"], "no profile and no icon")
+            self.assertEqual(tools.ran("codesign")[0], ("codesign", "--force", "--sign", "-", str(Path(tmp) / "out/Hello.app")))
+            self.assertFalse((Path(tmp) / "out/Hello.app/embedded.mobileprovision").exists())
+            self.assertEqual(printed[-1], str(Path(tmp) / "out/Hello.ipa"))
+
+    def test_a_profile_that_is_not_for_the_app_store_is_refused_before_anything_is_staged(self):
+        development = {**STORE, "ProvisionedDevices": ["00000000-0000000000000000"]}
+        debuggable = {**STORE, "Entitlements": {**STORE["Entitlements"], "get-task-allow": True}}
+        for profile, reason in ((development, "it lists devices"), (debuggable, "get-task-allow")):
+            with tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaises(RuntimeError) as raised:
+                    self.run_main(tmp, *self.store(tmp), tools=Tools("IOS", profile=profile))
+                self.assertIn(reason, str(raised.exception))
+                self.assertFalse((Path(tmp) / "out").exists())
+
+    def test_a_simulator_binary_is_refused_unsigned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = Tools("IOSSIMULATOR", profile=STORE)
+            with self.assertRaises(RuntimeError) as raised:
+                self.run_main(tmp, *self.store(tmp), tools=tools)
+            self.assertIn("was built for the iOS simulator: the App Store takes a device build", str(raised.exception))
+            self.assertEqual(tools.ran("codesign") + tools.ran("dsymutil"), [])
+            self.assertFalse((Path(tmp) / "out").exists(), "nothing was staged")
+
+    def test_distribution_needs_a_profile_and_an_icon_and_takes_no_device_or_chosen_simulator(self):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(io.StringIO()) as errors:
+            profile = ["--profile", str(Path(tmp) / "store.mobileprovision")]
+            for refused in ([], profile, ["--device", "phone", *profile], ["--simulator", "booted", *profile], ["--simulator", "iPhone 18 Pro", *profile]):
+                with self.assertRaises(SystemExit, msg=refused):
+                    self.run_main(tmp, "--distribution", *refused)
+            self.assertIn("--distribution needs --profile", errors.getvalue())
+            self.assertIn("--distribution needs --icon: the App Store takes no app without one", errors.getvalue())
+            self.assertEqual(errors.getvalue().count("leave out --device and --simulator"), 3)
+            self.assertFalse((Path(tmp) / "out").exists())
+
+    def test_without_distribution_a_profile_still_needs_its_device_and_the_simulator_is_the_booted_one(self):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(io.StringIO()) as errors:
+            with self.assertRaises(SystemExit):
+                self.run_main(tmp, "--profile", str(Path(tmp) / "store.mobileprovision"))
+            self.assertIn("--device and --profile go together", errors.getvalue())
+            tools, _ = self.run_main(tmp, "--no-launch", tools=Tools())
+            self.assertEqual([argv[1:3] for argv in tools.ran("simctl")], [("terminate", "booted"), ("install", "booted")])
+            self.assertEqual(tools.ran("dsymutil") + tools.ran("strip") + tools.ran("plutil"), [])
+            self.assertFalse((Path(tmp) / "out/Hello.ipa").exists())
 
 
 class LaunchRegression(unittest.TestCase):

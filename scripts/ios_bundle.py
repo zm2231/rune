@@ -1,10 +1,15 @@
-"""What `ios-app` and `ios-lib` decide about an iOS bundle from text and bytes alone, so each
-rule is tested on captured tool output without Xcode."""
+"""What `ios-app` and `ios-lib` decide about an iOS bundle without running a tool: rules over
+the text tools print and the bytes of files, each tested on captured output without Xcode."""
+from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import plistlib
 import re
+import shutil
 import struct
+import time
+import zipfile
 
 # Rune's Metal backend writes MSL 3.0, which needs iOS 16.
 MIN_OS = "16.0"
@@ -123,6 +128,83 @@ def privacy_problem(data):
     if missing:
         return f"it has no {', '.join(missing)}: a privacy manifest says all of {', '.join(PRIVACY_KEYS)}"
     return None
+
+
+def profile_problem(profile):
+    """Why a provisioning profile can't sign any build, or None when it can."""
+    granted = profile.get("Entitlements")
+    if not isinstance(granted, dict):
+        return "it grants no entitlements (it has no Entitlements)"
+    if not granted.get("com.apple.developer.team-identifier"):
+        return "its entitlements name no team (com.apple.developer.team-identifier)"
+    return None
+
+
+def distribution_profile_problem(profile, bundle_id, now=None):
+    """Why a provisioning profile can't sign this app's build for the App Store, or None when it can.
+
+    `now` is the time to hold its expiry against, as the UTC `datetime` without a zone that a
+    property list's dates are read as.
+    """
+    granted = profile.get("Entitlements") or {}
+    if profile.get("ProvisionedDevices"):
+        return "it lists devices, so it is a development or ad hoc profile: an App Store profile lists none"
+    if profile.get("ProvisionsAllDevices"):
+        return "it provisions all devices, so it is an enterprise profile: the App Store takes a build signed with an App Store one"
+    if granted.get("get-task-allow"):
+        return "it lets a debugger attach (get-task-allow), so it is a development profile: the App Store refuses a build signed with it"
+    expires = profile.get("ExpirationDate")
+    if expires and expires < (now or datetime.now(timezone.utc).replace(tzinfo=None)):
+        return f"it expired on {expires:%Y-%m-%d}"
+    # A profile is for one app (TEAM.com.example.hello) or for those under a prefix (TEAM.*).
+    covers, wanted = granted.get("application-identifier", ""), f"{granted.get('com.apple.developer.team-identifier')}.{bundle_id}"
+    if covers != wanted and not (covers.endswith("*") and wanted.startswith(covers[:-1])):
+        return f"its app identifier is {covers or 'missing'}, which does not cover {wanted}"
+    return None
+
+
+def ipa_members(app):
+    """Each folder, file and symbolic link of a staged bundle with its name in the app's .ipa, in order.
+
+    An .ipa is a zip of `Payload/<name>.app` and nothing else, so what Finder and macOS's own
+    zip leave around (`.DS_Store`, `._` files, `__MACOSX`) stays out, wherever it is. A folder's
+    name ends in a slash, and `Payload` itself stands in the archive as the bundle's folder does.
+    """
+    yield app, "Payload/"
+    for folder, folders, files in os.walk(app):
+        folder = Path(folder)
+        yield folder, "".join(f"{part}/" for part in ("Payload", app.name, *folder.relative_to(app).parts))
+        folders[:] = sorted(name for name in folders if name != "__MACOSX")
+        # A link to a folder is listed as a folder, but not walked into: it is stored as a link.
+        links = [name for name in folders if (folder / name).is_symlink()]
+        folders[:] = [name for name in folders if name not in links]
+        for name in sorted(name for name in files + links if name != ".DS_Store" and not name.startswith("._")):
+            yield folder / name, f"Payload/{app.name}/{(folder / name).relative_to(app).as_posix()}"
+
+
+def write_ipa(app, ipa):
+    """Zip a staged bundle as an .ipa, each file with its mode and each link as a link."""
+    with zipfile.ZipFile(ipa, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path, name in ipa_members(app):
+            status = path.lstat()
+            # A zip's dates start in 1980, and a file can say it is older.
+            entry = zipfile.ZipInfo(name, max(time.localtime(status.st_mtime)[:6], (1980, 1, 1, 0, 0, 0)))
+            entry.compress_type = zipfile.ZIP_DEFLATED
+            # A zip made on Unix keeps the file's mode in the high half of this field, which is
+            # where the executable bit and a link's type are read back from.
+            entry.create_system, entry.external_attr = 3, status.st_mode << 16
+            if name.endswith("/"):
+                # A folder's entry is empty, and also says so in the field's low, DOS half.
+                entry.compress_type, entry.external_attr = zipfile.ZIP_STORED, entry.external_attr | 0x10
+                archive.writestr(entry, b"")
+            elif path.is_symlink():
+                # A link's entry holds where it points, uncompressed.
+                entry.compress_type = zipfile.ZIP_STORED
+                archive.writestr(entry, os.readlink(path))
+            else:
+                with path.open("rb") as source, archive.open(entry, "w") as packed:
+                    shutil.copyfileobj(source, packed)
+    return ipa
 
 
 def build_version(vtool_output):

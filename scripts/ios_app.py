@@ -1,4 +1,4 @@
-"""Bundle a Rune app built for iOS, install it on a simulator or a device and launch it."""
+"""Bundle a Rune app built for iOS, then install it on a simulator or a device and launch it, or zip it as an .ipa an app could upload."""
 import argparse
 import glob
 import json
@@ -12,9 +12,10 @@ import sys
 import tempfile
 import time
 
-from ios_bundle import (ICON_FILE, MIN_OS, PRIVACY, actool_platform, alive_device, alive_simulator, build_version, device_crash_logs,
-                        file_name_problem, icon_catalog, icon_problem, launched_pid, min_os_mismatch, min_os_problem, privacy_problem,
-                        simulator_crash_log, simulator_pid, version_problem)
+from ios_bundle import (ICON_FILE, MIN_OS, PLATFORMS, PRIVACY, actool_platform, alive_device, alive_simulator, build_version,
+                        device_crash_logs, distribution_profile_problem, file_name_problem, icon_catalog, icon_problem, launched_pid,
+                        min_os_mismatch,
+                        min_os_problem, privacy_problem, profile_problem, simulator_crash_log, simulator_pid, version_problem, write_ipa)
 from mac_app_install import command
 
 # Booting a simulator and installing an app on it take far longer than the Mac installer's steps.
@@ -50,24 +51,75 @@ def info(args):
     )
 
 
+def provisioning(args):
+    """What `--profile` holds, read out of its signed envelope; None without one.
+
+    A profile for the App Store is checked here, before anything is staged with it.
+    """
+    if not args.profile:
+        return None
+    decoded = command("security", "cms", "-D", "-i", str(args.profile), check=False)
+    try:
+        profile = None if decoded.returncode else plistlib.loads(decoded.stdout.encode())
+    except Exception:
+        profile = None
+    if not isinstance(profile, dict):
+        raise RuntimeError(f"--profile {args.profile} is not a provisioning profile `security cms` can read\n{decoded.stderr.strip()}".strip())
+    problem = profile_problem(profile) or (args.distribution and distribution_profile_problem(profile, args.id))
+    if problem:
+        raise RuntimeError(f"--profile {args.profile}: {problem}")
+    return profile
+
+
 def entitlements(profile, bundle_id):
-    """What a development profile grants, with its wildcard app identifier narrowed to this app."""
-    granted = plistlib.loads(command("security", "cms", "-D", "-i", str(profile)).stdout.encode())["Entitlements"]
+    """What a profile grants, with its wildcard app identifier narrowed to this app."""
+    granted = profile["Entitlements"]
     team = granted["com.apple.developer.team-identifier"]
     return {**granted, "application-identifier": f"{team}.{bundle_id}"}
 
 
-def sign(stage, args):
-    """Ad hoc for a simulator; for a device, with the profile's entitlements and a development identity."""
-    if not args.profile:
+def sign(stage, args, profile):
+    """Ad hoc without a profile, as a simulator takes it; with one, the profile embedded and its
+    entitlements signed in by a development identity, or a distribution one for the App Store."""
+    if not profile:
         command("codesign", "--force", "--sign", "-", str(stage), timeout=SLOW)
         return
     shutil.copy2(args.profile, stage / "embedded.mobileprovision")
-    identity = os.environ.get("IOS_APP_SIGN") or "Apple Development"
+    identity = os.environ.get("IOS_APP_SIGN") or ("Apple Distribution" if args.distribution else "Apple Development")
     with tempfile.NamedTemporaryFile(suffix=".plist") as file:
-        plistlib.dump(entitlements(args.profile, args.id), file)
+        plistlib.dump(entitlements(profile, args.id), file)
         file.flush()
         command("codesign", "--force", "--sign", identity, "--entitlements", file.name, str(stage), timeout=SLOW)
+
+
+def dsym(stage):
+    """Where a distribution build's debug symbols go: `<out>/<name>.app.dSYM`."""
+    return stage.parent / f"{stage.name}.dSYM"
+
+
+def ipa(stage):
+    """Where a distribution build's archive goes: `<out>/<name>.ipa`."""
+    return stage.parent / f"{stage.name.removesuffix('.app')}.ipa"
+
+
+def strip(stage, args):
+    """Collect the binary's debug symbols into the dSYM, which turns a crash log's addresses
+    back into names, then strip the binary of them and of its local symbols."""
+    collected = command("xcrun", "dsymutil", str(stage / args.exe), "-o", str(dsym(stage)), timeout=SLOW)
+    # dsymutil succeeds on a binary with no debug info and only warns: the dSYM then has
+    # names and no lines, which is worth knowing before the build ships.
+    if collected.stderr.strip():
+        print(collected.stderr.strip(), file=sys.stderr)
+    # -S takes the debugging entries, which name the build's object files by their full
+    # paths, and -x the local symbols. Global symbols and the UUID the dSYM is matched by stay.
+    command("xcrun", "strip", "-S", "-x", str(stage / args.exe), timeout=SLOW)
+
+
+def archive(stage, args):
+    """Check the signed bundle as an upload is checked and zip it as `<out>/<name>.ipa`."""
+    command("codesign", "--verify", "--deep", "--strict", str(stage), timeout=SLOW)
+    command("plutil", "-lint", str(stage / "Info.plist"))
+    return write_ipa(stage, ipa(stage))
 
 
 def built_for(args):
@@ -116,8 +168,17 @@ def icon(stage, args, platform):
 
 def build(stage, args):
     """Stage `<out>/<name>.app` from the built binary and sign it."""
+    # An archive and symbols from an earlier run are not this bundle's, whatever this run makes.
+    for stale in (dsym(stage), ipa(stage)):
+        if stale.is_dir():
+            shutil.rmtree(stale)
+        elif stale.exists():
+            stale.unlink()
+    profile = provisioning(args)
     # Asked of the binary before anything is staged, so a refused one leaves no bundle behind.
     platform = built_for(args)
+    if args.distribution and platform != "IOS":
+        raise RuntimeError(f"{args.bin} was built for {PLATFORMS[platform]}: the App Store takes a device build (--target aarch64-apple-ios)")
     if stage.exists():
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
@@ -131,7 +192,10 @@ def build(stage, args):
     (stage / "Info.plist").write_bytes(plistlib.dumps(plist))
     # What the app declares to the App Store: its own manifest, or what Rune alone accounts for.
     shutil.copyfile(args.privacy or PRIVACY, stage / PRIVACY.name)
-    sign(stage, args)
+    # A signature covers the binary's bytes, so they change before it, not after.
+    if args.distribution:
+        strip(stage, args)
+    sign(stage, args, profile)
 
 
 def install_simulator(stage, args):
@@ -208,9 +272,12 @@ def flags():
     parser.add_argument("--privacy", type=Path, metavar="FILE",
                         help="the app's own PrivacyInfo.xcprivacy (default: Rune's, which declares what Rune itself uses)")
     parser.add_argument("--out", type=Path, default=Path("target/ios"), help="where the bundle is staged")
-    parser.add_argument("--simulator", default="booted", help="a simulator's UDID or name (default: the booted one)")
+    parser.add_argument("--simulator", help="a simulator's UDID or name (default: the booted one)")
     parser.add_argument("--device", help="a paired device's UDID or name, instead of a simulator; needs --profile")
-    parser.add_argument("--profile", type=Path, help="a development .mobileprovision that covers --id and the device")
+    parser.add_argument("--profile", type=Path,
+                        help="a .mobileprovision that covers --id: a development one that lists the device, or an App Store one for --distribution")
+    parser.add_argument("--distribution", action="store_true",
+                        help="make a build an app could upload: stripped, with its dSYM, signed for distribution and zipped as an .ipa; installs nothing")
     parser.add_argument("--min-os", default=MIN_OS, metavar="X.Y",
                         help=f"the oldest iOS the app runs on, which the binary must have been built for (default: {MIN_OS})")
     parser.add_argument("--url-scheme", action="append", default=[], metavar="SCHEME",
@@ -253,8 +320,27 @@ def refusal(args):
         return f"--min-os: {min_os_problem(args.min_os)}"
     if not 0 <= args.wait < math.inf:
         return f"--wait {args.wait:g}: a number of seconds to wait, 0 or more"
+    if args.distribution:
+        return distribution_refusal(args)
     if bool(args.device) != bool(args.profile):
         return "--device and --profile go together: a device runs only what a profile covers"
+    return None
+
+
+def distribution_refusal(args):
+    """Why `--distribution` can't go with the other flags, or None when it can."""
+    if args.device or args.simulator:
+        return "--distribution makes an .ipa and installs nothing: leave out --device and --simulator"
+    identity = os.environ.get("IOS_APP_SIGN") or "Apple Distribution"
+    if identity.startswith(("Apple Development", "iPhone Developer")):
+        return f"IOS_APP_SIGN={identity!r} is a development identity: --distribution signs with an Apple Distribution one"
+    # Signing ad hoc tries every step without an identity, a profile or an icon, for a build no store takes.
+    if identity == "-":
+        return None
+    if not args.profile:
+        return "--distribution needs --profile, an App Store provisioning profile (IOS_APP_SIGN=- tries the steps without one)"
+    if not args.icon:
+        return "--distribution needs --icon: the App Store takes no app without one (IOS_APP_SIGN=- tries the steps without one)"
     return None
 
 
@@ -269,10 +355,14 @@ def main():
     if problem:
         parser.error(problem)
     args.display_name = args.display_name.strip()
+    args.simulator = args.simulator or "booted"
     stage = args.out / f"{args.name}.app"
     build(stage, args)
     print(stage)
-    if not args.no_install:
+    if args.distribution:
+        print(dsym(stage))
+        print(archive(stage, args))
+    elif not args.no_install:
         (install_device if args.device else install_simulator)(stage, args)
 
 

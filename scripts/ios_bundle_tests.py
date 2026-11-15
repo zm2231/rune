@@ -1,8 +1,14 @@
 """Bundle rules on captured tool output and made-up files: never runs an Xcode tool."""
+from datetime import datetime
 import json
+import os
+from pathlib import Path
 import plistlib
+import stat
 import struct
+import tempfile
 import unittest
+import zipfile
 import zlib
 
 import ios_bundle
@@ -220,6 +226,105 @@ class Privacy(unittest.TestCase):
         short = {key: value for key, value in whole.items() if key != "NSPrivacyCollectedDataTypes"}
         self.assertIn("it has no NSPrivacyCollectedDataTypes:", ios_bundle.privacy_problem(plistlib.dumps(short)))
         self.assertIn("it has no NSPrivacyTracking, ", ios_bundle.privacy_problem(plistlib.dumps(["NSPrivacyTracking"])))
+
+
+class Distribution(unittest.TestCase):
+    def test_an_app_store_profile_lists_no_devices_and_allows_no_debugger(self):
+        store = {"Name": "Hello App Store", "TeamIdentifier": ["TEAM123456"],
+                 "Entitlements": {"application-identifier": "TEAM123456.com.example.hello", "com.apple.developer.team-identifier": "TEAM123456",
+                                  "get-task-allow": False, "beta-reports-active": True}}
+        def problem(profile, bundle_id="com.example.hello"):
+            return ios_bundle.distribution_profile_problem(profile, bundle_id, datetime(2026, 11, 15))
+
+        self.assertIsNone(problem(store))
+        self.assertIn("it lists devices", problem({**store, "ProvisionedDevices": ["00000000-0000000000000000"]}))
+        self.assertIn("get-task-allow", problem({**store, "Entitlements": {**store["Entitlements"], "get-task-allow": True}}))
+        self.assertIn("it is an enterprise profile", problem({**store, "ProvisionsAllDevices": True}))
+
+    def test_a_profile_past_its_expiry_is_refused_with_the_day_it_expired(self):
+        store = {"ExpirationDate": datetime(2026, 11, 14, 23, 59), "Entitlements": {
+            "application-identifier": "TEAM123456.*", "com.apple.developer.team-identifier": "TEAM123456"}}
+        self.assertEqual(ios_bundle.distribution_profile_problem(store, "com.example.hello", datetime(2026, 11, 15)), "it expired on 2026-11-14")
+        self.assertIsNone(ios_bundle.distribution_profile_problem(store, "com.example.hello", datetime(2026, 11, 14)))
+        self.assertIsNone(ios_bundle.distribution_profile_problem({**store, "ExpirationDate": datetime(2999, 1, 1)}, "com.example.hello"), "held against today")
+
+    def test_a_profile_covers_its_own_app_or_the_apps_under_its_wildcard(self):
+        def problem(identifier, bundle_id="com.example.hello"):
+            granted = {"com.apple.developer.team-identifier": "TEAM123456", **({"application-identifier": identifier} if identifier else {})}
+            return ios_bundle.distribution_profile_problem({"Entitlements": granted}, bundle_id)
+
+        for covering in ("TEAM123456.com.example.hello", "TEAM123456.*", "TEAM123456.com.example.*", "*"):
+            self.assertIsNone(problem(covering), covering)
+        for other in ("TEAM123456.com.example.other", "TEAM123456.com.example.hello.widget", "OTHER98765.*", "TEAM123456.com.example"):
+            self.assertEqual(problem(other), f"its app identifier is {other}, which does not cover TEAM123456.com.example.hello")
+        self.assertIn("its app identifier is missing", problem(None))
+
+    def test_a_profile_without_entitlements_or_a_team_signs_nothing(self):
+        self.assertIsNone(ios_bundle.profile_problem({"Entitlements": {"com.apple.developer.team-identifier": "TEAM123456"}}))
+        self.assertIn("it grants no entitlements", ios_bundle.profile_problem({"Name": "Hello"}))
+        self.assertIn("name no team", ios_bundle.profile_problem({"Entitlements": {"get-task-allow": True}}))
+
+    def staged(self, tmp):
+        """A bundle with a binary, a folder, a link, and what Finder and zip leave around."""
+        app = Path(tmp) / "out/Hello.app"
+        (app / "_CodeSignature").mkdir(parents=True)
+        (app / "__MACOSX").mkdir()
+        for name, text in (("hello", "binary"), ("Info.plist", "plist"), ("_CodeSignature/CodeResources", "seal"),
+                           (".DS_Store", "finder"), ("_CodeSignature/.DS_Store", "finder"), ("__MACOSX/._hello", "fork"),
+                           ("._hello", "fork"), ("_CodeSignature/._CodeResources", "fork")):
+            (app / name).write_text(text)
+        (app / "hello").chmod(0o755)
+        (app / "Info.plist").chmod(0o644)
+        (app / "alias").symlink_to("hello")
+        (app / "Signature").symlink_to("_CodeSignature", target_is_directory=True)
+        return app
+
+    def test_an_ipa_holds_the_bundle_under_payload_and_nothing_else(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.staged(tmp)
+            ipa = ios_bundle.write_ipa(app, Path(tmp) / "out/Hello.ipa")
+            with zipfile.ZipFile(ipa) as archive:
+                self.assertEqual(archive.namelist(), [
+                    "Payload/", "Payload/Hello.app/",
+                    "Payload/Hello.app/Info.plist", "Payload/Hello.app/Signature", "Payload/Hello.app/alias",
+                    "Payload/Hello.app/hello", "Payload/Hello.app/_CodeSignature/", "Payload/Hello.app/_CodeSignature/CodeResources"])
+                self.assertTrue(all(name == "Payload/" or name.startswith("Payload/Hello.app/") for name in archive.namelist()))
+                self.assertEqual(archive.read("Payload/Hello.app/hello"), b"binary")
+                self.assertIsNone(archive.testzip())
+
+    def test_an_ipa_keeps_the_executable_bit_and_links(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ipa = ios_bundle.write_ipa(self.staged(tmp), Path(tmp) / "Hello.ipa")
+            with zipfile.ZipFile(ipa) as archive:
+                mode = {name.rstrip("/").rsplit("/", 1)[-1]: archive.getinfo(name).external_attr >> 16 for name in archive.namelist()}
+                for folder in ("Payload", "Hello.app", "_CodeSignature"):
+                    self.assertTrue(stat.S_ISDIR(mode[folder]), folder)
+                self.assertTrue(archive.getinfo("Payload/Hello.app/").is_dir())
+                self.assertEqual(archive.getinfo("Payload/Hello.app/_CodeSignature/").file_size, 0)
+                self.assertEqual(stat.S_IMODE(mode["hello"]), 0o755)
+                self.assertEqual(stat.S_IMODE(mode["Info.plist"]), 0o644)
+                self.assertTrue(stat.S_ISREG(mode["hello"]))
+                self.assertTrue(stat.S_ISLNK(mode["alias"]) and stat.S_ISLNK(mode["Signature"]))
+                self.assertEqual(archive.read("Payload/Hello.app/alias"), b"hello")
+                self.assertEqual(archive.read("Payload/Hello.app/Signature"), b"_CodeSignature")
+                self.assertTrue(all(archive.getinfo(name).create_system == 3 for name in archive.namelist()), "Unix modes are read")
+
+    def test_a_file_dated_before_a_zip_can_say_is_stored_as_of_1980(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.staged(tmp)
+            os.utime(app / "hello", (0, 0))
+            with zipfile.ZipFile(ios_bundle.write_ipa(app, Path(tmp) / "Hello.ipa")) as archive:
+                self.assertEqual(archive.getinfo("Payload/Hello.app/hello").date_time, (1980, 1, 1, 0, 0, 0))
+                self.assertGreater(archive.getinfo("Payload/Hello.app/Info.plist").date_time, (2020, 1, 1, 0, 0, 0))
+
+    def test_writing_an_ipa_again_replaces_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app, ipa = self.staged(tmp), Path(tmp) / "Hello.ipa"
+            ios_bundle.write_ipa(app, ipa)
+            (app / "hello").unlink()
+            ios_bundle.write_ipa(app, ipa)
+            with zipfile.ZipFile(ipa) as archive:
+                self.assertNotIn("Payload/Hello.app/hello", archive.namelist())
 
 
 class Liveness(unittest.TestCase):

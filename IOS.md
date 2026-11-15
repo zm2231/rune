@@ -188,8 +188,8 @@ usage: ios-app [-h] --name NAME --id ID --bin BIN [--exe EXE]
                [--display-name TEXT] [--version X.Y.Z] [--build N]
                [--icon PNG] [--privacy FILE] [--out OUT]
                [--simulator SIMULATOR] [--device DEVICE] [--profile PROFILE]
-               [--min-os X.Y] [--url-scheme SCHEME] [--no-install]
-               [--no-launch] [--wait SECONDS]
+               [--distribution] [--min-os X.Y] [--url-scheme SCHEME]
+               [--no-install] [--no-launch] [--wait SECONDS]
                ...
 ```
 
@@ -539,7 +539,10 @@ the first view; once a view is made, a link no view has a hook for is dropped.
 
 ## Ship an app
 
-What `scripts/ios-app` puts in a bundle beyond what a test run needs.
+What `scripts/ios-app` puts in a bundle beyond what a test run needs, and the build it makes
+for the App Store. A bundle to ship is built for the deployment target it names ("The
+deployment target" above), has its own versions, an icon and a privacy manifest that covers
+the app, and is made with `--distribution`.
 
 ### Versions and names
 
@@ -642,6 +645,112 @@ nm -u target/aarch64-apple-ios/release/my-app | \
     grep -E 'stat|getattrlist|utimes|mach_absolute_time|statfs|statvfs|NSUserDefaults|activeInputModes'
 ```
 
+### A build an app could upload
+
+`--distribution` makes the files the App Store takes and installs nothing:
+
+```sh
+cargo build -p hello --target aarch64-apple-ios --release
+scripts/ios-app --name Hello --id com.example.hello --bin target/aarch64-apple-ios/release/hello \
+    --version 1.0.0 --build 1 --icon path/to/icon.png \
+    --distribution --profile path/to/app-store.mobileprovision
+```
+
+It needs `--profile`, an App Store provisioning profile, and `--icon`, since the App Store
+takes no app without one, and takes neither `--device` nor `--simulator`. Before staging
+anything it refuses:
+
+- a profile `security cms` can't read, or one that grants no entitlements;
+- a profile that lists devices (development or ad hoc), provisions all devices (enterprise),
+  lets a debugger attach (`get-task-allow`), has expired, or whose app identifier is neither
+  `--id` under the profile's team nor a wildcard that covers it;
+- an `IOS_APP_SIGN` that names a development identity (`Apple Development`,
+  `iPhone Developer`);
+- a binary built for the simulator.
+
+Every run of `ios-app`, with `--distribution` or without, first removes
+`<out>/<name>.ipa` and `<out>/<name>.app.dSYM` from an earlier run, so a failed build leaves
+no old archive beside a new bundle.
+
+With `--distribution` the script then does these, in order:
+
+1. `xcrun dsymutil` writes `<out>/<name>.app.dSYM` from the binary, and what it warns of is
+   printed. With this workspace's release profile the dSYM holds symbol names only, and
+   dsymutil warns `no debug symbols in executable`; "Line numbers and build paths" below
+   adds files and line numbers to it. Keep the dSYM: nothing uploads it, and it is what
+   Xcode's Organizer, `atos` and `symbolicatecrash` need to turn a crash log's addresses
+   into names.
+2. `xcrun strip -S -x` takes the debugging entries, which name the build's object files by
+   their full paths, and the local symbols out of the bundle's binary. It can't take the
+   source paths Rust keeps as strings for its panic messages ("Line numbers and build
+   paths" below).
+3. The bundle is signed with the keychain's `Apple Distribution` identity (`IOS_APP_SIGN`
+   names another) and the profile's entitlements, its app identifier narrowed to `--id`, and
+   the profile is embedded as `<name>.app/embedded.mobileprovision`. Everything else the
+   profile grants is signed as it is, wildcards included, which is also how a device build
+   is signed ("Run on a device" above).
+4. `codesign --verify --deep --strict` checks the signature and `plutil -lint` the
+   `Info.plist`.
+5. `<out>/<name>.ipa` is written: a zip of `Payload/<name>.app` and nothing else, with an
+   entry for each folder, each file with its mode and each symbolic link as a link, without
+   `.DS_Store`, `._` files or `__MACOSX`.
+
+The script prints the bundle's, the dSYM's and the .ipa's paths. With `IOS_APP_SIGN=-` the
+bundle is signed ad hoc and `--profile` and `--icon` may be left out: that proves the steps
+on a Mac with no distribution identity, and the result can't be uploaded.
+
+The script never uploads, and no upload has been made of an .ipa it wrote. Upload with the
+Transporter app, or with `xcrun altool --upload-app -f target/ios/Hello.ipa -t ios` and an
+App Store Connect API key: `xcrun altool --help` lists the flags that name the key.
+
+Whether the app uses encryption that needs export paperwork is the app's own call, so the
+script doesn't set `ITSAppUsesNonExemptEncryption`.
+
+### Line numbers and build paths
+
+What follows was seen with a release device build of `web-hello`, Xcode 27.2 and Rust
+1.99.1.
+
+**Build paths.** The plain release binary held 594 strings with the build machine's home
+folder in them, every one the path of a dependency's source file under
+`.cargo/registry/src/`, kept for panic messages. The workspace's own paths are relative and
+the standard library's are `/rustc/<hash>/...`. `strip` removed none of them. Built with
+
+```sh
+RUSTFLAGS="--remap-path-prefix=$HOME/.cargo=/cargo --remap-path-prefix=$PWD=/rune" \
+    cargo build --release --target aarch64-apple-ios -p web-hello
+```
+
+the binary held none (they read `/cargo/registry/src/.../smallvec-1.16.3/src/lib.rs`) and
+was the same size. `RUSTFLAGS` in the environment replaces the `build.rustflags` and the
+target's `rustflags` a config file would apply to the target; none apply to iOS in this
+workspace. A `.cargo/config.toml` can't expand `$HOME`, so set the variable in the shell or
+the CI step that builds. Cargo's `trim-paths` is not stable in Rust 1.99.1.
+
+**Line numbers.** With `CARGO_PROFILE_RELEASE_DEBUG=line-tables-only` as well, the dSYM
+went from names only (no compile units, 4.5 MB) to 2,505 compile units (106 MB), and `atos`
+turned an address into `open.rs:12` (with `-fullPath`,
+`/rune/crates/rune/src/playground/open.rs:12`). The unstripped binary grew from 22.9 MB to
+25.0 MB, the stripped one stayed at 20.1 MB, and the .ipa was 9.4 MB.
+
+The debug information stays in the build's object files until `dsymutil` collects it, so
+run `ios-app --distribution` while the target directory still holds them. The unstripped
+binary also lists those object files by their absolute paths, and the strip step left none
+of them. One C file, blake3's NEON source, kept the home folder in the dSYM until
+`CFLAGS="-ffile-prefix-map=$HOME/.cargo=/cargo"` was set too; with it the dSYM held none.
+Don't set `split-debuginfo = "packed"`: cargo then writes a dSYM of its own and deletes the
+object files, and the script's `dsymutil` finds little (it gave three
+`unable to open object file` warnings).
+
+The whole recipe:
+
+```sh
+RUSTFLAGS="--remap-path-prefix=$HOME/.cargo=/cargo --remap-path-prefix=$PWD=/rune" \
+CFLAGS="-ffile-prefix-map=$HOME/.cargo=/cargo" \
+CARGO_PROFILE_RELEASE_DEBUG=line-tables-only \
+    cargo build --release --target aarch64-apple-ios -p web-hello
+```
+
 ## What the `Info.plist` needs
 
 `scripts/ios-app` writes these, with the bundle's name, identifier, executable and versions
@@ -663,5 +772,6 @@ needs the same:
 - `CFBundleIcons` and `CFBundleIcons~ipad` naming the icon in the bundle's `Assets.car`, when
   it has an icon (`--icon`; "The icon" above).
 
-Beside the `Info.plist` the bundle holds `PrivacyInfo.xcprivacy`, which the App Store reads
-("The privacy manifest" above), and the icon's files when it has one.
+Beside the `Info.plist` and the binary the bundle holds `PrivacyInfo.xcprivacy`, which the
+App Store reads ("The privacy manifest" above), the icon's files when it has one, and
+`embedded.mobileprovision` when it was signed with a profile.

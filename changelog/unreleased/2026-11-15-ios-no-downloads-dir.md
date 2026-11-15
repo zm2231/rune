@@ -1,0 +1,1 @@
+- **iOS: `AppDirs::downloads` is `None`.** It was `$HOME/Downloads`, a path inside the app's container that nothing creates and the user cannot reach. An iOS app has no Downloads folder, so an app that saved there without asking now gets `None` and asks where to save with `Tx::save_file`. Under `RUNE_DIRS_ROOT` it is still `<root>/downloads`.

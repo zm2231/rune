@@ -15,6 +15,10 @@
 //! | state | `~/Library/Application Support/<id>` | `%LOCALAPPDATA%\<id>` | `$XDG_STATE_HOME/<id>` (`~/.local/state`) |
 //! | logs | `~/Library/Logs/<id>` | `%LOCALAPPDATA%\<id>\Logs` | `$XDG_STATE_HOME/<id>/logs` |
 //!
+//! Downloads is `~/Downloads` on macOS, `<home>\Downloads` on Windows and `$XDG_DOWNLOAD_DIR`
+//! (`~/Downloads`) elsewhere. iOS has none: an app there has no Downloads folder the user can
+//! reach, so [`AppDirs::downloads`] is `None` and the app asks where to save.
+//!
 //! Home is `HOME`, or `USERPROFILE` on Windows. Windows falls back to `<home>\AppData\Roaming`
 //! and `<home>\AppData\Local` when `APPDATA` or `LOCALAPPDATA` is unset, and a relative XDG
 //! variable is ignored, as the XDG spec says.
@@ -94,7 +98,8 @@ impl AppDirs {
     /// The user's home folder, if one was found (never moved by [`ROOT_ENV`]).
     pub fn home(&self) -> Option<&Path> { self.bases.home.as_deref() }
 
-    /// Where the user's downloads go (`<root>/downloads` under [`ROOT_ENV`]).
+    /// Where the user's downloads go (`<root>/downloads` under [`ROOT_ENV`]). None on iOS,
+    /// where an app has no such folder: ask the user where to save with `Tx::save_file`.
     pub fn downloads(&self) -> Option<&Path> { self.bases.downloads.as_deref() }
 
     /// Whether [`ROOT_ENV`] (or [`rooted`](Self::rooted)) placed these folders.
@@ -213,7 +218,8 @@ impl Bases {
             cache: Place::at(library.join("Caches")),
             state: Place::at(support),
             logs: Place::at(library.join("Logs")),
-            downloads: home.as_ref().map(|h| h.join("Downloads")),
+            // An iOS app's container has no Downloads folder the user can reach.
+            downloads: if cfg!(target_os = "ios") { None } else { home.as_ref().map(|h| h.join("Downloads")) },
             home,
             rooted: false,
         })

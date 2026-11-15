@@ -32,6 +32,13 @@ export const routes: Route[] = [
       "How to keep a Rune app fast: a free main thread, long lists that build only what is on screen, memo keyed small, an idle window that draws nothing, cheap poll, bounded caches, and a script that audits a repo.",
   },
   {
+    path: "/ios",
+    label: "iOS",
+    title: "iOS · Rune",
+    description:
+      "How to run a Rune app on iOS: what works and what doesn't yet, a simulator and a device, a Rune view in a UIKit or SwiftUI app, links into the app, lifecycle hooks, and a signed build with its versions, icon and privacy manifest.",
+  },
+  {
     path: "/principles",
     label: "Principles",
     title: "Principles · Rune",

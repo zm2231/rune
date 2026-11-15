@@ -17,6 +17,7 @@ export type Snippet = { html: string; label: string; file: string; start: number
 const SETTINGS = "examples/settings/src/main.rs"
 const HELLO = "examples/hello/src/main.rs"
 const TODO = "examples/todo/src/main.rs"
+const IOS = "IOS.md"
 
 const specs: Record<string, Spec> = {
   hello: {
@@ -125,6 +126,57 @@ const specs: Record<string, Spec> = {
     lang: "toml",
     label: "TOML",
     pieces: [{ file: "crates/rune/Cargo.toml", from: "rune-core = ", to: "parley = " }],
+  },
+  // The iOS page's commands and examples, cut from the guide so a changed command there fails the build here.
+  "ios-simulator": {
+    lang: "shell",
+    label: "Shell",
+    pieces: [{ file: IOS, from: "rustup target add aarch64-apple-ios", lines: 3 }],
+  },
+  "ios-device": {
+    lang: "shell",
+    label: "Shell",
+    pieces: [{ file: IOS, from: "cargo build -p hello --target aarch64-apple-ios --release", lines: 3 }],
+  },
+  "ios-crash-logs": {
+    lang: "shell",
+    label: "Shell",
+    pieces: [{ file: IOS, from: "xcrun devicectl device info files", lines: 3 }],
+  },
+  "ios-entry": {
+    lang: "rust",
+    label: "Rust",
+    pieces: [{ file: IOS, from: "fn main() {" }],
+  },
+  "ios-view": {
+    lang: "rust",
+    label: "Rust",
+    pieces: [{ file: IOS, from: 'pub extern "C" fn my_screen' }],
+  },
+  "ios-lib": {
+    lang: "shell",
+    label: "Shell",
+    pieces: [{ file: IOS, from: "scripts/ios-lib --package", lines: 1 }],
+  },
+  "ios-swiftui": {
+    lang: "plain",
+    label: "Swift",
+    pieces: [{ file: IOS, from: "import SwiftUI", to: "}" }],
+  },
+  "ios-url-scheme": {
+    lang: "shell",
+    label: "Shell",
+    pieces: [{ file: IOS, from: "scripts/ios-app --name Hello --id com.example.hello --bin target/aarch64-apple-ios-sim/debug/hello \\", lines: 3 }],
+  },
+  "ios-open-url": {
+    lang: "rust",
+    label: "Rust",
+    pieces: [{ file: IOS, from: 'pub unsafe extern "C" fn my_open_url' }],
+  },
+  "ios-on-open-url": {
+    lang: "plain",
+    label: "Swift",
+    pieces: [{ file: IOS, from: "RuneView(my_screen)", lines: 2 }],
   },
 }
 

@@ -680,7 +680,8 @@ app.run();
   started, the launching one before the first frame: its own schemes' (`scripts/ios-app
   --url-scheme myapp` declares one) and universal links, which arrive as their `https://` URL.
   A view in another app (`rune::ios::view`) gets none, since that app's scene delegate is handed
-  them; it passes one on with `AppHandle::update`. `IOS.md` has the steps.
+  them; it passes one on with `AppHandle::update`. `IOS.md` has the steps, and the docs site's
+  iOS page (`site/src/Ios.tsx`) the short form.
 - Links and relaunches on Windows: Windows starts a new process for each launch, passing a link
   as an argument. The hook receives the links among the first process's arguments
   (`scheme://…`) like the launching link on macOS. Call `rune::single_instance("com.example.myapp")`

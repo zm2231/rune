@@ -2,6 +2,7 @@ import { useEffect, useState, type JSX, type MouseEvent } from "react"
 import { Wordmark } from "./brand/Wordmark"
 import { layers, milestones, principles, risks } from "./content"
 import { FastAppsView } from "./FastApps"
+import { IosView } from "./Ios"
 import { ArchitectureView, HomeView, HowItWorksView, LaunchFastView, NotFoundView, PrinciplesView, RoadmapView, num } from "./pages"
 import { stripBase, withBase } from "./base"
 import { REPO, normalizePath } from "./routes"
@@ -70,6 +71,18 @@ function navGroups(pathname: string): NavGroup[] {
           spy("scrolling", "Smooth scrolling"),
           spy("caches", "Bounded caches"),
           spy("audit", "Audit a repo"),
+        ]),
+        page("/ios", "iOS", [
+          spy("works", "What works"),
+          spy("missing", "What doesn't yet"),
+          spy("simulator", "Run in a simulator"),
+          spy("device", "Run on a device"),
+          spy("entry", "The entry point"),
+          spy("embed", "A view in another app"),
+          spy("links", "Links into the app"),
+          spy("lifecycle", "Lifecycle hooks"),
+          spy("ship", "Ship an app"),
+          spy("plist", "Info.plist"),
         ]),
         page("/architecture", "Architecture", [
           spy("overview", "Overview"),
@@ -152,6 +165,7 @@ export function App({ pathname: initial }: { pathname?: string }) {
     "/how-it-works": HowItWorksView,
     "/launch-fast": LaunchFastView,
     "/fast-apps": FastAppsView,
+    "/ios": IosView,
     "/principles": PrinciplesView,
     "/architecture": ArchitectureView,
     "/roadmap": RoadmapView,

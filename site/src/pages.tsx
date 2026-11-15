@@ -203,7 +203,7 @@ const buildable: { title: string; text: ReactNode; status: Status; meta: string;
     ),
     status: "partly",
     meta: "M6",
-    href: "/roadmap#m6",
+    href: "/ios",
   },
 ]
 
@@ -1025,7 +1025,7 @@ export function ArchitectureView() {
       </section>
       </div>
 
-      <Pager prev={["/fast-apps", "Fast apps"]} next={["/principles", "Principles"]} />
+      <Pager prev={["/ios", "iOS"]} next={["/principles", "Principles"]} />
     </>
   )
 }

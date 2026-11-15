@@ -38,6 +38,9 @@ What works:
   misspelled word the caret has left, from UIKit's `UITextChecker`, and its long-press menu
   leads with the word's suggestions and Learn Spelling, as a right-click does on a Mac. See
   "Spell checking" below.
+- **Undo gestures.** A shake, the three-finger swipes and the three-finger tap's bar undo and
+  redo the focused field's own history, and on an iPad so do Edit › Undo and Redo in the menu
+  bar. With no field focused nothing is offered. See "Undo gestures" below.
 - **System fonts.** Text draws in the fonts the app bundles (Inter by default).
   `Family::Named("System Font")` is San Francisco and `Family::SystemMono` SF Mono, loaded
   from the files of the system's UI font the first time a text asks for them. A character the
@@ -326,6 +329,36 @@ A field of 2,000 different words filled in a batch of words a frame, after which
 drew no more; in that debug build the first check, which loads the dictionary, took 0.47 s.
 That run gave the checker 64 words a frame; with 32 it has not been run.
 None of this is yet verified on a device, nor is any language but English.
+
+## Undo gestures
+
+UIKit offers undo and redo when the first responder's `undoManager` says it can do them, and
+does them by asking that manager. While a text field has the focus the keyboard's text input
+answers with a manager of its own, and with none otherwise. The field's history
+(`TextEdit::can_undo`, `can_redo`) stays the only history: the manager holds at most one undo
+action and one redo action, there so that `canUndo` and `canRedo` say what the field would,
+and running one sends the field ⌘Z or ⇧⌘Z. After each frame what the manager offers is
+compared with the field and, when they differ, the manager is emptied and filled again. What
+it offers is kept from the last time it was filled: the manager itself is asked only on the
+frame after it was filled or ran an action, so a frame that changes nothing sends it nothing.
+When the text input goes away its manager is emptied, so no action is left to call it.
+
+A manager can redo only what it has undone, so one that should offer a redo is given an undo
+action and told to undo it; an action that runs then sends the field nothing. If that undo
+runs no action, the next frame finds the manager short of the field and fills it again. The
+actions are registered one to a group, with the manager's grouping by event off.
+
+Nothing is offered or run twice. The field's long-press menu has no Undo or Redo. An iPad's
+Edit › Undo and Redo are UIKit's own items, which act through the same manager. A hardware
+keyboard's ⌘Z reaches the field once.
+
+On the iOS simulator a shake offered Undo, Redo or both as the field had them, and each
+choice, each of the iPad menu bar's Undo and Redo and each ⌘Z took one step of the field's
+history. The first Undo chosen on a fresh simulator brought up UIKit's hint about the
+three-finger double tap, and the text stayed as it was until the next. The three-finger
+gestures need three fingers, which the simulator was not given: they and a real shake are
+not yet verified on a device. Nor is it known whether, on a device, the undo that fills the
+manager with a redo shows UIKit's undo HUD each time the manager is filled.
 
 ## Links into the app
 

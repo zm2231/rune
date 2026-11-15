@@ -1323,6 +1323,8 @@ Undo restores selection direction as well as text. History shares storage with v
 snapshots and retains at most 128 edits / 1 MiB of text (oversized edits drop history).
 Call `TextEdit::clear()` after submission to clear history while retaining focus;
 call `break_history_group()` when setting a selection from custom pointer handling.
+`TextEdit::can_undo()` and `can_redo()` say whether there is a step to take. On iOS a shake
+and the three-finger undo gestures act on the focused field's history (`IOS.md`).
 
 `.spellcheck(true)` marks a field's misspelled words with the platform's checker: Windows'
 spell checking API, AppKit's `NSSpellChecker` on macOS and UIKit's `UITextChecker` on iOS

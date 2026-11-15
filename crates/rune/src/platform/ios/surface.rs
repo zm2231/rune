@@ -14,6 +14,7 @@ use super::keys::Stroke;
 use super::lifecycle;
 use super::text::doc::Snapshot;
 use super::text::geometry::Geometry;
+use super::text::undo::Offer;
 use crate::a11y::AccessibilityLink;
 use crate::app::{App, OnWindow, Shared};
 use crate::embed::{EmbedFrame, LayerHost};
@@ -34,6 +35,8 @@ pub(crate) struct TextState {
     pub(crate) secure: bool,
     /// What the field asks of the keyboard; an editor the app draws asks for nothing.
     pub(crate) traits: crate::input::traits::InputTraits,
+    /// What a text field with the focus can undo and redo, for the system's undo gestures.
+    pub(crate) history: Option<Offer>,
 }
 
 pub(crate) trait Surface {
@@ -326,7 +329,8 @@ impl<S: 'static> Surface for Hosted<S> {
             None => Snapshot::Hidden,
         };
         let traits = rt.core().focused_input_traits().unwrap_or_default();
-        TextState { wanted: rt.core().wants_text(), snapshot, caret: rt.ime_area.map(|area| rt.to_window(area)), secure, traits }
+        let history = rt.core().focused_history().map(|(undo, redo)| Offer { undo, redo });
+        TextState { wanted: rt.core().wants_text(), snapshot, caret: rt.ime_area.map(|area| rt.to_window(area)), secure, traits, history }
     }
 
     fn text_geometry(&self) -> Option<Geometry> {

@@ -478,6 +478,17 @@ impl TextEdit {
         r
     }
 
+    /// Whether [`undo`](Self::undo) has a step to take back: never on a secure field, and not
+    /// while a composition is open, which an undo cancels instead.
+    pub fn can_undo(&self) -> bool {
+        self.recording() && self.preedit().is_none() && !self.history.undo.is_empty()
+    }
+
+    /// Whether [`redo`](Self::redo) has an undone step to put back.
+    pub fn can_redo(&self) -> bool {
+        self.recording() && self.preedit().is_none() && !self.history.redo.is_empty()
+    }
+
     /// Undo one typing group or discrete edit. Active IME composition is cancelled first.
     pub fn undo(&mut self) {
         if !self.recording() { return; }

@@ -423,7 +423,7 @@ impl RuneView {
         };
         // The frame applied the input before it: the keyboard hears what the field holds now.
         let input = self.ivars().text.borrow().clone();
-        if let Some(input) = input { input.sync(text.wanted, text.snapshot, text.caret, text.secure, text.traits); }
+        if let Some(input) = input { input.sync(text.wanted, text.snapshot, text.caret, text.secure, text.traits, text.history); }
         match popup {
             Some((popup, field)) => self.open_menu(popup, field),
             None => self.menu_follow_caret(),

@@ -25,6 +25,8 @@ use objc2_video::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_
 use super::doc::{Document, Effect, Event, Snapshot};
 use super::geometry::Geometry;
 use super::traits::{self, ContentType, Frame, Reload, ReloadEffect};
+use super::undo::uikit::Undo;
+use super::undo::{Action, Offer};
 use crate::input::traits::InputTraits;
 use super::super::view::{RuneView, UIResponder, UIView};
 
@@ -183,6 +185,8 @@ pub(crate) struct Ivars {
     tokenizer: RefCell<Option<Retained<AnyObject>>>,
     /// The cursor that follows the finger while the space bar is a trackpad, once made.
     floating: RefCell<Option<Retained<AnyObject>>>,
+    /// What the system's undo gestures ask: an undo manager that offers what the field can do.
+    undo: Undo,
 }
 
 define_class!(
@@ -216,6 +220,20 @@ define_class!(
 
         #[unsafe(method(paste:))]
         fn paste(&self, _sender: Option<&AnyObject>) { self.command('v'); }
+
+        /// What a shake and the three-finger undo gestures ask whether there is anything to
+        /// undo or redo, and tell to do it: the focused field's history, through a manager
+        /// that holds one action for each. Nil with no field focused, so nothing is offered.
+        #[unsafe(method_id(undoManager))]
+        fn undo_manager(&self) -> Option<Retained<AnyObject>> {
+            self.ivars().undo.manager()
+        }
+
+        #[unsafe(method(runeUndo:))]
+        fn undo_fired(&self, _object: Option<&AnyObject>) { self.history(Action::Undo); }
+
+        #[unsafe(method(runeRedo:))]
+        fn redo_fired(&self, _object: Option<&AnyObject>) { self.history(Action::Redo); }
 
         /// A hardware key going down. The host hears it as a physical key, and takes it from
         /// UIKit when it names an edit, a move or a shortcut. UIKit types the key when it is a
@@ -507,6 +525,7 @@ impl RuneTextInput {
             delegate: RefCell::new(None),
             tokenizer: RefCell::new(None),
             floating: RefCell::new(None),
+            undo: Undo::new(),
         });
         // SAFETY: `initWithFrame:` is `UIView`'s designated initializer.
         unsafe { msg_send![super(this), initWithFrame: zero] }
@@ -595,6 +614,13 @@ impl RuneTextInput {
         if let Some(host) = self.ivars().host.load() { host.command(c); }
     }
 
+    /// The undo manager ran one of its actions: for a gesture, the field undoes or redoes a
+    /// step of its own history, as for ⌘Z and ⇧⌘Z.
+    fn history(&self, action: Action) {
+        let key = self.ivars().undo.fired(self, action);
+        if let (Some(key), Some(host)) = (key, self.ivars().host.load()) { host.history(key == Action::Redo); }
+    }
+
     /// An edit the keyboard made: the copy takes it now, and the runtime hears of it.
     fn edit(&self, event: Event) {
         let effects = self.ivars().doc.borrow_mut().step(event);
@@ -602,10 +628,12 @@ impl RuneTextInput {
     }
 
     /// After a frame: whether a field wants the keyboard, what it holds, where its caret is in
-    /// the host's points, whether it is a password and what it asks of the keyboard. Takes or
-    /// gives up the keyboard, and tells it when the runtime's text is not what it believed.
-    pub(crate) fn sync(&self, wanted: bool, snapshot: Snapshot, caret: Option<[f32; 4]>, secure: bool, traits: InputTraits) {
+    /// the host's points, whether it is a password, what it asks of the keyboard and what it
+    /// can undo and redo. Takes or gives up the keyboard, and tells it when the runtime's text
+    /// is not what it believed.
+    pub(crate) fn sync(&self, wanted: bool, snapshot: Snapshot, caret: Option<[f32; 4]>, secure: bool, traits: InputTraits, history: Option<Offer>) {
         let ivars = self.ivars();
+        ivars.undo.frame(self, history);
         if let Some([x, y, w, h]) = caret {
             ivars.caret.set(CGRect::new(CGPoint::new(x as CGFloat, y as CGFloat), CGSize::new(w as CGFloat, h as CGFloat)));
         }

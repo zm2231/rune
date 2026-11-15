@@ -403,6 +403,13 @@ impl RuntimeCore {
         self.focused_input().map(|i| i.traits.resolve(i.edit.is_secure(), i.spellcheck))
     }
 
+    /// Whether the focused text field has a step to undo and one to redo, for a platform that
+    /// offers them itself. None when no text field has the focus.
+    #[cfg_attr(not(any(test, target_os = "ios")), allow(dead_code))]
+    pub(crate) fn focused_history(&self) -> Option<(bool, bool)> {
+        self.focused_input().map(|i| (i.edit.can_undo(), i.edit.can_redo()))
+    }
+
     pub fn has_focus(&self) -> bool {
         self.kbd.focus.path().is_some()
     }

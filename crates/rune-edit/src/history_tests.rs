@@ -35,3 +35,24 @@ fn a_group_is_closed_in_clones_and_holds_undo_until_it_closes() {
     e.undo();
     assert_eq!(e.text, "c", "replace_text in the group discards the history before it");
 }
+
+#[test]
+fn a_field_says_whether_it_has_a_step_to_undo_or_redo() {
+    let mut e = TextEdit::new("");
+    assert!(!e.can_undo() && !e.can_redo(), "a new field has neither");
+    e.insert("a");
+    assert!(e.can_undo() && !e.can_redo());
+    e.undo();
+    assert!(!e.can_undo() && e.can_redo());
+    e.redo();
+    assert!(e.can_undo() && !e.can_redo());
+    e.insert("b");
+    e.undo();
+    assert!(e.can_redo());
+    e.break_history_group();
+    e.insert("c");
+    assert!(e.can_undo() && !e.can_redo(), "a new edit drops the undone steps");
+    let mut secret = TextEdit::new("").secure();
+    secret.insert("pw");
+    assert!(!secret.can_undo() && !secret.can_redo(), "a secure field keeps no history");
+}

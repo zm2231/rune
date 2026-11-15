@@ -147,3 +147,31 @@ fn a_field_in_a_virtual_row_has_its_traits_mounted_or_scrolled_away() {
     assert!(rt.node(&path).is_none() && rt.commit.virtual_inputs.contains_key(&path), "the row left the window with its focus");
     postal(&rt);
 }
+
+/// `Runtime::focused_history`: what a host that offers undo itself asks of the focused field.
+#[test]
+fn the_focused_field_says_what_it_can_undo_and_redo() {
+    use crate::{Ime, Key, KeyEvent, Mods};
+    let undo = |shift| KeyEvent { key: Key::Command('z'), mods: Mods { cmd: true, shift, ..Mods::default() } };
+    let mut rt = runtime();
+    assert_eq!(rt.core().focused_history(), None, "no field has the focus");
+    focus(&mut rt, "button");
+    assert_eq!(rt.core().focused_history(), None, "the focus is not on a text field");
+    focus(&mut rt, "note");
+    assert_eq!(rt.core().focused_history(), Some((false, false)), "a field nothing was typed into");
+    rt.ime(Ime::Commit("a".into()));
+    rt.frame(0.0);
+    assert_eq!(rt.core().focused_history(), Some((true, false)));
+    rt.key(undo(false));
+    rt.frame(0.0);
+    assert_eq!(rt.core().focused_history(), Some((false, true)));
+    rt.key(undo(true));
+    rt.frame(0.0);
+    assert_eq!(rt.core().focused_history(), Some((true, false)));
+    focus(&mut rt, "pin");
+    rt.ime(Ime::Commit("1".into()));
+    rt.frame(0.0);
+    assert_eq!(rt.core().focused_history(), Some((false, false)), "a secure field keeps no history");
+    focus(&mut rt, "note");
+    assert_eq!(rt.core().focused_history(), Some((true, false)), "the field's history is its own");
+}

@@ -233,6 +233,13 @@ impl RuneView {
         self.pace(Event::Wake);
     }
 
+    /// ⌘Z, or ⇧⌘Z to `redo`, for an undo gesture UIKit ran on the focused field.
+    pub(crate) fn history(&self, redo: bool) {
+        let mods = Mods { cmd: true, logo: true, shift: redo, ..Mods::default() };
+        self.with_surface(|surface| surface.key(KeyEvent { key: Key::Command('z'), mods }));
+        self.pace(Event::Wake);
+    }
+
     /// Steps the key repeat and does what it asks.
     pub(super) fn keys(&self, event: keys::Event) {
         let ivars = self.ivars();

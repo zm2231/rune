@@ -30,6 +30,8 @@ use portal::show as native;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FileDialogOptions {
     pub title: String,
+    /// The folder the dialog opens in. On iOS the picker opens there when the system can show
+    /// that folder, and where it chooses otherwise.
     pub directory: Option<PathBuf>,
     pub file_name: Option<String>,
     pub filters: Vec<(String, Vec<String>)>,

@@ -25,6 +25,7 @@ What works:
 - **Accessibility.** VoiceOver, Switch Control and Voice Control read the same accessibility
   tree the desktop platforms do. The Reduce Motion setting is followed.
 - **Links and files.** `Tx::open_url` opens a link in the app that owns its scheme.
+  A file dialog opens in its options' `directory` when the system can show that folder.
   `Tx::open_file` shows the system's document picker and answers with a copy of the file;
   `Tx::open_folder` answers with a folder the app may use until it quits, and `Tx::save_file`
   asks for the folder and answers with the dialog's file name inside it.

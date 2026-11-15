@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use objc2_foundation_video::NSString;
+use objc2_foundation_video::{NSString, NSURL};
 use objc2_video::rc::{Allocated, Retained};
 use objc2_video::runtime::AnyObject;
 use objc2_video::{DefinedClass, class, msg_send};
@@ -44,7 +44,8 @@ impl RuneView {
         *self.ivars().file_dialog.borrow_mut() = Some(Picking { id, kind, file_name });
         let folder = kind != FileDialogKind::Open;
         // SAFETY: a picker that opens copies of files of these types, whose delegate the view
-        // is; a view controller presents another with no completion block.
+        // is and whose `directoryURL` is a file URL; a view controller presents another with no
+        // completion block.
         unsafe {
             let types: Retained<AnyObject> = msg_send![class!(NSMutableArray), array];
             for extension in options.filters.iter().flat_map(|(_, extensions)| extensions).filter(|_| !folder) {
@@ -60,6 +61,10 @@ impl RuneView {
             let picker: Allocated<AnyObject> = msg_send![class!(UIDocumentPickerViewController), alloc];
             let picker: Retained<AnyObject> = msg_send![picker, initForOpeningContentTypes: &*types, asCopy: !folder];
             let _: () = msg_send![&*picker, setDelegate: self];
+            // Where the picker opens. The system shows another folder when it can't show this one.
+            if let Some(directory) = options.directory.as_deref().and_then(|directory| directory.to_str()).filter(|directory| !directory.is_empty()) {
+                let _: () = msg_send![&*picker, setDirectoryURL: &*NSURL::fileURLWithPath_isDirectory(&NSString::from_str(directory), true)];
+            }
             let _: () = msg_send![&*screen, presentViewController: &*picker, animated: true, completion: std::ptr::null::<std::ffi::c_void>()];
         }
     }

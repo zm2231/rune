@@ -1,0 +1,1 @@
+- **iOS: a file dialog opens in the folder its options name.** `Tx::open_file`, `Tx::save_file` and `Tx::open_folder` ignored `FileDialogOptions::directory` there; the document picker now opens in that folder when the system can show it, and where it chooses otherwise. Not yet run on a simulator or a device.

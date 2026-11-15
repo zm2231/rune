@@ -2825,6 +2825,7 @@ checksum = "0cde0dfb48d25d2b4862161a4d5fcc0e3c24367869ad306b0c9ec0073bfed92d"
 dependencies = [
  "bitflags 2.13.2",
  "objc2-core-foundation",
+ "objc2-core-graphics",
 ]
 
 [[package]]
@@ -4169,6 +4170,7 @@ dependencies = [
  "icu_segmenter",
  "objc2 0.5.3",
  "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-core-text",
  "parley",
  "parley_engine",

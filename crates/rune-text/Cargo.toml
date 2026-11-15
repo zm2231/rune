@@ -64,7 +64,12 @@ wasm-bindgen = { workspace = true }
 [target.'cfg(target_vendor = "apple")'.dependencies]
 objc2-core-foundation = { workspace = true, features = ["std", "CFArray", "CFDictionary", "CFLocale", "CFNumber", "CFPreferences", "CFString", "CFURL"] }
 # CoreText's font fallback and family lookups (`fonts/system_fonts/core_text.rs`); fontique already builds it.
-objc2-core-text = { version = "0.3.2", default-features = false, features = ["std", "CTFont", "CTFontDescriptor", "CTFontManager", "CTFontTraits"] }
+# `objc2-core-graphics`: on iOS, the emoji images swash can't decode, which Core Text draws into
+# a Core Graphics bitmap (`raster/color_glyph/core_text.rs`).
+objc2-core-text = { version = "0.3.2", default-features = false, features = ["std", "CTFont", "CTFontDescriptor", "CTFontManager", "CTFontTraits", "objc2-core-graphics"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage"] }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 objc2 = { workspace = true }

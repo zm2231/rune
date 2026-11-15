@@ -286,6 +286,8 @@ pub struct TextSystem {
     installed: std::collections::HashSet<String>,
     pub atlas: Atlas,
     color_glyphs: GlyphMap<ColorGlyph>,
+    /// The faces the platform draws colour glyphs from (`raster::color_glyph`), a bounded few.
+    color_faces: raster::color_glyph::ColorFaces,
     color_pixels: Vec<rune_image::pixels::Pixels>,
     color_bytes: usize,
     /// Colour glyphs placed so far, painted or from the mask cache: with the atlas's count, a
@@ -409,6 +411,7 @@ impl TextSystem {
             installed: Default::default(),
             atlas: Atlas::new(),
             color_glyphs: GlyphMap::default(),
+            color_faces: Default::default(),
             color_pixels: Vec::new(),
             color_bytes: 0,
             color_placed: 0,

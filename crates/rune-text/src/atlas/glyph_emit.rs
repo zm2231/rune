@@ -242,7 +242,19 @@ impl TextSystem {
                     .build();
                 // COLR v1 first (Windows 11's emoji, COLR v1 Noto Color Emoji), then swash's COLR v0 and bitmaps.
                 let v1 = if scaler.has_color_outlines() { crate::raster::color_glyph::colr::rasterize(font.data.as_ref(), font.index, glyph, font_size, coords) } else { None };
-                if let Some((pixels, at)) = v1.or_else(|| crate::raster::color_glyph::rasterize_color(&mut scaler, glyph as u16)) {
+                // Last, in a font with colour bitmaps, an embedded image only the platform's
+                // text system decodes (iOS's emoji). A font without them is asked nothing more.
+                // Its image is kept as a painted one is, cross-launch cache included: that
+                // cache's key names the font by its bytes and the glyph, size and phase, not
+                // who drew the image. No glyph has two drawers on one platform, and the cache
+                // is on only where a build has a link stamp (Windows), which draws none this
+                // way. Turned on here, an image saved under one iOS would be read under the
+                // next while the font's bytes and the build stayed the same.
+                let bitmaps = scaler.has_color_bitmaps();
+                let image = v1
+                    .or_else(|| crate::raster::color_glyph::rasterize_color(&mut scaler, glyph as u16))
+                    .or_else(|| if bitmaps { crate::raster::color_glyph::platform(&mut self.color_faces, font, glyph as u16, font_size) } else { None });
+                if let Some((pixels, at)) = image {
                     out.push(self.add_color_glyph(color_key, face, pixels, at).quad(gx, gy, glide, ink, byte));
                     return Placed::Other;
                 }

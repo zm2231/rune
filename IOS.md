@@ -45,7 +45,15 @@ What works:
   `Family::Named("System Font")` is San Francisco and `Family::SystemMono` SF Mono, loaded
   from the files of the system's UI font the first time a text asks for them. A character the
   app's fonts lack (emoji, Arabic, Hebrew, Devanagari, Thai, kana, hangul...) draws in the
-  font CoreText falls back to for it, loaded the same way.
+  font CoreText falls back to for it, loaded the same way. Emoji draw in colour: Apple Color
+  Emoji's images on iOS are in a compressed format of Apple's, so Core Text draws each one,
+  from the font already in memory. On the iOS simulator a smiley, a family and a flag drew
+  in colour at 17 pt and 48 pt, each as one glyph; the first emoji took under a frame (6 ms
+  at worst in a release build, a later one under half a millisecond), and the app's footprint
+  grew by about 6 MB, the font's 139 MB staying a mapped file. Not yet verified on a device.
+  `text::ink` measures an emoji through swash alone, which can't read those images, so on
+  iOS a text of emoji only reports no ink and a text with emoji is measured by its other
+  characters; that matters only to an app that centres a text by its drawn ink.
 - **Accent.** `Cx::accent` is the view's `tintColor` and `Cx::focus_color` that colour at half
   its alpha. A view inherits its tint from the views above it, which is where a UIKit host's
   `tintColor` and a SwiftUI host's `.tint()` land; where none is set it is iOS's system blue, as

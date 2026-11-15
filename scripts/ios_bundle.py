@@ -74,6 +74,51 @@ def min_os_mismatch(binary, built, min_os):
     return None
 
 
+def simulator_pid(launch_output):
+    """The process id `simctl launch` prints as `<bundle id>: <pid>`, or None when it printed none."""
+    found = re.findall(r":\s*(\d+)\s*$", launch_output, flags=re.M)
+    return int(found[-1]) if found else None
+
+
+def alive_simulator(ps_output, pid):
+    """Whether `ps -p <pid> -o pid=` listed the process.
+
+    A simulator's app is a process of this Mac, under the simulator's own launchd, so the id
+    `simctl launch` printed is one `ps` knows, and a process that crashed is gone from it.
+    """
+    return any(line.strip() == str(pid) for line in ps_output.splitlines())
+
+
+def simulator_crash_log(exe, folder, logs):
+    """Where macOS writes a simulator app's crash log, and the newest of the ones it has.
+
+    `logs` is each `<exe>-YYYY-MM-DD-HHMMSS.ips` found in the folder, as (modified, path).
+    """
+    newest = f"; the newest there is {max(logs)[1]}" if logs else ", once it is written"
+    return f"Its crash log is {folder}/{exe}-*.ips{newest}"
+
+
+def launched_pid(launch_json):
+    """The process id in what `devicectl device process launch --json-output` wrote, or None."""
+    process = (launch_json.get("result") or {}).get("process") or {}
+    pid = process.get("processIdentifier")
+    # JSON's true is an int to Python, and no process.
+    return pid if type(pid) is int else None
+
+
+def alive_device(processes_json, pid):
+    """Whether what `devicectl device info processes --json-output` wrote lists the process."""
+    running = (processes_json.get("result") or {}).get("runningProcesses") or []
+    return any(process.get("processIdentifier") == pid for process in running)
+
+
+def device_crash_logs(device):
+    """The commands that list a device's crash logs and copy one of them here."""
+    files = f"xcrun devicectl device info files --device {device} --domain-type systemCrashLogs"
+    copy = f"xcrun devicectl device copy from --device {device} --domain-type systemCrashLogs --source <file> --destination ."
+    return f"The device keeps its crash log. List them, then copy the newest:\n  {files}\n  {copy}"
+
+
 def deployment_target(environ):
     """The deployment target `ios-lib` builds with: the caller's if they set one, else MIN_OS."""
     target = environ.get(TARGET_VAR) or MIN_OS

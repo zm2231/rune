@@ -186,9 +186,21 @@ earlier; arguments after `--` go to the app. No Xcode project is involved.
 usage: ios-app [-h] --name NAME --id ID --bin BIN [--exe EXE] [--out OUT]
                [--simulator SIMULATOR] [--device DEVICE] [--profile PROFILE]
                [--min-os X.Y] [--url-scheme SCHEME] [--no-install]
-               [--no-launch]
+               [--no-launch] [--wait SECONDS]
                ...
 ```
+
+An app can die as it starts in two ways, and the script fails on both. The app launches and
+is gone a moment later: `--wait SECONDS` after the launch (3 unless told; `--wait 0` skips
+this check) the launched process must still be running, or the script exits non-zero and
+says where the crash log is. Or the launch itself fails, because the app died before it had
+a process: the script exits non-zero and says where the crash log is, with what the tool
+said. A check that passes proves that much and no more: the process is still running after
+the wait. On a simulator that has just booted the app can still be on its way to the screen
+then. A simulator's app is a process of the Mac, so the script asks `ps` for the process id
+`simctl launch` printed, and macOS writes the crash log to
+`~/Library/Logs/DiagnosticReports/<executable>-YYYY-MM-DD-HHMMSS.ips`; the script names the
+newest one there.
 
 ### The deployment target
 
@@ -269,6 +281,17 @@ The script embeds the profile and signs with the profile's entitlements and the 
 `Apple Development` identity; set `IOS_APP_SIGN` to name another. `xcrun devicectl list devices`
 lists paired devices. Xcode keeps the profiles it manages in
 `~/Library/Developer/Xcode/UserData/Provisioning Profiles`.
+
+`--wait` checks a device's launch too: the script reads the process id from the launch's JSON
+result and looks for it in `devicectl device info processes`. The device keeps its own crash
+logs, so for an app that died the script prints the commands that list them and copy one to
+the Mac:
+
+```sh
+xcrun devicectl device info files --device DEVICE_UDID --domain-type systemCrashLogs
+xcrun devicectl device copy from --device DEVICE_UDID --domain-type systemCrashLogs \
+    --source FILE --destination .
+```
 
 ## The app's entry point
 

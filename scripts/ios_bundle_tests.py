@@ -127,5 +127,43 @@ class DeploymentTarget(unittest.TestCase):
         self.assertIn("IPHONEOS_DEPLOYMENT_TARGET: 14.0 is below 16.0", str(raised.exception))
 
 
+class Liveness(unittest.TestCase):
+    def test_the_simulators_pid_is_the_number_after_the_bundle_id(self):
+        pid = ios_bundle.simulator_pid
+        self.assertEqual(pid("com.example.hello: 4242"), 4242)
+        self.assertEqual(pid("com.example.hello: 4242\n"), 4242)
+        self.assertEqual(pid("a note first\ncom.example.hello:4242  \n"), 4242)
+        for none in ("", "launched", "com.example.hello: pid", "4242"):
+            self.assertIsNone(pid(none), none)
+
+    def test_a_simulator_app_is_alive_while_ps_lists_its_pid(self):
+        self.assertTrue(ios_bundle.alive_simulator(" 4242\n", 4242))
+        self.assertTrue(ios_bundle.alive_simulator("4242", 4242))
+        self.assertFalse(ios_bundle.alive_simulator("", 4242), "ps prints nothing for a process that is gone")
+        self.assertFalse(ios_bundle.alive_simulator("14242\n", 4242))
+
+    def test_a_devices_pid_is_read_from_the_launch_result_and_looked_for_among_its_processes(self):
+        self.assertEqual(ios_bundle.launched_pid({"info": {}, "result": {"process": {"processIdentifier": 977}}}), 977)
+        for none in ({}, {"result": {}}, {"result": {"process": {}}}, {"result": {"process": {"processIdentifier": "977"}}},
+                     {"result": {"process": {"processIdentifier": True}}}, {"error": {"code": 1}}):
+            self.assertIsNone(ios_bundle.launched_pid(none), none)
+        processes = {"result": {"runningProcesses": [{"processIdentifier": 1, "executable": "file:///sbin/launchd"}, {"processIdentifier": 977}]}}
+        self.assertTrue(ios_bundle.alive_device(processes, 977))
+        self.assertFalse(ios_bundle.alive_device(processes, 978))
+        self.assertFalse(ios_bundle.alive_device({"result": {}}, 977))
+
+    def test_a_dead_simulator_app_gets_the_folder_of_its_crash_logs_and_the_newest_one_there(self):
+        folder = "~/Library/Logs/DiagnosticReports"
+        self.assertEqual(ios_bundle.simulator_crash_log("hello", folder, []),
+                         "Its crash log is ~/Library/Logs/DiagnosticReports/hello-*.ips, once it is written")
+        logs = [(1000.0, "reports/hello-2026-11-14-090000.ips"), (2000.0, "reports/hello-2026-11-15-101500.ips"), (1500.0, "reports/hello-2026-11-15-080000.ips")]
+        self.assertTrue(ios_bundle.simulator_crash_log("hello", folder, logs).endswith("hello-*.ips; the newest there is reports/hello-2026-11-15-101500.ips"))
+
+    def test_a_dead_device_app_gets_the_commands_that_list_and_copy_its_crash_log(self):
+        text = ios_bundle.device_crash_logs("phone")
+        self.assertIn("xcrun devicectl device info files --device phone --domain-type systemCrashLogs", text)
+        self.assertIn("xcrun devicectl device copy from --device phone --domain-type systemCrashLogs --source <file> --destination .", text)
+
+
 if __name__ == "__main__":
     unittest.main()

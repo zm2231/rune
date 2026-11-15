@@ -1,5 +1,8 @@
 """Bundle a Rune app built for iOS, install it on a simulator or a device and launch it."""
 import argparse
+import glob
+import json
+import math
 import os
 from pathlib import Path
 import plistlib
@@ -7,12 +10,16 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 
-from ios_bundle import MIN_OS, build_version, min_os_mismatch, min_os_problem
+from ios_bundle import (MIN_OS, alive_device, alive_simulator, build_version, device_crash_logs, launched_pid,
+                        min_os_mismatch, min_os_problem, simulator_crash_log, simulator_pid)
 from mac_app_install import command
 
 # Booting a simulator and installing an app on it take far longer than the Mac installer's steps.
 SLOW = 180
+# Where macOS writes the crash log of a simulator's app, which is a process of this Mac.
+REPORTS = Path("~/Library/Logs/DiagnosticReports")
 
 
 def info(args):
@@ -104,15 +111,54 @@ def install_simulator(stage, args):
     command(*simctl, "terminate", args.simulator, args.id, check=False, timeout=SLOW)
     command(*simctl, "install", args.simulator, str(stage), timeout=SLOW)
     if not args.no_launch:
-        print(command(*simctl, "launch", args.simulator, args.id, *args.args, timeout=SLOW).stdout.strip())
+        launched = command(*simctl, "launch", args.simulator, args.id, *args.args, check=False, timeout=SLOW)
+        if launched.stdout.strip():
+            print(launched.stdout.strip())
+        outlive(args, launched, simulator_pid(launched.stdout),
+                lambda pid: alive_simulator(command("ps", "-p", str(pid), "-o", "pid=", check=False).stdout, pid), lambda: crash_logs(args.exe))
+
+
+def crash_logs(exe):
+    """Where macOS writes a simulator app's crash log, and the newest one it has for this app."""
+    logs = [(log.stat().st_mtime, log) for log in REPORTS.expanduser().glob(f"{glob.escape(exe)}-*.ips")]
+    return simulator_crash_log(exe, REPORTS, logs)
+
+
+def outlive(args, launched, pid, alive, crash_log):
+    """Fail when the app did not launch or is gone `--wait` seconds on, saying where its crash log is.
+
+    An app that crashes as it starts either fails its launch, when it dies before the system
+    has a process to name, or launches and is gone a moment later.
+    """
+    said = (launched.stdout + launched.stderr).strip()
+    if launched.returncode:
+        raise RuntimeError(f"{args.name} did not launch, as an app that dies while it starts does not. {crash_log()}\n{said}")
+    if not args.wait:
+        return
+    if pid is None:
+        raise RuntimeError(f"{args.name} was launched, but the launch named no process to watch (--wait 0 skips the check). It said:\n{said}")
+    time.sleep(args.wait)
+    if not alive(pid):
+        raise RuntimeError(f"{args.name} (pid {pid}) was gone {args.wait:g}s after its launch. {crash_log()}")
+
+
+def devicectl(*argv, check=True):
+    """Run a `devicectl device` command, whose first two words name it; its JSON result is the answer's `json`."""
+    with tempfile.TemporaryDirectory() as tmp:
+        result = Path(tmp) / "result.json"
+        # devicectl's own flags go before the app's identifier, which its arguments follow.
+        ran = command("xcrun", "devicectl", "device", *argv[:2], "--json-output", str(result), *argv[2:], check=check, timeout=SLOW)
+        ran.json = json.loads(result.read_text()) if not ran.returncode and result.is_file() else {}
+        return ran
 
 
 def install_device(stage, args):
     """Replace the app on a paired device and, unless told not to, launch it in place of a running one."""
-    device = ("xcrun", "devicectl", "device")
-    command(*device, "install", "app", "--device", args.device, str(stage), timeout=SLOW)
+    command("xcrun", "devicectl", "device", "install", "app", "--device", args.device, str(stage), timeout=SLOW)
     if not args.no_launch:
-        command(*device, "process", "launch", "--device", args.device, "--terminate-existing", args.id, *args.args, timeout=SLOW)
+        launched = devicectl("process", "launch", "--device", args.device, "--terminate-existing", args.id, *args.args, check=False)
+        outlive(args, launched, launched_pid(launched.json),
+                lambda pid: alive_device(devicectl("info", "processes", "--device", args.device).json, pid), lambda: device_crash_logs(args.device))
 
 
 def main():
@@ -130,6 +176,8 @@ def main():
                         help="a scheme whose links open the app (myapp for myapp://...); repeat for more")
     parser.add_argument("--no-install", action="store_true", help="stage the bundle only")
     parser.add_argument("--no-launch", action="store_true", help="install without launching")
+    parser.add_argument("--wait", type=float, default=3, metavar="SECONDS",
+                        help="how long a launched app must stay running, or the launch failed (default: 3; 0 skips the check)")
     parser.add_argument("args", nargs=argparse.REMAINDER, help="after --, passed to the app")
     args = parser.parse_args()
     if args.args[:1] == ["--"]:
@@ -141,6 +189,8 @@ def main():
             parser.error(f"--url-scheme {scheme!r}: a scheme is the part before ://, a letter then letters, digits, + . or -")
     if min_os_problem(args.min_os):
         parser.error(f"--min-os: {min_os_problem(args.min_os)}")
+    if not 0 <= args.wait < math.inf:
+        parser.error(f"--wait {args.wait:g}: a number of seconds to wait, 0 or more")
     if bool(args.device) != bool(args.profile):
         parser.error("--device and --profile go together: a device runs only what a profile covers")
     args.exe = args.exe or Path(args.bin).name

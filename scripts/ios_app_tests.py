@@ -1,6 +1,7 @@
 """Staged-bundle regressions: never boots a simulator."""
 import contextlib
 import io
+import json
 from pathlib import Path
 import plistlib
 import tempfile
@@ -22,16 +23,36 @@ Load command 11
   version 27106.1
 """
 
+# What `devicectl device process launch --json-output` is taken to write for a launched app.
+LAUNCHED = {"result": {"process": {"processIdentifier": 977}}}
+# What `simctl launch` said, exiting 3, for an app that died before it had a process. Abridged.
+NO_HANDLE = """An error was encountered processing the command (domain=NSPOSIXErrorDomain, code=3):
+Simulator device failed to launch com.example.hello.
+[...] did not return a process handle nor launch error.
+"""
+
 
 class Tools:
-    """Stands in for `command`: keeps each call and answers vtool as a binary built this way."""
+    """Stands in for `command`: keeps each call and answers vtool as a binary built this way.
 
-    def __init__(self, platform="IOSSIMULATOR", minos="16.0"):
+    `stdout` and `json` map a word of a command line to what that command prints, or writes to
+    its `--json-output` file; `fails` maps one to what a command that exits non-zero says.
+    """
+
+    def __init__(self, platform="IOSSIMULATOR", minos="16.0", stdout=None, json=None, fails=None):
         self.calls, self.platform, self.minos = [], platform, minos
+        self.stdout, self.json, self.fails = stdout or {}, json or {}, fails or {}
 
     def __call__(self, *argv, **_):
         self.calls.append(argv)
+        failure = next((text for word, text in self.fails.items() if word in argv), None)
+        if failure is not None:
+            return SimpleNamespace(stdout="", stderr=failure, returncode=3)
         stdout = VTOOL.format(path=argv[-1], platform=self.platform, minos=self.minos) if "vtool" in argv else ""
+        stdout = next((text for word, text in self.stdout.items() if word in argv), stdout)
+        if "--json-output" in argv:
+            written = next(value for word, value in self.json.items() if word in argv)
+            Path(argv[argv.index("--json-output") + 1]).write_text(json.dumps(written))
         return SimpleNamespace(stdout=stdout, stderr="", returncode=0)
 
     def ran(self, tool):
@@ -46,7 +67,7 @@ def args(tmp, **over):
     binary.chmod(0o755)
     base = dict(name="Hello", id="com.example.hello", bin=str(binary), exe="hello",
                 simulator="booted", device=None, profile=None, url_scheme=[], no_launch=False, args=[],
-                min_os="16.0")
+                min_os="16.0", wait=0)
     return SimpleNamespace(**{**base, **over})
 
 
@@ -153,18 +174,16 @@ class BundleRegression(unittest.TestCase):
             self.assertFalse((stage / "stale").exists())
 
     def test_the_booted_simulator_is_not_booted_again_and_the_app_is_replaced_then_launched(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command") as command, \
+        with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command", Tools()) as tools, \
                 contextlib.redirect_stdout(io.StringIO()):
             ios_app.install_simulator(Path(tmp) / "Hello.app", args(tmp, args=["--flag"]))
-            verbs = [call.args[2] for call in command.call_args_list]
-            self.assertEqual(verbs, ["terminate", "install", "launch"])
-            self.assertEqual(command.call_args.args[-1], "--flag")
+            self.assertEqual([argv[1] for argv in tools.ran("simctl")], ["terminate", "install", "launch"])
+            self.assertEqual(tools.calls[-1][-1], "--flag")
 
     def test_a_named_simulator_is_booted_first_and_no_launch_stops_after_install(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command") as command:
+        with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command", Tools()) as tools:
             ios_app.install_simulator(Path(tmp) / "Hello.app", args(tmp, simulator="iPhone 18 Pro", no_launch=True))
-            verbs = [call.args[2] for call in command.call_args_list]
-            self.assertEqual(verbs, ["boot", "bootstatus", "terminate", "install"])
+            self.assertEqual([argv[1] for argv in tools.ran("simctl")], ["boot", "bootstatus", "terminate", "install"])
 
     def test_a_device_bundle_carries_its_profile_and_is_signed_with_the_profiles_entitlements_for_this_app(self):
         granted = {"Entitlements": {"application-identifier": "TEAM123456.*", "com.apple.developer.team-identifier": "TEAM123456", "get-task-allow": True}}
@@ -190,11 +209,117 @@ class BundleRegression(unittest.TestCase):
             self.assertIs(signed["entitlements"]["get-task-allow"], True)
 
     def test_a_device_install_replaces_the_app_and_launches_it_over_a_running_one(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command") as command:
-            ios_app.install_device(Path(tmp) / "Hello.app", args(tmp, device="phone"))
-            install, launch = (call.args for call in command.call_args_list)
-            self.assertEqual(install[3:7], ("install", "app", "--device", "phone"))
-            self.assertEqual(launch[3:], ("process", "launch", "--device", "phone", "--terminate-existing", "com.example.hello"))
+        with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command", Tools(json={"launch": LAUNCHED})) as tools:
+            ios_app.install_device(Path(tmp) / "Hello.app", args(tmp, device="phone", args=["--flag"]))
+            install, launch = tools.ran("devicectl")
+            self.assertEqual(install[2:6], ("install", "app", "--device", "phone"))
+            self.assertEqual(launch[2:5] + launch[6:], ("process", "launch", "--json-output", "--device", "phone", "--terminate-existing", "com.example.hello", "--flag"))
+
+
+class LaunchRegression(unittest.TestCase):
+    def simulator(self, tmp, ps, launched="com.example.hello: 4242\n", **over):
+        """Install and launch on a simulator whose `ps` answers this; returns the fake tools."""
+        tools = Tools(stdout={"launch": launched, "ps": ps})
+        with patch.object(ios_app, "command", tools), patch.object(ios_app.time, "sleep") as sleep, \
+                patch.object(ios_app, "REPORTS", Path(tmp) / "reports"), contextlib.redirect_stdout(io.StringIO()):
+            try:
+                ios_app.install_simulator(Path(tmp) / "Hello.app", args(tmp, **{"wait": 3, **over}))
+            finally:
+                tools.slept = [call.args[0] for call in sleep.call_args_list]
+        return tools
+
+    def test_a_simulator_app_still_running_after_the_wait_is_a_launch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = self.simulator(tmp, " 4242\n", wait=1.5)
+            self.assertEqual(tools.slept, [1.5])
+            self.assertEqual(tools.calls[-1], ("ps", "-p", "4242", "-o", "pid="))
+
+    def test_a_simulator_app_gone_after_the_wait_fails_and_names_its_newest_crash_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(RuntimeError) as raised:
+                self.simulator(tmp, "")
+            self.assertIn("Hello (pid 4242) was gone 3s after its launch", str(raised.exception))
+            self.assertIn("reports/hello-*.ips, once it is written", str(raised.exception))
+            reports = Path(tmp) / "reports"
+            reports.mkdir()
+            for age, name in enumerate(("hello-2026-11-15-101500.ips", "hello-2026-11-14-090000.ips", "other-2026-11-15-120000.ips")):
+                (reports / name).write_text("{}")
+                ios_app.os.utime(reports / name, (1000 - age, 1000 - age))
+            with self.assertRaises(RuntimeError) as raised:
+                self.simulator(tmp, "")
+            self.assertIn(f"the newest there is {reports / 'hello-2026-11-15-101500.ips'}", str(raised.exception))
+
+    def test_a_wait_of_zero_and_no_launch_watch_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for over in (dict(wait=0), dict(no_launch=True)):
+                tools = self.simulator(tmp, "", **over)
+                self.assertEqual(tools.slept, [])
+                self.assertEqual(tools.ran("ps"), [])
+
+    def test_a_launch_that_names_no_process_fails_rather_than_pass_unwatched(self):
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(RuntimeError) as raised:
+            self.simulator(tmp, "", launched="launched\n")
+        self.assertIn("named no process to watch (--wait 0 skips the check). It said:\nlaunched", str(raised.exception))
+
+    def test_a_simulator_launch_that_fails_is_an_app_that_died_with_its_crash_log_and_what_simctl_said(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = Tools(fails={"launch": NO_HANDLE})
+            with patch.object(ios_app, "command", tools), patch.object(ios_app.time, "sleep") as sleep, \
+                    patch.object(ios_app, "REPORTS", Path(tmp) / "reports"), contextlib.redirect_stdout(io.StringIO()) as printed:
+                for wait in (3, 0):
+                    with self.assertRaises(RuntimeError, msg=wait) as raised:
+                        ios_app.install_simulator(Path(tmp) / "Hello.app", args(tmp, wait=wait))
+                    self.assertIn("Hello did not launch", str(raised.exception))
+                    self.assertIn("reports/hello-*.ips", str(raised.exception))
+                    self.assertIn("did not return a process handle nor launch error", str(raised.exception))
+            sleep.assert_not_called()
+            self.assertEqual(tools.ran("ps"), [])
+            self.assertEqual(printed.getvalue(), "")
+
+    def test_a_device_launch_that_fails_is_an_app_that_died_with_the_crash_log_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = Tools(fails={"launch": "ERROR: The application failed to launch.\n"})
+            with patch.object(ios_app, "command", tools), self.assertRaises(RuntimeError) as raised:
+                ios_app.install_device(Path(tmp) / "Hello.app", args(tmp, device="phone", wait=3))
+            self.assertIn("Hello did not launch", str(raised.exception))
+            self.assertIn("--device phone --domain-type systemCrashLogs", str(raised.exception))
+            self.assertIn("The application failed to launch.", str(raised.exception))
+            self.assertEqual(len(tools.ran("devicectl")), 2, "the install and the launch")
+
+    def device(self, tmp, running):
+        tools = Tools(json={"launch": LAUNCHED, "processes": {"result": {"runningProcesses": [{"processIdentifier": pid} for pid in running]}}})
+        with patch.object(ios_app, "command", tools), patch.object(ios_app.time, "sleep"):
+            ios_app.install_device(Path(tmp) / "Hello.app", args(tmp, device="phone", wait=3))
+        return tools
+
+    def test_a_device_app_is_looked_for_among_the_devices_processes_after_the_wait(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = self.device(tmp, [1, 977])
+            asked = tools.ran("devicectl")[-1]
+            self.assertEqual(asked[1:5] + asked[6:], ("device", "info", "processes", "--json-output", "--device", "phone"))
+
+    def test_a_device_app_gone_after_the_wait_fails_with_the_commands_that_fetch_its_crash_log(self):
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(RuntimeError) as raised:
+            self.device(tmp, [1, 2])
+        self.assertIn("Hello (pid 977) was gone 3s after its launch", str(raised.exception))
+        self.assertIn("xcrun devicectl device info files --device phone --domain-type systemCrashLogs", str(raised.exception))
+        self.assertIn("xcrun devicectl device copy from --device phone --domain-type systemCrashLogs --source <file> --destination .", str(raised.exception))
+
+    def test_the_wait_flag_takes_seconds_and_refuses_a_negative_wait(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "build") as build, \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as errors:
+            base = ["ios-app", "--name", "Hello", "--id", "com.example.hello", "--bin", args(tmp).bin, "--out", tmp, "--no-install"]
+            for flags, wait in (([], 3), (["--wait", "0"], 0), (["--wait", "0.5"], 0.5)):
+                with patch.object(ios_app.sys, "argv", base + flags):
+                    ios_app.main()
+                self.assertEqual(build.call_args.args[1].wait, wait)
+            build.reset_mock()
+            for refused in ("-1", "nan", "inf", "soon"):
+                with patch.object(ios_app.sys, "argv", base + [f"--wait={refused}"]), self.assertRaises(SystemExit, msg=refused):
+                    ios_app.main()
+            build.assert_not_called()
+            for said in ("--wait -1:", "--wait nan:", "--wait inf: a number of seconds to wait, 0 or more"):
+                self.assertIn(said, errors.getvalue())
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ members = [
     "crates/procwatch",
     "crates/rune-register",
     "crates/rune-knobs",
+    "crates/rune-ios",
     "crates/rune-mac",
     "crates/rune-notify",
     "crates/rune-mermaid",
@@ -86,6 +87,7 @@ default-members = [
     "crates/rune-light",
     "crates/procwatch",
     "crates/rune-register",
+    "crates/rune-ios",
     "crates/rune-knobs",
     "crates/rune-mermaid",
     "crates/rune-perf",
@@ -187,6 +189,7 @@ rune-fx = { path = "crates/rune-fx" }
 rune-gpu = { path = "crates/rune-gpu", default-features = false }
 rune-highlights = { path = "crates/rune-highlights" }
 rune-image = { path = "crates/rune-image", default-features = false }
+rune-ios = { path = "crates/rune-ios" }
 rune-kit = { path = "crates/rune-kit", default-features = false }
 rune-knobs = { path = "crates/rune-knobs" }
 rune-light = { path = "crates/rune-light" }
@@ -206,6 +209,7 @@ rune-theme-opencode = { path = "themes/opencode" }
 blake3 = "1"
 block2 = "0.6"
 bytemuck = { version = "1.25", features = ["derive"] }
+dispatch2 = { version = "0.3", default-features = false }
 half = "2"
 image = { version = "0.25", default-features = false }
 js-sys = "0.3"
@@ -219,6 +223,8 @@ objc2-core-graphics = { version = "0.3", default-features = false }
 objc2-core-video = { version = "0.3", default-features = false }
 objc2-foundation = { version = "0.3", default-features = false }
 objc2-metal = { version = "0.3", default-features = false }
+objc2-quartz-core = { version = "0.3", default-features = false }
+objc2-ui-kit = { version = "0.3", default-features = false }
 parley = { version = "0.12", default-features = false }
 parley_engine = { version = "0.12", default-features = false }
 png = "0.18"

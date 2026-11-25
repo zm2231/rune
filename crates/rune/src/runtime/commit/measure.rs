@@ -82,6 +82,7 @@ impl RuntimeCore {
             titlebar_inset: self.host.titlebar_inset / self.host.zoom.k,
             chrome: self.host.titlebar.insets.zoomed(self.host.zoom.k),
             safe_area: self.safe_area(),
+            keyboard_inset: self.keyboard_inset(),
             maximized: self.host.maximized,
             full_screen: self.host.full_screen,
             window_backdrop: self.host.window_backdrop,
@@ -565,6 +566,7 @@ impl Measurement<'_> {
             wm_state: this.wm_state,
             wm_state_read: std::cell::Cell::new(false),
             safe_area: this.safe_area,
+            keyboard_inset: this.keyboard_inset,
             layout: this.layout_seen.clone(),
             layout_reads: Default::default(),
         };

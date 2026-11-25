@@ -355,6 +355,22 @@ impl TextInput {
         self.edits.visual(move |e| e.spellcheck(on));
         self
     }
+    /// The software keyboard this field asks for ([`El::keyboard`](rune::El::keyboard)).
+    pub fn keyboard(mut self, keyboard: rune::Keyboard) -> Self {
+        self.edits.visual(move |e| e.keyboard(keyboard));
+        self
+    }
+    /// What the software keyboard's return key says ([`El::return_key`](rune::El::return_key)).
+    pub fn return_key(mut self, key: rune::ReturnKey) -> Self {
+        self.edits.visual(move |e| e.return_key(key));
+        self
+    }
+    /// Whether the platform's keyboard may correct and predict words
+    /// ([`El::autocorrect`](rune::El::autocorrect)).
+    pub fn autocorrect(mut self, on: bool) -> Self {
+        self.edits.visual(move |e| e.autocorrect(on));
+        self
+    }
     /// Scroll enclosing scroll viewports to bring this field's caret into view when it gains
     /// focus ([`El::reveal_caret_on_focus`](rune::El::reveal_caret_on_focus)). Off by default
     /// (`false`).

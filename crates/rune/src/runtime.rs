@@ -70,6 +70,7 @@ mod elements;
 pub(crate) mod event_log;
 mod font_families;
 mod frame;
+mod host_text;
 #[cfg(feature = "hot")]
 mod hot_state;
 mod init;
@@ -201,6 +202,7 @@ pub use cx::{Cx, Env, Waker, commit_generation};
 pub(crate) use cx::caret_of;
 use cx::COMMITS;
 pub use elements::{ElementInfo, MatchedHandover, Pose, ResolvedTextStyle};
+pub use host_text::{HostEdit, HostText};
 pub use pick::{Pick, Picked};
 #[cfg(debug_assertions)]
 pub(crate) use layout_read::{anchor_read_key, window_read_key};

@@ -47,6 +47,8 @@ pub struct InputSpec {
     pub(crate) copy: Option<InputCopyFn>,
     /// `El::spellcheck`: the platform's checker marks misspelled words.
     pub(crate) spellcheck: bool,
+    /// `El::keyboard`, `El::return_key` and `El::autocorrect`, for a platform text system.
+    pub(crate) hints: HintSpec,
     /// [`El::reveal_caret_on_focus`]: scroll enclosing viewports to the caret when this field gains focus.
     pub(crate) reveal_caret_on_focus: bool,
     /// `El::read_only`: mirrors read-only state onto offscreen virtual inputs.
@@ -122,6 +124,7 @@ pub fn text_input(edit: &TextEdit, style: TextStyle) -> El {
         paste: None,
         copy: None,
         spellcheck: false,
+        hints: HintSpec::default(),
         reveal_caret_on_focus: false,
         read_only: false,
         selection_style: None,

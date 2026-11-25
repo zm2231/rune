@@ -400,6 +400,7 @@ impl RuntimeCore {
                 }
                 TouchEffect::CommitHold { origin: (x, y) } => {
                     if !self.cancel_drag() { self.drop_press(); }
+                    if self.host_owns_hold(x, y) { continue; }
                     self.secondary_down(x, y);
                     self.secondary_up(app, x, y);
                 }

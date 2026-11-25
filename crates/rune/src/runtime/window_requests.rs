@@ -123,6 +123,9 @@ pub(crate) struct HostState {
     /// smaller than the layout viewport (e.g. an on-screen keyboard under `resizes-visual`), or
     /// `None` when the full layout viewport is visible.
     pub(in crate::runtime) visual_viewport_y: Option<(f32, f32)>,
+    /// The height an on-screen keyboard covers at the bottom of the window, in points
+    /// (`Runtime::set_keyboard_inset`).
+    pub(in crate::runtime) keyboard_inset: f32,
 }
 
 impl HostState {
@@ -191,6 +194,7 @@ impl HostState {
             wm_state_read: false,
             safe_area: None,
             visual_viewport_y: None,
+            keyboard_inset: 0.0,
         }
     }
 

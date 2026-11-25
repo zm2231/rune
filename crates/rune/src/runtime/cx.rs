@@ -81,6 +81,7 @@ pub(crate) struct CxCore {
     pub(super) wm_state: crate::WindowManagerState,
     pub(super) wm_state_read: std::cell::Cell<bool>,
     pub(super) safe_area: [f32; 4],
+    pub(super) keyboard_inset: f32,
     pub(super) layout: layout_read::LayoutRects,
     pub(super) layout_reads: std::cell::RefCell<layout_read::LayoutReads>,
 }
@@ -148,6 +149,7 @@ impl CxCore {
     pub(crate) fn accent(&self) -> Color { self.system_accent.accent(self.env.system_dark) }
     pub(crate) fn focus_color(&self) -> Color { self.system_accent.focus(self.env.system_dark) }
     pub(crate) fn safe_area(&self) -> [f32; 4] { self.safe_area }
+    pub(crate) fn keyboard_inset(&self) -> f32 { self.keyboard_inset }
     pub(crate) fn hover_none(&self) -> bool {
         #[cfg(target_arch = "wasm32")]
         { crate::platform::web::hover_none() }
@@ -586,6 +588,12 @@ impl<S> Cx<S> {
     /// can extend to the screen edges.
     #[inline(always)]
     pub fn safe_area(&self) -> [f32; 4] { self.core.safe_area() }
+    /// The height in points an on-screen keyboard covers at the bottom of the window, as the
+    /// host reports it ([`Runtime::set_keyboard_inset`](crate::Runtime::set_keyboard_inset)); 0
+    /// with no keyboard up. A focused field already scrolls above it; pad a bar pinned to the
+    /// bottom by it so the bar rides the keyboard. A change re-runs the view.
+    #[inline(always)]
+    pub fn keyboard_inset(&self) -> f32 { self.core.keyboard_inset() }
     /// The primary pointer can't hover: a browser's `(hover: none)`, a phone's or tablet's touch
     /// screen. What a mouse would reveal on hover (a code block's Copy, a row's actions) should
     /// show without it. True on iOS, false on other native platforms. A change re-runs the view.

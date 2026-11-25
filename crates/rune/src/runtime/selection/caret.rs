@@ -56,6 +56,9 @@ pub(crate) struct TextInputState {
     pub(in crate::runtime) caret_watch: bool,
     /// An edit ran this frame: keep the caret in its scroll viewport after the commit.
     pub(in crate::runtime) caret_follow: bool,
+    /// `Runtime::set_native_text_selection`: the host's text system owns a long press in the
+    /// focused editable field.
+    pub(in crate::runtime) native_text_selection: bool,
     /// Snapshot of the focused field before an `El::on_input_key` handler consumed a key; resolved
     /// against the committed tree so edits and caret moves follow the caret without calling
     /// `access` after a handler that may have removed the field.
@@ -103,6 +106,7 @@ impl TextInputState {
             caret: None,
             caret_watch: false,
             caret_follow: false,
+            native_text_selection: false,
             caret_follow_check: None,
             app_ime_comp: Default::default(),
             ime_option_as_alt: crate::OptionAsAlt::None,
@@ -294,7 +298,7 @@ impl RuntimeCore {
                 let a = usize::from(!horizontal);
                 let mut start = scroll_offsets(&self.scroll.scrolls, &self.tree.nodes, v).fold(self.tree.nodes[v].target[a], |p, o| p - o[a]);
                 let mut end = start + (self.tree.nodes[v].target[a + 2] - self.tree.nodes[v].target[a]);
-                if !horizontal && let Some((vis_top, vis_bottom)) = self.host.visual_viewport_y {
+                if !horizontal && let Some((vis_top, vis_bottom)) = self.host.visible_band(self.viewport.1) {
                     let zoom = self.host.zoom().max(1e-3);
                     let clipped_start = start.max(vis_top / zoom);
                     let clipped_end = end.min(vis_bottom / zoom);

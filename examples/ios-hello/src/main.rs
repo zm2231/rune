@@ -117,4 +117,3 @@ mod tests {
         assert_eq!(rt.state.picked, None, "a drag picks no row");
     }
 }
-

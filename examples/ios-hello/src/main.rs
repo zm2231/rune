@@ -6,7 +6,7 @@
 #![forbid(unsafe_code)]
 
 use rune::tok;
-use rune::{AppSpec, Color, Cx, El, Haptic, HapticOutcome, ImpactStrength, ScrollSpec, TextStyle, Tx, col, el, row, text};
+use rune::{AppSpec, Color, Cx, El, Haptic, HapticOutcome, ImpactStrength, ScrollSpec, TextStyle, Tx, col, row, text};
 
 const ROWS: usize = 80;
 const TITLE: TextStyle = TextStyle::new(28.0, 700.0);
@@ -72,7 +72,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     }
     col().w_full().h_full().fill(t.bg).pt(top).pl(left).pr(right)
         .child(header(s, cx, &t))
-        .child(el().key("list").w_full().grow(1.0).scroll(ScrollSpec { stick_bottom: false }).child(list))
+        .child(col().key("list").w_full().grow(1.0).scroll(ScrollSpec { stick_bottom: false }).child(list))
 }
 
 fn spec() -> AppSpec<State> {
@@ -89,7 +89,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rune::{Env, Runtime};
+    use rune::{Env, Runtime, TouchPhase};
 
     #[test]
     fn the_header_keeps_clear_of_the_safe_area() {
@@ -99,4 +99,22 @@ mod tests {
         let header = rt.presented("header").unwrap_or_else(|| panic!("no header")).0;
         assert_eq!(header[1], 59.0);
     }
+
+    #[test]
+    fn a_finger_dragged_up_scrolls_the_list() {
+        let mut rt = Runtime::new(State::default(), view, (402.0, 874.0), Env { system_dark: true, scale: 3.0 });
+        rt.frame(0.0);
+        let top = |rt: &Runtime<State>| rt.presented("row-0").unwrap_or_else(|| panic!("no row 0")).0[1];
+        let before = top(&rt);
+        rt.touch(1, TouchPhase::Started, 200.0, 750.0, 0.0);
+        for i in 1..=20 {
+            rt.touch(1, TouchPhase::Moved, 200.0, 750.0 - i as f32 * 20.0, i as f64 * 0.016);
+            rt.frame(0.016);
+        }
+        rt.touch(1, TouchPhase::Ended, 200.0, 350.0, 0.33);
+        rt.frame(0.016);
+        assert!(top(&rt) < before - 300.0, "row 0 moved from {before} to {}", top(&rt));
+        assert_eq!(rt.state.picked, None, "a drag picks no row");
+    }
 }
+

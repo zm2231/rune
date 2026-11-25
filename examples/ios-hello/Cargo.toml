@@ -1,0 +1,12 @@
+[package]
+name = "ios-hello"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rune = { workspace = true, default-features = true }
+rune-ios = { workspace = true }
+
+[lints]
+workspace = true

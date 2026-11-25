@@ -15,7 +15,7 @@ UIKit hierarchy can place a `RuneView::new(mtm, spec)` anywhere instead.
 | What | How |
 | --- | --- |
 | Frames | A `CADisplayLink` asking for up to 120 Hz ticks while something moves and pauses once a frame settles, so an idle view costs no CPU. Input, the app's `Waker` and the frame's `wake_after_secs` resume it. |
-| Background | The link stops when the scene enters the background (Metal may not draw there) and resumes in the foreground. |
+| Background | Every view stops its link while the app is in the background (Metal may not draw there), including a view made there, and resumes in the foreground. |
 | Touches | `touchesBegan`/`Moved`/`Ended`/`Cancelled` go to `Runtime::touch`, with each move's coalesced samples, so taps, scrolls, flings, long presses and pinches behave as Rune's touch input describes. |
 | Safe area | `UIView.safeAreaInsets` goes to `Runtime::set_safe_area`; read it with `Cx::safe_area`. |
 | Appearance | Dark mode follows the trait collection; Reduce Motion follows `UIAccessibilityIsReduceMotionEnabled`. |

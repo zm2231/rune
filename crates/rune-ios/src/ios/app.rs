@@ -45,7 +45,6 @@ define_class!(
 #[derive(Default)]
 struct Scene {
     window: RefCell<Option<Retained<UIWindow>>>,
-    view: RefCell<Option<Retained<RuneView>>>,
 }
 
 define_class!(
@@ -80,27 +79,11 @@ define_class!(
             window.setRootViewController(Some(&controller));
             window.makeKeyAndVisible();
             *self.ivars().window.borrow_mut() = Some(window);
-            *self.ivars().view.borrow_mut() = Some(view);
         }
 
         #[unsafe(method(sceneDidDisconnect:))]
         fn did_disconnect(&self, _scene: &UIScene) {
-            self.ivars().view.borrow_mut().take();
             self.ivars().window.borrow_mut().take();
-        }
-
-        #[unsafe(method(sceneDidEnterBackground:))]
-        fn did_enter_background(&self, _scene: &UIScene) {
-            if let Some(view) = &*self.ivars().view.borrow() {
-                view.enter_background();
-            }
-        }
-
-        #[unsafe(method(sceneWillEnterForeground:))]
-        fn will_enter_foreground(&self, _scene: &UIScene) {
-            if let Some(view) = &*self.ivars().view.borrow() {
-                view.enter_foreground();
-            }
         }
     }
 

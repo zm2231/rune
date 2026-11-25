@@ -12,6 +12,8 @@
 //!
 //! Off iOS the crate builds empty, so a workspace check doesn't need the iOS SDK.
 
+#[cfg_attr(not(any(test, target_os = "ios")), allow(dead_code))]
+mod bridge;
 #[cfg(target_os = "ios")]
 mod ios;
 #[cfg_attr(not(any(test, target_os = "ios")), allow(dead_code))]

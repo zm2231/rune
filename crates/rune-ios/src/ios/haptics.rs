@@ -5,7 +5,9 @@ use objc2_ui_kit::{
     UIFeedbackGenerator, UIImpactFeedbackGenerator, UIImpactFeedbackStyle, UINotificationFeedbackGenerator,
     UINotificationFeedbackType, UISelectionFeedbackGenerator, UIView,
 };
-use rune::{Haptic, HapticOutcome, ImpactStrength};
+use rune::Haptic;
+
+use crate::bridge::{Feedback, feedback};
 
 /// A view's feedback generators, made on first use and attached to the view so the system
 /// plays them on its screen.
@@ -18,38 +20,27 @@ pub(crate) struct Haptics {
 
 impl Haptics {
     pub(crate) fn play(&self, view: &UIView, haptic: Haptic) {
-        match haptic {
-            Haptic::Selection => {
-                self.selection.get_or_init(|| UISelectionFeedbackGenerator::feedbackGeneratorForView(view)).selectionChanged();
-            }
-            Haptic::Impact(strength) => {
-                let (slot, style) = match strength {
-                    ImpactStrength::Light => (0, UIImpactFeedbackStyle::Light),
-                    ImpactStrength::Medium => (1, UIImpactFeedbackStyle::Medium),
-                    ImpactStrength::Heavy => (2, UIImpactFeedbackStyle::Heavy),
-                    ImpactStrength::Soft => (3, UIImpactFeedbackStyle::Soft),
-                    ImpactStrength::Rigid => (4, UIImpactFeedbackStyle::Rigid),
-                };
-                self.impact[slot]
-                    .get_or_init(|| UIImpactFeedbackGenerator::feedbackGeneratorWithStyle_forView(style, view))
+        match feedback(haptic) {
+            Feedback::Selection => self.selection(view).selectionChanged(),
+            Feedback::Impact(style) => {
+                let Some(slot) = usize::try_from(style).ok().and_then(|i| self.impact.get(i)) else { return };
+                slot.get_or_init(|| UIImpactFeedbackGenerator::feedbackGeneratorWithStyle_forView(UIImpactFeedbackStyle(style), view))
                     .impactOccurred();
             }
-            Haptic::Notify(outcome) => {
-                let kind = match outcome {
-                    HapticOutcome::Success => UINotificationFeedbackType::Success,
-                    HapticOutcome::Warning => UINotificationFeedbackType::Warning,
-                    HapticOutcome::Error => UINotificationFeedbackType::Error,
-                };
+            Feedback::Notification(kind) => {
                 self.notification
                     .get_or_init(|| UINotificationFeedbackGenerator::feedbackGeneratorForView(view))
-                    .notificationOccurred(kind);
+                    .notificationOccurred(UINotificationFeedbackType(kind));
             }
         }
     }
 
     /// Wakes the Taptic Engine when a finger lands, so a gesture's first haptic isn't late.
     pub(crate) fn prepare(&self, view: &UIView) {
-        let selection = self.selection.get_or_init(|| UISelectionFeedbackGenerator::feedbackGeneratorForView(view));
-        AsRef::<UIFeedbackGenerator>::as_ref(&**selection).prepare();
+        AsRef::<UIFeedbackGenerator>::as_ref(&**self.selection(view)).prepare();
+    }
+
+    fn selection(&self, view: &UIView) -> &Retained<UISelectionFeedbackGenerator> {
+        self.selection.get_or_init(|| UISelectionFeedbackGenerator::feedbackGeneratorForView(view))
     }
 }

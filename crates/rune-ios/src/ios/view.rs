@@ -8,7 +8,9 @@ use objc2_core_foundation::CGRect;
 use objc2_foundation::{NSNotification, NSNotificationCenter, NSSet};
 use objc2_quartz_core::CADisplayLink;
 use objc2_ui_kit::{
-    UIAccessibilityIsReduceMotionEnabled, UIAccessibilityReduceMotionStatusDidChangeNotification, UIEvent, UIResponder,
+    UIAccessibilityIsReduceMotionEnabled, UIAccessibilityReduceMotionStatusDidChangeNotification, UIApplication,
+    UIApplicationDidEnterBackgroundNotification, UIApplicationState, UIApplicationWillEnterForegroundNotification, UIEvent,
+    UIResponder,
     UITouch, UITraitCollection, UITraitEnvironment, UIUserInterfaceStyle, UIView,
 };
 use rune::{AppSpec, TouchPhase};
@@ -17,6 +19,7 @@ use super::haptics::Haptics;
 use super::host::{Factory, Host, Mount, factory};
 use super::link::{Link, arm_timer, waker};
 use super::touch;
+use crate::bridge;
 use crate::pacing::{Pacer, Pacing, PacingEffect, PacingEvent, step};
 
 /// Whether the view's runtime has started.
@@ -103,6 +106,16 @@ define_class!(
             self.with_host(|host| host.set_dark(dark));
         }
 
+        #[unsafe(method(runeDidEnterBackground:))]
+        fn did_enter_background(&self, _note: &NSNotification) {
+            self.pace(PacingEvent::Background);
+        }
+
+        #[unsafe(method(runeWillEnterForeground:))]
+        fn will_enter_foreground(&self, _note: &NSNotification) {
+            self.pace(PacingEvent::Foreground);
+        }
+
         #[unsafe(method(runeReduceMotionChanged:))]
         fn reduce_motion_changed(&self, _note: &NSNotification) {
             let reduced = UIAccessibilityIsReduceMotionEnabled();
@@ -129,16 +142,33 @@ impl RuneView {
         // SAFETY: `UIView`'s designated initializer, on an allocated view whose ivars are set.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: CGRect::default()] };
         this.setMultipleTouchEnabled(true);
+        this.follow_app_lifecycle(mtm);
         this
     }
 
-    /// The app left the foreground: Metal may not draw there, so the display link stops.
-    pub(crate) fn enter_background(&self) {
-        self.pace(PacingEvent::Background);
-    }
-
-    pub(crate) fn enter_foreground(&self) {
-        self.pace(PacingEvent::Foreground);
+    /// Every view stops its display link while the app is in the background, where Metal may
+    /// not draw, including one made there.
+    fn follow_app_lifecycle(&self, mtm: MainThreadMarker) {
+        let center = NSNotificationCenter::defaultCenter();
+        // SAFETY: the view answers both one-argument selectors with an `NSNotification`, and the
+        // notification centre stops calling an observer once it is deallocated.
+        unsafe {
+            center.addObserver_selector_name_object(
+                self,
+                sel!(runeDidEnterBackground:),
+                Some(UIApplicationDidEnterBackgroundNotification),
+                None,
+            );
+            center.addObserver_selector_name_object(
+                self,
+                sel!(runeWillEnterForeground:),
+                Some(UIApplicationWillEnterForegroundNotification),
+                None,
+            );
+        }
+        if UIApplication::sharedApplication(mtm).applicationState() == UIApplicationState::Background {
+            self.pace(PacingEvent::Background);
+        }
     }
 
     /// One display refresh: draws a frame, plays the haptics it asked for, and lets the pacer
@@ -274,10 +304,9 @@ impl RuneView {
         }
     }
 
-    /// Top, right, bottom, left, as `Runtime::set_safe_area` takes them.
     fn safe_area(&self) -> [f32; 4] {
         let i = self.safeAreaInsets();
-        [i.top as f32, i.right as f32, i.bottom as f32, i.left as f32]
+        bridge::safe_area(i.top, i.left, i.bottom, i.right)
     }
 
     fn dark(&self) -> bool {

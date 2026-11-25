@@ -210,6 +210,8 @@ use types::{AxisScroll, GlideTo, Inh, NodeCold, RowLayout, ScaleMotion, ScrollSt
 pub(crate) use window_requests::HostState;
 
 #[cfg(test)]
+mod hidden_wake_tests;
+#[cfg(test)]
 mod timer_wake_tests;
 #[cfg(test)]
 mod grid_tests;

@@ -14,10 +14,16 @@
 
 #[cfg_attr(not(any(test, target_os = "ios")), allow(dead_code))]
 mod bridge;
+#[cfg_attr(not(any(test, target_os = "ios")), allow(dead_code))]
+mod editing;
 #[cfg(target_os = "ios")]
 mod ios;
 #[cfg_attr(not(any(test, target_os = "ios")), allow(dead_code))]
+mod keyboard;
+#[cfg_attr(not(any(test, target_os = "ios")), allow(dead_code))]
 mod pacing;
+#[cfg_attr(not(any(test, target_os = "ios")), allow(dead_code))]
+mod utf16;
 
 #[cfg(target_os = "ios")]
 pub use ios::RuneView;

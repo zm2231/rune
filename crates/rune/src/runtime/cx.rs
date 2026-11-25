@@ -151,13 +151,17 @@ impl CxCore {
     pub(crate) fn hover_none(&self) -> bool {
         #[cfg(target_arch = "wasm32")]
         { crate::platform::web::hover_none() }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(target_os = "ios")]
+        { true }
+        #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
         { false }
     }
     pub(crate) fn touch_controls(&self) -> bool {
         #[cfg(target_arch = "wasm32")]
         { crate::platform::web::touch_controls() }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(target_os = "ios")]
+        { true }
+        #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
         { false }
     }
     pub(crate) fn system_contrast(&self) -> Option<crate::SystemContrast> { self.system_contrast }
@@ -584,11 +588,12 @@ impl<S> Cx<S> {
     pub fn safe_area(&self) -> [f32; 4] { self.core.safe_area() }
     /// The primary pointer can't hover: a browser's `(hover: none)`, a phone's or tablet's touch
     /// screen. What a mouse would reveal on hover (a code block's Copy, a row's actions) should
-    /// show without it. False natively. A change re-runs the view.
+    /// show without it. True on iOS, false on other native platforms. A change re-runs the view.
     #[inline(always)]
     pub fn hover_none(&self) -> bool { self.core.hover_none() }
-    /// A page's primary pointer is coarse and can't hover. Use this for a phone or tablet's
-    /// controls rather than the viewport width: a narrow window can still have a mouse.
+    /// The primary pointer is coarse and can't hover: a page's, or any iOS app's. Use this for a
+    /// phone or tablet's controls rather than the viewport width: a narrow window can still have
+    /// a mouse.
     #[inline(always)]
     pub fn touch_controls(&self) -> bool { self.core.touch_controls() }
     /// The system's contrast theme when one is on (Windows' Contrast themes, high contrast):

@@ -1,0 +1,1 @@
+- `El::scroll`: debug builds warn once per call site when a vertical scroll viewport is a row (`el()` or `row()`) whose content spills out of it. A row stretches its content to the viewport's height, so nothing overflowed and a drag or wheel scrolled nothing, silently; make the viewport a `col()`. The `El::scroll` docs say so too.

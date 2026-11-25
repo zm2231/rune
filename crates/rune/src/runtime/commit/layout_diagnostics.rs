@@ -70,6 +70,21 @@ pub(in crate::runtime) fn collapsed_scrolls(taffy: &LayoutEngine, nodes: &[Node]
                 );
             }
         }
+        if n.scroll_axes.y() && s.flex_direction() == FlexDirection::Row {
+            let spills = |c: usize| {
+                let inner = (c + 1..nodes.len()).take_while(|&j| nodes[j].parent >= Some(c)).filter(|&j| nodes[j].parent == Some(c));
+                inner.map(bottom).fold(0.0_f32, f32::max) > height(c) + 0.5
+            };
+            let site = n.scroll_source.map_or_else(|| n.path.clone(), |s| s.to_string());
+            if direct().any(spills) && mark_warned(format!("row-viewport:{site}")) {
+                eprintln!(
+                    "rune: scroll viewport {:?} (.scroll at {site}) is a row (el() or row()), which \
+                     stretches its content to the viewport's height, so the content spills out and \
+                     nothing scrolls: make the viewport a col(). (debug builds only)",
+                    n.path,
+                );
+            }
+        }
         if !n.scroll_axes.y() || height(i) >= 0.5 { continue; }
         let content = direct().map(bottom).fold(0.0_f32, f32::max);
         if content < 0.5 { continue; }
@@ -137,6 +152,22 @@ mod tests {
             let list = rt.elements().into_iter().find(|e| e.key.as_deref() == Some("list")).unwrap();
             assert_eq!(list.rect[3], if bounded { 200.0 } else { 0.0 }, "layout is unchanged");
             assert_eq!(super::warned_at("layout_diagnostics.rs"), !bounded);
+        }
+    }
+
+    #[test]
+    fn a_row_scroll_viewport_whose_content_spills_warns() {
+        fn view(row: &bool, _: &mut crate::Cx<bool>) -> crate::El {
+            let viewport = if *row { el() } else { col() };
+            viewport.key("list").size(200.0, 200.0).scroll(ScrollSpec { stick_bottom: false })
+                .child(col().w_full().children((0..10).map(|_| el().w_full().h(40.0))))
+        }
+        for row in [false, true] {
+            let _warnings = super::scope();
+            let mut rt = Runtime::new(row, view, (200.0, 200.0), Env::new(true, 1.0));
+            rt.frame(0.0);
+            assert_eq!(super::warned_at("row-viewport:"), row);
+            assert_eq!(rt.scroll_at_bottom("list"), Some(row), "a row viewport doesn't scroll");
         }
     }
 

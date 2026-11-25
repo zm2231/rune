@@ -9,8 +9,10 @@ impl El {
     /// The viewport needs a bounded height to scroll: a fixed `.h(..)`, or a `.grow(1.0)` share
     /// of a parent whose height is itself bounded. Every flex column between that bounded
     /// ancestor and the viewport needs `.min_h(0.0)`, or it grows to fit the content and the
-    /// viewport never overflows. Debug builds warn once per call site when a viewport inside a
-    /// `.grow()` container resolves to 0 pt tall while its content is not.
+    /// viewport never overflows. Make the viewport a `col()`: a row (`el()`, `row()`) stretches
+    /// its content to the viewport's height, so nothing overflows. Debug builds warn once per
+    /// call site when a viewport inside a `.grow()` container resolves to 0 pt tall while its
+    /// content is not, or when a row viewport's content spills out of it.
     #[cfg_attr(debug_assertions, track_caller)]
     #[inline]
     pub fn scroll(mut self, spec: ScrollSpec) -> Self {

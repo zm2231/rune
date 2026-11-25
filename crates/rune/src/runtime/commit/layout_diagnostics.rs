@@ -172,6 +172,27 @@ mod tests {
     }
 
     #[test]
+    fn a_growth_stack_in_a_row_viewport_does_not_scroll_and_warns_too() {
+        fn view(row: &bool, _: &mut crate::Cx<bool>) -> crate::El {
+            let viewport = if *row { el() } else { col() };
+            viewport.key("list").size(200.0, 200.0).scroll(ScrollSpec { stick_bottom: false })
+                .child(col().w_full().growth(GrowthSpec::default()).children((0..10).map(|i| el().key(format!("r{i}")).w_full().h(40.0))))
+        }
+        for row in [false, true] {
+            let _warnings = super::scope();
+            let mut rt = Runtime::new(row, view, (200.0, 200.0), Env::new(true, 1.0));
+            rt.frame(0.0);
+            rt.touch(1, crate::TouchPhase::Started, 100.0, 180.0, 0.0);
+            for k in 1..=10 { rt.touch(1, crate::TouchPhase::Moved, 100.0, 180.0 - 15.0 * k as f32, k as f64 * 0.01); }
+            rt.touch(1, crate::TouchPhase::Ended, 100.0, 30.0, 0.5);
+            for _ in 0..60 { rt.frame(1.0 / 60.0); }
+            let top = rt.presented("r0").unwrap().0[1];
+            assert_eq!(top < -100.0, !row, "row {row}: the first row ends at {top}");
+            assert_eq!(super::warned_at("row-viewport:"), row);
+        }
+    }
+
+    #[test]
     fn warning_scope_isolates_tests_from_prior_process_warnings() {
         fn bad_growth_sibling(_: &(), _: &mut crate::Cx<()>) -> crate::El {
             col().key("scroll").size(200.0, 200.0).scroll(ScrollSpec { stick_bottom: false })

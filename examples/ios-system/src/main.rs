@@ -1,0 +1,147 @@
+#![forbid(unsafe_code)]
+
+use std::path::{Path, PathBuf};
+
+use rune::tok::{self, type_};
+use rune::{
+    AppSpec, Cx, El, FileDialogOptions, MediaKind, MediaPicker, ScrollSpec, Share, SizeClass, TextEdit, Tx, col, el, row, text,
+    text_input,
+};
+
+#[derive(Default)]
+struct State {
+    status: String,
+    picked: Vec<PathBuf>,
+    pasted: String,
+    scratch: TextEdit,
+}
+
+impl State {
+    fn say(&mut self, status: impl Into<String>) { self.status = status.into(); }
+}
+
+fn names(paths: &[PathBuf]) -> String {
+    paths.iter().map(|p| p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned())).collect::<Vec<_>>().join(", ")
+}
+
+fn button(key: &'static str, label: &'static str, t: &tok::Theme, on_press: impl Fn(&mut State, &mut Tx) + 'static) -> El {
+    el().key(key).role("button").label(label).min_h(44.0).px(16.0).py(10.0).radius(12.0).fill(t.card)
+        .child(text(label).font(type_::BODY).color(t.text))
+        .on_press_tx(move |s: &mut State, tx: &mut Tx| on_press(s, tx))
+}
+
+fn section(title: &'static str, t: &tok::Theme, buttons: Vec<El>) -> El {
+    buttons.into_iter().fold(col().w_full().gap(8.0).child(text(title).font(type_::SECTION).color(t.text)), El::child)
+}
+
+fn links(t: &tok::Theme) -> El {
+    section("Links", t, vec![
+        button("open-web", "Open example.com", t, |s, tx| {
+            if let Err(e) = tx.open_url_then("https://example.com/", |s: &mut State, result, _| s.say(format!("example.com: {result:?}"))) {
+                s.say(format!("example.com: {e}"));
+            }
+        }),
+        button("open-mail", "Open a mailto: link", t, |s, tx| {
+            if let Err(e) = tx.open_url_then("mailto:hello@example.com", |s: &mut State, result, _| s.say(format!("mailto: {result:?}"))) {
+                s.say(format!("mailto: {e}"));
+            }
+        }),
+    ])
+}
+
+fn clipboard(state: &State, t: &tok::Theme) -> El {
+    section("Clipboard", t, vec![
+        button("copy", "Copy \"Hello from Rune\"", t, |s, tx| {
+            tx.copy("Hello from Rune");
+            s.say("Copied");
+        }),
+        button("paste", "Read the clipboard", t, |_, tx| {
+            tx.read_clipboard(|s: &mut State, content, _| {
+                let image = content.image().map(|i| format!(", image {}x{}", i.size().0, i.size().1)).unwrap_or_default();
+                s.pasted = format!("text {:?}{image}", content.text());
+                s.say("Read the clipboard");
+            });
+        }),
+        text(format!("Clipboard: {}", state.pasted)).key("pasted").font(type_::LABEL).color(t.text_secondary).wrap().w_full(),
+        text_input(&state.scratch, type_::BODY).key("scratch").label("Paste here").placeholder("Paste here", t.text_secondary)
+            .color(t.text).w_full().min_h(44.0).padding(12.0).radius(12.0).fill(t.card).on_edit(|s: &mut State| &mut s.scratch),
+    ])
+}
+
+fn sharing(t: &tok::Theme) -> El {
+    section("Share", t, vec![
+        button("share-link", "Share a link", t, |_, tx| {
+            tx.share(Share::new().title("Rune").text("Made with Rune").url("https://example.com/"), "share-link", |s: &mut State, result, _| {
+                s.say(format!("Share link: {result:?}"));
+            });
+        }),
+        button("share-picked", "Share the picked files", t, |s, tx| {
+            let share = s.picked.iter().fold(Share::new(), |share, path| share.file(path.clone()));
+            tx.share(share, "share-picked", |s: &mut State, result, _| s.say(format!("Share files: {result:?}")));
+        }),
+    ])
+}
+
+fn pickers(state: &State, t: &tok::Theme) -> El {
+    let answered = |what: &'static str| move |s: &mut State, result: Result<Option<Vec<PathBuf>>, rune::FileDialogError>, _: &mut Tx| match result {
+        Ok(Some(paths)) => {
+            s.say(format!("{what}: {} picked", paths.len()));
+            s.picked = paths;
+        }
+        Ok(None) => s.say(format!("{what}: cancelled")),
+        Err(e) => s.say(format!("{what}: {e}")),
+    };
+    section("Photos and files", t, vec![
+        button("pick-photo", "Pick a photo", t, move |_, tx| tx.pick_media(MediaPicker::default(), answered("Photo"))),
+        button("pick-media", "Pick photos and videos", t, move |_, tx| {
+            tx.pick_media(MediaPicker::new(MediaKind::ImagesAndVideos).limit(0), answered("Media"));
+        }),
+        button("import", "Import files", t, move |_, tx| tx.open_files(FileDialogOptions::default(), answered("Import"))),
+        button("export", "Export a text file", t, |_, tx| {
+            let options = FileDialogOptions { file_name: Some("Rune export.txt".into()), ..Default::default() };
+            tx.save_file(options, |s: &mut State, result, _| match result {
+                Ok(Some(path)) => {
+                    s.say(format!("Exporting to {}", path.display()));
+                    export(path);
+                }
+                Ok(None) => s.say("Export: cancelled"),
+                Err(e) => s.say(format!("Export: {e}")),
+            });
+        }),
+        text(format!("Picked: {}", names(&state.picked))).key("picked").font(type_::LABEL).color(t.text_secondary).wrap().w_full(),
+    ])
+}
+
+fn export(path: PathBuf) {
+    std::thread::spawn(move || write(&path));
+}
+
+fn write(path: &Path) {
+    if let Err(e) = std::fs::write(path, "Exported from Rune\n") { eprintln!("export to {}: {e}", path.display()); }
+}
+
+fn view(state: &State, cx: &mut Cx<State>) -> El {
+    let t = tok::theme(cx.system_dark());
+    let [top, right, bottom, left] = cx.safe_area();
+    let (horizontal, vertical) = (cx.horizontal_size_class(), cx.vertical_size_class());
+    let [width, height] = cx.layout_size("root").unwrap_or_default();
+    let header = col().w_full().gap(4.0)
+        .child(text("System").font(type_::TITLE).color(t.text))
+        .child(text(format!("Size classes: {horizontal:?} across, {vertical:?} down; {width:.0}×{height:.0} pt")).key("size-class")
+            .font(type_::LABEL).color(t.text_secondary).wrap().w_full())
+        .child(text(format!("Status: {}", state.status)).key("status").font(type_::LABEL).color(t.text_secondary).wrap().w_full());
+    let first = col().w_full().gap(24.0).child(links(&t)).child(clipboard(state, &t));
+    let second = col().w_full().gap(24.0).child(sharing(&t)).child(pickers(state, &t));
+    let body = if horizontal == Some(SizeClass::Regular) {
+        row().w_full().gap(32.0).child(first.grow(1.0).shrink()).child(second.grow(1.0).shrink())
+    } else {
+        col().w_full().gap(24.0).child(first).child(second)
+    };
+    let page = col().w_full().gap(24.0).py(16.0).child(header).child(body);
+    col().key("root").w_full().h_full().pt(top).pr(16.0 + right).pb(bottom).pl(16.0 + left).fill(t.bg)
+        .child(col().key("page").w_full().grow(1.0).shrink().scroll(ScrollSpec { stick_bottom: false }).child(page))
+}
+
+fn main() {
+    rune::App::new(AppSpec::new("System", (390.0, 760.0), State::default, view)).run();
+}

@@ -33,8 +33,25 @@ pub(crate) fn parse_script(list: Value) -> Vec<Ev> {
             out.push(Ev { t, kind: Kind::Reopen, pos: Pos::Rel(0.0, 0.0) });
             continue;
         }
+        if e["close_request"].as_bool() == Some(true) {
+            out.push(Ev { t, kind: Kind::CloseRequest, pos: Pos::Rel(0.0, 0.0) });
+            continue;
+        }
+        if e["quit_request"].as_bool() == Some(true) {
+            out.push(Ev { t, kind: Kind::QuitRequest, pos: Pos::Rel(0.0, 0.0) });
+            continue;
+        }
         if let Some(url) = e["open_url"].as_str() {
             out.push(Ev { t, kind: Kind::OpenUrl(url.into()), pos: Pos::Rel(0.0, 0.0) });
+            continue;
+        }
+        if let Some(files) = e.get("open_files") {
+            let paths: Vec<std::path::PathBuf> = files.as_array()
+                .unwrap_or_else(|| die("open_files needs an array of path strings, like [\"a.txt\"]"))
+                .iter()
+                .map(|p| p.as_str().unwrap_or_else(|| die("open_files entries must be strings")).into())
+                .collect();
+            out.push(Ev { t, kind: Kind::OpenFiles(paths), pos: Pos::Rel(0.0, 0.0) });
             continue;
         }
         if let Some(chord) = e["physical"].as_str() {
@@ -42,7 +59,7 @@ pub(crate) fn parse_script(list: Value) -> Vec<Ev> {
             let repeat = e["repeat"].as_bool().unwrap_or(false);
             for pressed in [true, false] {
                 out.push(Ev { t, kind: Kind::Physical(crate::PhysicalInput::Key {
-                    key: chord.physical_key(), mods: chord.modifiers(), pressed, repeat: repeat && pressed,
+                    key: chord.physical_key(), mods: chord.modifiers(), pressed, repeat: repeat && pressed, text: None, consumed_mods: Default::default(),
                 }), pos: Pos::Rel(0.0, 0.0) });
             }
             // Then the modifiers come up, as on a real keyboard, so nothing stays held.
@@ -74,7 +91,7 @@ pub(crate) fn parse_script(list: Value) -> Vec<Ev> {
                 }
             }
             let pressed = e["down"].as_bool().unwrap_or(true);
-            out.push(Ev { t, kind: Kind::Physical(crate::PhysicalInput::Key { key, mods, pressed, repeat: false }), pos: Pos::Rel(0.0, 0.0) });
+            out.push(Ev { t, kind: Kind::Physical(crate::PhysicalInput::Key { key, mods, pressed, repeat: false, text: None, consumed_mods: Default::default() }), pos: Pos::Rel(0.0, 0.0) });
             out.push(Ev { t, kind: Kind::Physical(crate::PhysicalInput::Modifiers(mods)), pos: Pos::Rel(0.0, 0.0) });
             continue;
         }
@@ -205,7 +222,7 @@ pub(crate) fn parse_script(list: Value) -> Vec<Ev> {
                 if let Some(code) = e["code"].as_str() {
                     let code = code.parse::<crate::Shortcut>().unwrap_or_else(|e| die(&e.to_string())).physical_key();
                     let base = script_key_base(&e, name, mods);
-                    let press = |pressed| crate::PhysicalInput::Key { key: code, mods, pressed, repeat: repeat && pressed };
+                    let press = |pressed| crate::PhysicalInput::Key { key: code, mods, pressed, repeat: repeat && pressed, text: None, consumed_mods: Default::default() };
                     if ty == "key-up" {
                         out.push(Ev { t, kind: Kind::PhysicalKey(press(false), KeyEvent { key, mods }, base), pos: Pos::Rel(0.0, 0.0) });
                     } else {
@@ -266,6 +283,11 @@ pub(crate) fn parse_script(list: Value) -> Vec<Ev> {
             }
             "scroll" => eased_input::swipe(&mut out, &e, t, pos),
             "resize" => eased_input::resize(&mut out, &e, t),
+            "pointer-motion" => {
+                let dx = e["dx"].as_f64().unwrap_or(0.0) as f32;
+                let dy = e["dy"].as_f64().unwrap_or(0.0) as f32;
+                out.push(Ev { t, kind: Kind::PointerMotion(dx, dy), pos: Pos::Rel(0.0, 0.0) });
+            }
             "fling" => {
                 let v = |k: &str| e[k].as_f64().unwrap_or(0.0) as f32;
                 out.push(Ev { t, kind: Kind::Fling(v("vx"), v("v")), pos });
@@ -275,9 +297,21 @@ pub(crate) fn parse_script(list: Value) -> Vec<Ev> {
                 out.push(Ev { t, kind: Kind::PopupMenu(Some(id.into())), pos: Pos::Rel(0.0, 0.0) });
             }
             "menu-cancel" => out.push(Ev { t, kind: Kind::PopupMenu(None), pos: Pos::Rel(0.0, 0.0) }),
-            "file-dialog" => {
-                let path = e["path"].as_str().unwrap_or_else(|| die("file-dialog needs a \"path\" (file-dialog-cancel cancels)"));
-                out.push(Ev { t, kind: Kind::FileDialog(Some(path.into())), pos: Pos::Rel(0.0, 0.0) });
+            "file-dialog" => match (e.get("path"), e.get("paths")) {
+                (Some(_), Some(_)) => die("file-dialog takes either \"path\" or \"paths\", not both"),
+                (Some(p), None) => {
+                    let path = p.as_str().unwrap_or_else(|| die("file-dialog \"path\" must be a string"));
+                    out.push(Ev { t, kind: Kind::FileDialog(Some(path.into())), pos: Pos::Rel(0.0, 0.0) });
+                }
+                (None, Some(ps)) => {
+                    let paths: Vec<std::path::PathBuf> = ps.as_array()
+                        .unwrap_or_else(|| die("file-dialog \"paths\" must be an array of strings"))
+                        .iter()
+                        .map(|p| p.as_str().unwrap_or_else(|| die("file-dialog \"paths\" entries must be strings")).into())
+                        .collect();
+                    out.push(Ev { t, kind: Kind::FileDialogFiles(paths), pos: Pos::Rel(0.0, 0.0) });
+                }
+                (None, None) => die("file-dialog needs a \"path\" or \"paths\" (file-dialog-cancel cancels)"),
             }
             "file-dialog-cancel" => out.push(Ev { t, kind: Kind::FileDialog(None), pos: Pos::Rel(0.0, 0.0) }),
             "mark" => {
@@ -291,7 +325,7 @@ pub(crate) fn parse_script(list: Value) -> Vec<Ev> {
     out
 }
 
-/// `{"drag_files": {"paths": […], "at": [x, y]}}` (or `"key": …` for an element's centre) moves a
+/// `{"drag_files": {"paths": […], "at": [x, y]}}` (or `"key": …` for the centre of an element's shown part) moves a
 /// file drag from another app over the window; `{"drag_files": "leave"}` takes it away.
 /// `{"drop_files": {…, "hover": s}}` drags the files there for `s` seconds (default 0), then
 /// drops them. Whether `e` was one.

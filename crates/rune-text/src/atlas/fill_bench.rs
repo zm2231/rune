@@ -2,6 +2,7 @@
 //! each frame's queued fills, and the outline records they read, to `<dir>/fills-<n>.bin`;
 //! [`FillSet`] reads one back and fills, times or counts it. A measurement, not a fill.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::fill::{Fill, QueuedFill};
@@ -91,7 +92,7 @@ impl FillSet {
             }
             // Let the workers reach their spin before the clock starts.
             std::thread::sleep(std::time::Duration::from_millis(2));
-            let start = std::time::Instant::now();
+            let start = rune_core::time::now();
             let mut groups = outline::share_rows(&self.fills);
             let size = |g: &Vec<u32>| g.iter().map(|&i| self.fills[i as usize].rect[2] * self.fills[i as usize].rect[3]).sum::<u32>();
             groups.sort_by_key(|g| std::cmp::Reverse(size(g)));

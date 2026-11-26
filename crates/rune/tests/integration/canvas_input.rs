@@ -77,8 +77,9 @@ fn a_wheel_handler_hears_deltas_before_the_scroll_view_around_it() {
     assert_eq!((e.x, e.y, e.mods, e.precise), (30.0, 40.0, cmd, true), "the pointer in the canvas's own points");
     assert_eq!(y_of(&rt, "canvas"), 50.0, "the page didn't scroll");
 
-    // The gesture stays the canvas's when the pointer leaves it, as a scroll keeps its axis.
-    rt.wheel_xy(150.0, 280.0, 0.0, -30.0);
+    // The gesture stays the canvas's when the pointer leaves it, as a scroll keeps its axis
+    // (keeping the same modifiers; changing modifiers starts a new unphased gesture).
+    rt.wheel_event(WheelEvent::new(0.0, -30.0).at(150.0, 280.0).mods(cmd));
     rt.frame(1.0 / 60.0);
     assert_eq!((rt.state.pan.1, y_of(&rt, "canvas")), (-50.0, 50.0));
 
@@ -149,13 +150,24 @@ fn the_middle_button_drags_only_elements_that_take_it() {
     assert!(drags.contains(&(Phase::Move, PointerButton::Middle, 20.0, 30.0)));
     assert_eq!(drags.last(), Some(&(Phase::Up, PointerButton::Middle, 20.0, 30.0)));
     assert!(drags.iter().all(|d| d.1 == PointerButton::Middle));
-    assert_eq!(rt.state.presses, [PointerButton::Middle], "released over it, as a primary drag would be");
+    assert!(rt.state.presses.is_empty(), "a drag past the click slop suppresses on_press, as a primary drag does");
 
-    // A middle click outside it presses nothing.
+    // A middle click within slop presses it.
+    rt.button_down(90.0, 100.0, PointerButton::Middle);
+    rt.button_up(90.0, 100.0, PointerButton::Middle);
+    rt.frame(1.0 / 60.0);
+    assert_eq!(rt.state.presses, [PointerButton::Middle]);
+
+    // A middle click outside it presses nothing (on Windows/Linux it latches page autoscroll,
+    // which a key dismisses before the next press reaches the canvas).
     rt.button_down(20.0, 20.0, PointerButton::Middle);
     rt.button_up(20.0, 20.0, PointerButton::Middle);
     rt.frame(1.0 / 60.0);
     assert_eq!(rt.state.presses.len(), 1);
+    if cfg!(any(target_os = "windows", target_os = "linux")) {
+        rt.key(KeyEvent { key: Key::Escape, mods: Mods::default() });
+        rt.frame(1.0 / 60.0);
+    }
 
     // The primary button presses it as before, as the primary.
     rt.pointer_down(150.0, 150.0);

@@ -20,30 +20,43 @@ of a blurred, rounded capsule; the separate headless regression covers fully off
 ## Interactive lab
 
 `cargo run -p overlay-lab` opens a transparent pill on the display under the pointer.
-Only its chips intercept clicks; the background and hover label pass through. iPhone/Paste
-change its contents inside a fixed maximum canvas. Area/Window/Screen open one picker per
-display. Drag selects an area; Escape closes all pickers on platforms with overlay keys.
+Only its chips and leading drag grip (`.hit().window_drag()`) intercept clicks; dragging the grip
+moves the pill natively on window-backed overlays without snapping back until placement is changed,
+while the background and hover label pass through. iPhone/Paste
+change its contents inside a fixed maximum canvas. Edge cycles `OverlayPlacement::Edge` across
+all four corners and top/bottom center while showing `Display::work_area()` (on Windows, edge
+placements clear the taskbar and docked app bars on all four sides). Area/Window/Screen open
+one picker per display. Drag selects an area; Escape closes all pickers on platforms with
+overlay keys.
 
 Headless stills use the same views, selected as the ordinary `lab` host:
 
 ```
 cargo run -p overlay-lab -- --scene pill --snap pill.png
 cargo run -p overlay-lab -- --scene expanded --snap expanded.png
+cargo run -p overlay-lab -- --scene work-area --snap work-area.png
 cargo run -p overlay-lab -- --scene picker --size 960x600 --snap picker.png
+cargo run -p overlay-lab -- --scene native-window --size 480x180 --snap native-window.png
 ```
 
 Set `OVERLAY_LAB_SECONDS=15` for a bounded desktop probe with panel-ID/capture-request
 logging. `OVERLAY_LAB_PICKER=1` opens the picker immediately. Run desktop probes in a GUI test
 Mac's logged-in session, at normal priority, not on a developer's desk display.
 `OVERLAY_LAB_UNDERLAY=1` runs a separate normal-window process that logs clicks, for
-cross-process pass-through/focus checks. `OVERLAY_LAB_INCLUDE_IN_CAPTURE=1` disables the
-capture request while grounding input coordinates; omit it for the exclusion check.
+cross-process pass-through/focus checks. `OVERLAY_LAB_NATIVE_WINDOW=1` (without
+`OVERLAY_LAB_UNDERLAY`) opens an ordinary borderless window demonstrating portable
+`WindowSpec::exclude_from_capture` with a live `WindowHandle::set_exclude_from_capture`
+toggle and `WindowsWindowOptions::undecorated_shadow` (set `OVERLAY_LAB_NO_ACTIVATE=1`
+and `OVERLAY_LAB_TOOL_WINDOW=1` for `WS_EX_NOACTIVATE` / `WS_EX_TOOLWINDOW`).
+`OVERLAY_LAB_INCLUDE_IN_CAPTURE=1` disables the capture request while grounding input
+coordinates; omit it for the exclusion check.
 
 Linux capture exclusion is unavailable. Wayland only observes pointer movement inside its
 input region, and the compositor chooses an output for UnderPointer. It cannot follow the
-global pointer. OnDemand permits click-to-focus on layer-shell v4; Windows/X11 do not offer
-nonactivating key focus. Capture requests on macOS must be supplemented with an explicit
-ScreenCaptureKit window-ID filter when the OS capture path ignores NSWindow sharingType.
+global pointer. OnDemand permits click-to-focus on layer-shell v4, X11 and Windows (where
+`request_keys` takes the foreground only when Windows lets the process); XWayland has no key
+focus. Capture requests on macOS must be supplemented with an explicit ScreenCaptureKit
+window-ID filter when the OS capture path ignores NSWindow sharingType.
 Wayland keeps all three levels on the compositor's overlay layer; it has no higher layer and
 does not guarantee ordering among peers. Native status/status+1 levels are macOS-specific.
 
@@ -72,7 +85,10 @@ does not guarantee ordering among peers. Native status/status+1 levels are macOS
 - `Display::native_id()` maps to `DisplayTarget::Native`: macOS CGDirectDisplayID, Windows
   full-width HMONITOR, X11 RandR CRTC, Wayland wl_output registry name. X11 output IDs can
   also be targeted with `NativeDisplayId::X11Output`. `native_bounds()` is global top-left
-  (macOS/Wayland points, Windows/X11 pixels); `scale` converts local lengths.
+  (macOS/Wayland points, Windows/X11 pixels); `scale` converts local lengths. `Display::work_area()`
+  returns `((x, y), (w, h))` in physical desktop pixels: `GetMonitorInfoW`'s `rcWork` on Windows
+  (matching all four sides of edge-placed overlays) and `(position, size)` elsewhere or when
+  disconnected.
 - The pill uses `AboveOverlays` (macOS 27), above the picker's `AboveStatus` (26). Both use
   CanJoinAllSpaces, FullScreenAuxiliary and Stationary. Wayland ordering remains compositor-owned.
 - Desktop hide retains the native window, GPU surface and renderer. With `prewarm`, macOS

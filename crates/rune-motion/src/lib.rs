@@ -27,6 +27,8 @@
 //! assert!(o > 0.5 && o < 1.0);
 //! ```
 
+#![forbid(unsafe_code)]
+
 mod animated;
 mod carry;
 mod choreo;
@@ -61,6 +63,7 @@ pub use choreo::StepId;
 pub use choreo::When;
 pub use choreo::stagger;
 pub use clock::Clock;
+pub use clock::ManualClock;
 pub use curve::Anim;
 pub use curve::AnimExt;
 pub use curve::Blend;
@@ -90,6 +93,7 @@ pub use props::PropId;
 pub use props::REDUCED_FADE;
 pub use props::prop;
 pub use scene::FrameOutput;
+pub use scene::Handover;
 pub use scene::LayoutAnim;
 pub use scene::Mask;
 pub use scene::Mount;
@@ -154,6 +158,7 @@ pub mod prelude {
     pub use crate::Edge;
     pub use crate::Keyframes;
     pub use crate::LayoutAnim;
+    pub use crate::ManualClock;
     pub use crate::Mount;
     pub use crate::NodeId;
     pub use crate::NodeSpec;

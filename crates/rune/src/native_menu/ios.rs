@@ -12,17 +12,19 @@
 //! none takes it (`keys_first`). An iPhone has no main menu, so there every item's chord works
 //! that way.
 
+#![allow(unsafe_code)]
+
 use std::cell::RefCell;
 
-use objc2_foundation_video::NSString;
-use objc2_video::rc::Retained;
-use objc2_video::runtime::AnyObject;
-use objc2_video::{class, msg_send, sel};
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send, sel};
+use objc2_foundation::NSString;
 
-use super::chord::chord_item;
-use super::groups::{Group, groups};
+use super::chord::{actions, chord_item};
+use super::groups::{Group, groups, is_separator};
 use super::key_equivalent::uikit_input;
-use super::{Description, Sink};
+use super::{Description, EntryKind, Sink};
 use crate::runtime::Unhandled;
 
 // SAFETY: UIKit's headers declare each as a `UIMenuIdentifier`, an `NSString` that lives for
@@ -73,7 +75,7 @@ pub(crate) fn build(builder: &AnyObject) {
 /// Runs the item `id` names, as a click on it does. False when no item has that id.
 pub(crate) fn perform(id: &str) -> bool {
     let sink = INSTALLED.with(|installed| installed.borrow().as_ref()
-        .filter(|i| i.items.iter().any(|d| !d.separator && d.id == id)).map(|i| i.sink.clone()));
+        .filter(|i| actions(&i.items).any(|d| d.meta.id == id)).map(|i| i.sink.clone()));
     sink.inspect(|sink| sink(id)).is_some()
 }
 
@@ -85,7 +87,7 @@ pub(crate) fn keys_first(key: &crate::KeyEvent) -> Option<Unhandled> {
         let installed = installed.borrow();
         let installed = installed.as_ref()?;
         let item = chord_item(&installed.items, key, menu_bar)?;
-        let (id, sink) = (item.id.clone(), installed.sink.clone());
+        let (id, sink) = (item.meta.id.clone(), installed.sink.clone());
         Some(Unhandled::Menu(std::sync::Arc::new(move || sink(&id))))
     })
 }
@@ -144,11 +146,18 @@ fn place(builder: &AnyObject, group: &Group) {
     }
 }
 
-/// `d` as a command, or a key command when it has a shortcut UIKit can take.
+/// `d` as a command, or a key command when it has a shortcut UIKit can take. A submenu is a
+/// menu of its items, its separators splitting it into sections.
 fn command(d: &Description) -> Retained<AnyObject> {
-    let title = NSString::from_str(&d.title);
-    let id = NSString::from_str(&d.id);
-    let key = d.equivalent.as_ref().filter(|_| !d.keys_first).and_then(uikit_input);
+    if let EntryKind::Submenu(children) = &d.kind {
+        let sections = children.split(is_separator).filter(|s| !s.is_empty())
+            .map(|section| menu("", INLINE, None, section.iter().map(command).collect())).collect();
+        return menu(&d.meta.title, 0, None, sections);
+    }
+    let m = &d.meta;
+    let title = NSString::from_str(&m.title);
+    let id = NSString::from_str(&m.id);
+    let key = m.equivalent.as_ref().filter(|_| !m.keys_first).and_then(uikit_input);
     // SAFETY: a command with a title, no image, the action `RuneView` implements and the
     // item's id; its attributes and state are option sets of these sizes.
     unsafe {
@@ -158,8 +167,8 @@ fn command(d: &Description) -> Retained<AnyObject> {
             None => msg_send![class!(UICommand), commandWithTitle: &*title, image: None::<&AnyObject>,
                 action: sel!(runeMenuItem:), propertyList: &*id],
         };
-        if !d.enabled { let _: () = msg_send![&*command, setAttributes: DISABLED]; }
-        if d.checked { let _: () = msg_send![&*command, setState: ON]; }
+        if !m.enabled { let _: () = msg_send![&*command, setAttributes: DISABLED]; }
+        if m.checked { let _: () = msg_send![&*command, setState: ON]; }
         command
     }
 }

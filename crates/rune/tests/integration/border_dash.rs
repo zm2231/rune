@@ -1,4 +1,4 @@
-use rune::render::{Gpu, KIND_DASHED, KIND_RECT, OFFSCREEN_FORMAT, Offscreen, Renderer};
+use rune::render::{Gpu, KIND_DASHED, KIND_RECT, OFFSCREEN_FORMAT_LINEAR, Offscreen, Renderer};
 use rune::{Color, Cx, El, Env, Runtime, el};
 
 const TOP: Color = Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
@@ -28,14 +28,15 @@ fn view(mode: &Mode, _: &mut Cx<Mode>) -> El {
 
 fn frame(mode: Mode) -> Runtime<Mode> {
     let mut rt = Runtime::new(mode, view, (68.0, 22.0), Env::new(true, 2.0));
+    rt.set_srgb_blend(false);
     rt.frame(0.0);
     rt
 }
 
 fn pixels(gpu: &Gpu, rt: &mut Runtime<Mode>) -> Vec<u8> {
     let size = (136, 44);
-    let mut renderer = Renderer::new(&gpu.device, OFFSCREEN_FORMAT);
-    let target = Offscreen::new(&gpu.device, size.0, size.1);
+    let mut renderer = Renderer::new(&gpu.device, OFFSCREEN_FORMAT_LINEAR);
+    let target = Offscreen::with_format(&gpu.device, size.0, size.1, OFFSCREEN_FORMAT_LINEAR);
     renderer.prepare(&gpu.device, &gpu.queue, &mut rt.text.atlas, &rt.instances, size);
     let mut encoder = gpu.device.create_command_encoder(&Default::default());
     renderer.draw(&mut encoder, &target.view, [0.0; 4]);
@@ -61,7 +62,7 @@ fn a_dashed_border_is_its_own_ring_over_the_fill() {
 
 #[test]
 fn dashes_antialias_like_the_solid_border_and_show_the_fill_between() {
-    let gpu = Gpu::headless();
+    let Some(gpu) = Gpu::test_headless() else { return };
     let px = |out: &[u8], x: usize, y: usize| -> [u8; 4] { out[(y * 136 + x) * 4..][..4].try_into().unwrap() };
     let solid = pixels(&gpu, &mut frame(Mode::Solid));
     let dashed = pixels(&gpu, &mut frame(Mode::Dashed));

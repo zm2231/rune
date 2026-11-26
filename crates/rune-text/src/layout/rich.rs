@@ -11,6 +11,9 @@ pub struct TextInput<'a> {
     pub spans: &'a [Span],
     pub blocks: &'a [Block],
     pub pills: &'a [PillChip],
+    pub span_boxes: &'a [SpanBoxRun],
+    pub inline_boxes: &'a [InlineBoxRun],
+    pub text_indent: f32,
     pub style: TextStyle,
     pub shape_key: Option<u64>,
     pub wrap_anywhere: bool,
@@ -57,6 +60,8 @@ impl TextInput<'_> {
     /// [`shape_key`] of this text in its direction.
     pub(crate) fn fresh_shape_key(&self, scale: f32) -> u64 {
         let key = crate::shape_key(self.content, self.spans, self.style, scale, self.wrap_anywhere, self.pills);
+        let key = crate::mix_span_boxes(key, self.span_boxes);
+        let key = crate::mix_inline_boxes(key, self.inline_boxes);
         crate::directed(key, self.base())
     }
 }
@@ -89,14 +94,14 @@ impl RichLayoutOptions {
 
     /// Breaks inside a word that has no break opportunity and is wider than the wrap width
     /// (a long URL, hash or token) instead of letting it run past the line, as
-    /// [`El::wrap_anywhere`](crate::El::wrap_anywhere) does. Words that fit still break at spaces.
+    /// `El::wrap_anywhere` does. Words that fit still break at spaces.
     pub fn wrap_anywhere(mut self) -> Self {
         self.wrap_anywhere = true;
         self
     }
 
     /// The paragraph's direction (its bidi base level), as a text element inside
-    /// [`El::dir`](crate::El::dir) lays out in: `Rtl` aligns `Start` to the right edge and gives
+    /// `El::dir` lays out in: `Rtl` aligns `Start` to the right edge and gives
     /// neutral characters at its ends the right-to-left side, `Auto` takes the first strong
     /// character's. Left to right by default.
     pub fn direction(mut self, direction: crate::Direction) -> Self {
@@ -154,7 +159,53 @@ impl TextSystem {
         max_width: Option<f32>,
         options: RichLayoutOptions,
     ) -> Rc<Layout<Ink>> {
-        self.layout_keyed(None, text, spans, &[], &[], style, scale, max_width, options.align, options.wrap_anywhere, false, Keep::Cached, options.direction)
+        self.layout_keyed(None, text, spans, &[], 0.0, &[], &[], &[], style, scale, max_width, options.align, options.wrap_anywhere, false, Keep::Cached, options.direction)
+    }
+
+    /// CSS min-content and max-content widths of `text` (with `spans`) in `style` at scale 1.0,
+    /// shaped once into an uncached `Keep::Owned` layout and broken at `Some(0.0)` and `None` so
+    /// zero throwaway layouts enter `self.layouts`.
+    pub(crate) fn content_widths(&mut self, text: &str, spans: &[Span], style: TextStyle) -> (f32, f32) {
+        let mut l = self.layout_keyed(
+            None,
+            text,
+            spans,
+            &[],
+            0.0,
+            &[],
+            &[],
+            &[],
+            style,
+            1.0,
+            Some(0.0),
+            Alignment::Start,
+            false,
+            false,
+            Keep::Owned,
+            parley::BaseDirection::Auto,
+        );
+        let min = l.width();
+        let layout = Rc::make_mut(&mut l);
+        layout.break_all_lines(None);
+        layout.align(Alignment::Start, parley::AlignmentOptions::default());
+        let max = layout.width();
+        self.layout_ids.forget(&l);
+        (min, max)
+    }
+
+    /// [`layout_rich_with`](Self::layout_rich_with) reserving in-flow [`InlineBoxRun`] slots.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn layout_inline_with(
+        &mut self,
+        text: &str,
+        spans: &[Span],
+        inline_boxes: &[InlineBoxRun],
+        style: TextStyle,
+        scale: f32,
+        max_width: Option<f32>,
+        options: RichLayoutOptions,
+    ) -> Rc<Layout<Ink>> {
+        self.layout_keyed(None, text, spans, &[], 0.0, &[], &[], inline_boxes, style, scale, max_width, options.align, options.wrap_anywhere, false, Keep::Cached, options.direction)
     }
 
     /// [`layout_aligned`](Self::layout_aligned) with per-paragraph [`Block`](crate::Block)
@@ -193,7 +244,7 @@ impl TextSystem {
         wrap_anywhere: bool,
         cache: bool,
     ) -> Rc<Layout<Ink>> {
-        self.layout_keyed(None, text, spans, blocks, pills, style, scale, max_width, align, wrap_anywhere, false, if cache { Keep::Cached } else { Keep::Secret }, parley::BaseDirection::Auto)
+        self.layout_keyed(None, text, spans, blocks, 0.0, pills, &[], &[], style, scale, max_width, align, wrap_anywhere, false, if cache { Keep::Cached } else { Keep::Secret }, parley::BaseDirection::Auto)
     }
 
     /// Secure display runs must not enter the shared layout cache or leave character
@@ -207,7 +258,20 @@ impl TextSystem {
         max_width: Option<f32>,
         align: Alignment,
     ) -> Rc<Layout<Ink>> {
-        self.layout_keyed(spec.shape_key, spec.content, spec.spans, spec.blocks, spec.pills, spec.style, scale, max_width, align, spec.wrap_anywhere, spec.pretty, if spec.redacted { Keep::Secret } else { Keep::Cached }, spec.base())
+        self.layout_keyed(spec.shape_key, spec.content, spec.spans, spec.blocks, spec.text_indent, spec.pills, spec.span_boxes, spec.inline_boxes, spec.style, scale, max_width, align, spec.wrap_anywhere, spec.pretty, if spec.redacted { Keep::Secret } else { Keep::Cached }, spec.base())
+    }
+
+    /// Like [`Self::layout_for_spec`], keeping the layout only on the caller so live text
+    /// ticks never retain entries in the commit cache.
+    #[doc(hidden)]
+    pub fn layout_live_spec(
+        &mut self,
+        spec: &TextInput<'_>,
+        scale: f32,
+        max_width: Option<f32>,
+        align: Alignment,
+    ) -> Rc<Layout<Ink>> {
+        self.layout_keyed(None, spec.content, spec.spans, spec.blocks, spec.text_indent, spec.pills, spec.span_boxes, spec.inline_boxes, spec.style, scale, max_width, align, spec.wrap_anywhere, spec.pretty, Keep::Owned, spec.base())
     }
 
     /// [`Self::layout_blocks_inner`] of a cut of `spec`'s content, in its direction.
@@ -223,7 +287,56 @@ impl TextSystem {
         align: Alignment,
         cache: bool,
     ) -> Rc<Layout<Ink>> {
-        self.layout_keyed(None, text, spans, spec.blocks, &[], spec.style, scale, max_width, align, spec.wrap_anywhere, false, if cache { Keep::Cached } else { Keep::Secret }, spec.base())
+        self.layout_cut_inline(spec, text, spans, &[], scale, max_width, align, cache)
+    }
+
+    /// [`Self::layout_cut`] carrying kept [`InlineBoxRun`]s across truncation or line clamping.
+    #[allow(clippy::too_many_arguments)]
+    #[doc(hidden)]
+    pub fn layout_cut_inline(
+        &mut self,
+        spec: &TextInput<'_>,
+        text: &str,
+        spans: &[Span],
+        inline_boxes: &[InlineBoxRun],
+        scale: f32,
+        max_width: Option<f32>,
+        align: Alignment,
+        cache: bool,
+    ) -> Rc<Layout<Ink>> {
+        self.layout_keyed(None, text, spans, spec.blocks, spec.text_indent, &[], &[], inline_boxes, spec.style, scale, max_width, align, spec.wrap_anywhere, false, if cache { Keep::Cached } else { Keep::Secret }, spec.base())
+    }
+
+    /// Like [`Self::layout_cut`] for live text: reuses the shaping context without inserting
+    /// into the shared layout cache.
+    #[allow(clippy::too_many_arguments)]
+    #[doc(hidden)]
+    pub fn layout_cut_live(
+        &mut self,
+        spec: &TextInput<'_>,
+        text: &str,
+        spans: &[Span],
+        scale: f32,
+        max_width: Option<f32>,
+        align: Alignment,
+    ) -> Rc<Layout<Ink>> {
+        self.layout_cut_live_inline(spec, text, spans, &[], scale, max_width, align)
+    }
+
+    /// [`Self::layout_cut_live`] carrying kept [`InlineBoxRun`]s across truncation or line clamping.
+    #[allow(clippy::too_many_arguments)]
+    #[doc(hidden)]
+    pub fn layout_cut_live_inline(
+        &mut self,
+        spec: &TextInput<'_>,
+        text: &str,
+        spans: &[Span],
+        inline_boxes: &[InlineBoxRun],
+        scale: f32,
+        max_width: Option<f32>,
+        align: Alignment,
+    ) -> Rc<Layout<Ink>> {
+        self.layout_keyed(None, text, spans, spec.blocks, spec.text_indent, &[], &[], inline_boxes, spec.style, scale, max_width, align, spec.wrap_anywhere, false, Keep::Owned, spec.base())
     }
 }
 
@@ -275,20 +388,18 @@ impl TextSystem {
     ) -> Vec<(std::ops::Range<usize>, f32)> {
         let mono_style = matches!(style.family, Family::Mono | Family::SystemMono);
         let default_family = if mono_style { style.family } else { Family::Mono };
+        let sizes = super::span_map::SpanMap::new(spans.iter().filter_map(|s| s.size.map(|v| (s.start as usize..s.end as usize, v))));
+        let weights = super::span_map::SpanMap::new(spans.iter().filter_map(|s| s.weight.map(|v| (s.start as usize..s.end as usize, v))));
+        let italics = super::span_map::SpanMap::new(spans.iter().filter_map(|s| s.italic.then_some((s.start as usize..s.end as usize, ()))));
         let mut last_probe: Option<((u32, u32, bool), f32)> = None;
         let mut widen: Vec<(std::ops::Range<usize>, f32)> = Vec::new();
         for &(at, columns) in tabs {
             if columns <= 1 {
                 continue;
             }
-            let (mut sz, mut wt, mut it) = (style.size, style.weight, style.italic);
-            for s in spans {
-                if (s.start as usize) <= at && at < s.end as usize {
-                    if let Some(v) = s.size { sz = v; }
-                    if let Some(v) = s.weight { wt = v; }
-                    if s.italic { it = true; }
-                }
-            }
+            let sz = sizes.get(at).unwrap_or(style.size);
+            let wt = weights.get(at).unwrap_or(style.weight);
+            let it = style.italic || italics.get(at).is_some();
             let probe_key = (sz.to_bits(), wt.to_bits(), it);
             let col_pt = match last_probe {
                 Some((k, v)) if k == probe_key => v,

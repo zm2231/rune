@@ -1,5 +1,6 @@
 use super::composite::{MAX_BACKDROP, fit_backdrop, pixels};
 use super::*;
+use crate::time::Instant;
 
 #[test]
 fn backdrop_is_cropped_to_the_output_aspect_then_scaled() {
@@ -105,6 +106,7 @@ impl Member for Fake {
     fn resolve_popup(&mut self, _: Option<&str>) -> Result<(), crate::PopupMenuError> { Ok(()) }
     fn file_dialog_open(&self) -> bool { false }
     fn resolve_file_dialog(&mut self, _: Option<std::path::PathBuf>) -> Result<(), crate::FileDialogError> { Ok(()) }
+    fn resolve_file_dialog_files(&mut self, _: Option<Vec<std::path::PathBuf>>) -> Result<(), crate::FileDialogError> { Ok(()) }
     fn render(&mut self, _: &Gpu, _: &Slot, _: (u32, u32), _: f64, _: f64, _: Instant) {}
     fn flush_interaction(&mut self) {}
     fn backdrop_dark(&self) -> Option<bool> { None }
@@ -317,6 +319,8 @@ fn virtual_desktop_window_follows_fit_content_height_and_resize_window() {
 
 #[test]
 fn virtual_desktop_reports_frames_to_on_frame_encoded() {
+    if !crate::render::Gpu::test_adapter_available() { return; }
+    let _turn = crate::tooling::headless_run::test_turn();
     let dir = std::env::temp_dir().join(format!("rune-desktop-encoded-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let backdrop = dir.join("backdrop.png");

@@ -22,7 +22,7 @@ fn cached_card(bounds: [f32; 4]) -> Vec<Instance> {
 /// miss did: an unturned hit snaps the scope back to where its bounds sit.
 #[test]
 fn a_cache_hit_composites_with_its_layer_turn() {
-    let gpu = Gpu::headless();
+    let Some(gpu) = Gpu::test_headless() else { return };
     let mut renderer = Renderer::new(&gpu.device, OFFSCREEN_FORMAT);
     let target = Offscreen::new(&gpu.device, 64, 64);
     let mut atlas = crate::text::TextSystem::default().atlas;
@@ -57,9 +57,9 @@ fn a_cache_hit_composites_with_its_layer_turn() {
 /// then doesn't fit the budget, the scope draws as a plain group, and its faded child with it.
 #[test]
 fn a_layer_inside_a_cache_that_misses_its_budget_still_draws() {
-    let gpu = Gpu::headless();
-    let mut renderer = Renderer::new(&gpu.device, OFFSCREEN_FORMAT);
-    let target = Offscreen::new(&gpu.device, 32, 16);
+    let Some(gpu) = Gpu::test_headless() else { return };
+    let mut renderer = Renderer::new(&gpu.device, OFFSCREEN_FORMAT_LINEAR);
+    let target = Offscreen::with_format(&gpu.device, 32, 16, OFFSCREEN_FORMAT_LINEAR);
     let mut atlas = crate::text::TextSystem::default().atlas;
     let instances = cached_card([4.0, 2.0, 24.0, 12.0]);
     let at = (8 * 32 + 16) * 4;

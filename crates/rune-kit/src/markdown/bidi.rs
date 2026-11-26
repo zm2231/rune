@@ -138,11 +138,18 @@ pub(super) fn isolated(e: El, inl: &Inline) -> El {
     units(inl).into_iter().fold(e, |e, r| e.isolate(r, Direction::Ltr))
 }
 
+/// Whether the link over bytes `a..b` of `inl`, to `url`, shows its own address (a bare or
+/// autolinked URL, a `mailto:`), not a label.
+pub(super) fn shows_address(inl: &Inline, a: usize, b: usize, url: &str) -> bool {
+    let shown = inl.text.get(a..b).unwrap_or_default().trim();
+    shown == url || ["http://", "https://", "www.", "file://", "mailto:"].iter().any(|p| shown.starts_with(p))
+}
+
 /// The runs of `inl` that keep their own order: each inline code chip with its padding, and each
 /// link whose text is its address.
 fn units(inl: &Inline) -> Vec<Range<usize>> {
     let mut out: Vec<Range<usize>> = Vec::new();
-    let mut code: Vec<Range<usize>> = inl.spans.iter().filter(|s| matches!(s.2, Style::Code | Style::CodePad)).map(|s| s.0..s.1).collect();
+    let mut code: Vec<Range<usize>> = inl.spans.iter().filter(|s| matches!(s.2, Style::Code | Style::CodePad | Style::Math)).map(|s| s.0..s.1).collect();
     code.sort_by_key(|r| r.start);
     for r in code {
         match out.last_mut() {
@@ -151,9 +158,7 @@ fn units(inl: &Inline) -> Vec<Range<usize>> {
         }
     }
     for (a, b, url) in &inl.links {
-        let shown = inl.text.get(*a..*b).unwrap_or_default().trim();
-        let address = shown == url.as_str() || ["http://", "https://", "www.", "file://", "mailto:"].iter().any(|p| shown.starts_with(p));
-        if address && !out.iter().any(|r| r.start < *b && *a < r.end) {
+        if shows_address(inl, *a, *b, url) && !out.iter().any(|r| r.start < *b && *a < r.end) {
             out.push(*a..*b);
         }
     }

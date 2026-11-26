@@ -93,7 +93,7 @@ fn a_trim_gives_back_the_atlas_pages_after_the_last_in_use() {
     while ts.atlas.page_count() < 3 {
         ts.atlas.put(512, 512, &mask, 0, 0).unwrap();
     }
-    let held: usize = (0..ts.atlas.page_count()).map(|page| ts.atlas.page_data(page).unwrap().len()).sum();
+    let first = ts.atlas.page_data(0).unwrap().len();
     ts.rest();
     ts.trim_memory();
     assert_eq!(ts.atlas.page_count(), 3, "pages the frame drew from stay");
@@ -102,7 +102,8 @@ fn a_trim_gives_back_the_atlas_pages_after_the_last_in_use() {
     ts.rest();
     ts.trim_memory();
     assert_eq!(ts.atlas.page_count(), 1);
-    assert_eq!(ts.atlas.page_data(0).unwrap().len() * 3, held);
+    // Pages grow by rows as they fill, so only the first page's buffer is compared.
+    assert_eq!(ts.atlas.page_data(0).unwrap().len(), first, "the first page keeps its buffer");
 }
 
 /// Colour glyphs go at a frame's start only over their budget. A trim retires the ones the

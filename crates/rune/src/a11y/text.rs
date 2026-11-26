@@ -1,19 +1,21 @@
 //! Text inside the accessibility tree: a text field's lines as text runs with each
 //! character's place, so a reader moves by character, word and line and a magnifier follows
-//! the caret; a selectable text's lines likewise; and a text's inline links as link nodes.
+//! the caret; a selectable text's lines likewise; a text's inline links as link nodes; and its
+//! named inline icons as images.
 
 use accesskit::{Action as Ak, Node as AkNode, NodeId as AkId, Rect as AkRect, Role, TextDirection, TextPosition, TextSelection};
 use std::borrow::Cow;
 
-use super::*;
-use super::a11y_tree::{element_id, line_id, lines_box_id, link_id, round};
+use super::tree::{LINK_BASE, Walk, element_id, icon_id, line_id, lines_box_id, link_id, round};
+use crate::el::TextSpec;
+use crate::runtime::{RuntimeCore, caret_index, text_origin};
+use crate::text::TextFlow;
 
-#[path = "text/long_field.rs"]
 mod long_field;
-#[path = "text/runs.rs"]
 mod runs;
 
-pub(crate) use runs::{Line, byte_at, lines};
+pub(crate) use runs::Line;
+pub(super) use runs::{byte_at, lines};
 
 /// Text longer than this gets no per-character runs (a reader still gets its whole value). A field
 /// past it marks its selection on itself, publishes only its drawn visual lines under an
@@ -27,15 +29,16 @@ const FIELD_SELECTION: bool = cfg!(any(target_os = "windows", target_os = "macos
 
 impl RuntimeCore {
     /// Node `i`'s text as AccessKit sees it: the lines of a field or selectable text, and the
-    /// links of any text, pushed after it as its children.
-    pub(super) fn a11y_text_nodes(&self, i: usize, w: &a11y_tree::Walk, out: &mut Vec<(AkId, AkNode)>) {
+    /// links and named inline icons of any text, pushed after it as its children.
+    pub(super) fn a11y_text_nodes(&self, i: usize, w: &Walk, out: &mut Vec<(AkId, AkNode)>) {
         let n = &self.tree.nodes[i];
+        if n.is_secure() || n.role == "list-marker" { return; }
         if let Some(g) = n.vis.grid.as_deref() {
             return self.a11y_grid_rows(i, g, w, out);
         }
         let Some(spec) = n.text.as_deref() else { return };
         let me = out.len() - 1;
-        let runs = n.input.is_some() || (spec.selectable && !n.is_secure());
+        let runs = (n.input.is_some() || spec.selectable) && !n.is_secure();
         let long_field = self.a11y_uses_long_field(i);
         let found = (!long_field && runs).then(|| self.a11y_lines(i)).flatten();
         if let Some((content, lines)) = found {
@@ -76,7 +79,7 @@ impl RuntimeCore {
             let at = |character_index| TextPosition { node: element_id(n.id), character_index };
             out[me].1.set_text_selection(TextSelection { anchor: at(input.edit.anchor), focus: at(input.edit.focus) });
         }
-        if spec.cold.links.is_empty() || spec.redacted { return; }
+        if spec.redacted { return; }
         let boxes = self.link_boxes(i, self.drawn_box(i));
         for (k, l) in spec.cold.links.iter().enumerate() {
             let Some(r) = boxes.iter().filter(|(j, _)| *j == k).fold(None, |u: Option<[f32; 4]>, (_, r)| {
@@ -90,26 +93,56 @@ impl RuntimeCore {
             let words = spec.source_slice(l.start, l.end).unwrap_or("");
             link.set_label(l.label.as_deref().unwrap_or(words));
             link.set_author_id(l.id.as_str());
-            if role == Role::Link && l.id.contains("://") { link.set_url(l.id.as_str()); }
+            if role == Role::Link {
+                if let Some(url) = crate::runtime::selection::link_menu::link_url(spec, l) {
+                    link.set_url(url);
+                } else if l.id.contains("://") {
+                    link.set_url(l.id.as_str());
+                }
+            }
             link.set_bounds(AkRect {
                 x0: round(r[0] + w.shift[0]), y0: round(r[1] + w.shift[1]),
                 x1: round(r[2] + w.shift[0]), y1: round(r[3] + w.shift[1]),
             });
+            let disabled = self.node_disabled(i) || n.inert;
+            if disabled { link.set_disabled(); }
             if self.allowed(i) {
-                if spec.cold.on_link.is_some() { link.add_action(Ak::Click); }
+                if !disabled && spec.cold.on_link.is_some() { link.add_action(Ak::Click); }
                 if self.can_focus(i) { link.add_action(Ak::Focus); }
-                if spec.cold.on_link_secondary.is_some() { link.add_action(Ak::ShowContextMenu); }
+                if !disabled
+                    && (spec.cold.on_link_secondary.is_some()
+                        || (!self.ancestor_has_secondary_press(i)
+                            && crate::runtime::selection::link_menu::link_address(spec, l).is_some()))
+                {
+                    link.add_action(Ak::ShowContextMenu);
+                }
             }
             let id = link_id(n.id, k);
             out[me].1.push_child(id);
             out.push((id, link));
+        }
+        // An inline icon with a name (`InlineIcon::label`): an image where it draws, as
+        // `<span role="img" aria-label>` is on a web page.
+        for (k, r) in self.inline_icon_boxes(i, self.drawn_box(i)) {
+            let Some(b) = spec.cold.pills.get(k).and_then(|p| p.bare.as_deref()) else { continue };
+            let Some(label) = b.label.as_deref() else { continue };
+            let mut icon = AkNode::new(Role::Image);
+            icon.set_label(label);
+            if let Some(help) = b.help.as_deref().filter(|h| *h != label) { icon.set_description(help); }
+            icon.set_bounds(AkRect {
+                x0: round(r[0] + w.shift[0]), y0: round(r[1] + w.shift[1]),
+                x1: round(r[2] + w.shift[0]), y1: round(r[3] + w.shift[1]),
+            });
+            let id = icon_id(n.id, k);
+            out[me].1.push_child(id);
+            out.push((id, icon));
         }
     }
 
     /// A terminal grid's rows as its text lines, top to bottom: each row's text (its pinned
     /// cells in their columns) with every character's place on the cell grid, so a reader moves
     /// through the screen by character, word and line.
-    fn a11y_grid_rows(&self, i: usize, g: &crate::el::grid::Grid, w: &a11y_tree::Walk, out: &mut Vec<(AkId, AkNode)>) {
+    fn a11y_grid_rows(&self, i: usize, g: &crate::el::grid::Grid, w: &Walk, out: &mut Vec<(AkId, AkNode)>) {
         let n = &self.tree.nodes[i];
         let me = out.len() - 1;
         let r = self.paint.drawn[i];
@@ -160,12 +193,13 @@ impl RuntimeCore {
         }
     }
 
-    /// What node `i` draws as text: a field's display text (its mask when secure), else its
-    /// content.
+    /// What node `i` draws as text: none for a secure node, else a field's display text or the
+    /// element's content.
     fn a11y_drawn_text(&self, i: usize) -> Option<Cow<'_, str>> {
         let n = &self.tree.nodes[i];
+        if n.is_secure() { return None; }
         match n.input.as_deref() {
-            Some(input) if !input.edit.is_secure() && input.edit.preedit().is_none() => Some(Cow::Borrowed(input.edit.text.as_str())),
+            Some(input) if input.edit.preedit().is_none() => Some(Cow::Borrowed(input.edit.text.as_str())),
             Some(input) => Some(Cow::Owned(input.edit.display().0)),
             None => n.text.as_deref().map(|t| Cow::Borrowed(t.content.as_str())),
         }
@@ -173,15 +207,15 @@ impl RuntimeCore {
 
     fn a11y_drawn_len(&self, i: usize) -> Option<usize> {
         let n = &self.tree.nodes[i];
+        if n.is_secure() { return None; }
         match n.input.as_deref() {
-            Some(input) if !input.edit.is_secure() => match input.edit.preedit() {
+            Some(input) => match input.edit.preedit() {
                 None => Some(input.edit.text.len()),
                 Some((pre, _)) => {
                     let (a, b) = input.edit.range();
                     Some(input.edit.text.len().saturating_sub(b.saturating_sub(a)) + pre.len())
                 }
             },
-            Some(input) => Some(input.edit.display().0.len()),
             None => n.text.as_deref().map(|t| t.content.len()),
         }
     }
@@ -193,7 +227,7 @@ impl RuntimeCore {
         let s = self.env.scale;
         let z = self.paint.drawn_scale.get(i).copied().unwrap_or(1.0).max(1e-4);
         let r = self.paint.drawn[i];
-        let [mut x, y] = links::origin(n, spec, layout, [r[0], r[1], r[0] + r[2], r[1] + r[3]], s, z);
+        let [mut x, y] = text_origin(n, spec, layout, [r[0], r[1], r[0] + r[2], r[1] + r[3]], s, z);
         if n.input.as_deref().is_some_and(|inp| inp.single_line) {
             x -= self.edit.input_scroll.get(&n.path).copied().unwrap_or(0.0) * z;
         }
@@ -221,7 +255,7 @@ impl RuntimeCore {
         let lines = lines(layout, &content, px, origin);
         // `line_id` holds up to `LINK_BASE - 2` (`32,766`) runs per node; if a block exceeds that
         // or its runs don't cover `content`, publish its whole value/label without `TextRun`s.
-        if lines.len() > (super::a11y_tree::LINK_BASE as usize - 2)
+        if lines.len() > (LINK_BASE as usize - 2)
             || lines.iter().map(|l| l.range.len()).sum::<usize>() != content.len()
         {
             return None;
@@ -249,6 +283,7 @@ impl RuntimeCore {
     /// A field's caret or selection, in its lines.
     fn a11y_selection(&self, i: usize, content: &str, lines: &[Line]) -> Option<TextSelection> {
         let n = &self.tree.nodes[i];
+        if n.is_secure() { return None; }
         let input = n.input.as_deref()?;
         let edit = &input.edit;
         let (anchor, focus) = if edit.preedit().is_some() {
@@ -261,10 +296,25 @@ impl RuntimeCore {
         Some(TextSelection { anchor: at(anchor)?, focus: at(focus)? })
     }
 
+    /// Active caret or selection for focused caret-browsing host `host`, referencing the
+    /// mounted `Role::TextRun` children of its anchor and focus text nodes.
+    pub(super) fn a11y_caret_selection(&self, host: usize) -> Option<TextSelection> {
+        let (h, ai, a_byte, fi, f_byte) = self.caret_browse_endpoints()?;
+        if h != host || !self.a11y_in_tree(ai) || !self.a11y_in_tree(fi) {
+            return None;
+        }
+        let pos_in = |ni: usize, byte: usize| -> Option<TextPosition> {
+            let (_, lines) = self.a11y_lines(ni)?;
+            let (k, c) = runs::position(&lines, byte)?;
+            Some(TextPosition { node: line_id(self.tree.nodes[ni].id, k), character_index: c })
+        };
+        Some(TextSelection { anchor: pos_in(ai, a_byte)?, focus: pos_in(fi, f_byte)? })
+    }
+
     /// The value and state a text field adds to its node.
-    pub(super) fn a11y_input(&self, _i: usize, input: &crate::el::InputSpec, node: &mut AkNode) {
+    pub(super) fn a11y_input(&self, i: usize, input: &crate::el::InputSpec, node: &mut AkNode) {
         if !input.placeholder.is_empty() { node.set_placeholder(input.placeholder.as_str()); }
-        if !input.edit.is_secure() { node.set_value(input.edit.text.as_str()); }
-        if input.access.is_none() { node.set_read_only(); }
+        if !self.tree.nodes[i].is_secure() { node.set_value(input.edit.text.as_str()); }
+        if input.access.is_none() || self.is_node_read_only(i) { node.set_read_only(); }
     }
 }

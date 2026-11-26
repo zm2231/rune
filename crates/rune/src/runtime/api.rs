@@ -119,6 +119,8 @@ impl<S: 'static> Runtime<S> {
     #[inline(always)]
     pub(crate) fn ignore_minimize(&mut self, what: &str) { self.core_mut().ignore_minimize(what); }
     #[inline(always)]
+    pub(crate) fn take_user_close_request(&mut self) -> bool { self.core_mut().take_user_close_request() }
+    #[inline(always)]
     pub(crate) fn minimize_step(&mut self, event: crate::window::MinimizeEvent) -> bool { self.core_mut().minimize_step(event) }
     #[inline(always)]
     pub(crate) fn schedule_pending_wakes(&mut self) { self.core_mut().schedule_pending_wakes(); }
@@ -179,15 +181,15 @@ impl<S: 'static> Runtime<S> {
 
     /// The view's UI zoom from the last commit (`Cx::zoom`), 1 when unzoomed.
     #[inline(always)]
-    pub fn zoom(&self) -> f32 { self.core().zoom() }
+    pub fn zoom(&self) -> f32 { self.core().host.zoom() }
 
     /// The window's size in its own points, before the view's zoom.
     #[inline(always)]
-    pub fn window_viewport(&self) -> (f32, f32) { self.core().window_viewport() }
+    pub fn window_viewport(&self) -> (f32, f32) { self.core().host.window_viewport() }
 
     /// The window's scale, before the view's zoom.
     #[inline(always)]
-    pub fn window_scale(&self) -> f32 { self.core().window_scale() }
+    pub fn window_scale(&self) -> f32 { self.core().host.window_scale() }
 
     /// Physical pixels per view point: what a host divides physical pointer coordinates by.
     #[inline(always)]
@@ -195,13 +197,19 @@ impl<S: 'static> Runtime<S> {
 
     /// A rect `[x, y, w, h]` from view points to window points.
     #[inline(always)]
-    pub fn to_window(&self, r: [f32; 4]) -> [f32; 4] { self.core().to_window(r) }
+    pub fn to_window(&self, r: [f32; 4]) -> [f32; 4] { self.core().host.to_window(r) }
 
     /// The root's natural height at the current width, in window points.
     #[inline(always)]
     pub fn content_height(&mut self) -> f32 {
         let (core, app) = self.split_mut();
         core.content_height(&app)
+    }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn measure_content(&mut self) -> (f32, f32) {
+        let (core, app) = self.split_mut();
+        core.measure_content(&app)
     }
 
     #[inline(always)]
@@ -215,8 +223,118 @@ impl<S: 'static> Runtime<S> {
     pub fn set_system_dark(&mut self, dark: bool) { self.core_mut().set_system_dark(dark); }
     #[inline(always)]
     pub fn set_titlebar_inset(&mut self, points: f32) { self.core_mut().set_titlebar_inset(points); }
+    /// Sets what [`Cx::decoration_mode`], [`Cx::tiled_edges`], and [`Cx::window_actions`] report,
+    /// marking the view dirty when it changes and the last committed view read any of them.
+    ///
+    /// ```
+    /// # use rune::{Cx, DecorationMode, El, Env, Runtime, WindowManagerState, el};
+    /// fn view(_: &(), cx: &mut Cx<()>) -> El {
+    ///     el().w(if cx.decoration_mode() == DecorationMode::Client { 100.0 } else { 50.0 })
+    /// }
+    /// let mut rt = Runtime::new((), view, (200.0, 100.0), Env::default());
+    /// rt.set_window_manager_state(WindowManagerState::default().with_decoration_mode(DecorationMode::Client));
+    /// rt.frame(0.0);
+    /// ```
     #[inline(always)]
-    pub fn set_safe_area(&mut self, insets: [f32; 4]) -> bool { self.core_mut().set_safe_area(insets) }
+    pub fn set_window_manager_state(&mut self, state: crate::WindowManagerState) {
+        self.core_mut().set_window_manager_state(state);
+    }
+    /// Sets what [`Cx::is_maximized`] reports, marking the view dirty when it changes.
+    ///
+    /// Native windows update this from confirmed OS window state on create, resize, scale change,
+    /// and focus. Headless runs default to `false`.
+    ///
+    /// ```
+    /// # use rune::{Cx, El, Env, Runtime, el};
+    /// fn view(_: &(), cx: &mut Cx<()>) -> El {
+    ///     el().w(if cx.is_maximized() { 100.0 } else { 50.0 })
+    /// }
+    /// let mut rt = Runtime::new((), view, (200.0, 100.0), Env::default());
+    /// rt.set_maximized(true);
+    /// rt.frame(0.0);
+    /// ```
+    #[inline(always)]
+    pub fn set_maximized(&mut self, maximized: bool) { self.core_mut().set_maximized(maximized); }
+    /// Sets what [`Cx::is_full_screen`] reports, marking the view dirty when it changes.
+    ///
+    /// Native macOS windows flip this at the start of the Space transition
+    /// (`NSWindowWillEnterFullScreenNotification` / `NSWindowWillExitFullScreenNotification`) and
+    /// reconcile on completion or failure; Windows and Linux update from confirmed OS window state
+    /// on create, resize, scale change, and focus. Web and headless runs default to `false`.
+    ///
+    /// ```
+    /// # use rune::{Cx, El, Env, Runtime, el};
+    /// fn view(_: &(), cx: &mut Cx<()>) -> El {
+    ///     el().w(if cx.is_full_screen() { 100.0 } else { 50.0 })
+    /// }
+    /// let mut rt = Runtime::new((), view, (200.0, 100.0), Env::default());
+    /// rt.set_full_screen(true);
+    /// rt.frame(0.0);
+    /// ```
+    #[inline(always)]
+    pub fn set_full_screen(&mut self, full_screen: bool) { self.core_mut().set_full_screen(full_screen); }
+    /// Sets what [`Cx::window_backdrop`] reports for headless tests, marking the view and its
+    /// memos dirty when it changes.
+    ///
+    /// Native windows and overlays update this only when the OS confirms an active backdrop
+    /// (Windows 11 Build 22621+ `DWMWA_SYSTEMBACKDROP_TYPE`). Headless runs default to
+    /// [`WindowBackdrop::None`](crate::WindowBackdrop::None).
+    ///
+    /// ```
+    /// # use rune::{Color, Cx, El, Env, Runtime, WindowBackdrop, el};
+    /// fn view(_: &(), cx: &mut Cx<()>) -> El {
+    ///     let bg = if cx.window_backdrop().is_active() { Color::TRANSPARENT } else { Color::BLACK };
+    ///     el().w_full().h_full().fill(bg)
+    /// }
+    /// let mut rt = Runtime::new((), view, (200.0, 100.0), Env::default());
+    /// rt.set_window_backdrop(WindowBackdrop::Mica);
+    /// rt.frame(0.0);
+    /// ```
+    #[inline(always)]
+    pub fn set_window_backdrop(&mut self, backdrop: crate::WindowBackdrop) { self.core_mut().set_window_backdrop(backdrop); }
+    /// Sets what [`Cx::window_backdrop_supported`] reports for `backdrop` in headless tests,
+    /// marking the view and its memos dirty when it changes.
+    ///
+    /// [`WindowBackdrop::None`](crate::WindowBackdrop::None) is always reported supported and
+    /// ignores calls to this setter. Headless runs default to `false` for all non-`None`
+    /// variants.
+    ///
+    /// ```
+    /// # use rune::{Cx, El, Env, Runtime, WindowBackdrop, el};
+    /// let mut rt = Runtime::new(
+    ///     (),
+    ///     |_: &(), cx: &mut Cx<()>| {
+    ///         let _ = cx.window_backdrop_supported(WindowBackdrop::Blur);
+    ///         el()
+    ///     },
+    ///     (200.0, 100.0),
+    ///     Env::default(),
+    /// );
+    /// rt.set_window_backdrop_supported(WindowBackdrop::Blur, true);
+    /// rt.frame(0.0);
+    /// ```
+    #[inline(always)]
+    pub fn set_window_backdrop_supported(&mut self, backdrop: crate::WindowBackdrop, supported: bool) {
+        self.core_mut().set_window_backdrop_supported(backdrop, supported);
+    }
+    /// Sets what [`Cx::renderer_kind`] reports for headless tests, marking the view and its
+    /// memos dirty when it changes. Defaults to [`RendererKind::Gpu`](crate::RendererKind::Gpu).
+    ///
+    /// ```
+    /// # use rune::{Cx, El, Env, RendererKind, Runtime, el};
+    /// let mut rt = Runtime::new(
+    ///     (),
+    ///     |_: &(), cx: &mut Cx<()>| if cx.renderer_kind().is_cpu() { el() } else { el().blur(8.0) },
+    ///     (200.0, 100.0),
+    ///     Env::default(),
+    /// );
+    /// rt.set_renderer_kind(RendererKind::Cpu);
+    /// rt.frame(0.0);
+    /// ```
+    #[inline(always)]
+    pub fn set_renderer_kind(&mut self, kind: crate::RendererKind) {
+        self.core_mut().set_renderer_kind(kind);
+    }
     #[inline(always)]
     pub fn set_system_text_scale(&mut self, scale: f32) -> bool { self.core_mut().set_system_text_scale(scale) }
     #[inline(always)]
@@ -234,7 +352,27 @@ impl<S: 'static> Runtime<S> {
     #[inline(always)]
     pub fn set_system_reduced_motion(&mut self, reduced: bool) { self.core_mut().set_system_reduced_motion(reduced); }
     #[inline(always)]
-    pub fn system_reduced_motion(&self) -> bool { self.core().system_reduced_motion() }
+    pub fn system_reduced_motion(&self) -> bool { self.core().host.system_reduced_motion() }
+    /// Sets the preferred language list reported by [`Cx::system_languages`] and [`Cx::locale`]
+    /// as BCP 47 tags in preference order, overriding the lazily queried platform languages.
+    /// Empty and duplicate tags are dropped; a change re-runs the view and its memos.
+    ///
+    /// ```
+    /// use rune::{Env, Runtime, el};
+    ///
+    /// let mut rt = Runtime::new(
+    ///     (),
+    ///     |_: &(), cx| { let _ = cx.locale(); el() },
+    ///     (200.0, 120.0),
+    ///     Env::default(),
+    /// );
+    /// rt.set_languages(["ar-EG", "en-US"]);
+    /// rt.frame(0.0);
+    /// ```
+    #[inline(always)]
+    pub fn set_languages(&mut self, languages: impl IntoIterator<Item = impl AsRef<str>>) {
+        self.core_mut().set_languages(languages.into_iter().map(|s| s.as_ref().to_owned()).collect());
+    }
     #[inline(always)]
     pub(crate) fn system_scroll_bars_state(&self) -> crate::platform::scroll_bars::SystemScrollBars { self.core().system_scroll_bars_state() }
     #[inline(always)]
@@ -242,29 +380,143 @@ impl<S: 'static> Runtime<S> {
     #[inline(always)]
     pub fn set_system_scroll_bars(&mut self, bars: crate::ScrollBars) { self.core_mut().set_system_scroll_bars(bars); }
     #[inline(always)]
-    pub fn system_scroll_bars(&self) -> crate::ScrollBars { self.core().system_scroll_bars() }
+    pub fn system_scroll_bars(&self) -> crate::ScrollBars { self.core().host.system_scroll_bars() }
     #[inline(always)]
     pub fn set_system_scroller_overlay(&mut self, overlay: bool) { self.core_mut().set_system_scroller_overlay(overlay); }
     #[inline(always)]
-    pub fn system_scroller_overlay(&self) -> bool { self.core().system_scroller_overlay() }
+    pub fn system_scroller_overlay(&self) -> bool { self.core().host.system_scroller_overlay() }
     #[inline(always)]
     pub fn set_system_scroller_jumps(&mut self, jumps: bool) { self.core_mut().set_system_scroller_jumps(jumps); }
     #[inline(always)]
-    pub fn system_scroller_jumps(&self) -> bool { self.core().system_scroller_jumps() }
+    pub fn system_scroller_jumps(&self) -> bool { self.core().host.system_scroller_jumps() }
     #[inline(always)]
-    pub fn overlay_scroll_bars(&self) -> bool { self.core().overlay_scroll_bars() }
+    pub fn overlay_scroll_bars(&self) -> bool { self.core().host.overlay_scroll_bars() }
 
+    /// Registers font bytes (TTF, OTF, TTC, or variable font) into the process-wide font
+    /// collection at runtime, returning the registered family names in registration order.
+    ///
+    /// Pass bytes loaded off the UI thread (or embedded bytes); never read font files on the UI
+    /// thread. Invalidates this runtime's shaped layouts, memoized subtrees, and layout
+    /// measurements immediately when new faces are added; every other window, overlay, and
+    /// [`rune::text::measure`](crate::text::measure) picks them up too.
+    ///
+    /// ```no_run
+    /// # let mut rt: rune::Runtime<()> = unimplemented!();
+    /// # let bytes: Vec<u8> = Vec::new();
+    /// let families = rt.add_font(bytes);
+    /// if let Some(family) = families.first() {
+    ///     rt.set_font_families(family, "ui-monospace");
+    /// }
+    /// ```
+    #[inline(always)]
+    pub fn add_font(&mut self, bytes: impl Into<std::sync::Arc<[u8]>>) -> Vec<String> { self.core_mut().add_font(bytes) }
     #[inline(always)]
     pub fn set_font_families(&mut self, sans: &str, mono: &str) { self.core_mut().set_font_families(sans, mono); }
     #[inline(always)]
     pub fn font_families(&self) -> (&str, &str) { self.core().font_families() }
+    /// Sets or clears the opt-in preferred emoji font family across every runtime on this thread
+    /// (and windows opened later), as [`Tx::set_emoji_family`](crate::Tx::set_emoji_family) does
+    /// from a handler.
+    ///
+    /// Precedence for emoji graphemes is: this explicit `emoji_family` first, then any colour
+    /// emoji font explicitly named in the active family stack, then the lazily loaded system emoji
+    /// font, then the active text stack. Pass `None` or an empty string to restore default emoji
+    /// fallback.
+    ///
+    /// ```
+    /// use rune::{Env, Runtime, el};
+    ///
+    /// let mut rt = Runtime::new((), |_: &(), _| el(), (200.0, 120.0), Env::default());
+    /// rt.set_emoji_family(Some("Twemoji"));
+    /// assert_eq!(rt.emoji_family(), Some("Twemoji"));
+    /// rt.set_emoji_family(None);
+    /// assert_eq!(rt.emoji_family(), None);
+    /// ```
+    #[inline(always)]
+    pub fn set_emoji_family(&mut self, family: Option<&str>) { self.core_mut().set_emoji_family(family); }
+    /// The opt-in preferred emoji font family, or `None` when using default emoji fallback.
+    ///
+    /// ```
+    /// use rune::{Env, Runtime, el};
+    ///
+    /// let rt = Runtime::new((), |_: &(), _| el(), (200.0, 120.0), Env::default());
+    /// assert_eq!(rt.emoji_family(), None);
+    /// ```
+    #[inline(always)]
+    pub fn emoji_family(&self) -> Option<&str> { self.core().emoji_family() }
     #[inline(always)]
     pub(crate) fn follow_font_families(&mut self) -> bool { self.core_mut().follow_font_families() }
 
+    /// Enables or disables sRGB-encoded blending for translucent fills, shadows, blurs, images
+    /// and video, matching [`App::srgb_blend`](crate::App::srgb_blend).
+    ///
+    /// On by default (`true`), matching `App` windows and [`crate::render::OFFSCREEN_FORMAT`].
+    /// Pass `false` to blend in linear light (paired with [`crate::render::OFFSCREEN_FORMAT_LINEAR`]
+    /// and [`Renderer::set_srgb_blend`](crate::render::Renderer::set_srgb_blend) set to `false`).
+    ///
+    /// ```
+    /// use rune::{Env, Runtime, el};
+    ///
+    /// let mut rt = Runtime::new((), |_: &(), _| el(), (200.0, 120.0), Env::new(true, 1.0));
+    /// assert!(rt.srgb_blend());
+    /// rt.set_srgb_blend(false);
+    /// assert!(!rt.srgb_blend());
+    /// ```
     #[inline(always)]
     pub fn set_srgb_blend(&mut self, enabled: bool) { self.core_mut().set_srgb_blend(enabled); }
+    /// Whether this runtime blends colours in sRGB-encoded space (`true` by default).
     #[inline(always)]
     pub fn srgb_blend(&self) -> bool { self.core().srgb_blend() }
+    /// Set the maximum number of native `El::system_material` views this runtime admits per frame
+    /// (default [`crate::MAX_NATIVE_MATERIALS`], clamped to 64), as
+    /// [`App::max_native_materials`](crate::App::max_native_materials) does for a window.
+    ///
+    /// ```
+    /// use rune::{Env, Runtime, el};
+    ///
+    /// let mut rt = Runtime::new((), |_: &(), _| el(), (200.0, 120.0), Env::default());
+    /// rt.set_max_native_materials(8);
+    /// assert_eq!(rt.max_native_materials(), 8);
+    /// ```
+    #[inline(always)]
+    pub fn set_max_native_materials(&mut self, max: usize) { self.core_mut().set_max_native_materials(max); }
+    /// Maximum number of native `El::system_material` views this runtime admits per frame.
+    #[inline(always)]
+    pub fn max_native_materials(&self) -> usize { self.core().max_native_materials() }
+    /// Cap the wake rate (Hz) used when `El::reveal` word fades are the only active animation
+    /// (`0.0`, default = full display rate; positive finite values clamp to at least `1.0` Hz,
+    /// non-positive or non-finite values normalize to `0.0`).
+    ///
+    /// `30.0` Hz is recommended because it divides both 60 Hz and 120 Hz displays cleanly without
+    /// beat judder (Apple WWDC21 Session 10147), though any positive rate (such as `40.0`) is
+    /// accepted. When any other animation is active alongside a word fade, the fade rides along at
+    /// that animation's full rate.
+    ///
+    /// ```
+    /// use rune::{Env, Runtime, el};
+    ///
+    /// let mut rt = Runtime::new((), |_: &(), _| el(), (200.0, 120.0), Env::default());
+    /// assert_eq!(rt.reveal_fps(), 0.0);
+    /// rt.set_reveal_fps(30.0);
+    /// assert_eq!(rt.reveal_fps(), 30.0);
+    /// rt.set_reveal_fps(0.0);
+    /// assert_eq!(rt.reveal_fps(), 0.0);
+    /// ```
+    #[inline(always)]
+    pub fn set_reveal_fps(&mut self, fps: f32) { self.core_mut().set_reveal_fps(fps); }
+    /// Wake-rate cap (Hz) used when `El::reveal` word fades are the only active animation, or
+    /// `0.0` when fades run at full display rate.
+    ///
+    /// ```
+    /// use rune::{Env, Runtime, el};
+    ///
+    /// let rt = Runtime::new((), |_: &(), _| el(), (200.0, 120.0), Env::default());
+    /// assert_eq!(rt.reveal_fps(), 0.0);
+    /// ```
+    #[inline(always)]
+    pub fn reveal_fps(&self) -> f32 { self.core().reveal_fps() }
+    #[inline(always)]
+    pub fn fade_stops(&self) -> [f32; 2] { self.core().fade_stops() }
     #[inline(always)]
     pub fn set_font_smoothing(&mut self, mode: crate::FontSmoothing) { self.core_mut().set_font_smoothing(mode); }
     #[inline(always)]
@@ -275,9 +527,11 @@ impl<S: 'static> Runtime<S> {
     // ── Elements & inspection ──────────────────────────────────────────────────────────────────
 
     #[inline(always)]
-    pub fn element_is_secure(&self, path: &str) -> bool { self.core().element_is_secure(path) }
+    pub fn element_is_secure(&self, path: &str) -> bool { self.core().tree.element_is_secure(path) }
     #[inline(always)]
     pub fn elements(&self) -> Vec<ElementInfo> { self.core().elements() }
+    #[inline(always)]
+    pub fn matched_handovers(&self) -> Vec<MatchedHandover> { self.core().matched_handovers() }
     #[inline(always)]
     pub fn find(&self, key: &str) -> Option<(f32, f32)> { self.core().find(key) }
     #[inline(always)]
@@ -290,6 +544,51 @@ impl<S: 'static> Runtime<S> {
     pub fn element_at_in(&self, within: &str, x: f32, y: f32) -> Option<Picked> { self.core().element_at_in(within, x, y) }
     #[inline(always)]
     pub fn element_at_in_with(&self, within: &str, x: f32, y: f32, pick: Pick) -> Option<Picked> { self.core().element_at_in_with(within, x, y, pick) }
+    /// Hit-test window point (`x`, `y`) in points to a UTF-8 byte offset in the mounted,
+    /// non-exiting, non-secure text or text field named `key` (key or key path), as of the last
+    /// presented frame. Returns `None` when `key` is missing, exiting, not a text or text field,
+    /// or secure. Running handlers can call [`Tx::text_offset_at`](crate::Tx::text_offset_at).
+    ///
+    /// ```
+    /// use rune::{Env, Runtime, TextStyle, col, text};
+    ///
+    /// let mut rt = Runtime::new(
+    ///     (),
+    ///     |_: &(), _| col().size(200.0, 60.0).child(text("hello world").key("t").font(TextStyle::new(14.0, 400.0))),
+    ///     (200.0, 60.0),
+    ///     Env::new(true, 1.0),
+    /// );
+    /// rt.frame(0.0);
+    /// let (x, y) = rt.find("t").unwrap();
+    /// let offset = rt.text_offset_at("t", x, y).unwrap();
+    /// assert!(offset <= "hello world".len() && "hello world".is_char_boundary(offset));
+    /// ```
+    #[inline(always)]
+    pub fn text_offset_at(&self, key: &str, x: f32, y: f32) -> Option<usize> { self.core().text_offset_at(key, x, y) }
+    /// The visual line holding byte `byte` of the text field named `key`, focused or not, from
+    /// the last layout: its box in window points and the first bytes of it and the lines
+    /// beside it. `None` when `key` is missing, exiting, not a text field, or secure. Running
+    /// handlers can use [`Tx::text_line`] without holding a `Runtime`; [`Self::text_offset_at`]
+    /// goes the other way, from a point to a byte.
+    ///
+    /// ```
+    /// use rune::{Env, Runtime, TextEdit, TextStyle, col, text_input};
+    ///
+    /// let edit = TextEdit::new("one\ntwo\nthree");
+    /// let mut rt = Runtime::new(
+    ///     edit,
+    ///     |e: &TextEdit, _| col().size(200.0, 120.0).child(text_input(e, TextStyle::new(14.0, 400.0)).key("f").w_full()),
+    ///     (200.0, 120.0),
+    ///     Env::new(true, 1.0),
+    /// );
+    /// rt.frame(0.0);
+    /// let two = rt.text_line("f", 5).unwrap();
+    /// assert_eq!((two.start, two.prev, two.next), (4, Some(0), Some(8)));
+    /// let one = rt.text_line("f", 0).unwrap();
+    /// assert!(two.rect[1] > one.rect[1]);
+    /// ```
+    #[inline(always)]
+    pub fn text_line(&self, key: &str, byte: usize) -> Option<crate::TextLine> { self.core().text_line(key, byte) }
     #[inline(always)]
     pub fn contains(&self, key: &str, x: f32, y: f32) -> bool { self.core().contains(key, x, y) }
     #[inline(always)]
@@ -297,17 +596,88 @@ impl<S: 'static> Runtime<S> {
     #[inline(always)]
     pub fn presented_pose(&self, key: &str) -> Option<Pose> { self.core().presented_pose(key) }
 
+    /// The authored key of the non-exiting presented focused element, or the focused inline link's
+    /// id, matching `rt.elements().into_iter().find(|e| e.focused && !e.exiting).and_then(|e| e.key)`
+    /// without building the inspection list.
+    ///
+    /// Returns `None` when nothing has focus, the focused control has no key, the focused element
+    /// is exiting or not presented (such as an unmounted virtual field), or a focused inline link
+    /// has no presented line box.
+    ///
+    /// ```
+    /// use rune::{Cx, El, Env, Runtime, col, el};
+    ///
+    /// fn view(_: &(), _: &mut Cx<()>) -> El {
+    ///     col().size(120.0, 40.0).child(el().key("save").size(80.0, 32.0).focusable(true))
+    /// }
+    ///
+    /// let mut rt = Runtime::new((), view, (120.0, 40.0), Env::new(true, 1.0));
+    /// rt.frame(0.0);
+    /// assert_eq!(rt.presented_focus_key(), None);
+    /// let (x, y) = rt.find("save").unwrap();
+    /// rt.pointer_down(x, y);
+    /// rt.pointer_up(x, y);
+    /// rt.frame(0.0);
+    /// assert_eq!(rt.presented_focus_key(), Some("save"));
+    /// ```
+    #[inline(always)]
+    pub fn presented_focus_key(&self) -> Option<&str> { self.core().presented_focus_key() }
+
     #[inline(always)]
     pub(crate) fn backdrop_dark(&self) -> Option<bool> { self.core().backdrop_dark() }
 
     // ── Motion, live, timers, paint, clipboard, memo & URLs ────────────────────────────────────
 
+    /// Events whose handler called [`Tx::live_only`](crate::Tx::live_only) and so didn't re-run
+    /// the view, since the runtime started.
     #[inline(always)]
     pub fn live_only_events(&self) -> u64 { self.core().live_only_events() }
+
+    /// Whether debug builds check [`Tx::live_only`](crate::Tx::live_only) handlers (on by
+    /// default): a live-only event a quarter second or more after the last commit still commits,
+    /// and Rune warns when the view built something else. A test counting
+    /// [`FrameStats::commits`](crate::runtime::FrameStats::commits) turns it off; release builds never
+    /// check.
+    ///
+    /// ```
+    /// use rune::{Env, Runtime, el};
+    ///
+    /// let mut rt = Runtime::new((), |_: &(), _| el(), (200.0, 120.0), Env::new(true, 1.0));
+    /// rt.check_live_only(false);
+    /// rt.frame(0.0);
+    /// assert_eq!(rt.live_only_warnings().len(), 0);
+    /// ```
     #[inline(always)]
     pub fn check_live_only(&mut self, on: bool) { self.core_mut().check_live_only(on); }
+
+    /// The stale-view warnings debug builds have printed for
+    /// [`Tx::live_only`](crate::Tx::live_only) handlers, each naming the element and property
+    /// that differed, so a test can assert there are none. Always empty in release builds.
     #[inline(always)]
     pub fn live_only_warnings(&self) -> &[String] { self.core().live_only_warnings() }
+
+    /// Debug builds: opt into panicking when `PaintKeep`'s self-check detects that a copied
+    /// subtree would differ from a fresh paint (unshifted or scroll-shifted).
+    ///
+    /// Off by default in downstream debug runs (which log the mismatch to stderr and paint fresh);
+    /// set `RUNE_PAINT_KEEP_STRICT=1` or call this method in tests to fail fast. No-op in release
+    /// builds.
+    ///
+    /// ```
+    /// use rune::{Env, Runtime, el};
+    ///
+    /// let mut rt = Runtime::new((), |_: &(), _| el(), (200.0, 120.0), Env::new(true, 1.0));
+    /// rt.set_paint_keep_strict(true);
+    /// rt.frame(0.0);
+    /// assert_eq!(rt.paint_keep_mismatches(), 0);
+    /// ```
+    #[inline(always)]
+    pub fn set_paint_keep_strict(&mut self, strict: bool) { self.core_mut().paint.set_paint_keep_strict(strict); }
+
+    /// Debug builds: total `PaintKeep` self-check mismatches observed on this runtime across both
+    /// unshifted and scroll-shifted copies. Always `0` in release builds.
+    #[inline(always)]
+    pub fn paint_keep_mismatches(&self) -> usize { self.core().paint.keep_check_mismatches() }
 
     #[inline(always)]
     pub(crate) fn live_wake(&self) -> &Arc<crate::live::Wake> { self.core().live_wake() }
@@ -330,7 +700,7 @@ impl<S: 'static> Runtime<S> {
     #[inline(always)]
     pub fn element_path(&self, id: NodeId) -> Option<(&str, Option<&str>)> { self.core().element_path(id) }
     #[inline(always)]
-    pub fn rewind(&self) -> Option<&crate::rewind::Rewind> { self.core().rewind() }
+    pub fn rewind(&self) -> Option<&crate::rewind::Rewind> { self.core().motion.rewind() }
 
     #[inline(always)]
     pub(crate) fn poll_hidden(&mut self) -> bool {
@@ -348,6 +718,11 @@ impl<S: 'static> Runtime<S> {
     pub(crate) fn cancel_timer_frame(&mut self) { self.core_mut().cancel_timer_frame(); }
     #[inline(always)]
     pub(crate) fn rests(&self) -> bool { self.core().rests() }
+    /// Releases state not needed to redraw the current view, as `window::rest` does after
+    /// `REST_AFTER`.
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn rest(&mut self) { self.core_mut().rest(); }
 
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     #[inline(always)]
@@ -394,14 +769,35 @@ impl<S: 'static> Runtime<S> {
 
     /// Takes the links handlers asked to open that this runtime didn't open.
     #[inline(always)]
-    pub fn take_url_requests(&mut self) -> Vec<String> { self.core_mut().take_url_requests() }
+    pub fn take_url_requests(&mut self) -> Vec<String> { self.core_mut().host.take_url_requests() }
+
+    /// Takes the schemes [`AppHandle::register_url_scheme`](crate::AppHandle::register_url_scheme)
+    /// asked to claim that this runtime didn't claim with the system (lowercased, in order): all
+    /// of them in headless runs and tests, none in a live window.
+    #[inline(always)]
+    pub fn take_url_scheme_requests(&mut self) -> Vec<String> { self.core_mut().host.take_url_scheme_requests() }
+
+    /// Takes the local path open and reveal requests queued by [`Tx::open_path`] and
+    /// [`Tx::reveal_path`] that this runtime didn't execute natively (all of them in headless runs
+    /// and tests, none in a live desktop window).
+    ///
+    /// ```no_run
+    /// use std::path::PathBuf;
+    /// use rune::{Env, PathAction, PathRequest, Runtime, el};
+    ///
+    /// let mut rt = Runtime::new((), |_, _| el(), (40.0, 40.0), Env::new(true, 1.0));
+    /// rt.update(|_, tx| { tx.reveal_path("/tmp/notes.txt").unwrap(); });
+    /// assert_eq!(rt.take_path_requests(), [PathRequest { path: PathBuf::from("/tmp/notes.txt"), action: PathAction::Reveal }]);
+    /// ```
+    #[inline(always)]
+    pub fn take_path_requests(&mut self) -> Vec<crate::PathRequest> { self.core_mut().host.take_path_requests() }
 
     #[cfg(feature = "hot")]
     #[inline(always)]
     pub(crate) fn hot_scrolls(&self) -> Vec<(String, f64)> { self.core().hot_scrolls() }
     #[cfg(feature = "hot")]
     #[inline(always)]
-    pub(crate) fn hot_motion(&self) -> Vec<(String, [f32; 4], [f32; 4])> { self.core().hot_motion() }
+    pub(crate) fn hot_motion(&self) -> Vec<(String, [f32; 4], [f32; 4])> { self.core().tree.hot_motion(&self.core().scene) }
 
     // ── Accessibility & web ────────────────────────────────────────────────────────────────────
 
@@ -420,7 +816,7 @@ impl<S: 'static> Runtime<S> {
     pub(crate) fn a11y_deactivate(&mut self) { self.core_mut().a11y_deactivate(); }
     #[cfg(test)]
     #[inline(always)]
-    pub(crate) fn a11y_changes(&self) -> a11y_tree::Changes { self.core().a11y_changes() }
+    pub(crate) fn a11y_changes(&self) -> crate::a11y::tree::Changes { self.core().a11y_changes() }
     #[cfg(test)]
     #[inline(always)]
     pub(crate) fn a11y_update(&mut self) -> Option<accesskit::TreeUpdate> { self.core_mut().a11y_update() }
@@ -437,9 +833,9 @@ impl<S: 'static> Runtime<S> {
     #[cfg(target_arch = "wasm32")]
     #[inline(always)]
     pub(crate) fn page_scroll_x(&self) -> Vec<(String, f32)> { self.core().page_scroll_x() }
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    #[cfg(any(test, target_arch = "wasm32"))]
     #[inline(always)]
-    pub(crate) fn web_a11y_scrolled_only(&self, mirror: &web_a11y::A11yMirror) -> bool { self.core().web_a11y_scrolled_only(mirror) }
+    pub(crate) fn web_a11y_patch<'a>(&self, mirror: &'a mut web_a11y::A11yMirror) -> Option<&'a str> { self.core().web_a11y_patch(mirror) }
     #[cfg(any(test, target_arch = "wasm32"))]
     #[inline(always)]
     pub(crate) fn web_a11y<'a>(&self, mirror: &'a mut web_a11y::A11yMirror) -> Option<&'a str> { self.core().web_a11y(mirror) }
@@ -485,13 +881,13 @@ impl<S: 'static> Runtime<S> {
         let (core, mut app) = self.split_mut();
         core.web_focus_field(&mut app)
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(test, target_arch = "wasm32"))]
     #[inline(always)]
     pub(crate) fn web_edit_context(&mut self, mirror: &mut web_runtime::Mirror) -> Option<bool> {
         let (core, mut app) = self.split_mut();
         core.web_edit_context(&mut app, mirror)
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(test, target_arch = "wasm32"))]
     #[inline(always)]
     pub(crate) fn web_context(&self, mirror: &mut web_runtime::Mirror) -> bool { self.core().web_context(mirror) }
     #[cfg(any(test, target_arch = "wasm32"))]
@@ -500,14 +896,20 @@ impl<S: 'static> Runtime<S> {
         let (core, mut app) = self.split_mut();
         core.web_key(&mut app, event)
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(test, target_arch = "wasm32"))]
     #[inline(always)]
     pub(crate) fn web_secure(&mut self, key: &str, text: String) { self.core_mut().web_secure(key, text); }
     #[cfg(any(test, target_arch = "wasm32"))]
     #[inline(always)]
-    pub(crate) fn web_edit(&mut self, event: &serde_json::Value) {
+    pub(crate) fn web_secure_replace(&mut self, key: &str, text: String) {
         let (core, mut app) = self.split_mut();
-        core.web_edit(&mut app, event);
+        core.web_secure_replace(&mut app, key, text);
+    }
+    #[cfg(any(test, target_arch = "wasm32"))]
+    #[inline(always)]
+    pub(crate) fn web_edit(&mut self, event: &serde_json::Value, mirror: &mut web_runtime::Mirror) {
+        let (core, mut app) = self.split_mut();
+        core.web_edit(&mut app, event, mirror);
     }
 
     // ── Test-only helpers called directly on `Runtime<S>` inside unit tests ───────────────────
@@ -557,7 +959,10 @@ impl<S: 'static> Runtime<S> {
 
     #[cfg(test)]
     #[inline(always)]
-    pub(super) fn capture_text_flight(&mut self, source: String, target: String) { self.core_mut().capture_text_flight(source, target); }
+    pub(super) fn capture_text_flight(&mut self, source: String, target: String) {
+        let c = self.core_mut();
+        c.motion.capture_text_flight(&c.tree.nodes, &mut c.paint, &mut c.text, c.env.scale, c.viewport, c.t, source, target);
+    }
 
     #[cfg(test)]
     #[inline(always)]
@@ -613,7 +1018,10 @@ impl<S: 'static> Runtime<S> {
 
     #[cfg(test)]
     #[inline(always)]
-    pub(crate) fn record_rewind(&mut self) { self.core_mut().record_rewind(); }
+    pub(crate) fn record_rewind(&mut self) {
+        let c = self.core();
+        c.motion.record_rewind(c.clock, c.viewport, &c.tree.nodes, &c.paint);
+    }
 
     #[cfg(test)]
     #[inline(always)]

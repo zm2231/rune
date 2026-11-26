@@ -14,13 +14,15 @@
 //! caption, what the system may offer) when it attaches, so it is reloaded when they change
 //! under it, once any marked text is closed (`traits::Reload`).
 
+#![allow(unsafe_code)]
+
 use std::cell::{Cell, RefCell};
 
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
-use objc2_foundation_video::{NSArray, NSDictionary, NSRange, NSString};
-use objc2_video::rc::{Allocated, Retained, Weak};
-use objc2_video::runtime::{AnyObject, NSObject, NSObjectProtocol};
-use objc2_video::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, extern_class, extern_protocol, msg_send};
+use objc2_foundation::{NSArray, NSDictionary, NSRange, NSString};
+use objc2::rc::{Allocated, Retained, Weak};
+use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, extern_class, extern_protocol, msg_send};
 
 use super::doc::{Document, Effect, Event, Snapshot};
 use super::geometry::Geometry;

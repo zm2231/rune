@@ -5,18 +5,20 @@
 //! above a selection, through a `UIEditMenuInteraction`: its items are `UICommand`s that come
 //! back to the view through the responder chain, so nothing here needs a block.
 
+#![allow(unsafe_code)]
+
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
-use objc2_foundation_video::NSString;
-use objc2_video::rc::{Allocated, Retained, Weak};
-use objc2_video::runtime::AnyObject;
-use objc2_video::{DefinedClass, class, msg_send, sel};
+use objc2_foundation::NSString;
+use objc2::rc::{Allocated, Retained, Weak};
+use objc2::runtime::AnyObject;
+use objc2::{DefinedClass, class, msg_send, sel};
 
 use super::super::pacing::Event;
 use super::super::edit_menu::{self, Effect};
 use super::{MainOnly, RuneView};
 use crate::machine::Attempt;
 use crate::platform::main_queue::after_main;
-use crate::popup_menu::{Entry, PopupMenu, Show};
+use crate::popup_menu::{PopupEntry, PopupMenu, Show};
 
 /// `UIGestureRecognizerStateBegan`.
 const BEGAN: isize = 1;
@@ -151,7 +153,7 @@ impl RuneView {
 /// `menu` as a `UIMenu`: an item is a command that calls `runeMenuPick:` with its id, and the
 /// items between separators are a group set apart.
 fn build(menu: &PopupMenu, title: &str, options: usize) -> Retained<AnyObject> {
-    let groups: Vec<&[Entry]> = menu.entries.split(|entry| matches!(entry, Entry::Separator)).filter(|group| !group.is_empty()).collect();
+    let groups: Vec<&[PopupEntry]> = menu.entries.split(|entry| matches!(entry, PopupEntry::Separator)).filter(|group| !group.is_empty()).collect();
     let children: Vec<Retained<AnyObject>> = match groups.as_slice() {
         [only] => only.iter().map(element).collect(),
         groups => groups.iter().map(|group| ui_menu("", INLINE, group.iter().map(element).collect())).collect(),
@@ -159,9 +161,9 @@ fn build(menu: &PopupMenu, title: &str, options: usize) -> Retained<AnyObject> {
     ui_menu(title, options, children)
 }
 
-fn element(entry: &Entry) -> Retained<AnyObject> {
+fn element(entry: &PopupEntry) -> Retained<AnyObject> {
     match entry {
-        Entry::Item(item) => {
+        PopupEntry::Item(item) => {
             // SAFETY: a command with a title, no image, a selector the view implements and a
             // property list; its attributes and state are option sets of these sizes.
             unsafe {
@@ -172,9 +174,9 @@ fn element(entry: &Entry) -> Retained<AnyObject> {
                 command
             }
         }
-        Entry::Submenu(title, menu, _) => build(menu, title, 0),
+        PopupEntry::Submenu { title, menu, .. } => build(menu, title, 0),
         // `build` splits on separators before it gets here.
-        Entry::Separator => ui_menu("", INLINE, Vec::new()),
+        PopupEntry::Separator => ui_menu("", INLINE, Vec::new()),
     }
 }
 

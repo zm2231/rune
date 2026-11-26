@@ -2,6 +2,8 @@
 //! (appearance also on each redraw, which a change asks for).
 //! Headless runtimes use their explicit Env instead.
 
+#![allow(unsafe_code)]
+
 #[cfg(target_os = "macos")]
 pub(crate) fn reduced_motion() -> bool {
     use objc2::{class, msg_send};
@@ -22,24 +24,368 @@ pub(crate) fn reduced_motion() -> bool {
     unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&mut animations as *mut i32).cast(), 0) != 0 && animations == 0 }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "dbus"))]
 pub(crate) fn reduced_motion() -> bool {
-    // KDE exposes animation duration in kdeglobals; zero disables animation.
-    let config = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")));
-    if std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().split(':').any(|d| d.eq_ignore_ascii_case("KDE"))
-        && let Some(config) = config
-        && let Ok(contents) = std::fs::read_to_string(config.join("kdeglobals"))
-        && let Some(factor) = contents.lines().filter_map(|line| line.trim().split_once('='))
-            .find_map(|(k, v)| (k.trim() == "AnimationDurationFactor").then(|| v.trim().parse::<f64>().ok()).flatten())
-    { return factor == 0.0; }
-    // Optional GNOME GSettings, with schema lookup before constructing settings (missing
-    // schemas otherwise abort GLib). No subprocess or required GNOME dependency.
-    unsafe { gnome_animations().is_some_and(|enabled| !enabled) }
+    crate::platform::portal_appearance::reduced_motion()
+}
+
+#[cfg(all(target_os = "linux", not(feature = "dbus")))]
+static CACHED_REDUCED_MOTION: CachedReducedMotion = CachedReducedMotion::new();
+
+#[cfg(all(target_os = "linux", not(feature = "dbus")))]
+static CACHED_DOUBLE_CLICK: CachedDoubleClick = CachedDoubleClick::new();
+
+#[cfg(all(target_os = "linux", not(feature = "dbus")))]
+static FALLBACK_WINDOWS: std::sync::Mutex<Vec<std::sync::Weak<winit::window::Window>>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Registers `window` to redraw if a slow Linux fallback preference read finishes with a
+/// non-default value after launch already fell back to the default.
+#[cfg(all(target_os = "linux", not(feature = "dbus")))]
+pub(crate) fn follow_fallback(window: &std::sync::Arc<winit::window::Window>) {
+    let mut windows = FALLBACK_WINDOWS.lock().unwrap_or_else(|e| e.into_inner());
+    windows.retain(|w| w.strong_count() > 0);
+    windows.push(std::sync::Arc::downgrade(window));
+    drop(windows);
+    if CACHED_REDUCED_MOTION.late_changed() || CACHED_DOUBLE_CLICK.late_changed() {
+        window.request_redraw();
+    }
+}
+
+#[cfg(all(target_os = "linux", not(feature = "dbus")))]
+fn redraw_fallback_windows() {
+    let live: Vec<_> = {
+        let mut windows = FALLBACK_WINDOWS.lock().unwrap_or_else(|e| e.into_inner());
+        windows.retain(|w| w.strong_count() > 0);
+        windows.iter().filter_map(std::sync::Weak::upgrade).collect()
+    };
+    for window in live {
+        window.request_redraw();
+    }
+}
+
+#[cfg(all(target_os = "linux", not(feature = "dbus")))]
+pub(crate) fn reduced_motion() -> bool {
+    CACHED_REDUCED_MOTION.get_or_init_notifying(read_reduced_motion_fallback, redraw_fallback_windows)
+}
+
+/// Default double-click interval (milliseconds) when the Linux desktop reports none.
+#[cfg(any(test, target_os = "linux"))]
+pub(crate) const DEFAULT_DOUBLE_CLICK_MS: u32 = 500;
+/// Default double-click interval (seconds) when the Linux desktop reports none.
+#[cfg(any(test, all(target_os = "linux", feature = "dbus")))]
+pub(crate) const DEFAULT_DOUBLE_CLICK_SECS: f64 = DEFAULT_DOUBLE_CLICK_MS as f64 / 1000.0;
+/// Bounds for a Linux desktop's reported double-click interval (milliseconds).
+#[cfg(any(test, target_os = "linux"))]
+pub(crate) const MIN_DOUBLE_CLICK_MS: u32 = 50;
+#[cfg(any(test, target_os = "linux"))]
+pub(crate) const MAX_DOUBLE_CLICK_MS: u32 = 5000;
+
+/// Clamps a positive millisecond double-click interval to `MIN_DOUBLE_CLICK_MS..=MAX_DOUBLE_CLICK_MS`,
+/// returning `None` for zero.
+#[cfg(any(test, target_os = "linux"))]
+pub(crate) fn clamp_double_click_ms(ms: u32) -> Option<u32> {
+    (ms > 0).then(|| ms.clamp(MIN_DOUBLE_CLICK_MS, MAX_DOUBLE_CLICK_MS))
+}
+
+/// The Linux desktop's configured double-click interval in seconds: from the XDG Settings portal
+/// (`org.gnome.desktop.peripherals.mouse` `double-click`), falling back off the UI thread to
+/// `kdeglobals` or GSettings, or `0.5` s when none answers.
+#[cfg(all(target_os = "linux", feature = "dbus"))]
+pub(crate) fn double_click_interval() -> f64 {
+    crate::platform::portal_appearance::double_click_interval().unwrap_or(DEFAULT_DOUBLE_CLICK_SECS)
+}
+
+#[cfg(all(target_os = "linux", not(feature = "dbus")))]
+pub(crate) fn double_click_interval() -> f64 {
+    CACHED_DOUBLE_CLICK.get_or_init_notifying(read_double_click_fallback, redraw_fallback_windows)
+}
+
+#[cfg(any(test, all(target_os = "linux", not(feature = "dbus"))))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CacheState<T> {
+    /// No worker started yet.
+    Unstarted,
+    /// Worker is reading the platform setting; `timed_out` records that at least one caller
+    /// returned `default` before the worker finished.
+    Pending { timed_out: bool },
+    /// Worker finished and stored the resolved setting; `late_changed` is true when a caller
+    /// already returned `default` and the resolved setting differs from it.
+    Ready { value: T, late_changed: bool },
+}
+
+/// One-shot off-UI-thread cache for Linux fallback preference reads when `dbus` is disabled:
+/// spawns one short-lived worker thread per process, waits at most `FIRST_ANSWER` so launch does
+/// not stall, and notifies open windows if a non-default answer arrives after that wait expires.
+#[cfg(any(test, all(target_os = "linux", not(feature = "dbus"))))]
+struct CachedPref<T: Copy + Eq + Send + Sync + 'static> {
+    default: T,
+    state: std::sync::Mutex<CacheState<T>>,
+    ready: std::sync::Condvar,
+}
+
+#[cfg(any(test, all(target_os = "linux", not(feature = "dbus"))))]
+impl<T: Copy + Eq + Send + Sync + 'static> CachedPref<T> {
+    const FIRST_ANSWER: std::time::Duration = std::time::Duration::from_millis(100);
+
+    const fn new(default: T) -> Self {
+        Self {
+            default,
+            state: std::sync::Mutex::new(CacheState::Unstarted),
+            ready: std::sync::Condvar::new(),
+        }
+    }
+
+    fn get_or_init_with(
+        &'static self,
+        name: &'static str,
+        wait: std::time::Duration,
+        read: impl FnOnce() -> T + Send + 'static,
+        on_late: impl FnOnce() + Send + 'static,
+    ) -> T {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        match *state {
+            CacheState::Ready { value, .. } => return value,
+            CacheState::Pending { ref mut timed_out } => {
+                *timed_out = true;
+                return self.default;
+            }
+            CacheState::Unstarted => *state = CacheState::Pending { timed_out: false },
+        }
+        let spawned = std::thread::Builder::new().name(name.into()).spawn(move || {
+            let value = std::panic::catch_unwind(std::panic::AssertUnwindSafe(read)).unwrap_or(self.default);
+            let notify_late = {
+                let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                let was_timed_out = matches!(*state, CacheState::Pending { timed_out: true });
+                let late_changed = was_timed_out && value != self.default;
+                *state = CacheState::Ready { value, late_changed };
+                self.ready.notify_all();
+                late_changed
+            };
+            if notify_late {
+                on_late();
+            }
+        });
+        if spawned.is_err() {
+            *state = CacheState::Ready { value: self.default, late_changed: false };
+            self.ready.notify_all();
+            return self.default;
+        }
+        let (mut state, _) = self
+            .ready
+            .wait_timeout_while(state, wait, |s| matches!(*s, CacheState::Pending { .. }))
+            .unwrap_or_else(|e| e.into_inner());
+        match *state {
+            CacheState::Ready { value, .. } => value,
+            CacheState::Pending { ref mut timed_out } => {
+                *timed_out = true;
+                self.default
+            }
+            CacheState::Unstarted => self.default,
+        }
+    }
+
+    fn late_changed(&self) -> bool {
+        matches!(
+            *self.state.lock().unwrap_or_else(|e| e.into_inner()),
+            CacheState::Ready { late_changed: true, .. }
+        )
+    }
+
+    #[cfg(test)]
+    fn wait_ready(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        while !matches!(*state, CacheState::Ready { .. }) {
+            state = self.ready.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+}
+
+/// One-shot off-UI-thread cache for the Linux fallback reduced-motion read when the `dbus`
+/// feature is disabled: spawns one short-lived worker thread per process so focus changes never
+/// touch the filesystem or `dlopen` libgio on the UI thread.
+#[cfg(any(test, all(target_os = "linux", not(feature = "dbus"))))]
+struct CachedReducedMotion(CachedPref<bool>);
+
+#[cfg(any(test, all(target_os = "linux", not(feature = "dbus"))))]
+impl CachedReducedMotion {
+    const fn new() -> Self {
+        Self(CachedPref::new(false))
+    }
+
+    fn get_or_init_notifying(&'static self, read: fn() -> bool, on_late: fn()) -> bool {
+        self.0.get_or_init_with("rune-reduced-motion", CachedPref::<bool>::FIRST_ANSWER, read, on_late)
+    }
+
+    fn late_changed(&self) -> bool {
+        self.0.late_changed()
+    }
+
+    #[cfg(test)]
+    fn get_or_init(&'static self, read: fn() -> bool) -> bool {
+        self.get_or_init_notifying(read, || {})
+    }
+
+    #[cfg(test)]
+    fn get_or_init_with(
+        &'static self,
+        wait: std::time::Duration,
+        read: impl FnOnce() -> bool + Send + 'static,
+        on_late: impl FnOnce() + Send + 'static,
+    ) -> bool {
+        self.0.get_or_init_with("rune-reduced-motion", wait, read, on_late)
+    }
+
+    #[cfg(test)]
+    fn wait_ready(&self) {
+        self.0.wait_ready();
+    }
+}
+
+/// One-shot off-UI-thread cache for the Linux fallback double-click interval when the `dbus`
+/// feature is disabled: spawns one short-lived worker thread per process so window creation or
+/// redraws never touch the filesystem or `dlopen` libgio on the UI thread.
+#[cfg(any(test, all(target_os = "linux", not(feature = "dbus"))))]
+struct CachedDoubleClick(CachedPref<u32>);
+
+#[cfg(any(test, all(target_os = "linux", not(feature = "dbus"))))]
+impl CachedDoubleClick {
+    const fn new() -> Self {
+        Self(CachedPref::new(DEFAULT_DOUBLE_CLICK_MS))
+    }
+
+    fn get_or_init_notifying(&'static self, read: fn() -> Option<u32>, on_late: fn()) -> f64 {
+        let ms = self.0.get_or_init_with(
+            "rune-double-click",
+            CachedPref::<u32>::FIRST_ANSWER,
+            move || read().and_then(clamp_double_click_ms).unwrap_or(DEFAULT_DOUBLE_CLICK_MS),
+            on_late,
+        );
+        f64::from(ms) / 1000.0
+    }
+
+    fn late_changed(&self) -> bool {
+        self.0.late_changed()
+    }
+
+    #[cfg(test)]
+    fn get_or_init(&'static self, read: fn() -> Option<u32>) -> f64 {
+        self.get_or_init_notifying(read, || {})
+    }
+
+    #[cfg(test)]
+    fn get_or_init_with(
+        &'static self,
+        wait: std::time::Duration,
+        read: impl FnOnce() -> Option<u32> + Send + 'static,
+        on_late: impl FnOnce() + Send + 'static,
+    ) -> f64 {
+        let ms = self.0.get_or_init_with(
+            "rune-double-click",
+            wait,
+            move || read().and_then(clamp_double_click_ms).unwrap_or(DEFAULT_DOUBLE_CLICK_MS),
+            on_late,
+        );
+        f64::from(ms) / 1000.0
+    }
+
+    #[cfg(test)]
+    fn wait_ready(&self) {
+        self.0.wait_ready();
+    }
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn parse_kdeglobals_reduced_motion(contents: &str) -> Option<bool> {
+    contents.lines()
+        .filter_map(|line| line.trim().split_once('='))
+        .find_map(|(k, v)| (k.trim() == "AnimationDurationFactor").then(|| v.trim().parse::<f64>().ok()).flatten())
+        .map(|factor| factor == 0.0)
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn parse_kdeglobals_double_click_ms(contents: &str) -> Option<u32> {
+    let contents = contents.strip_prefix('\u{feff}').unwrap_or(contents);
+    let mut in_kde = false;
+    for line in contents.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if let Some(section) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            in_kde = section.trim() == "KDE";
+            continue;
+        }
+        if !in_kde { continue; }
+        if let Some((k, v)) = line.split_once('=')
+            && k.trim() == "DoubleClickInterval"
+        {
+            let ms = v.trim().parse::<i64>().ok()?;
+            if ms <= 0 { return None; }
+            return clamp_double_click_ms(ms.min(i64::from(u32::MAX)) as u32);
+        }
+    }
+    None
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn resolve_double_click_fallback(
+    is_kde: bool,
+    kdeglobals: impl FnOnce() -> Option<u32>,
+    gsettings: impl FnOnce() -> Option<u32>,
+) -> Option<u32> {
+    if is_kde { kdeglobals() } else { gsettings().or_else(kdeglobals) }
 }
 
 #[cfg(target_os = "linux")]
-unsafe fn gnome_animations() -> Option<bool> {
+fn is_kde_desktop() -> bool {
+    rune_core::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().split(':').any(|d| d.eq_ignore_ascii_case("KDE"))
+}
+
+#[cfg(target_os = "linux")]
+fn read_kdeglobals() -> Option<String> {
+    let config = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()).map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").filter(|v| !v.is_empty()).map(|h| std::path::PathBuf::from(h).join(".config")))?;
+    std::fs::read_to_string(config.join("kdeglobals")).ok()
+}
+
+/// Fallback reduced-motion read for Linux desktops whose Settings portal answers neither
+/// `org.freedesktop.appearance` `reduced-motion` nor `org.gnome.desktop.interface`
+/// `enable-animations`, or builds without the `dbus` feature. Called at most once per process,
+/// on a background worker thread.
+#[cfg(target_os = "linux")]
+pub(crate) fn read_reduced_motion_fallback() -> bool {
+    // KDE exposes animation duration in kdeglobals; zero disables animation.
+    if is_kde_desktop()
+        && let Some(contents) = read_kdeglobals()
+        && let Some(reduced) = parse_kdeglobals_reduced_motion(&contents)
+    { return reduced; }
+    // Optional GNOME GSettings, with schema lookup before constructing settings (missing
+    // schemas otherwise abort GLib). No subprocess or required GNOME dependency.
+    // SAFETY: `gnome_animations` dynamically resolves GIO symbols, checks every pointer for null,
+    // and releases each GLib object before returning.
+    unsafe { gnome_animations().is_some_and(|enabled| !enabled) }
+}
+
+/// Fallback double-click interval read (in milliseconds) for Linux desktops whose Settings portal
+/// does not answer `org.gnome.desktop.peripherals.mouse` `double-click`, or builds without the
+/// `dbus` feature. Called at most once per process, on a background worker thread.
+#[cfg(target_os = "linux")]
+pub(crate) fn read_double_click_fallback() -> Option<u32> {
+    resolve_double_click_fallback(
+        is_kde_desktop(),
+        || read_kdeglobals().as_deref().and_then(parse_kdeglobals_double_click_ms),
+        // SAFETY: `gnome_double_click_ms` dynamically resolves GIO symbols, checks every pointer
+        // for null, and releases each GLib object before returning.
+        || unsafe { gnome_double_click_ms() },
+    )
+}
+
+#[cfg(target_os = "linux")]
+unsafe fn with_gsettings<T>(
+    schema_id: &std::ffi::CStr,
+    key: &std::ffi::CStr,
+    read: impl FnOnce(&libloading::Library, *mut std::ffi::c_void, *const std::ffi::c_char) -> Option<T>,
+) -> Option<T> {
     use std::ffi::{c_char, c_void};
     type Ptr = *mut c_void;
     // SAFETY: signatures match GIO/GLib's public C API; every reference is released while
@@ -51,21 +397,45 @@ unsafe fn gnome_animations() -> Option<bool> {
         let lookup = gio.get::<unsafe extern "C" fn(Ptr, *const c_char, i32) -> Ptr>(b"g_settings_schema_source_lookup\0").ok()?;
         let has_key = gio.get::<unsafe extern "C" fn(Ptr, *const c_char) -> i32>(b"g_settings_schema_has_key\0").ok()?;
         let new = gio.get::<unsafe extern "C" fn(Ptr, Ptr, *const c_char) -> Ptr>(b"g_settings_new_full\0").ok()?;
-        let get = gio.get::<unsafe extern "C" fn(Ptr, *const c_char) -> i32>(b"g_settings_get_boolean\0").ok()?;
         let schema_unref = gio.get::<unsafe extern "C" fn(Ptr)>(b"g_settings_schema_unref\0").ok()?;
         let unref = gio.get::<unsafe extern "C" fn(Ptr)>(b"g_object_unref\0").ok()?;
         let source = default();
         if source.is_null() { return None; }
-        let schema = lookup(source, c"org.gnome.desktop.interface".as_ptr(), 1);
+        let schema = lookup(source, schema_id.as_ptr(), 1);
         if schema.is_null() { return None; }
-        if has_key(schema, c"enable-animations".as_ptr()) == 0 { schema_unref(schema); return None; }
+        if has_key(schema, key.as_ptr()) == 0 { schema_unref(schema); return None; }
         let settings = new(schema, std::ptr::null_mut(), std::ptr::null());
         schema_unref(schema);
         if settings.is_null() { return None; }
-        let enabled = get(settings, c"enable-animations".as_ptr()) != 0;
+        let value = read(gio, settings, key.as_ptr());
         unref(settings);
         // The static library stays loaded for GLib's retained backend callbacks.
-        Some(enabled)
+        value
+    }
+}
+
+#[cfg(target_os = "linux")]
+unsafe fn gnome_animations() -> Option<bool> {
+    use std::ffi::{c_char, c_void};
+    // SAFETY: `g_settings_get_boolean` matches GIO's C ABI and `settings` is valid for the closure.
+    unsafe {
+        with_gsettings(c"org.gnome.desktop.interface", c"enable-animations", |gio, settings, key| {
+            let get = gio.get::<unsafe extern "C" fn(*mut c_void, *const c_char) -> i32>(b"g_settings_get_boolean\0").ok()?;
+            Some(get(settings, key) != 0)
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+unsafe fn gnome_double_click_ms() -> Option<u32> {
+    use std::ffi::{c_char, c_void};
+    // SAFETY: `g_settings_get_int` matches GIO's C ABI and `settings` is valid for the closure.
+    unsafe {
+        with_gsettings(c"org.gnome.desktop.peripherals.mouse", c"double-click", |gio, settings, key| {
+            let get = gio.get::<unsafe extern "C" fn(*mut c_void, *const c_char) -> i32>(b"g_settings_get_int\0").ok()?;
+            let ms = get(settings, key);
+            u32::try_from(ms).ok().and_then(clamp_double_click_ms)
+        })
     }
 }
 
@@ -144,8 +514,8 @@ pub(crate) fn contrast() -> Option<SystemContrast> {
     // SAFETY: SPI_GETHIGHCONTRAST fills a HIGHCONTRASTW whose size it is told.
     let read = unsafe { SystemParametersInfoW(SPI_GETHIGHCONTRAST, hc.cbSize, (&mut hc as *mut HIGHCONTRASTW).cast(), 0) } != 0;
     if !read || hc.dwFlags & HCF_HIGHCONTRASTON == 0 { return None; }
-    // SAFETY: GetSysColor reads a colour index; the indices are Win32's constants.
     let sys = |index: i32| {
+        // SAFETY: `GetSysColor` is a read-only Win32 query; callers pass standard `COLOR_*` indices.
         let c = unsafe { GetSysColor(index) };
         let d = |v: u32| crate::color::srgb_decode((v & 0xff) as f32 / 255.0);
         crate::Color { r: d(c), g: d(c >> 8), b: d(c >> 16), a: 1.0 }
@@ -162,7 +532,7 @@ pub(crate) fn contrast() -> Option<SystemContrast> { contrast_preset() }
 /// its system colours are, without turning it on for the whole machine: for captures and checks
 /// of an app in each.
 pub(crate) fn contrast_preset() -> Option<SystemContrast> {
-    let name = std::env::var("RUNE_CONTRAST").ok()?;
+    let name = rune_core::env::var("RUNE_CONTRAST")?;
     let [window, text, highlight, highlight_text, disabled, link] = match name.to_ascii_lowercase().as_str() {
         "aquatic" => ["#202020", "#ffffff", "#8ee3f0", "#263b50", "#a6a6a6", "#75e9fc"],
         "desert" => ["#fffaef", "#3d3d3d", "#903909", "#fff5e3", "#6d6d6d", "#1c5e75"],
@@ -177,9 +547,9 @@ pub(crate) fn contrast_preset() -> Option<SystemContrast> {
 #[cfg(target_os = "ios")]
 pub(crate) fn text_scale() -> f32 {
     use objc2_core_foundation::CGFloat;
-    use objc2_video::rc::Retained;
-    use objc2_video::runtime::AnyObject;
-    use objc2_video::{class, msg_send};
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
     // SAFETY: `+[UIFontMetrics defaultMetrics]` is never nil, and `scaledValueForValue:` takes
     // and returns a `CGFloat`.
     let scaled: CGFloat = unsafe {
@@ -189,24 +559,54 @@ pub(crate) fn text_scale() -> f32 {
     (scaled / 100.0) as f32
 }
 
+/// The desktop's appearance as an app keeps it from one run to the next (`last_appearance`):
+/// light or dark (None: the desktop says neither), and whether it asks for reduced motion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Appearance {
+    pub dark: Option<bool>,
+    pub reduced_motion: bool,
+}
+
+/// Gives Rune the desktop's appearance as the app's last run saw it, before the first window:
+/// `last` is what `keep` was last given (None on a first run). Linux asks the XDG desktop portal
+/// for the appearance, over D-Bus, and a window's first frame can't wait for an answer that may
+/// take a tenth of a second (a portal that is starting) without the window coming that much
+/// later. With `last`, the first frame draws with it at once, and the portal's answer redraws
+/// the windows only when it differs (the desktop's setting changed while the app was closed).
+/// Without it, the first window waits for the portal as it did.
+///
+/// `keep` runs on a worker thread with each answer that isn't what it last had: save it where
+/// the app keeps its launch state. Windows and macOS report their appearance without a wait, so
+/// there this does nothing.
+pub fn last_appearance(last: Option<Appearance>, keep: impl FnMut(Appearance) + Send + 'static) {
+    #[cfg(all(target_os = "linux", feature = "dbus"))]
+    crate::platform::portal_appearance::last(last, Box::new(keep));
+    #[cfg(not(all(target_os = "linux", feature = "dbus")))]
+    let _ = (last, keep);
+}
+
 /// The desktop's light or dark preference where winit reports none (Linux: the XDG desktop
 /// portal's `color-scheme`). None leaves the host's own default.
 #[cfg(all(target_os = "linux", feature = "dbus"))]
 pub(crate) fn dark() -> Option<bool> { crate::platform::portal_appearance::dark() }
 
-#[cfg(not(all(target_os = "linux", feature = "dbus")))]
+#[cfg(not(any(all(target_os = "linux", feature = "dbus"), target_arch = "wasm32")))]
 pub(crate) fn dark() -> Option<bool> { None }
 
 /// [`dark`] for a window winit gives no theme; None leaves the window's appearance as it is.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn desktop_dark(window: &winit::window::Window) -> Option<bool> {
     dark().filter(|_| window.theme().is_none())
 }
 
 /// A new window's appearance: `--theme` when given, else winit's theme, else [`desktop_dark`],
 /// else dark. On Linux a change of the desktop's preference redraws the window, which rereads it.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn window_dark(window: &std::sync::Arc<winit::window::Window>, theme: Option<&str>) -> bool {
     #[cfg(all(target_os = "linux", feature = "dbus"))]
     crate::platform::portal_appearance::follow(window);
+    #[cfg(all(target_os = "linux", not(feature = "dbus")))]
+    follow_fallback(window);
     match theme {
         Some("light") => false,
         Some("dark") => true,
@@ -230,3 +630,7 @@ pub(crate) fn full_keyboard_access() -> bool {
 
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn full_keyboard_access() -> bool { true }
+
+#[cfg(test)]
+#[path = "preferences_tests.rs"]
+mod tests;

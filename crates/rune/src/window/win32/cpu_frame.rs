@@ -14,7 +14,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
 use super::covered_draw::{CoveredDraw, CoveredDrawEvent};
-use super::handover::{GpuJob, SurfaceMode, warm_instances};
+use super::handover::{GpuJob, NeedsGpuFrameAction, SurfaceMode, needs_gpu_frame_action, warm_instances};
 use crate::frame::clock::FrameClock;
 use crate::frame::host_step::{self, Acquire, FrameHost, Gate, RenderPrep, StepInfo};
 use crate::platform::win32::dib::{Blit, Dib, Prefault};
@@ -28,7 +28,7 @@ use crate::window::host::stepping::FrameMove;
 use crate::window::state::FirstFrame;
 use crate::window::surface::{
     Backoff, BackoffEvent, FRAME_LATENCY, HiddenPace, LoopFrame, Native, Presented, Redraw,
-    SurfaceRetries, TIMER_FRAME, TimerFrame, Win, native, win,
+    SurfaceRetries, TIMER_FRAME, TimerFrame, Win, drawable_size, max_surface_dim, native, win,
 };
 use crate::window::{WakeEvent, sync_screen_origin_core};
 
@@ -44,6 +44,9 @@ pub(in crate::window) struct Cpu {
     pub(super) shown: Shown,
     /// Until the first frame is painted: the window shows with it, then, activating when `true`.
     show: Option<bool>,
+    /// Whether the most recently painted CPU frame used degraded fallback mode (so `count_drift`
+    /// is skipped when the GPU takes over).
+    pub(super) degraded: bool,
 }
 
 /// What a CPU window has of its buffer. GDI draws nothing into a hidden window, so the first
@@ -124,13 +127,44 @@ fn painter_threads() -> usize {
     std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 6)
 }
 
-/// Whether a window opens on the CPU: an opaque window while no window has a GPU yet (with one,
-/// a new window's swap chain is ready in a few milliseconds), unless turned off
-/// (`RUNE_CPU_FIRST=0`).
+/// Pure Windows rule for whether a window opens on the CPU renderer.
+///
+/// Under `CpuFirst::Auto` + `Policy::Automatic`, a live `DeviceType::Cpu` (WARP) device in
+/// `gpu_pool` (created by a transparent window or overlay) does not pull a second opaque window
+/// onto WARP. Hardware pool GPUs, pinned adapters, transparent windows, overlays, `CpuFirst::Off`,
+/// and `CpuFirst::Only` behave identically to before.
+pub(super) const fn win32_opens_on_cpu(
+    mode: crate::window::CpuFirst,
+    policy: crate::gpu::fallback::Policy,
+    transparent: bool,
+    has_gpu: bool,
+    pool_gpu: Option<wgpu::DeviceType>,
+) -> bool {
+    let live_pool_gpu = match (mode, policy, pool_gpu) {
+        (crate::window::CpuFirst::Auto, crate::gpu::fallback::Policy::Automatic, Some(wgpu::DeviceType::Cpu)) => false,
+        (_, _, Some(_)) => true,
+        (_, _, None) => false,
+    };
+    mode.opens_on_cpu(transparent, has_gpu, live_pool_gpu)
+}
+
+/// Whether a window opens on the CPU: an opaque window without its own GPU, following
+/// [`Host::effective_cpu_first`] (`RUNE_CPU_FIRST` overrides `App::cpu_first` /
+/// `WindowSpec::cpu_first`).
 pub(in crate::window) fn opens_on_cpu(host: &Host) -> bool {
-    !host.options.transparent && host.gpu.is_none()
-        && host.gpu_pool.borrow().upgrade().is_none_or(|gpu| gpu.is_lost())
-        && std::env::var_os("RUNE_CPU_FIRST").is_none_or(|v| v != "0")
+    let pool_gpu = host
+        .gpu_pool
+        .borrow()
+        .upgrade()
+        .filter(|gpu| !gpu.is_lost())
+        .map(|gpu| gpu.adapter.get_info().device_type);
+    win32_opens_on_cpu(
+        host.effective_cpu_first(),
+        crate::gpu::pick::env_policy(),
+        host.options.transparent,
+        host.gpu.is_some(),
+        pool_gpu,
+    )
 }
 
 impl Host {
@@ -153,12 +187,13 @@ impl Host {
         frame: Option<crate::platform::win32::CustomFrame>, cloak: crate::platform::win32::Cloak, focus: bool, open_as: crate::windows::OpenAs, built: bool) -> Result<(), String> {
         // Maximizing (or full screen) shows a window: cloaked, so it shows only with its frame.
         if open_as != crate::windows::OpenAs::Normal {
-            cloak.hold(&window, Instant::now() + win::READY_FALLBACK, focus);
+            cloak.hold(&window, crate::time::now() + win::READY_FALLBACK, focus);
             window.set_visible(true);
             chrome::open_as(&window, open_as);
+            crate::platform::win32::apply_window_styles(&window, &self.windows_window);
         }
         let phys = window.inner_size();
-        let size = (phys.width.max(1), phys.height.max(1));
+        let size = drawable_size(None, (phys.width, phys.height), max_surface_dim(None));
         let display = window.current_monitor().map_or((0, 0), |m| (m.size().width, m.size().height));
         let Some((prefault, capacity, painter)) = self.cpu_side(size, display) else { return Err("no memory for the window's frame buffer".into()) };
         let half = HalfRounding::of_vendor(crate::gpu::pick::display_vendor().unwrap_or(0));
@@ -179,6 +214,7 @@ impl Host {
             let rt = self.app.rt_mut();
             rt.set_system_dark(crate::platform::preferences::window_dark(&window, self.args.theme.as_deref()));
             rt.set_viewport((size.0 as f32 / scale, size.1 as f32 / scale), scale);
+            rt.set_renderer_kind(crate::RendererKind::Cpu);
             // Reopening paints the settled state in the first frame (guarantee 8).
             if self.shown && !built { rt.settle_all(); }
         }
@@ -189,13 +225,13 @@ impl Host {
         *self.native_handle.native.window.lock().unwrap() = Arc::downgrade(&window);
         self.native_handle.native.number.store(native_window_number(&window).unwrap_or(0), Ordering::Release);
         let native = {
-            let mode = SurfaceMode::Cpu { cpu: Cpu { buffer: Buffer::Touching(prefault, capacity), painter, half, shown: Shown::Nothing, show: Some(focus) }, job: GpuJob::Waiting { tries: 0, retry_at: None } };
+            let mode = SurfaceMode::Cpu { cpu: Cpu { buffer: Buffer::Touching(prefault, capacity), painter, half, shown: Shown::Nothing, show: Some(focus), degraded: false }, job: GpuJob::Waiting { tries: 0, retry_at: None } };
             Native { cloak, frame, mode, a11y_start, ..Default::default() }
         };
         self.win = Some(Win {
             a11y,
             native,
-            first_frame: FirstFrame::opened(Instant::now()),
+            first_frame: FirstFrame::opened(crate::time::now()),
             surface: None,
             config,
             surface_ok: true,
@@ -222,7 +258,7 @@ impl Host {
             let rt = self.app.rt_mut();
             if size.width > 0 && size.height > 0 {
                 w.resize_surface(None, size);
-                rt.set_viewport((size.width as f32 / scale, size.height as f32 / scale), scale);
+                rt.set_viewport((w.config.width as f32 / scale, w.config.height as f32 / scale), scale);
             }
             sync_chrome_core(rt, w, self.chrome, self.titlebar);
             sync_screen_origin_core(rt, &w.window);
@@ -235,7 +271,7 @@ impl Host {
         if !w.first_frame.ready() {
             // Only the GPU draws this frame (`start_gpu` began it): shown cloaked until it has.
             if let SurfaceMode::Cpu { cpu, .. } = &mut w.native.mode { cpu.show = None; }
-            w.native.cloak.hold(&w.window, Instant::now() + win::READY_FALLBACK, focus);
+            w.native.cloak.hold(&w.window, crate::time::now() + win::READY_FALLBACK, focus);
             w.window.set_visible(true);
             return Ok(());
         }
@@ -285,7 +321,7 @@ impl FrameHost for CpuWindowFrame<'_> {
         if let Some(w) = self.host.win.as_mut() && let SurfaceMode::HandingOver { cpu, done, paused, since, readback, .. } = &mut w.native.mode {
             if self.host.app.rt().has_pending_input() {
                 if !*paused { crate::marks::mark("gpu.window.paused"); }
-                (*done, *readback, *paused, *since) = (None, None, true, Instant::now());
+                (*done, *readback, *paused, *since) = (None, None, true, crate::time::now());
             } else if done.is_some() {
                 if owed { copy_last(cpu, &w.window); }
                 return Gate::Skip;
@@ -309,7 +345,7 @@ impl FrameHost for CpuWindowFrame<'_> {
             if let Some(w) = self.host.win.as_mut() { w.covered_draw = w.covered_draw.step(CoveredDrawEvent::Drawn); }
         }
         let Some(l) = self.host.win.as_ref() else { return Gate::Skip };
-        if !owed && !handing && !self.resizing && l.backing_off(Instant::now()) { return Gate::Skip; }
+        if !owed && !handing && !self.resizing && l.backing_off(crate::time::now()) { return Gate::Skip; }
         let Some(l) = self.host.win.as_mut() else { return Gate::Skip };
         l.timer_frame.drawn();
         if self.host.native_handle.native.number.load(Ordering::Relaxed) == 0 {
@@ -322,7 +358,7 @@ impl FrameHost for CpuWindowFrame<'_> {
     }
 
     fn before_acquire(&mut self) {
-        if !self.hidden && !self.resizing { self.host.step_frame(Instant::now()); }
+        if !self.hidden && !self.resizing { self.host.step_frame(crate::time::now()); }
         let Some(l) = self.host.win.as_mut() else { return };
         l.backoff_step(BackoffEvent::Lapsed);
         l.backoff_step(BackoffEvent::Presented);
@@ -334,7 +370,7 @@ impl FrameHost for CpuWindowFrame<'_> {
     fn acquire(&mut self) -> Acquire<()> { Acquire::Ready(()) }
 
     fn step_runtime(&mut self) -> StepInfo {
-        let now = Instant::now();
+        let now = crate::time::now();
         self.now = Some(now);
         if self.hidden && self.host.win.as_ref().is_some_and(|l| l.first_frame.settles()) {
             self.host.app.rt_mut().settle_all();
@@ -351,11 +387,11 @@ impl FrameHost for CpuWindowFrame<'_> {
     }
 
     fn sync_after_step(&mut self, info: &mut StepInfo) {
-        let now = self.now.unwrap_or_else(Instant::now);
+        let now = self.now.unwrap_or_else(crate::time::now);
         info.update_ms = now.elapsed().as_secs_f64() * 1000.0;
         let Some(l) = self.host.win.as_mut() else { return };
         let rt = self.host.app.rt_mut();
-        sync_platform_core(l, rt, &mut self.host.secure_input, &mut self.host.ime_allowed, &self.host.clipboard);
+        sync_platform_core(l, rt, &mut self.host.secure_input, &mut self.host.ime, self.host.ime_waits, &self.host.clipboard);
         let mut quiet_now = false;
         if let SurfaceMode::Cpu { job: GpuJob::Building { latest, animating: moving, ready, .. }, .. } = &mut l.native.mode {
             *latest.lock().unwrap_or_else(|e| e.into_inner()) = warm_instances(&rt.instances);
@@ -371,11 +407,13 @@ impl FrameHost for CpuWindowFrame<'_> {
         let Some(l) = self.host.win.as_mut() else { return RenderPrep::Abort };
         let (width, height) = (l.config.width, l.config.height);
         let rt = self.host.app.rt_mut();
+        let handing_over = matches!(l.native.mode, SurfaceMode::HandingOver { .. });
         let (SurfaceMode::Cpu { cpu, .. } | SurfaceMode::HandingOver { cpu, .. }) = &mut l.native.mode else { return RenderPrep::Abort };
         cpu.painter.fill_masks(&mut rt.text.atlas);
         crate::marks::mark_once(&FIRST_MASKS, "frame.first.masks");
         let scene = Scene::new(&rt.instances, &rt.text.atlas, &rt.images, (width, height), rt.clear_color())
             .srgb_blend(rt.srgb_blend())
+            .fade_stops(rt.fade_stops())
             .native_surfaces(!rt.surfaces.is_empty())
             .compositor(has_comp)
             .half_rounding(cpu.half)
@@ -383,23 +421,53 @@ impl FrameHost for CpuWindowFrame<'_> {
         let Cpu { buffer, painter, .. } = &mut *cpu;
         let Some(dib) = ready(buffer, painter, (width, height)) else {
             eprintln!("rune: no memory for a {width} x {height} frame buffer");
-            l.backoff_step(BackoffEvent::At(Instant::now() + TIMER_FRAME));
+            l.backoff_step(BackoffEvent::At(crate::time::now() + TIMER_FRAME));
             return RenderPrep::Abort;
         };
         let stride = dib.stride();
-        match painter.paint(&scene, &mut Target::with_stride(dib.bytes(), width, height, stride)) {
+        let paint_result = painter.paint(&scene, &mut Target::with_stride(dib.bytes(), width, height, stride));
+        match paint_result {
             Ok(painted) => {
+                cpu.degraded = false;
                 crate::marks::mark_once(&FIRST_PAINT, "frame.first.painted");
                 RenderPrep::Ready(Some(painted.rects))
             }
-            Err(_why) => {
-                // The frame needs what only the GPU draws (a native surface, a compositor's scene):
-                // the GPU starts now if it hasn't, and the window keeps its last frame until then.
-                if !matches!(self.host.win.as_ref().map(|w| &w.native.mode), Some(SurfaceMode::HandingOver { .. })) {
+            Err(why) => {
+                let first_frame_ready = l.first_frame.ready();
+                let action = needs_gpu_frame_action(first_frame_ready, why);
+                // Mid-session degradable NeedsGpu frames paint live without their GPU-only
+                // modifier while the GPU builds off the UI thread, avoiding a full-window freeze.
+                // Frame 1 stays cloaked; SlugText/OutlineGlyph/UnknownKind/Target hold the last frame.
+                let degraded_rects = if action == NeedsGpuFrameAction::PaintDegraded {
+                    let degraded_scene = scene.degraded(true);
+                    let Cpu { buffer, painter, degraded, .. } = &mut *cpu;
+                    match buffer {
+                        Buffer::Ready(dib) => {
+                            let stride = dib.stride();
+                            match painter.paint(&degraded_scene, &mut Target::with_stride(dib.bytes(), width, height, stride)) {
+                                Ok(painted) => {
+                                    *degraded = true;
+                                    crate::marks::mark("cpu_first.degraded_paint");
+                                    Some(painted.rects)
+                                }
+                                Err(_non_degradable) => None,
+                            }
+                        }
+                        Buffer::Touching(..) | Buffer::Missing => None,
+                    }
+                } else {
+                    None
+                };
+                if !handing_over {
                     crate::marks::mark("cpu_first.needs_gpu");
-                    self.host.start_gpu(false);
+                    self.host.start_gpu_for_needs_gpu();
+                }
+                if let Some(rects) = degraded_rects {
+                    return RenderPrep::Ready(Some(rects));
+                }
+                if !handing_over {
                     self.host.idle = false;
-                    if let Some(l) = self.host.win.as_mut() { l.backoff_step(BackoffEvent::At(Instant::now() + TIMER_FRAME)); }
+                    if let Some(l) = self.host.win.as_mut() { l.backoff_step(BackoffEvent::At(crate::time::now() + TIMER_FRAME)); }
                     return RenderPrep::Abort;
                 }
                 RenderPrep::Ready(None)
@@ -429,7 +497,7 @@ impl FrameHost for CpuWindowFrame<'_> {
             // it shows cloaked, takes the frame, then comes on screen, activating as the
             // cloak lifts.
             if !l.native.cloak.held() {
-                l.native.cloak.hold(&l.window, Instant::now() + win::READY_FALLBACK, focus);
+                l.native.cloak.hold(&l.window, crate::time::now() + win::READY_FALLBACK, focus);
                 crate::marks::mark("window.cloaked");
                 l.window.set_visible(true);
                 crate::marks::mark("window.visible");
@@ -457,9 +525,9 @@ impl FrameHost for CpuWindowFrame<'_> {
             && let SurfaceMode::HandingOver { paused, since, .. } = &mut l.native.mode
             && *paused && !info.animating && !self.host.app.rt().has_pending_input()
         {
-            (*paused, *since) = (false, Instant::now());
+            (*paused, *since) = (false, crate::time::now());
         }
-        Instant::now()
+        crate::time::now()
     }
 
     fn present_targets(&mut self) -> (Option<&mut FrameClock>, &mut RuntimeCore) {
@@ -469,23 +537,25 @@ impl FrameHost for CpuWindowFrame<'_> {
     fn settle(&mut self, submitted: Instant, info: &StepInfo) {
         let now = self.now.unwrap_or(submitted);
         self.host.meter.presented();
+        crate::haptics::flush_live(self.host.app.rt_mut(), false);
         self.host.frame_reports.drawn(self.encoded, None, now, info.update_ms);
         self.host.app.inspect_frame();
         let Some(l) = self.host.win.as_mut() else { return };
         let next_tick = l.next_tick(now).filter(|_| !self.hidden);
+        let surfaces_pending = self.host.gpu.as_ref().is_some_and(|(_, r)| r.surfaces_pending());
         self.host.idle = Presented::settle_core(
             &mut l.presented,
             self.host.app.rt(),
             &l.config,
             info.animating || FrameMove::moving(&self.host.frame_move),
             next_tick,
-            !self.hidden,
+            !self.hidden && !surfaces_pending,
             false,
         );
         // Motion's next frame comes at the display's next refresh: a CPU frame presents at once,
         // so nothing else paces it.
         if !self.hidden && !self.host.idle {
-            l.backoff_step(BackoffEvent::At(crate::platform::win32::next_vblank(Instant::now())));
+            l.backoff_step(BackoffEvent::At(crate::platform::win32::next_vblank(crate::time::now())));
             self.host.meter.set_pacing(l.pacing_state(true));
         } else {
             l.stop_pacing();

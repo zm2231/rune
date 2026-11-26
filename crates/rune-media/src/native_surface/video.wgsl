@@ -13,11 +13,19 @@ struct Out { @builtin(position) pos: vec4<f32> };
     let local = p - u.viewport.zw;
     return Out(vec4<f32>(local.x / u.viewport.x * 2.0 - 1.0, 1.0 - local.y / u.viewport.y * 2.0, 0.0, 1.0));
 }
+fn bt709_decode(x: vec3<f32>) -> vec3<f32> {
+    return select(pow((x + 0.099) / 1.099, vec3<f32>(1.0 / 0.45)), x / 4.5, x < vec3<f32>(0.081));
+}
+fn srgb_encode(x: vec3<f32>) -> vec3<f32> {
+    let v = clamp(x, vec3<f32>(0.0), vec3<f32>(1.0));
+    return select(1.055 * pow(max(v, vec3<f32>(0.0031308)), vec3<f32>(1.0 / 2.4)) - 0.055, v * 12.92, v <= vec3<f32>(0.0031308));
+}
 fn linear(v: vec3<f32>) -> vec3<f32> {
     let x = clamp(v, vec3<f32>(0.0), vec3<f32>(1.0));
+    if u.color.z > 2.5 { return srgb_encode(bt709_decode(x)); }
     if u.color.z > 1.5 { return x; }
     if u.color.z < 0.5 { return select(pow((x + 0.055) / 1.055, vec3<f32>(2.4)), x / 12.92, x <= vec3<f32>(0.04045)); }
-    return select(pow((x + 0.099) / 1.099, vec3<f32>(1.0 / 0.45)), x / 4.5, x < vec3<f32>(0.081));
+    return bt709_decode(x);
 }
 fn convert(a: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
     if u.color.x < 0.5 { return vec4<f32>(linear(a.rgb) * a.a, a.a); }
@@ -71,6 +79,18 @@ fn unpack_clip_radii(w: u32) -> vec4<f32> {
         f32((w >> 21u) & 0x7fu),
     ) * (step * sgn);
 }
+fn unpack_f16(h: u32) -> f32 {
+    let sign = (h & 0x8000u) << 16u;
+    let exp = (h >> 10u) & 0x1Fu;
+    let mant = h & 0x03FFu;
+    let sub = sign | bitcast<u32>(f32(mant) * (1.0 / 16777216.0));
+    let norm = sign | ((exp + 112u) << 23u) | (mant << 13u);
+    let inf_nan = sign | 0x7F800000u | (mant << 13u) | select(0u, 0x00400000u, mant != 0u);
+    return bitcast<f32>(select(select(norm, inf_nan, exp == 31u), sub, exp == 0u));
+}
+fn unpack_f16x2(packed: u32) -> vec2<f32> {
+    return vec2<f32>(unpack_f16(packed & 0xFFFFu), unpack_f16(packed >> 16u));
+}
 fn ramp(d: f32, width: f32) -> f32 {
     if width == 0.0 { return clamp(d + 0.5, 0.0, 1.0); }
     let x = clamp(d / abs(width), 0.0, 1.0);
@@ -108,18 +128,31 @@ fn ramp(d: f32, width: f32) -> f32 {
     }
     let half = u.node.zw*0.5;
     let distance = sd_rounded(p-u.node.xy-half, half, u.radii);
-    let hard = vec4<f32>(p-u.clip.xy, u.clip.zw-p);
-    let fade = vec4<f32>(unpack2x16float(u.fade.x), unpack2x16float(u.fade.y));
-    let offset = unpack4x8unorm(u.fade.z);
+    let hard = vec4<f32>(p - u.clip.xy, u.clip.zw - p);
+    var fade = vec4<f32>(0.0);
+    if (u.fade.x | u.fade.y) != 0u { fade = vec4<f32>(unpack_f16x2(u.fade.x), unpack_f16x2(u.fade.y)); }
     var clip = 1.0;
-    for (var edge = 0u; edge < 4u; edge++) {
-        var a = ramp(hard[edge], fade[edge]);
-        if offset[edge] >= 1.0 {
-            a = ramp(hard[edge], 0.0);
-        } else if offset[edge] > 0.0 {
-            a = min(ramp(hard[edge], 0.0), ramp(hard[edge] + offset[edge] * abs(fade[edge]), fade[edge]));
+    if u.fade.z == 0u {
+        clip = ramp(hard.x, fade.x) * ramp(hard.y, fade.y) * ramp(hard.z, fade.z) * ramp(hard.w, fade.w);
+    } else {
+        for (var edge = 0u; edge < 4u; edge++) {
+            let raw_off = (u.fade.z >> (edge * 8u)) & 0xFFu;
+            let is_stops = (raw_off & 0x80u) != 0u;
+            let off_u = raw_off & 0x7Fu;
+            // Native surfaces carry no frame-globals stop table; degrade stop-tagged edges to a
+            // linear ramp while preserving exact 7-bit offset and hard-edge (`off_u >= 127`) semantics.
+            let fw = select(fade[edge], -abs(fade[edge]), is_stops);
+            var a: f32;
+            if off_u >= 127u {
+                a = ramp(hard[edge], 0.0);
+            } else if off_u > 0u {
+                let offset = f32(off_u) * (1.0 / 127.0);
+                a = min(ramp(hard[edge], 0.0), ramp(hard[edge] + offset * abs(fw), fw));
+            } else {
+                a = ramp(hard[edge], fw);
+            }
+            clip *= a;
         }
-        clip *= a;
     }
     var mask = 1.0;
     if u.fade.w != 0u {

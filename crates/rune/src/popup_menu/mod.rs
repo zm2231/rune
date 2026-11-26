@@ -15,15 +15,23 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
 use serde_json::{Value, json};
+#[cfg(not(target_arch = "wasm32"))]
 use winit::window::Window;
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::Waker;
 #[cfg(test)]
 use crate::Runtime;
 use crate::{PointerPress, Shortcut, Tx};
+
+mod request;
+mod style;
+pub use request::PopupMenuRequest;
+pub use style::PopupMenuStyle;
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -40,12 +48,18 @@ pub(crate) use win32::{enter_menu_loop, layout, turns};
 /// once. iOS has no such window: a `RuneView` shows the menu itself, as the system's edit menu.
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 mod host {
+    #[cfg(not(target_arch = "wasm32"))]
     use super::{Arc, Rc, Session, Show, Waker, Window};
     pub(super) const SUPPORTED: bool = cfg!(target_os = "ios");
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) type Tracking = ();
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn show(_: &Arc<Window>, _: Show, _: Rc<Session>, _: Option<Waker>) -> bool { false }
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn stop(_: Tracking) {}
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn scheme(_: bool) {}
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn start(_: Waker) {}
 }
 
@@ -56,6 +70,7 @@ pub fn popup_menu_supported() -> bool { host::SUPPORTED }
 
 /// The event loop starts. `turn` runs its idle turn (due timers, overlays), for a platform whose
 /// menus hold the event loop in a modal loop of their own while they track.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn start(turn: Waker) { host::start(turn); }
 
 /// One choice in a [`PopupMenu`]: enabled and unchecked unless set.
@@ -86,22 +101,66 @@ impl PopupItem {
     pub fn title(&self) -> &str { &self.title }
     pub fn is_enabled(&self) -> bool { self.enabled }
     pub fn is_checked(&self) -> bool { self.checked }
+
+    /// The shortcut hint shown beside the title, if one was set with [`PopupItem::key_equivalent`].
+    ///
+    /// ```
+    /// # use rune::{PopupItem, Shortcut};
+    /// let shortcut: Shortcut = "mod+c".parse().unwrap();
+    /// let item = PopupItem::new("copy", "Copy").key_equivalent(shortcut.clone());
+    /// assert_eq!(item.key_equivalent_shortcut(), Some(&shortcut));
+    /// assert_eq!(PopupItem::new("plain", "Plain").key_equivalent_shortcut(), None);
+    /// ```
+    pub fn key_equivalent_shortcut(&self) -> Option<&Shortcut> { self.key_equivalent.as_ref() }
+
+    /// The macOS SF Symbol name set with [`PopupItem::symbol`], if any.
+    ///
+    /// ```
+    /// # use rune::PopupItem;
+    /// let item = PopupItem::new("copy", "Copy").symbol("doc.on.doc");
+    /// assert_eq!(item.symbol_name(), Some("doc.on.doc"));
+    /// assert_eq!(PopupItem::new("plain", "Plain").symbol_name(), None);
+    /// ```
+    pub fn symbol_name(&self) -> Option<&str> { self.symbol.as_deref() }
 }
 
+/// One entry in a [`PopupMenu`]: an item, a separator, or a nested submenu.
+///
+/// Returned as a slice by [`PopupMenu::entries`] so headless tests and in-app fallback menus can
+/// inspect an open menu without cloning it.
+///
+/// ```
+/// # use rune::{PopupEntry, PopupItem, PopupMenu};
+/// let menu = PopupMenu::new()
+///     .item(PopupItem::new("copy", "Copy"))
+///     .separator()
+///     .submenu("More", PopupMenu::new().item(PopupItem::new("share", "Share")));
+/// assert!(matches!(&menu.entries()[0], PopupEntry::Item(i) if i.id() == "copy"));
+/// assert!(matches!(&menu.entries()[1], PopupEntry::Separator));
+/// assert!(matches!(&menu.entries()[2], PopupEntry::Submenu { title, enabled: true, .. } if title == "More"));
+/// ```
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Entry {
+#[non_exhaustive]
+pub enum PopupEntry {
+    /// A selectable item.
     Item(PopupItem),
+    /// A divider between groups of items.
     Separator,
     /// A titled submenu, and whether it opens.
-    Submenu(String, PopupMenu, bool),
+    Submenu {
+        title: String,
+        menu: PopupMenu,
+        enabled: bool,
+    },
 }
 
 /// The items of a native pop-up or context menu. Ids must be unique across the menu and its
 /// submenus.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PopupMenu {
-    pub(crate) entries: Vec<Entry>,
+    pub(crate) entries: Vec<PopupEntry>,
     pub(crate) selected: Option<String>,
+    pub(crate) style: Option<PopupMenuStyle>,
 }
 
 impl PopupMenu {
@@ -119,31 +178,61 @@ impl PopupMenu {
         Self::new().items(items).selected(selected)
     }
 
-    pub fn item(mut self, item: PopupItem) -> Self { self.entries.push(Entry::Item(item)); self }
+    pub fn item(mut self, item: PopupItem) -> Self { self.entries.push(PopupEntry::Item(item)); self }
     pub fn items(mut self, items: impl IntoIterator<Item = PopupItem>) -> Self {
-        self.entries.extend(items.into_iter().map(Entry::Item));
+        self.entries.extend(items.into_iter().map(PopupEntry::Item));
         self
     }
-    pub fn separator(mut self) -> Self { self.entries.push(Entry::Separator); self }
+    pub fn separator(mut self) -> Self { self.entries.push(PopupEntry::Separator); self }
     pub fn submenu(mut self, title: impl Into<String>, menu: PopupMenu) -> Self {
-        self.entries.push(Entry::Submenu(title.into(), menu, true));
+        self.entries.push(PopupEntry::Submenu { title: title.into(), menu, enabled: true });
         self
     }
-    /// A submenu shown greyed out and closed unless nabled.
+    /// A submenu shown greyed out and closed unless `enabled`.
     pub fn submenu_enabled(mut self, title: impl Into<String>, menu: PopupMenu, enabled: bool) -> Self {
-        self.entries.push(Entry::Submenu(title.into(), menu, enabled));
+        self.entries.push(PopupEntry::Submenu { title: title.into(), menu, enabled });
         self
     }
     /// The top-level item that opens over an element anchor, like a pop-up button's current
     /// value. Without one, a menu anchored to an element drops down below it. Over a point
     /// anchor, this item opens under the point instead of the menu's top-left corner.
     pub fn selected(mut self, id: impl Into<String>) -> Self { self.selected = Some(id.into()); self }
+    /// How the web draws this menu and its submenus, such as from the app's palette. Native
+    /// menus (macOS, Windows) ignore it. A submenu's own style is unused and left out of
+    /// `--tree`.
+    pub fn style(mut self, style: PopupMenuStyle) -> Self { self.style = Some(style); self }
+
+    /// The style set with [`PopupMenu::style`], if any.
+    pub fn menu_style(&self) -> Option<&PopupMenuStyle> { self.style.as_ref() }
+
+    /// The menu's entries in order: items, separators, and nested submenus.
+    ///
+    /// ```
+    /// # use rune::{PopupEntry, PopupItem, PopupMenu};
+    /// let menu = PopupMenu::new()
+    ///     .item(PopupItem::new("copy", "Copy"))
+    ///     .separator()
+    ///     .item(PopupItem::new("paste", "Paste").enabled(false));
+    /// assert_eq!(menu.entries().len(), 3);
+    /// assert!(matches!(&menu.entries()[2], PopupEntry::Item(i) if !i.is_enabled()));
+    /// ```
+    pub fn entries(&self) -> &[PopupEntry] { &self.entries }
+
+    /// The item id set with [`PopupMenu::selected`] or [`PopupMenu::picker`], if any.
+    ///
+    /// ```
+    /// # use rune::PopupMenu;
+    /// let menu = PopupMenu::picker([("light", "Light"), ("dark", "Dark")], "dark");
+    /// assert_eq!(menu.selected_id(), Some("dark"));
+    /// assert_eq!(PopupMenu::new().selected_id(), None);
+    /// ```
+    pub fn selected_id(&self) -> Option<&str> { self.selected.as_deref() }
 
     /// The item with this id, in this menu or a submenu.
     pub fn find(&self, id: &str) -> Option<&PopupItem> {
         self.entries.iter().find_map(|entry| match entry {
-            Entry::Item(item) if item.id == id => Some(item),
-            Entry::Submenu(_, menu, _) => menu.find(id),
+            PopupEntry::Item(item) if item.id == id => Some(item),
+            PopupEntry::Submenu { menu, .. } => menu.find(id),
             _ => None,
         })
     }
@@ -151,34 +240,42 @@ impl PopupMenu {
     /// The selected id when it names a top-level item, the only kind AppKit can position.
     pub(crate) fn positioned(&self) -> Option<&str> {
         let selected = self.selected.as_deref()?;
-        self.entries.iter().any(|e| matches!(e, Entry::Item(item) if item.id == selected)).then_some(selected)
+        self.entries.iter().any(|e| matches!(e, PopupEntry::Item(item) if item.id == selected)).then_some(selected)
     }
 
     fn validate(&self, ids: &mut std::collections::HashSet<String>) -> Result<(), String> {
         for entry in &self.entries {
             match entry {
-                Entry::Item(item) => {
+                PopupEntry::Item(item) => {
                     if item.id.is_empty() { return Err("an item has an empty id".into()); }
                     if !ids.insert(item.id.clone()) { return Err(format!("duplicate item id {:?}", item.id)); }
                 }
-                Entry::Submenu(_, menu, _) => menu.validate(ids)?,
-                Entry::Separator => {}
+                PopupEntry::Submenu { menu, .. } => menu.validate(ids)?,
+                PopupEntry::Separator => {}
             }
         }
         Ok(())
     }
 
+    /// The menu as the web bridge and `--tree` read it. Only the top menu carries its `style`,
+    /// the one the page draws every level with.
     pub(crate) fn to_json(&self) -> Value {
+        let mut v = self.entries_json();
+        if let Some(style) = &self.style { v["style"] = style.to_json(); }
+        v
+    }
+
+    fn entries_json(&self) -> Value {
         let entries: Vec<Value> = self.entries.iter().map(|entry| match entry {
-            Entry::Item(item) => {
+            PopupEntry::Item(item) => {
                 let mut v = json!({ "id": item.id, "title": item.title, "enabled": item.enabled, "checked": item.checked });
                 if let Some(shortcut) = &item.key_equivalent { v["keyEquivalent"] = shortcut.to_string().into(); }
                 if let Some(symbol) = &item.symbol { v["symbol"] = symbol.clone().into(); }
                 v
             }
-            Entry::Separator => json!({ "separator": true }),
-            Entry::Submenu(title, menu, true) => json!({ "submenu": title, "menu": menu.to_json() }),
-            Entry::Submenu(title, menu, false) => json!({ "submenu": title, "enabled": false, "menu": menu.to_json() }),
+            PopupEntry::Separator => json!({ "separator": true }),
+            PopupEntry::Submenu { title, menu, enabled: true } => json!({ "submenu": title, "menu": menu.entries_json() }),
+            PopupEntry::Submenu { title, menu, enabled: false } => json!({ "submenu": title, "enabled": false, "menu": menu.entries_json() }),
         }).collect();
         let mut v = json!({ "items": entries });
         if let Some(selected) = &self.selected { v["selected"] = selected.clone().into(); }
@@ -200,7 +297,54 @@ impl From<&String> for PopupAnchor { fn from(key: &String) -> Self { Self::Key(k
 impl From<PointerPress> for PopupAnchor { fn from(p: PointerPress) -> Self { Self::Point(p.x, p.y) } }
 impl From<(f32, f32)> for PopupAnchor { fn from((x, y): (f32, f32)) -> Self { Self::Point(x, y) } }
 
-/// Why [`Runtime::resolve_popup`] could not answer a menu.
+/// A text field's context-menu request handed to [`App::on_field_menu`](crate::App::on_field_menu)
+/// on platforms where [`popup_menu_supported`] is false (such as Linux).
+///
+/// Inspect [`Self::menu`] with [`PopupMenu::entries`] to build an in-window menu at
+/// [`Self::point`], then answer with [`Tx::resolve_field_menu`](crate::Tx::resolve_field_menu).
+///
+/// ```
+/// use rune::{App, AppSpec, FieldMenuRequest, PopupEntry, Tx, el};
+///
+/// struct S { open_menu: Option<FieldMenuRequest> }
+/// let _app = App::new(AppSpec::new("demo", (480.0, 320.0), || S { open_menu: None }, |_, _| el()))
+///     .on_field_menu(|s: &mut S, req: FieldMenuRequest, _tx: &mut Tx| {
+///         let _entries: &[PopupEntry] = req.menu().entries();
+///         s.open_menu = Some(req);
+///     });
+/// ```
+#[derive(Clone, Debug, PartialEq)]
+pub struct FieldMenuRequest {
+    field_key: Option<String>,
+    field_path: String,
+    point: PointerPress,
+    menu: PopupMenu,
+}
+
+impl FieldMenuRequest {
+    pub(crate) fn new(field_key: Option<String>, field_path: String, point: PointerPress, menu: PopupMenu) -> Self {
+        Self { field_key, field_path, point, menu }
+    }
+
+    /// The text field's element key (`El::key`), if one was set.
+    pub fn field_key(&self) -> Option<&str> { self.field_key.as_deref() }
+
+    /// The text field's full tree path.
+    pub fn field_path(&self) -> &str { &self.field_path }
+
+    /// Where the menu was requested, in view points (the secondary-press point, or the focused
+    /// field's bottom-left for keyboard Menu / Shift+F10).
+    pub fn point(&self) -> PointerPress { self.point }
+
+    /// The ready-built field menu (spelling suggestions, Cut, Copy, Paste, Select All,
+    /// Spellcheck, Spellcheck Languages). Read its items with [`PopupMenu::entries`].
+    pub fn menu(&self) -> &PopupMenu { &self.menu }
+
+    /// Consumes the request and returns its [`PopupMenu`].
+    pub fn into_menu(self) -> PopupMenu { self.menu }
+}
+
+/// Why [`crate::Runtime::resolve_popup`] could not answer a menu.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PopupMenuError {
     NotOpen,
@@ -254,13 +398,17 @@ impl Tx {
     /// dismissed or this platform has no native menu ([`popup_menu_supported`]). Exactly one
     /// call per request. A menu asked for while another is open opens after it closes.
     ///
-    /// ```ignore
+    /// ```
+    /// # use rune::{PopupMenu, Tx, el};
+    /// # struct Settings { theme: String }
+    /// # let _ = el()
     /// .on_press_tx(|_: &mut Settings, tx: &mut Tx| {
     ///     let menu = PopupMenu::picker([("system", "System"), ("light", "Light"), ("dark", "Dark")], "system");
     ///     tx.popup_menu(menu, "theme-button", |s: &mut Settings, picked, _| {
     ///         if let Some(id) = picked { s.theme = id.into(); }
     ///     });
     /// })
+    /// # ;
     /// ```
     pub fn popup_menu<S: 'static>(
         &mut self,
@@ -274,6 +422,25 @@ impl Tx {
         });
         let request = Request { menu, anchor: anchor.into(), on_pick, field: None };
         self.popups.push(Call(Rc::new(RefCell::new(Some(request)))));
+    }
+
+    /// Answers the pending text-field menu delivered to
+    /// [`App::on_field_menu`](crate::App::on_field_menu).
+    ///
+    /// Pass `Some(id)` with the picked [`PopupItem::id`] to run that field action (Cut, Copy,
+    /// Paste, Select All, a spelling suggestion, Learn Spelling, or a spellcheck setting), or
+    /// `None` to dismiss it. Unknown or disabled item ids are ignored, and calls with no
+    /// pending fallback menu do nothing.
+    ///
+    /// ```
+    /// use rune::{Tx, el};
+    ///
+    /// let _copy = el().on_press_tx(|_: &mut (), tx: &mut Tx| {
+    ///     tx.resolve_field_menu(Some("copy"));
+    /// });
+    /// ```
+    pub fn resolve_field_menu(&mut self, id: Option<&str>) {
+        self.field_menu_resolution = Some(id.map(str::to_owned));
     }
 }
 
@@ -312,6 +479,7 @@ impl Show {
 /// menu is `Opening` until the platform puts it up, `Open` while it tracks, and ends
 /// `Resolved` with its answer, or `Cancelled` when its window goes away first. A cancelled
 /// menu never opens (or stops tracking), and its answer is dropped.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
 #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub(crate) enum Phase {
@@ -326,12 +494,14 @@ pub(crate) enum Phase {
 }
 
 /// One native menu, from the host handing it over until its answer is read.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
 pub(crate) struct Session {
     phase: RefCell<Phase>,
 }
 
 // Only macOS and Windows open menus; elsewhere every request answers `None` before a session.
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 impl Session {
     /// `Opening` → `Open`, as the menu comes up. False when it was cancelled first.
@@ -383,12 +553,14 @@ impl Session {
 
 /// One window's native menu: opens what its runtime asks for, and hands the answer back after
 /// `wake` brings the host to its inbox.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
 pub(crate) struct Presenter {
     session: Option<Rc<Session>>,
     wake: Option<Waker>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Presenter {
     pub(crate) fn new(wake: Waker) -> Self { Self { session: None, wake: Some(wake) } }
 
@@ -409,7 +581,7 @@ impl Presenter {
         self.session = None;
         if let Err(error) = rt.resolve_popup(app, picked.as_deref()) {
             eprintln!("rune: {error}");
-            let _ = rt.resolve_popup(app, None);
+            rt.resolve_popup(app, None).ok();
         }
         // In window points; the view's are over its zoom.
         if let Some((x, y)) = pointer && rt.pointer().is_none() { rt.pointer_move(app, x / rt.zoom(), y / rt.zoom()); }
@@ -429,6 +601,17 @@ impl Presenter {
     }
 
     pub(crate) fn open_core(&mut self, rt: &mut crate::runtime::RuntimeCore, app: &mut dyn crate::runtime::AppDriver, window: Option<&Arc<Window>>, paints: bool) -> bool {
+        if rt.popup_menu_fallback_active(app) {
+            if window.is_none() {
+                if rt.popup_menu().is_some() {
+                    rt.cancel_popups(app);
+                    return true;
+                }
+                return false;
+            }
+            if paints && rt.popup_waits_for_layout() { return true; }
+            return rt.deliver_popup_menu_fallback_from_host(app);
+        }
         let mut redraw = false;
         loop {
             if window.is_some() && paints && rt.popup_waits_for_layout() { return true; }
@@ -443,7 +626,7 @@ impl Presenter {
                     return true;
                 }
             }
-            let _ = rt.resolve_popup(app, None);
+            rt.resolve_popup(app, None).ok();
         }
     }
 
@@ -468,6 +651,7 @@ impl Presenter {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for Presenter {
     fn drop(&mut self) { self.stop(); }
 }

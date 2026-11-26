@@ -55,6 +55,8 @@ mod submit;
 mod surface;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod texture_tests;
 
 use std::future::ready;
 use std::pin::Pin;
@@ -75,6 +77,21 @@ pub type Owner = std::sync::Arc<dyn std::any::Any + Send + Sync>;
 /// The Metal device under `device`, when it's this backend's.
 pub fn raw_device(device: &wgpu::Device) -> Option<&ProtocolObject<dyn MTLDevice>> {
     device.as_custom::<MetalDevice>().map(|d| &*d.shared.device)
+}
+
+/// Before the passes `encoder` records next, the GPU waits until `event` reaches `value`
+/// (`encodeWaitForEvent`): for work another queue, device or API signals. A wait Metal gives up on
+/// fails the command buffer, which loses the device, so wait only for a signal that will come.
+/// False if `encoder` isn't this backend's.
+pub fn wait_for_event(encoder: &mut wgpu::CommandEncoder, event: &ProtocolObject<dyn objc2_metal::MTLEvent>, value: u64) -> bool {
+    encoder.as_custom::<encode::MetalEncoder>().map(|e| e.wait_for_event(event, value)).is_some()
+}
+
+/// Once all of `encoder`'s work has finished, the GPU sets `event` to `value`
+/// (`encodeSignalEvent`, encoded at `finish`): for another queue, device or API to wait on. False
+/// if `encoder` isn't this backend's.
+pub fn signal_event_on_finish(encoder: &mut wgpu::CommandEncoder, event: &ProtocolObject<dyn objc2_metal::MTLEvent>, value: u64) -> bool {
+    encoder.as_custom::<encode::MetalEncoder>().map(|e| e.signal_on_finish(event, value)).is_some()
 }
 
 /// A texture over `raw`, made on `raw_device`'s device and matching `desc`, which `owner` keeps valid.
@@ -123,6 +140,7 @@ pub fn enabled() -> bool {
 
 pub fn instance() -> wgpu::Instance {
     rune_staging::set_direct(write_in_place);
+    rune_staging::set_direct_texture(write_texture_in_place);
     wgpu::Instance::from_custom(MetalInstance)
 }
 
@@ -135,6 +153,16 @@ fn write_in_place(buffer: &wgpu::Buffer, offset: u64, data: &[u8]) -> bool {
     buffer.as_custom::<resource::MetalBuffer>().is_some_and(|b| b.store.write_ahead(&b.shared, offset, data, || true))
 }
 
+/// Staging's in-place texture row writer: an idle Apple Silicon shared texture takes rows via
+/// `replaceRegion`, falling back to staged blits whenever the GPU still references it.
+fn write_texture_in_place(texture: &wgpu::Texture, y: u32, rows: &[u8]) -> bool {
+    let Some(tex) = texture.as_custom::<resource::MetalTexture>() else { return false };
+    let Some(shared) = &tex.shared else { return false };
+    if !tex.raw.is_idle(shared) { return false }
+    encode::replace_texture_rows(&tex.raw, y, rows);
+    true
+}
+
 /// The CAMetalLayer a surface of this backend presents into.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn layer<'s>(surface: &'s wgpu::Surface<'_>) -> Option<&'s objc2::runtime::AnyObject> {
@@ -145,7 +173,10 @@ macro_rules! send_sync {
     ($($t:ty),*) => { $(
         // SAFETY: Metal devices, queues, resources and events are thread-safe; command buffers,
         // encoders and drawables are used by one thread at a time, as wgpu's handles are.
+        #[allow(unsafe_code)]
         unsafe impl Send for $t {}
+        // SAFETY: as above; shared Metal objects are thread-safe and single-thread handles follow wgpu's contract.
+        #[allow(unsafe_code)]
         unsafe impl Sync for $t {}
     )* };
 }
@@ -164,7 +195,9 @@ struct MetalInstance;
 
 impl InstanceInterface for MetalInstance {
     fn new(_: wgpu::InstanceDescriptor) -> Self { MetalInstance }
+    #[allow(unsafe_code)]
     unsafe fn create_surface(&self, target: wgpu::SurfaceTargetUnsafe) -> Result<DispatchSurface, wgpu::CreateSurfaceError> {
+        // SAFETY: caller upholds `InstanceInterface::create_surface`'s contract that `target` names a live layer or view.
         Ok(unsafe { surface::create(target) })
     }
     fn request_adapter(&self, options: &wgpu::RequestAdapterOptions<'_, '_>) -> Pin<Box<dyn RequestAdapterFuture>> {

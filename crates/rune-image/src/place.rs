@@ -1,7 +1,7 @@
 //! Alignment and aspect-preserving placement for surfaces and pixel buffers: which edge a spare
 //! or cropped side is shared from, and whether the frame is scaled at all.
 
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Align {
     #[default]
     Start,
@@ -16,8 +16,55 @@ pub enum SurfaceFit {
     Fill,
 }
 
+/// How an image scales when its drawn size differs from its source texels (`El::image_filter`).
+///
+/// Matches CSS `image-rendering: auto` ([`Self::Linear`], the default) and
+/// `image-rendering: pixelated` ([`Self::Nearest`]), and `wgpu::FilterMode::{Linear, Nearest}`.
+///
+/// ```
+/// use rune_image::ImageFilter;
+///
+/// assert_eq!(ImageFilter::default(), ImageFilter::Linear);
+/// assert_ne!(ImageFilter::Nearest, ImageFilter::Linear);
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ImageFilter {
+    /// Bilinear interpolation between neighbouring texels, using prefiltered mip levels when
+    /// scaled down (the default).
+    #[default]
+    Linear,
+    /// Nearest-neighbour (point) sampling from mip level 0, keeping crisp hard texel edges for
+    /// pixel art, sprites, and zoomed bitmaps.
+    Nearest,
+}
+
+/// How an image fills the area of an element outside its placed rectangle
+/// (`El::pixels_wrap`, `El::pixels_tile`).
+///
+/// Matches Skia `SkTileMode::{kRepeat, kMirror, kClamp}`, wgpu
+/// `AddressMode::{Repeat, MirrorRepeat, ClampToEdge}`, and Metal `MTLSamplerAddressMode`.
+///
+/// ```
+/// use rune_image::PixelsWrap;
+///
+/// assert_ne!(PixelsWrap::Repeat, PixelsWrap::Mirror);
+/// assert_ne!(PixelsWrap::Mirror, PixelsWrap::Extend);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PixelsWrap {
+    /// Tile copies of the image side by side along both axes (CSS `background-repeat: repeat`,
+    /// Skia `kRepeat`, `wgpu::AddressMode::Repeat`).
+    Repeat,
+    /// Reflect alternating tiles across every edge so adjacent copies meet seamlessly
+    /// (Skia `kMirror`, `wgpu::AddressMode::MirrorRepeat`).
+    Mirror,
+    /// Extend the image's outermost edge rows, edge columns, and corner texels to the element's
+    /// bounds (Skia `kClamp`, `wgpu::AddressMode::ClampToEdge`).
+    Extend,
+}
+
 /// `El::surface_anchor` and `El::surface_unscaled`. The default centres and scales by `SurfaceFit`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SurfacePlace {
     pub anchor: [Align; 2],
     pub unscaled: bool,

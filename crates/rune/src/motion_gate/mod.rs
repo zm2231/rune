@@ -1,10 +1,13 @@
 //! A motion gate for an app's own tests: drive the real app headless on the virtual clock, record
 //! every element's presented rect, visible part and opacity each frame, and list what a person
-//! would see go wrong (see [`check`] and [`RULES`]).
+//! would see go wrong (see [`check()`] and [`RULES`]).
 //!
 //! An app lists cells, one scenario in one circumstance each, and runs them in a test:
 //!
-//! ```ignore
+//! ```no_run
+//! # use rune::{Cx, El, Env, Runtime, el};
+//! # #[derive(Default)] struct State;
+//! # fn view(_: &State, _: &mut Cx<State>) -> El { el().key("add").size(40.0, 40.0) }
 //! use rune::motion_gate::{self, AllowRow, Job, Run};
 //!
 //! const ALLOW: &[AllowRow] = &[
@@ -20,10 +23,10 @@
 //!     r.rec
 //! }
 //!
-//! #[test]
 //! fn motion_gate() {
 //!     motion_gate::gate_rows(vec![("add-row/wide".into(), Box::new(add_row) as Job)], ALLOW);
 //! }
+//! # motion_gate();
 //! ```
 //!
 //! [`gate`] reads its settings from the environment, which `scripts/motion-audit/gate` sets:
@@ -49,7 +52,7 @@
 pub mod check;
 mod gate;
 
-pub use check::{Finding, RULES, Recording, Rule, Snap, Track, check, dump, rule, sheet, short};
+pub use check::{Finding, Handover, RULES, Recording, Rule, Snap, Track, check, dump, rule, sheet, short};
 pub use gate::{Allow, AllowRow, Cell, Job, Report, allowed, gate, gate_rows, report, report_rows, run};
 pub(crate) use gate::evidence;
 
@@ -83,7 +86,7 @@ impl Raster {
         bytemuck::cast_slice::<_, u8>(&rt.instances).hash(&mut hasher);
         let key = hasher.finish();
         if let Some((k, g)) = &self.0 && *k == key { return g.clone(); }
-        let g = Arc::new(check::raster::rasterize_with(&rt.instances, size, rt.env.scale, &rt.paint.icon_aprons, &rt.text.glyph_shifts()));
+        let g = Arc::new(check::raster::rasterize_with(&rt.instances, size, rt.env.scale, rt.paint.icon_aprons(), &rt.text.glyph_shifts()));
         self.0 = Some((key, g.clone()));
         g
     }
@@ -92,11 +95,15 @@ impl Raster {
 /// Samples a frame `rt` just took into `rec`: why it committed, its elements, what they paint
 /// and the composited window (`grid`, else the CPU raster).
 fn sample(rt: &mut crate::runtime::RuntimeCore, rec: &mut Recording, raster: &mut Raster, grid: Option<Arc<check::raster::Grid>>) {
-    let why = std::mem::take(&mut rt.commit.commit_why);
+    let why = rt.commit.take_commit_why();
     rec.commits(rt.scrolling(), why);
     let els: Vec<ElementInfo> = rt.elements();
     let paints = rt.paints();
+    let frame = rec.frames;
     rec.sample_with(&els, Some(&paints));
+    for h in rt.matched_handovers() {
+        rec.handover(frame, h.from, h.to, h.from_rect, h.to_rect);
+    }
     let grid = grid.unwrap_or_else(|| raster.of(rt, rec.size));
     rec.grid(Some(grid));
     rec.tips.resize(rec.frames.saturating_sub(1), None);
@@ -113,7 +120,7 @@ pub struct Sampler {
 
 impl Sampler {
     pub fn new<S>(rt: &mut Runtime<S>, hz: f64) -> Self {
-        rt.paint.paint_rank = Some(Vec::new());
+        rt.paint.enable_paint_rank();
         Sampler { rec: Recording::new(rt.viewport, hz), raster: Raster::default() }
     }
 
@@ -124,7 +131,7 @@ impl Sampler {
 
     /// Clears what the last frame left, before `rt.frame`.
     pub fn before<S>(&mut self, rt: &mut Runtime<S>) {
-        rt.commit.commit_why = 0;
+        rt.commit.clear_commit_why();
     }
 
     /// Samples the frame `rt` just took; `awake` is what `rt.frame` returned.
@@ -135,7 +142,7 @@ impl Sampler {
 }
 
 fn run_init(core: &mut crate::runtime::RuntimeCore, app: &mut dyn crate::runtime::AppDriver, hz: f64) -> (Recording, f64) {
-    core.paint.paint_rank = Some(Vec::new());
+    core.paint.enable_paint_rank();
     core.frame(app, 0.0);
     (Recording::new(core.viewport, hz), 1.0 / hz)
 }
@@ -147,7 +154,7 @@ fn run_idle(core: &mut crate::runtime::RuntimeCore, app: &mut dyn crate::runtime
 }
 
 fn run_step_frame(core: &mut crate::runtime::RuntimeCore, app: &mut dyn crate::runtime::AppDriver, rec: &mut Recording, dt: f64) {
-    core.commit.commit_why = 0;
+    core.commit.clear_commit_why();
     let played = app.playground_played();
     let awake = core.frame(app, dt);
     if app.playground_played() > played { rec.input("a story step's key"); }

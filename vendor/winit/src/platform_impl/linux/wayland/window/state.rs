@@ -19,8 +19,10 @@ use sctk::reexports::protocols::wp::fractional_scale::v1::client::wp_fractional_
 use sctk::reexports::protocols::wp::text_input::zv3::client::zwp_text_input_v3::ZwpTextInputV3;
 use sctk::reexports::protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use sctk::reexports::protocols::xdg::shell::client::xdg_toplevel::ResizeEdge as XdgResizeEdge;
+use sctk::reexports::protocols::xdg::toplevel_icon::v1::client::xdg_toplevel_icon_manager_v1::XdgToplevelIconManagerV1;
 
 use sctk::compositor::{CompositorState, Region, SurfaceData, SurfaceDataExt};
+use sctk::globals::GlobalData;
 use sctk::seat::pointer::{PointerDataExt, ThemedPointer};
 use sctk::shell::xdg::window::{DecorationMode, Window, WindowConfigure};
 use sctk::shell::xdg::XdgSurface;
@@ -36,7 +38,8 @@ use crate::error::{ExternalError, NotSupportedError};
 use crate::platform_impl::wayland::logical_to_physical_rounded;
 use crate::platform_impl::wayland::types::cursor::{CustomCursor, SelectedCursor};
 use crate::platform_impl::wayland::types::kwin_blur::KWinBlurManager;
-use crate::platform_impl::{PlatformCustomCursor, WindowId};
+use crate::platform_impl::wayland::types::xdg_toplevel_icon::ToplevelIcon;
+use crate::platform_impl::{PlatformCustomCursor, PlatformIcon, WindowId};
 use crate::window::{CursorGrabMode, CursorIcon, ImePurpose, ResizeDirection, Theme};
 
 use crate::platform_impl::wayland::seat::{
@@ -63,11 +66,20 @@ pub struct WindowState {
     // A shared pool where to allocate custom cursors.
     custom_cursor_pool: Arc<Mutex<SlotPool>>,
 
+    /// Xdg toplevel icon manager, to set the window's icon.
+    xdg_toplevel_icon_manager: Option<XdgToplevelIconManagerV1>,
+
+    /// The window's current icon, whose buffer the compositor may still read.
+    toplevel_icon: Option<ToplevelIcon>,
+
     /// The last received configure.
     pub last_configure: Option<WindowConfigure>,
 
     /// The pointers observed on the window.
     pub pointers: Vec<Weak<ThemedPointer<WinitPointerData>>>,
+
+    /// Rune: active touches on the window, for interactive move/resize/menu serials.
+    active_touches: ActiveTouches<WlSeat>,
 
     selected_cursor: SelectedCursor,
 
@@ -182,8 +194,12 @@ impl WindowState {
             .fractional_scaling_manager
             .as_ref()
             .map(|fsm| fsm.fractional_scaling(window.wl_surface(), queue_handle));
+        let xdg_toplevel_icon_manager =
+            winit_state.xdg_toplevel_icon_manager.as_ref().map(|manager| manager.global().clone());
 
         Self {
+            toplevel_icon: None,
+            xdg_toplevel_icon_manager,
             blur: None,
             blur_manager: winit_state.kwin_blur_manager.clone(),
             compositor,
@@ -206,6 +222,7 @@ impl WindowState {
             resize_increments: None,
             pointer_constraints,
             pointers: Default::default(),
+            active_touches: ActiveTouches::default(),
             queue_handle: queue_handle.clone(),
             resizable: true,
             scale_factor: 1.,
@@ -232,6 +249,28 @@ impl WindowState {
             let data = pointer.pointer().winit_data();
             callback(pointer.as_ref(), data);
         })
+    }
+
+    /// Rune: record an active touch down on this window.
+    pub fn touch_down(&mut self, id: i32, seat: WlSeat, serial: u32) {
+        self.active_touches.down(id, seat, serial);
+    }
+
+    /// Rune: clear a touch point that ended or was cancelled on this window.
+    pub fn touch_up(&mut self, id: i32, seat: &WlSeat) {
+        self.active_touches.up(id, seat);
+    }
+
+    /// Rune: run an interactive xdg-shell request using the active touch's `(seat, serial)`,
+    /// falling back to the observed pointers' latest button serial when no touch is down.
+    fn with_interactive_serial(&self, mut callback: impl FnMut(&WlSeat, u32)) {
+        if let Some((seat, serial)) = self.active_touches.latest() {
+            callback(seat, serial);
+            return;
+        }
+        self.apply_on_pointer(|_, data| {
+            callback(data.seat(), data.latest_button_serial());
+        });
     }
 
     /// Get the current state of the frame callback.
@@ -380,6 +419,9 @@ impl WindowState {
 
         let new_state = configure.state;
         let old_state = self.last_configure.as_ref().map(|configure| configure.state);
+        let old_decoration_mode =
+            self.last_configure.as_ref().map(|configure| configure.decoration_mode);
+        let old_capabilities = self.last_configure.as_ref().map(|configure| configure.capabilities);
 
         let state_change_requires_resize = old_state
             .map(|old_state| {
@@ -387,6 +429,8 @@ impl WindowState {
                     .symmetric_difference(new_state)
                     .difference(XdgWindowState::ACTIVATED | XdgWindowState::SUSPENDED)
                     .is_empty()
+                    || old_decoration_mode != Some(configure.decoration_mode)
+                    || old_capabilities != Some(configure.capabilities)
             })
             // NOTE: `None` is present for the initial configure, thus we must always resize.
             .unwrap_or(true);
@@ -435,11 +479,7 @@ impl WindowState {
     /// Start interacting drag resize.
     pub fn drag_resize_window(&self, direction: ResizeDirection) -> Result<(), ExternalError> {
         let xdg_toplevel = self.window.xdg_toplevel();
-
-        // TODO(kchibisov) handle touch serials.
-        self.apply_on_pointer(|_, data| {
-            let serial = data.latest_button_serial();
-            let seat = data.seat();
+        self.with_interactive_serial(|seat, serial| {
             xdg_toplevel.resize(seat, serial, direction.into());
         });
 
@@ -449,10 +489,7 @@ impl WindowState {
     /// Start the window drag.
     pub fn drag_window(&self) -> Result<(), ExternalError> {
         let xdg_toplevel = self.window.xdg_toplevel();
-        // TODO(kchibisov) handle touch serials.
-        self.apply_on_pointer(|_, data| {
-            let serial = data.latest_button_serial();
-            let seat = data.seat();
+        self.with_interactive_serial(|seat, serial| {
             xdg_toplevel._move(seat, serial);
         });
 
@@ -616,6 +653,26 @@ impl WindowState {
                 .as_ref()
                 .is_some_and(|configure| configure.decoration_mode == DecorationMode::Client)
             && self.frame.is_some()
+    }
+
+    /// Rune: confirmed Wayland `xdg_toplevel` / `xdg-decoration` state from `last_configure`,
+    /// gated by `xdg_toplevel` protocol version (`>= 2` for tiled edges, `>= 5` for
+    /// `wm_capabilities`).
+    #[inline]
+    pub fn wayland_wm_state(&self) -> Option<(bool, Option<[bool; 4]>, Option<u16>)> {
+        let configure = self.last_configure.as_ref()?;
+        let server = matches!(configure.decoration_mode, DecorationMode::Server);
+        let version = self.window.xdg_toplevel().version();
+        let tiled = (version >= 2).then(|| {
+            [
+                configure.is_tiled_top(),
+                configure.is_tiled_right(),
+                configure.is_tiled_bottom(),
+                configure.is_tiled_left(),
+            ]
+        });
+        let capabilities = (version >= 5).then(|| configure.capabilities.bits());
+        Some((server, tiled, capabilities))
     }
 
     /// Rune: the radius, in logical points, of the arc the window's content takes at its bottom
@@ -982,10 +1039,7 @@ impl WindowState {
     }
 
     pub fn show_window_menu(&self, position: LogicalPosition<u32>) {
-        // TODO(kchibisov) handle touch serials.
-        self.apply_on_pointer(|_, data| {
-            let serial = data.latest_button_serial();
-            let seat = data.seat();
+        self.with_interactive_serial(|seat, serial| {
             self.window.show_window_menu(seat, serial, position.into());
         });
     }
@@ -1167,6 +1221,41 @@ impl WindowState {
         self.title = title;
     }
 
+    /// Set the window's icon through `xdg_toplevel_icon_v1`, when the compositor has it.
+    pub(crate) fn set_window_icon(&mut self, window_icon: Option<PlatformIcon>) {
+        let Some(manager) = self.xdg_toplevel_icon_manager.as_ref() else {
+            if window_icon.is_some() {
+                info!("`xdg_toplevel_icon_manager_v1` is not supported");
+            }
+            return;
+        };
+
+        let (toplevel_icon, xdg_toplevel_icon) = match window_icon {
+            Some(icon) => {
+                let mut pool = self.custom_cursor_pool.lock().unwrap();
+                let toplevel_icon = match ToplevelIcon::new(&icon, &mut pool) {
+                    Ok(toplevel_icon) => toplevel_icon,
+                    Err(error) => {
+                        warn!("Error setting window icon: {error}");
+                        return;
+                    },
+                };
+                let xdg_toplevel_icon = manager.create_icon(&self.queue_handle, GlobalData);
+                toplevel_icon.add_buffer(&xdg_toplevel_icon);
+                (Some(toplevel_icon), Some(xdg_toplevel_icon))
+            },
+            None => (None, None),
+        };
+
+        manager.set_icon(self.window.xdg_toplevel(), xdg_toplevel_icon.as_ref());
+        self.toplevel_icon = toplevel_icon;
+
+        // The icon object is immutable once set; the toplevel keeps what it showed.
+        if let Some(xdg_toplevel_icon) = xdg_toplevel_icon {
+            xdg_toplevel_icon.destroy();
+        }
+    }
+
     /// Mark the window as transparent.
     #[inline]
     pub fn set_transparent(&mut self, transparent: bool) {
@@ -1266,5 +1355,60 @@ fn into_sctk_adwaita_config(theme: Option<Theme>) -> sctk_adwaita::FrameConfig {
         Some(Theme::Light) => sctk_adwaita::FrameConfig::light(),
         Some(Theme::Dark) => sctk_adwaita::FrameConfig::dark(),
         None => sctk_adwaita::FrameConfig::auto(),
+    }
+}
+
+/// Rune: active touches on a window `(id, seat, down_serial)` in arrival order.
+#[derive(Debug)]
+struct ActiveTouches<S> {
+    points: Vec<(i32, S, u32)>,
+}
+
+impl<S> Default for ActiveTouches<S> {
+    fn default() -> Self {
+        Self { points: Vec::new() }
+    }
+}
+
+impl<S: PartialEq> ActiveTouches<S> {
+    fn down(&mut self, id: i32, seat: S, serial: u32) {
+        self.points.retain(|(i, s, _)| !(*i == id && *s == seat));
+        self.points.push((id, seat, serial));
+    }
+
+    fn up(&mut self, id: i32, seat: &S) {
+        self.points.retain(|(i, s, _)| !(*i == id && s == seat));
+    }
+
+    fn latest(&self) -> Option<(&S, u32)> {
+        self.points.last().map(|(_, seat, serial)| (seat, *serial))
+    }
+}
+
+#[cfg(test)]
+mod touch_serial_tests {
+    use super::ActiveTouches;
+
+    #[test]
+    fn active_touch_serial_tracks_down_up_and_multitouch() {
+        let mut touches = ActiveTouches::default();
+        assert_eq!(touches.latest(), None);
+
+        touches.down(0, "seat0", 41);
+        assert_eq!(touches.latest(), Some((&"seat0", 41)));
+
+        // Second finger down becomes latest; lifting it restores the first finger's serial.
+        touches.down(1, "seat0", 42);
+        assert_eq!(touches.latest(), Some((&"seat0", 42)));
+        touches.up(1, &"seat0");
+        assert_eq!(touches.latest(), Some((&"seat0", 41)));
+
+        // Duplicate id on the same seat updates its serial without duplicating entries.
+        touches.down(0, "seat0", 43);
+        assert_eq!(touches.latest(), Some((&"seat0", 43)));
+
+        // Lifting the last finger returns None so callers fall back to pointer serials.
+        touches.up(0, &"seat0");
+        assert_eq!(touches.latest(), None);
     }
 }

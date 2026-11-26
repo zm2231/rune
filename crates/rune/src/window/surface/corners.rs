@@ -32,11 +32,9 @@ impl Host {
     /// Whether this window is decorated at all on Wayland, and so may have a client-side frame:
     /// what the surface is asked for, without asking winit which decorations the compositor
     /// settled on (`client_frame`).
+    #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
     pub(in crate::window) fn rounds_corners(&self) -> bool {
-        #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
-        return self.wayland && !self.options.borderless;
-        #[cfg(not(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))]
-        false
+        self.wayland && !self.options.borderless
     }
 
     /// The radius, in device pixels, the window's client-side frame leaves the content's bottom
@@ -51,10 +49,20 @@ impl Host {
         #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
         if self.rounds_corners() && window.config.alpha_mode != wgpu::CompositeAlphaMode::Opaque {
             let radius = winit::platform::wayland::WindowExtWayland::content_corner_radius(&*window.window);
-            return radius * self.app.rt().env.scale;
+            return radius_in_device_pixels(radius, self.app.rt());
         }
         0.
     }
+}
+
+/// Converts a Wayland client-side frame's bottom corner radius (in logical window points) to
+/// device pixels. The frame draws at the window's backing scale, unaffected by `Cx::zoom`.
+#[cfg_attr(
+    not(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))),
+    allow(dead_code)
+)]
+pub(in crate::window) fn radius_in_device_pixels(radius_points: f32, rt: &crate::runtime::RuntimeCore) -> f32 {
+    radius_points * rt.window_scale()
 }
 
 /// Prepares `pass` to clear `size` at `radius` device pixels, making it (or another for a surface
@@ -90,3 +98,7 @@ pub(in crate::window) fn draw(
         pass.draw(encoder, target);
     }
 }
+
+#[cfg(test)]
+#[path = "corners_tests.rs"]
+mod tests;

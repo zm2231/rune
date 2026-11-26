@@ -27,12 +27,23 @@ pub use crate::window::Theme;
 pub trait ActiveEventLoopExtWayland {
     /// True if the [`ActiveEventLoop`] uses Wayland.
     fn is_wayland(&self) -> bool;
+
+    /// Rune: when `wake` is true, any successful Wayland display read marks the event loop as
+    /// having dispatched events so `ControlFlow::Wait` runs a turn even when winit's own queues
+    /// had no events. Foreign Wayland queues sharing the display (such as layer-shell overlays)
+    /// dispatch on that turn without background reader threads. Off by default; no-op on X11.
+    fn set_wake_on_wayland_read(&self, wake: bool);
 }
 
 impl ActiveEventLoopExtWayland for ActiveEventLoop {
     #[inline]
     fn is_wayland(&self) -> bool {
         self.p.is_wayland()
+    }
+
+    #[inline]
+    fn set_wake_on_wayland_read(&self, wake: bool) {
+        self.p.set_wake_on_wayland_read(wake);
     }
 }
 
@@ -98,6 +109,13 @@ pub trait WindowExtWayland {
     /// False when the compositor draws the decorations, when decorations are off, when no frame
     /// could be made, and on X11.
     fn has_client_side_frame(&self) -> bool;
+
+    /// Rune: confirmed Wayland `xdg_toplevel` / `xdg-decoration` state from the latest configure:
+    /// `(is_server_decoration, tiled_edges [top, right, bottom, left], wm_capabilities bits)`.
+    ///
+    /// Returns `None` before the initial configure and on X11. `tiled_edges` is `None` below
+    /// `xdg_toplevel` v2 and `wm_capabilities` is `None` below v5.
+    fn wayland_wm_state(&self) -> Option<(bool, Option<[bool; 4]>, Option<u16>)>;
 }
 
 impl WindowExtWayland for Window {
@@ -131,6 +149,17 @@ impl WindowExtWayland for Window {
             crate::platform_impl::Window::X(_) => false,
             #[cfg(wayland_platform)]
             crate::platform_impl::Window::Wayland(window) => window.has_client_side_frame(),
+        }
+    }
+
+    #[inline]
+    fn wayland_wm_state(&self) -> Option<(bool, Option<[bool; 4]>, Option<u16>)> {
+        #[allow(clippy::single_match)]
+        match &self.window {
+            #[cfg(x11_platform)]
+            crate::platform_impl::Window::X(_) => None,
+            #[cfg(wayland_platform)]
+            crate::platform_impl::Window::Wayland(window) => window.wayland_wm_state(),
         }
     }
 }

@@ -1,13 +1,25 @@
-//! Vector shapes painted inside an element: strokes (polylines) and fills (simple polygons), in
-//! the element's own points with the origin at its top-left corner. For waveforms, meters,
-//! sparklines and other drawing that changes every frame.
+//! Vector shapes painted inside an element: strokes (polylines) and fills (simple or compound
+//! polygons with holes under a [`FillRule`]), in the element's own points with the origin at its
+//! top-left corner. For waveforms, meters, sparklines and other drawing that changes every frame.
 //!
 //! Shapes render in the uber-quad pass without the glyph atlas: a stroke is one capsule or box
-//! per segment (`KIND_SEGMENT`), a fill is ear-clipped into triangles (`KIND_TRIANGLE`) whose
-//! polygon-boundary edges are antialiased and whose interior edges are hard, so fills have no
-//! seams. Translucent strokes blend twice where neighbouring segments overlap at a joint; draw
-//! translucent areas as fills. An element's opacity doesn't: while it is between 0 and 1, a
-//! shape of more than one piece paints through a layer that takes it once.
+//! per segment (`KIND_SEGMENT`), a fill is triangulated into triangles (`KIND_TRIANGLE`) whose
+//! true contour-boundary edges are antialiased and whose interior and bridge edges are hard, so
+//! fills have no seams even when translucent. Translucent strokes blend twice where neighbouring
+//! segments overlap at a joint; draw translucent areas as fills. An element's opacity doesn't:
+//! while it is between 0 and 1, a shape of more than one piece paints through a layer that takes
+//! it once.
+
+mod area;
+mod planar;
+mod svg_path;
+mod triangulate;
+
+pub use area::Area;
+#[doc(hidden)]
+pub use svg_path::{SvgPathSink, parse_svg_path};
+#[doc(hidden)]
+pub use triangulate::{triangulate, triangulate_compound};
 
 use crate::color::Color;
 
@@ -18,6 +30,30 @@ pub enum LineCap {
     /// Half-discs past each end; also rounds every joint of a polyline.
     #[default]
     Round,
+}
+
+/// Determines which regions of a compound or self-intersecting [`Path`] are filled, following the
+/// SVG 2 / CSS `fill-rule` and HTML Canvas `CanvasFillRule` conventions.
+///
+/// ```
+/// use rune_core::Color;
+/// use rune_core::shape::{FillRule, Path, Shape};
+///
+/// let ring = Path::new()
+///     .move_to([0.0, 0.0]).line_to([40.0, 0.0]).line_to([40.0, 40.0]).line_to([0.0, 40.0]).close()
+///     .move_to([10.0, 10.0]).line_to([30.0, 10.0]).line_to([30.0, 30.0]).line_to([10.0, 30.0]).close();
+/// let shape = Shape::new().fill_path_with(&ring, FillRule::EvenOdd, Color::WHITE);
+/// assert!(!shape.is_empty());
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FillRule {
+    /// A point is inside when its signed winding number across all contours is non-zero
+    /// (CSS/SVG `nonzero`, the default).
+    #[default]
+    NonZero,
+    /// A point is inside when a ray from the point crosses an odd number of contour edges
+    /// (CSS/SVG `evenodd`).
+    EvenOdd,
 }
 
 #[doc(hidden)]
@@ -34,12 +70,24 @@ pub enum Op {
         points: Vec<[f32; 2]>,
         color: Color,
     },
+    FillCompound {
+        contours: Vec<Vec<[f32; 2]>>,
+        rule: FillRule,
+        color: Color,
+    },
+    FillArea {
+        area: Area,
+        color: Color,
+    },
 }
 
 /// A list of strokes and fills, painted in order over the element's fill and under its text.
 ///
-/// ```ignore
-/// use rune::{Color, Shape, canvas};
+/// ```
+/// use rune_core::{Color, shape::Shape};
+/// # struct El;
+/// # impl El { fn size(self, _: f32, _: f32) -> Self { self } }
+/// # fn canvas(_: Shape) -> El { El }
 /// let wave: Vec<[f32; 2]> = (0..64).map(|i| [i as f32 * 4.0, 20.0 + (i as f32 * 0.3).sin() * 16.0]).collect();
 /// let meter = Shape::new()
 ///     .fill(vec![[0.0, 40.0], [120.0, 40.0], [120.0, 36.0], [0.0, 36.0]], Color::WHITE)
@@ -110,12 +158,106 @@ impl Shape {
         self
     }
 
-    /// Fills every subpath of `path` on its own (no holes between subpaths).
-    pub fn fill_path(mut self, path: &Path, color: Color) -> Shape {
-        for sub in &path.subpaths {
-            self = self.fill(sub.points.clone(), color);
+    /// Fills `path` under [`FillRule::NonZero`]. Equivalent to
+    /// `self.fill_path_with(path, FillRule::NonZero, color)`: single and disjoint subpaths behave
+    /// as simple fills, opposite-winding nested subpaths cut transparent holes, and overlapping
+    /// subpaths merge without double-blending.
+    pub fn fill_path(self, path: &Path, color: Color) -> Shape {
+        self.fill_path_with(path, FillRule::NonZero, color)
+    }
+
+    /// Fills all subpaths of `path` together as one compound region under `rule`
+    /// ([`FillRule::NonZero`] or [`FillRule::EvenOdd`]). Nested subpaths leave transparent holes
+    /// according to `rule`, and overlapping or self-intersecting contours resolve without
+    /// double-blending translucent fills.
+    ///
+    /// ```
+    /// use rune_core::Color;
+    /// use rune_core::shape::{FillRule, Path, Shape};
+    ///
+    /// let path = Path::new()
+    ///     .move_to([0.0, 0.0]).line_to([100.0, 0.0]).line_to([100.0, 100.0]).line_to([0.0, 100.0]).close()
+    ///     .move_to([25.0, 25.0]).line_to([75.0, 25.0]).line_to([75.0, 75.0]).line_to([25.0, 75.0]).close();
+    /// let shape = Shape::new().fill_path_with(&path, FillRule::EvenOdd, Color::WHITE);
+    /// assert!(!shape.is_empty());
+    /// ```
+    pub fn fill_path_with(mut self, path: &Path, rule: FillRule, color: Color) -> Shape {
+        let contours: Vec<Vec<[f32; 2]>> = path
+            .subpaths
+            .iter()
+            .filter(|sub| sub.points.len() >= 3)
+            .map(|sub| sub.points.clone())
+            .collect();
+        if !contours.is_empty() {
+            self.ops.push(Op::FillCompound { contours, rule, color });
         }
         self
+    }
+
+    /// Fills `area`, triangulated when it was made, so drawing it again (a map kept in state,
+    /// panned and zoomed) costs no triangulation. Clones of one [`Area`] share its triangles.
+    ///
+    /// ```
+    /// use rune_core::Color;
+    /// use rune_core::shape::{Area, FillRule, Path, Shape};
+    ///
+    /// let ring = Path::new()
+    ///     .polygon([[0.0, 0.0], [40.0, 0.0], [40.0, 40.0], [0.0, 40.0]])
+    ///     .polygon([[10.0, 10.0], [30.0, 10.0], [30.0, 30.0], [10.0, 30.0]]);
+    /// let area = Area::new(&ring, FillRule::EvenOdd);
+    /// let shape = Shape::new().fill_area(&area, Color::WHITE);
+    /// assert!(!shape.is_empty());
+    /// ```
+    pub fn fill_area(mut self, area: &Area, color: Color) -> Shape {
+        if !area.is_empty() {
+            self.ops.push(Op::FillArea { area: area.clone(), color });
+        }
+        self
+    }
+
+    /// Parses SVG 2 path data `d` with [`Path::from_svg`] and fills it under
+    /// [`FillRule::NonZero`]. Equivalent to `self.fill_svg_with(d, FillRule::NonZero, color)`.
+    ///
+    /// ```
+    /// use rune_core::Color;
+    /// use rune_core::shape::Shape;
+    ///
+    /// let badge = Shape::new().fill_svg("M0 0 H40 V40 H0 Z", Color::WHITE);
+    /// assert!(!badge.is_empty());
+    /// ```
+    pub fn fill_svg(self, d: &str, color: Color) -> Shape {
+        self.fill_svg_with(d, FillRule::NonZero, color)
+    }
+
+    /// Parses SVG 2 path data `d` with [`Path::from_svg`] and fills all subpaths together under
+    /// `rule` ([`FillRule::NonZero`] or [`FillRule::EvenOdd`]).
+    ///
+    /// ```
+    /// use rune_core::Color;
+    /// use rune_core::shape::{FillRule, Shape};
+    ///
+    /// let ring = "M0 0 H40 V40 H0 Z M10 10 H30 V30 H10 Z";
+    /// let shape = Shape::new().fill_svg_with(ring, FillRule::EvenOdd, Color::WHITE);
+    /// assert!(!shape.is_empty());
+    /// ```
+    pub fn fill_svg_with(self, d: &str, rule: FillRule, color: Color) -> Shape {
+        let path = Path::from_svg(d);
+        self.fill_path_with(&path, rule, color)
+    }
+
+    /// Parses SVG 2 path data `d` with [`Path::from_svg`] and strokes every subpath, closed
+    /// ones back to their start.
+    ///
+    /// ```
+    /// use rune_core::Color;
+    /// use rune_core::shape::{LineCap, Shape};
+    ///
+    /// let check = Shape::new().stroke_svg("M4 12 L10 18 L20 6", 2.0, LineCap::Round, Color::WHITE);
+    /// assert!(!check.is_empty());
+    /// ```
+    pub fn stroke_svg(self, d: &str, width: f32, cap: LineCap, color: Color) -> Shape {
+        let path = Path::from_svg(d);
+        self.stroke_path(&path, width, cap, color)
     }
 
     /// Treats coordinates as spanning `width` × `height` and stretches them to whatever size the
@@ -137,7 +279,7 @@ impl Shape {
     pub fn overlaps(&self) -> bool {
         let pieces = |op: &Op| match op {
             Op::Stroke { points, closed, .. } => if *closed { points.len() } else { points.len() - 1 },
-            Op::Fill { .. } => 1,
+            Op::Fill { .. } | Op::FillCompound { .. } | Op::FillArea { .. } => 1,
         };
         self.ops.iter().map(pieces).sum::<usize>() > 1
     }
@@ -190,16 +332,25 @@ impl Shape {
                     done += l;
                 }
                 Op::Fill { points, color } => {
-                    let a = if total <= 0.0 {
-                        t
-                    } else if done <= 0.0 {
-                        1.0
-                    } else {
-                        let ramp = DRAW_RAMP.min(done);
-                        ((at - (done - ramp)) / ramp).clamp(0.0, 1.0)
-                    };
+                    let a = fill_fade(total, done, at, t);
                     if a > 0.0 {
                         ops.push(Op::Fill { points: points.clone(), color: Color { a: color.a * a, ..*color } });
+                    }
+                }
+                Op::FillCompound { contours, rule, color } => {
+                    let a = fill_fade(total, done, at, t);
+                    if a > 0.0 {
+                        ops.push(Op::FillCompound {
+                            contours: contours.clone(),
+                            rule: *rule,
+                            color: Color { a: color.a * a, ..*color },
+                        });
+                    }
+                }
+                Op::FillArea { area, color } => {
+                    let a = fill_fade(total, done, at, t);
+                    if a > 0.0 {
+                        ops.push(Op::FillArea { area: area.clone(), color: Color { a: color.a * a, ..*color } });
                     }
                 }
             }
@@ -254,6 +405,26 @@ const TOLERANCE: f32 = 0.1;
 impl Path {
     pub fn new() -> Path {
         Path::default()
+    }
+
+    /// Parses an SVG 2 path data (`d`) string into a flattened `Path`.
+    ///
+    /// Supports all SVG 2 path commands in absolute and relative forms (`M/m`, `L/l`, `H/h`,
+    /// `V/v`, `C/c`, `S/s`, `Q/q`, `T/t`, `A/a`, `Z/z`), implicit repeated commands,
+    /// scientific-notation numbers, compact flag packing, and elliptical arcs (converted to cubic
+    /// Bézier segments). Follows W3C SVG 2 and Blink/Chromium error handling: parsing stops at the
+    /// first syntax error or non-finite value while preserving every valid segment parsed before it.
+    ///
+    /// ```
+    /// use rune_core::Color;
+    /// use rune_core::shape::{LineCap, Path, Shape};
+    ///
+    /// let path = Path::from_svg("M0 10 C10 0 20 0 30 10 S50 20 60 10");
+    /// let shape = Shape::new().stroke_path(&path, 2.0, LineCap::Round, Color::WHITE);
+    /// assert!(!shape.is_empty());
+    /// ```
+    pub fn from_svg(d: &str) -> Path {
+        svg_path::parse_into_path(d)
     }
 
     fn last(&self) -> [f32; 2] {
@@ -321,6 +492,28 @@ impl Path {
         self
     }
 
+    /// Adds the closed polygon through `points` as its own subpath, after any before it: an
+    /// outline, then the holes or islands that go with it. Fewer than two points add nothing.
+    ///
+    /// ```
+    /// use rune_core::shape::Path;
+    ///
+    /// let triangle = Path::new().polygon([[0.0, 0.0], [10.0, 0.0], [5.0, 8.0]]);
+    /// assert_eq!(triangle, Path::new().move_to([0.0, 0.0]).line_to([10.0, 0.0]).line_to([5.0, 8.0]).close());
+    /// ```
+    pub fn polygon(mut self, points: impl Into<Vec<[f32; 2]>>) -> Path {
+        let points = points.into();
+        if points.len() < 2 {
+            return self;
+        }
+        // A trailing `move_to` with nothing after it is replaced, as another `move_to` would.
+        if self.subpaths.last().is_some_and(|s| s.points.len() == 1 && !s.closed) {
+            self.subpaths.pop();
+        }
+        self.subpaths.push(Subpath { points, closed: true });
+        self
+    }
+
     pub fn close(mut self) -> Path {
         if let Some(s) = self.subpaths.last_mut() {
             s.closed = true;
@@ -338,208 +531,17 @@ fn segments(length: f32) -> usize {
     ((length / TOLERANCE).sqrt() * 0.5).ceil().clamp(1.0, 256.0) as usize
 }
 
-/// Ear-clips a simple polygon. Each triangle is three vertex indices and a mask of which of its
-/// edges (a→b, b→c, c→a as bits 0, 1, 2) lie on the polygon's boundary.
-#[doc(hidden)]
-pub fn triangulate(points: &[[f32; 2]]) -> Vec<([usize; 3], u32)> {
-    let n = points.len();
-    if n < 3 {
-        return Vec::new();
+fn fill_fade(total: f32, done: f32, at: f32, t: f32) -> f32 {
+    if total <= 0.0 {
+        t
+    } else if done <= 0.0 {
+        1.0
+    } else {
+        let ramp = DRAW_RAMP.min(done);
+        ((at - (done - ramp)) / ramp).clamp(0.0, 1.0)
     }
-    let area: f32 = (0..n)
-        .map(|i| {
-            let (a, b) = (points[i], points[(i + 1) % n]);
-            a[0] * b[1] - b[0] * a[1]
-        })
-        .sum();
-    let ccw = area > 0.0;
-    let cross = |a: [f32; 2], b: [f32; 2], c: [f32; 2]| {
-        let v = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
-        if ccw { v } else { -v }
-    };
-    let boundary = |i: usize, j: usize| (i + 1) % n == j || (j + 1) % n == i;
-    let mut ring: Vec<usize> = (0..n).collect();
-    let mut out = Vec::with_capacity(n - 2);
-    let mut misses = 0;
-    let mut i = 0;
-    while ring.len() > 3 {
-        let m = ring.len();
-        let (ia, ib, ic) = (ring[(i + m - 1) % m], ring[i % m], ring[(i + 1) % m]);
-        let (a, b, c) = (points[ia], points[ib], points[ic]);
-        let convex = cross(a, b, c) > 0.0;
-        let empty = convex
-            && ring.iter().all(|&k| {
-                k == ia || k == ib || k == ic || {
-                    let p = points[k];
-                    !(cross(a, b, p) >= 0.0 && cross(b, c, p) >= 0.0 && cross(c, a, p) >= 0.0)
-                }
-            });
-        // Degenerate (collinear) vertices are dropped once no ear is left.
-        if empty || (misses >= m && cross(a, b, c) == 0.0) {
-            if empty {
-                out.push(([ia, ib, ic], mask(boundary, ia, ib, ic)));
-            }
-            ring.remove(i % m);
-            misses = 0;
-            i %= ring.len();
-        } else {
-            misses += 1;
-            if misses > 2 * m {
-                // Not simple: fall back to a fan over what is left.
-                for k in 1..ring.len() - 1 {
-                    let (x, y, z) = (ring[0], ring[k], ring[k + 1]);
-                    out.push(([x, y, z], mask(boundary, x, y, z)));
-                }
-                return out;
-            }
-            i = (i + 1) % m;
-        }
-    }
-    let (a, b, c) = (ring[0], ring[1], ring[2]);
-    out.push(([a, b, c], mask(boundary, a, b, c)));
-    out
-}
-
-fn mask(boundary: impl Fn(usize, usize) -> bool, a: usize, b: usize, c: usize) -> u32 {
-    (boundary(a, b) as u32) | ((boundary(b, c) as u32) << 1) | ((boundary(c, a) as u32) << 2)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn area(points: &[[f32; 2]], tris: &[([usize; 3], u32)]) -> f32 {
-        tris.iter()
-            .map(|([a, b, c], _)| {
-                let (a, b, c) = (points[*a], points[*b], points[*c]);
-                ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs() * 0.5
-            })
-            .sum()
-    }
-
-    #[test]
-    fn a_concave_polygon_triangulates_to_its_area_with_boundary_edges_marked() {
-        // An L shape, clockwise in y-down screen space.
-        let l = [
-            [0.0, 0.0],
-            [20.0, 0.0],
-            [20.0, 10.0],
-            [10.0, 10.0],
-            [10.0, 30.0],
-            [0.0, 30.0],
-        ];
-        let tris = triangulate(&l);
-        assert_eq!(tris.len(), 4);
-        assert!((area(&l, &tris) - 400.0).abs() < 1e-3);
-        let boundary_edges: u32 = tris.iter().map(|(_, m)| m.count_ones()).sum();
-        assert_eq!(
-            boundary_edges, 6,
-            "every polygon edge once, no interior edge"
-        );
-    }
-
-    #[test]
-    fn a_waveform_envelope_triangulates_completely() {
-        let top: Vec<[f32; 2]> = (0..200)
-            .map(|i| [i as f32, 20.0 - ((i as f32) * 0.2).sin().abs() * 18.0 - 1.0])
-            .collect();
-        let mut env = top.clone();
-        env.extend(top.iter().rev().map(|p| [p[0], 40.0 - p[1]]));
-        let tris = triangulate(&env);
-        assert_eq!(tris.len(), env.len() - 2);
-        let exact: f32 = (0..env.len())
-            .map(|i| {
-                let (a, b) = (env[i], env[(i + 1) % env.len()]);
-                a[0] * b[1] - b[0] * a[1]
-            })
-            .sum::<f32>()
-            .abs()
-            * 0.5;
-        assert!((area(&env, &tris) - exact).abs() < exact * 1e-3);
-    }
-
-    #[test]
-    fn curves_flatten_within_tolerance_and_end_on_their_points() {
-        let p = Path::new()
-            .move_to([0.0, 0.0])
-            .cubic_to([0.0, 50.0], [100.0, 50.0], [100.0, 0.0])
-            .close();
-        let s = &p.subpaths[0];
-        assert!(s.closed);
-        assert_eq!(*s.points.last().unwrap(), [100.0, 0.0]);
-        let mid = s.points[s.points.len() / 2];
-        assert!((mid[1] - 37.5).abs() < 1.0, "{mid:?}");
-    }
-
-    fn strokes(s: &Shape) -> Vec<Vec<[f32; 2]>> {
-        s.ops.iter().filter_map(|op| if let Op::Stroke { points, .. } = op { Some(points.clone()) } else { None }).collect()
-    }
-
-    fn fill_alpha(s: &Shape) -> Option<f32> {
-        s.ops.iter().find_map(|op| if let Op::Fill { color, .. } = op { Some(color.a) } else { None })
-    }
-
-    #[test]
-    fn a_drawn_shape_traces_its_strokes_in_order_and_lands_its_head_last() {
-        // A connector: an L-shaped line 100 points long, a second 20-point run, then its head.
-        let s = Shape::new()
-            .stroke(vec![[0.0, 0.0], [0.0, 60.0], [40.0, 60.0]], 1.0, Color::WHITE)
-            .stroke(vec![[40.0, 70.0], [40.0, 90.0]], 1.0, Color::WHITE)
-            .fill(vec![[36.0, 90.0], [44.0, 90.0], [40.0, 96.0]], Color::WHITE);
-        assert_eq!(strokes(&s.drawn(0.0)), Vec::<Vec<[f32; 2]>>::new(), "nothing drawn yet");
-        assert_eq!(fill_alpha(&s.drawn(0.0)), None);
-        // 60 of 120 points: down the first leg, not yet round the corner.
-        assert_eq!(strokes(&s.drawn(0.5)), vec![vec![[0.0, 0.0], [0.0, 60.0]]]);
-        // 80 points: round the corner, halfway along the second leg.
-        assert_eq!(strokes(&s.drawn(80.0 / 120.0)), vec![vec![[0.0, 0.0], [0.0, 60.0], [20.0, 60.0]]]);
-        // The head fades in over the last 8 points of line.
-        assert_eq!(fill_alpha(&s.drawn(108.0 / 120.0)), None);
-        let a = fill_alpha(&s.drawn(116.0 / 120.0)).unwrap();
-        assert!((a - 0.5).abs() < 1e-4, "{a}");
-        assert_eq!(s.drawn(1.0), s, "drawn whole");
-        assert_eq!(s.drawn(f32::NAN), s);
-    }
-
-    #[test]
-    fn a_closed_stroke_draws_on_round_to_its_start_and_fills_alone_fade() {
-        let square = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
-        let s = Shape::new().stroke_with(square, true, 1.0, LineCap::Round, Color::WHITE);
-        assert_eq!(strokes(&s.drawn(0.875)), vec![vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 5.0]]]);
-        let dot = Shape::new().fill(vec![[0.0, 0.0], [4.0, 0.0], [2.0, 4.0]], Color::WHITE);
-        assert_eq!(fill_alpha(&dot.drawn(0.25)), Some(0.25));
-    }
-
-    #[test]
-    fn a_trimmed_shape_keeps_the_stretch_between_start_and_end() {
-        let s = Shape::new()
-            .stroke(vec![[0.0, 0.0], [0.0, 60.0], [40.0, 60.0]], 1.0, Color::WHITE)
-            .stroke(vec![[40.0, 70.0], [40.0, 90.0]], 1.0, Color::WHITE);
-        // 30 to 105 of 120 points: round the corner, then 5 points down the second stroke.
-        assert_eq!(
-            strokes(&s.trimmed(0.25, 0.875)),
-            vec![vec![[0.0, 30.0], [0.0, 60.0], [40.0, 60.0]], vec![[40.0, 70.0], [40.0, 75.0]]]
-        );
-        // A cut on a vertex keeps no zero-length piece there.
-        assert_eq!(strokes(&s.trimmed(0.5, 0.875)), vec![vec![[0.0, 60.0], [40.0, 60.0]], vec![[40.0, 70.0], [40.0, 75.0]]]);
-        assert!(strokes(&s.trimmed(0.6, 0.6)).is_empty(), "nothing between equal ends");
-        assert!(strokes(&s.trimmed(0.7, 0.2)).is_empty());
-        assert_eq!(s.trimmed(0.0, 1.0), s);
-        assert_eq!(s.trimmed(f32::NAN, f32::NAN), s);
-        assert_eq!(s.trimmed(0.0, 0.5), s.drawn(0.5));
-    }
-
-    #[test]
-    fn a_closed_stroke_trims_across_its_closing_edge() {
-        let square = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
-        let s = Shape::new().stroke_with(square, true, 1.0, LineCap::Round, Color::WHITE);
-        assert_eq!(strokes(&s.trimmed(0.625, 1.0)), vec![vec![[5.0, 10.0], [0.0, 10.0], [0.0, 0.0]]]);
-    }
-
-    #[test]
-    fn empty_and_degenerate_ops_are_dropped() {
-        let s = Shape::new()
-            .stroke(vec![[0.0, 0.0]], 1.0, Color::WHITE)
-            .fill(vec![[0.0, 0.0], [1.0, 1.0]], Color::WHITE);
-        assert!(s.is_empty());
-    }
-}
+#[path = "shape_tests.rs"]
+mod tests;

@@ -7,6 +7,8 @@ pub(in crate::window) mod cpu_frame;
 pub(in crate::window) mod damage;
 pub(in crate::window) mod handover;
 pub(in crate::window) mod look;
+pub(crate) mod poll_pace;
 pub(in crate::window) mod post_frame;
+pub(in crate::window) mod resize_sync;
 pub(crate) mod slot;
 pub(in crate::window) mod video_layer;

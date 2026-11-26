@@ -97,7 +97,7 @@ impl ShortcutRecorderState {
                 self.hold(mods);
                 if self.is_recording() { Outcome::Consumed } else { Outcome::Pass }
             }
-            PhysicalInput::Key { key, mods, pressed, repeat } => {
+            PhysicalInput::Key { key, mods, pressed, repeat, .. } => {
                 self.hold(mods);
                 if self.phase.finishing() == Some(key) {
                     if !pressed {
@@ -278,10 +278,10 @@ impl RecorderCore {
         control = control.child((if labels.is_empty() { text(placeholder).font(k.ty.ui_compact).color(k.c.text_faint) }
             else { Keybind::new(&labels).build(k) }).a11y_hidden());
         control = bind.bind_control(control, self.disabled, self.unmodified);
-        let mut root = col().key(format!("{}-field", self.key)).gap(4.0).child(control);
+        let mut root = col().key(format!("{}-field", self.key)).w(self.width).gap(4.0).child(control);
         if let Some(error) = self.state.error() {
             root = root.child(text((self.message)(error, self.state.refused())).key("error").role("alert")
-                .font(k.ty.small_medium).color(k.c.danger.fg));
+                .font(k.ty.small_medium).color(k.c.danger.fg).wrap().w_full());
         }
         root
     }
@@ -292,7 +292,7 @@ impl RecorderCore {
 /// returning an error keeps the old value and shows the refused chord with a message
 /// (`error_message` words it). An unchanged chord is a no-op unless the state was marked
 /// unregistered (`ShortcutRecorderState::mark_unregistered`). A chord without ⌘, ⌃ or ⌥ (Ctrl,
-/// Alt or Super elsewhere) other than F1–F24 is refused before `on_change` unless
+/// Alt or Super elsewhere) other than F1–F24 or Print Screen is refused before `on_change` unless
 /// `allow_unmodified`.
 pub struct ShortcutRecorder<S> {
     core: RecorderCore,

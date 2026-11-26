@@ -11,36 +11,41 @@ use super::*;
 pub(crate) struct FrameState {
     /// What `update` asked of the next commit.
     pub(in crate::runtime) pending: Tx,
-    pub(in crate::runtime) idle_meter: crate::tooling::perf_warn::IdleMeter,
+    pub(super) idle_meter: crate::tooling::perf_warn::IdleMeter,
     /// When the frame being built will present; videos pull the picture for it.
-    pub(crate) frame_target: Option<crate::time::Instant>,
+    frame_target: Option<crate::time::Instant>,
     #[cfg(test)]
-    pub(crate) test_clock: Option<crate::Clock>,
+    test_clock: Option<crate::ManualClock>,
     /// Tooling opts in before any callbacks. Absent in ordinary app runs.
-    pub(crate) trace_channels: Option<HashMap<&'static str, (&'static str, f32)>>,
+    trace_channels: Option<HashMap<&'static str, (&'static str, f32)>>,
     #[cfg(feature = "hot")]
-    pub(crate) hot: Option<crate::hot::Session>,
+    hot: Option<crate::hot::Session>,
     /// The live-only event this frame's commit checks: its handler, and what the view had built.
     #[cfg(debug_assertions)]
-    pub(in crate::runtime) live_check: Option<(String, live_check::ViewPrint)>,
+    pub(super) live_check: Option<(String, live_check::ViewPrint)>,
     /// Live-only events checked (and so committed) so far.
     #[cfg(debug_assertions)]
-    pub(in crate::runtime) live_checks: u64,
+    pub(super) live_checks: u64,
     /// Stale-view warnings printed for `Tx::live_only` handlers, each once.
     #[cfg(debug_assertions)]
-    pub(crate) live_only_warnings: Vec<String>,
-    pub(in crate::runtime) live_clock: Arc<()>,
-    pub(in crate::runtime) live_subscriptions: Vec<Arc<crate::live::Subscription>>,
+    pub(super) live_only_warnings: Vec<String>,
+    pub(super) live_clock: Arc<()>,
+    pub(super) live_subscriptions: HashMap<live_latch::SourceKey, Arc<crate::live::Subscription>>,
     /// Events whose handler said `Tx::live_only`, and so didn't commit.
     pub(in crate::runtime) live_only_skips: u64,
-    pub(in crate::runtime) last_dt: f64,
+    /// Incremented once per frame when `latch_live` mutates an in-scene, non-secure `LiveText`
+    /// in place without a commit, so accessibility stamps notice in O(1).
+    pub(crate) live_text_gen: u64,
+    last_dt: f64,
     /// Record `events` without a trace: headless runs. Live hosts turn it off.
-    pub(crate) record_events: bool,
+    record_events: bool,
     /// Debug builds check `Tx::live_only` events (`skip_view`).
     #[cfg(debug_assertions)]
-    pub(in crate::runtime) live_only_check: bool,
-    pub(in crate::runtime) wake_deadlines: Vec<f64>,
-    pub(in crate::runtime) timer_wake: TimerWake,
+    pub(super) live_only_check: bool,
+    wake_deadlines: Vec<f64>,
+    timer_wake: TimerWake,
+    /// Whether the latest `frame_step` hit `frame::drain::MAX_POLL_ROUNDS`.
+    poll_capped: bool,
     pub(in crate::runtime) queue: ActionQueue,
     pub(in crate::runtime) live: live_latch::LiveLane,
 }
@@ -55,6 +60,7 @@ impl FrameState {
             pending: Tx::default(),
             wake_deadlines: Vec::new(),
             timer_wake: Default::default(),
+            poll_capped: false,
             idle_meter: Default::default(),
             last_dt: 0.0,
             frame_target: None,
@@ -62,8 +68,9 @@ impl FrameState {
             test_clock: None,
             live: live_latch::LiveLane::new(Arc::new(|| {})),
             live_clock: Arc::new(()),
-            live_subscriptions: Vec::new(),
+            live_subscriptions: HashMap::default(),
             live_only_skips: 0,
+            live_text_gen: 0,
             #[cfg(debug_assertions)]
             live_only_check: true,
             #[cfg(debug_assertions)]
@@ -78,6 +85,213 @@ impl FrameState {
             hot: None,
         }
     }
+
+    #[inline]
+    pub(in crate::runtime) fn record_poll(&mut self, changed: bool) -> bool {
+        self.idle_meter.polled(changed)
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn frame_target(&self) -> Option<crate::time::Instant> {
+        self.frame_target
+    }
+
+    #[inline]
+    pub(crate) fn set_frame_target(&mut self, at: crate::time::Instant) {
+        self.frame_target = Some(at);
+    }
+
+    #[cfg(test)]
+    #[inline]
+    pub(crate) fn set_test_clock(&mut self, clock: crate::ManualClock) {
+        self.test_clock = Some(clock);
+    }
+
+    #[cfg(test)]
+    #[inline]
+    pub(crate) fn test_clock_mut(&mut self) -> Option<&mut crate::ManualClock> {
+        self.test_clock.as_mut()
+    }
+
+    #[cfg(test)]
+    #[inline]
+    pub(in crate::runtime) fn test_clock_now(&self) -> Option<f64> {
+        self.test_clock.as_ref().map(crate::ManualClock::now)
+    }
+
+    #[inline]
+    pub(crate) fn tracing_channels(&self) -> bool {
+        self.trace_channels.is_some()
+    }
+
+    #[inline]
+    pub(crate) fn trace_channels(&self) -> Option<&HashMap<&'static str, (&'static str, f32)>> {
+        self.trace_channels.as_ref()
+    }
+
+    #[inline]
+    pub(crate) fn enable_trace_channels(&mut self, enabled: bool) {
+        self.trace_channels = enabled.then(Default::default);
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn record_trace_channel(&mut self, name: &'static str, kind: &'static str, value: f32) {
+        if let Some(channels) = &mut self.trace_channels {
+            channels.insert(name, (kind, value));
+        }
+    }
+
+    #[inline]
+    pub(crate) fn has_hot(&self) -> bool {
+        #[cfg(feature = "hot")]
+        return self.hot.is_some();
+        #[cfg(not(feature = "hot"))]
+        false
+    }
+
+    #[cfg(feature = "hot")]
+    #[inline]
+    pub(crate) fn hot(&self) -> Option<&crate::hot::Session> {
+        self.hot.as_ref()
+    }
+
+    #[cfg(all(test, feature = "hot"))]
+    #[inline]
+    pub(crate) fn hot_mut(&mut self) -> Option<&mut crate::hot::Session> {
+        self.hot.as_mut()
+    }
+
+    #[cfg(feature = "hot")]
+    #[inline]
+    pub(crate) fn set_hot(&mut self, session: crate::hot::Session) {
+        self.hot = Some(session);
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn hot_pending(&self) -> bool {
+        #[cfg(feature = "hot")]
+        return self.hot.as_ref().is_some_and(crate::hot::Session::pending);
+        #[cfg(not(feature = "hot"))]
+        false
+    }
+
+    #[cfg(feature = "hot")]
+    #[inline]
+    pub(in crate::runtime) fn hot_changed(&mut self) -> bool {
+        self.hot.as_mut().is_some_and(crate::hot::Session::changed)
+    }
+
+    #[cfg(debug_assertions)]
+    #[inline]
+    pub(in crate::runtime) fn clear_live_check(&mut self) {
+        self.live_check = None;
+    }
+
+    #[cfg(debug_assertions)]
+    #[inline]
+    pub(in crate::runtime) fn take_live_check(&mut self) -> Option<(String, live_check::ViewPrint)> {
+        self.live_check.take()
+    }
+
+    #[cfg(debug_assertions)]
+    #[inline]
+    pub(in crate::runtime) fn live_checks(&self) -> u64 {
+        self.live_checks
+    }
+
+    #[cfg(debug_assertions)]
+    #[inline]
+    pub(in crate::runtime) fn live_only_warnings(&self) -> &[String] {
+        &self.live_only_warnings
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn has_live_subscriptions(&self) -> bool {
+        !self.live_subscriptions.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(in crate::runtime) fn live_subscription(&self, source_id: u64) -> Option<Arc<crate::live::Subscription>> {
+        self.live_subscriptions.get(&live_latch::SourceKey(source_id)).cloned()
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn set_last_dt(&mut self, dt: f64) {
+        self.last_dt = dt;
+    }
+
+    #[inline]
+    pub(crate) fn record_events(&self) -> bool {
+        self.record_events
+    }
+
+    #[inline]
+    pub(crate) fn set_record_events(&mut self, record: bool) {
+        self.record_events = record;
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn schedule_wakes_from(&mut self, now: f64, wakes: impl IntoIterator<Item = std::time::Duration>) {
+        for delay in wakes {
+            let deadline = now + delay.as_secs_f64();
+            if let Err(index) = self.wake_deadlines.binary_search_by(|t| t.total_cmp(&deadline)) {
+                self.wake_deadlines.insert(index, deadline);
+            }
+        }
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn next_wake_deadline(&self) -> Option<f64> {
+        self.wake_deadlines.first().copied()
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn begin_frame_poll(&mut self, clock: f64) -> (bool, usize) {
+        if matches!(self.timer_wake, TimerWake::FollowUp { .. }) {
+            let polled = self.timer_wake.frame_polled(false);
+            return (polled, 0);
+        }
+        let polled = self.timer_wake.frame_polled(self.wake_deadlines.first().is_some_and(|t| *t <= clock));
+        let due = self.wake_deadlines.partition_point(|t| *t <= clock);
+        (polled, due)
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn set_follow_up_poll(&mut self, at: f64) {
+        self.timer_wake = self.timer_wake.step(TimerWakeEvent::FollowUp { at }).0;
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn set_poll_capped(&mut self, capped: bool) {
+        self.poll_capped = capped;
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn poll_capped(&self) -> bool {
+        self.poll_capped
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn drain_due_wakes(&mut self, due: usize) {
+        self.wake_deadlines.drain(..due);
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn polled_at(&self, fallback: f64) -> f64 {
+        self.timer_wake.polled_at().unwrap_or(fallback)
+    }
+
+    #[cfg(test)]
+    #[inline]
+    pub(in crate::runtime) fn wake_deadlines(&self) -> &[f64] {
+        &self.wake_deadlines
+    }
+
+    #[cfg(test)]
+    #[inline]
+    pub(in crate::runtime) fn clear_wake_deadlines(&mut self) {
+        self.wake_deadlines.clear();
+    }
 }
 
 /// A resting window's timer poll, and the frame it asked for.
@@ -91,11 +305,16 @@ pub(in crate::runtime) enum TimerWake {
     Asked { at: f64 },
     /// A frame took the poll at `polled_at` as its own.
     Taken { polled_at: f64 },
+    /// Follow-up zero-dt frame draining queued input inside the same hidden or covered wake:
+    /// `poll` already ran at `at` and newly scheduled timers stay armed for the next host wake.
+    FollowUp { at: f64 },
 }
 
 pub(in crate::runtime) enum TimerWakeEvent {
     /// A resting wake's poll ran `at` and asked for a frame.
     Asked { at: f64 },
+    /// A hidden or covered wake's follow-up frame drains queued input without re-polling.
+    FollowUp { at: f64 },
     /// A frame polls; `due`: a deadline came due since the timer's poll, so it polls again.
     Frame { due: bool },
     /// The frame asked for won't stand for its poll: the window hid or showed, or a wake asks
@@ -111,10 +330,16 @@ impl TimerWake {
     pub(in crate::runtime) fn step(self, event: TimerWakeEvent) -> (TimerWake, Option<f64>) {
         match (self, event) {
             (_, TimerWakeEvent::Asked { at }) => (TimerWake::Asked { at }, None),
+            (_, TimerWakeEvent::FollowUp { at }) => (TimerWake::FollowUp { at }, None),
             (_, TimerWakeEvent::PollAlone) => (TimerWake::Idle, None),
-            (TimerWake::Asked { at }, TimerWakeEvent::Frame { due: false }) => (TimerWake::Taken { polled_at: at }, Some(at)),
+            (TimerWake::Asked { at }, TimerWakeEvent::Frame { due: false })
+            | (TimerWake::FollowUp { at }, TimerWakeEvent::Frame { .. }) => {
+                (TimerWake::Taken { polled_at: at }, Some(at))
+            }
             (_, TimerWakeEvent::Frame { .. }) => (TimerWake::Idle, None),
-            (TimerWake::Asked { at }, TimerWakeEvent::Cancel) => (TimerWake::Idle, Some(at)),
+            (TimerWake::Asked { at } | TimerWake::FollowUp { at }, TimerWakeEvent::Cancel) => {
+                (TimerWake::Idle, Some(at))
+            }
             (state, TimerWakeEvent::Cancel) => (state, None),
         }
     }
@@ -157,6 +382,26 @@ impl RuntimeCore {
         stale
     }
 
+    /// Runs a hidden poll; if it leaves input or drag ends queued, arms `TimerWake::FollowUp`
+    /// (preserving the poll's clock and pending wakes without re-polling) and reports
+    /// `(stale, true)`. Otherwise schedules the poll's wakes and reports `(stale, false)`.
+    pub(crate) fn poll_hidden_or_arm_follow_up(&mut self, app: &mut dyn AppDriver) -> (bool, bool) {
+        let now = self.now_clock();
+        if self.frame.timer_wake.asked() && self.frame.wake_deadlines.first().is_none_or(|t| *t > now) {
+            self.cancel_timer_frame();
+            return (self.needs_commit(), self.has_pending_input() || self.drag_ends_pending());
+        }
+        let stale = self.poll_alone(app);
+        if self.has_pending_input() || self.drag_ends_pending() {
+            let polled = self.clock;
+            self.frame.set_follow_up_poll(polled);
+            return (stale, true);
+        }
+        let wakes = std::mem::take(&mut self.frame.pending.wakes);
+        self.schedule_wakes(wakes);
+        (stale, false)
+    }
+
     /// `poll_hidden`, leaving the poll's `wake_after`s in `pending`.
     fn poll_alone(&mut self, app: &mut dyn AppDriver) -> bool {
         self.frame.timer_wake = self.frame.timer_wake.step(TimerWakeEvent::PollAlone).0;
@@ -171,14 +416,26 @@ impl RuntimeCore {
         // A glyph mask cache write that came due while nothing draws (`mask_cache`).
         let _ = self.text.mask_cache_frame(false);
         let patched = self.patch_pending();
-        if !app.has_poll() { return patched; }
+        let has_poll = app.has_poll();
+        let has_playground = app.playground().is_some_and(|p| p.polls());
+        if !has_poll && !has_playground { return patched; }
+        let queued = self.frame.queue.len();
         let mut one = self.transaction(app);
-        let changed = self.frame.idle_meter.polled(crate::tooling::perf_warn::timed("poll", || app.poll(self.clock, &mut one)));
+        let mut changed = has_poll && self.frame.idle_meter.polled(crate::tooling::perf_warn::timed("poll", || app.poll(self.clock, &mut one)));
+        if has_playground {
+            let mut stage = self.transaction(app);
+            let clock = self.clock;
+            changed |= self.poll_playground(app, clock, &mut stage);
+            merge(&mut one, stage);
+        }
         self.commit.dirty |= changed;
         self.frame.pending.polled_change |= changed;
-        let asks_frame = one.srgb_blend.is_some_and(|b| b != self.paint.srgb_blend) || one.font_smoothing.is_some_and(|m| m != self.text.smoothing) || self.changes_families(&one) || (one.blur && self.kbd.focus.path().is_some());
+        let asks_frame = one.srgb_blend.is_some_and(|b| b != self.paint.srgb_blend()) || one.font_smoothing.is_some_and(|m| m != self.text.smoothing) || self.changes_families(&one) || (one.blur && self.kbd.focus.path().is_some());
         self.latch_requests(app, &mut one);
-        let stale = changed || one.frame_work() || patched || asks_frame;
+        let stale = changed || one.frame_work() || patched || asks_frame || self.frame.queue.len() > queued;
+        if std::mem::take(&mut one.request_poll) {
+            one.wakes.push(std::time::Duration::ZERO);
+        }
         merge(&mut self.frame.pending, one);
         stale
     }
@@ -195,7 +452,7 @@ impl RuntimeCore {
         let stale = self.poll_alone(app);
         let steps = self.frame.pending.wakes.iter().any(|d| d.is_zero());
         // A starved fill's wake draws the frame that resumes it; the poll alone never does.
-        Some(stale || self.host.window_frame.is_some() || steps || self.commit.virtual_fill.resuming(self.clock))
+        Some(stale || self.host.window_frame.is_some() || steps || self.commit.virtual_fill.resuming(self.clock) || self.commit.virtual_items.fill_resuming(self.clock))
     }
 
     /// Whether the host asked for a frame after `resting_wake`. That frame doesn't poll again
@@ -219,9 +476,16 @@ impl RuntimeCore {
         self.schedule_wakes_from(polled, wakes);
     }
 
+    /// Whether user input is queued in the action queue (`ActionQueue::has_input`), as
+    /// distinguished from layout and state observers. Hosts check this before resting and
+    /// hidden wakes check it after a poll or frame so queued input never waits for a later timer.
+    pub(crate) fn has_input_waiting(&self) -> bool {
+        self.frame.queue.has_input()
+    }
+
     /// Nothing but a timer asks this runtime for a frame.
     pub(crate) fn rests(&self) -> bool {
-        self.motion.loop_wake.is_none() && self.rests_except_loop()
+        self.motion.loop_wake().is_none() && self.rests_except_loop()
     }
 
     /// `rests`, apart from a loop's own wake (`paint_cycle_tick`).
@@ -238,14 +502,15 @@ impl RuntimeCore {
     /// What waits for a frame besides motion, if anything (`rests_but_motion`).
     pub(in crate::runtime) fn waiting_work(&self) -> Option<&'static str> {
         #[cfg(feature = "hot")]
-        if self.frame.hot.is_some() { return Some("live edit"); }
+        if self.frame.has_hot() { return Some("live edit"); }
         if self.stale() { Some("a commit or input") }
-        else if self.commit.settle || self.host.window_frame.is_some() { Some("a settle or window frame") }
+        else if self.commit.is_settling() || self.host.window_frame.is_some() { Some("a settle or window frame") }
         else if self.pointer.hover_delays.waiting() || self.tooltip_waiting() || self.press_repeat_waiting() || self.drag_ends_pending() || self.pointer.drag_out_request.is_some() { Some("pointer work") }
         else if self.files_held() { Some("files") }
         else if self.live_pending() { Some("a live value") }
         else if !self.surfaces.is_empty() { Some("a native surface") }
         else if self.steps_frames() { Some("a poll that steps every frame") }
+        else if self.reveal_fps() > 0.0 && self.time_scale > 0.0 && self.motion.has_fading_reveals(&self.scene) { Some("a reveal") }
         else { None }
     }
 
@@ -255,3 +520,5 @@ impl RuntimeCore {
         self.frame.wake_deadlines.first().is_some_and(|t| *t <= self.clock)
     }
 }
+
+

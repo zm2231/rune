@@ -20,6 +20,8 @@ use crate::{Direction, Flow, TextInput};
 
 mod keying;
 mod lazy;
+#[cfg(test)]
+mod tests;
 use keying::{Found, Runs, count_newlines, flow_of, key_paragraphs, next_line_start, reuse_keys, with_isolates};
 pub(crate) use keying::LineScan;
 pub use keying::{common_end, common_start};
@@ -89,8 +91,13 @@ pub struct ParagraphLayout {
     /// What its lines were broken at; the next edit's paragraphs re-break theirs when it changed.
     pub(crate) max_width: Option<f32>,
     align: Alignment,
+    /// First-line `text_indent` in points and device pixels (paragraph 0, line 0 only).
+    text_indent: f32,
+    text_indent_px: f32,
     /// Its text's shape key, which its layouts at other widths are cached under.
     whole: u64,
+    /// The [`TextSystem::shaped_epoch`] that built this layout; older epochs are not reused.
+    shaped_epoch: u64,
     /// The width a selected line break highlights, as a selection across a newline shows.
     pub(super) newline: f32,
     /// `[baseline, ascent, descent]` of one line in the base font (device px), for blank lines.
@@ -136,6 +143,8 @@ pub struct Paragraph {
     pub height: f32,
     /// Its layout's width and full width, so a later edit that keeps it reads neither from it.
     widths: [f32; 2],
+    /// Left indent and right padding in device px for this paragraph's [`Block`].
+    pad: [f32; 2],
     pub flow: Flow,
     /// What its layout depends on but the width: its words, their shaping spans, its pills,
     /// block and direction, in the field's style.
@@ -167,6 +176,7 @@ pub struct Piece<'a> {
     /// Its paragraph's index in the field, for its [`Block`].
     pub index: usize,
     pub shaped: bool,
+    pad: [f32; 2],
     isolates: &'a [(u32, u32)],
     disjoint_spans: bool,
     whole: bool,
@@ -174,11 +184,11 @@ pub struct Piece<'a> {
 
 impl<'a> Piece<'a> {
     pub(crate) fn of_paragraph(k: usize, p: &'a Paragraph, disjoint_spans: bool) -> Piece<'a> {
-        Piece { layout: &p.layout, shared: Some(&p.layout), start: p.start, end: p.end, y: p.y, height: p.height, flow: p.flow, index: k, shaped: p.shaped, isolates: &p.isolates, disjoint_spans, whole: false }
+        Piece { layout: &p.layout, shared: Some(&p.layout), start: p.start, end: p.end, y: p.y, height: p.height, flow: p.flow, index: k, shaped: p.shaped, pad: p.pad, isolates: &p.isolates, disjoint_spans, whole: false }
     }
 
     fn whole(layout: &'a Layout<Ink>) -> Piece<'a> {
-        Piece { layout, shared: None, start: 0, end: usize::MAX, y: 0.0, height: layout.height(), flow: Flow::of_layout(layout), index: 0, shaped: true, isolates: &[], disjoint_spans: false, whole: true }
+        Piece { layout, shared: None, start: 0, end: usize::MAX, y: 0.0, height: layout.height(), flow: Flow::of_layout(layout), index: 0, shaped: true, pad: [0.0, 0.0], isolates: &[], disjoint_spans: false, whole: true }
     }
 
     /// Whether it's a text's one layout rather than a paragraph of a field's.
@@ -222,6 +232,17 @@ impl<'a> Piece<'a> {
             let (a, b) = self.clip(a as usize, b as usize)?;
             Some((a as u32, b as u32, c))
         }).collect())
+    }
+
+    /// Overline byte ranges over its words, on its shaped text.
+    pub fn overlines<'s>(&self, overlines: &'s [(u32, u32, Option<Color>)]) -> Cow<'s, [(u32, u32, Option<Color>)]> {
+        self.strikes(overlines)
+    }
+
+    /// [`SpanBoxRun`]s meeting its words, clipped to its paragraph on its shaped text.
+    pub fn span_boxes<'s>(&self, span_boxes: &'s [SpanBoxRun]) -> Cow<'s, [SpanBoxRun]> {
+        if self.whole || span_boxes.is_empty() { return Cow::Borrowed(span_boxes); }
+        Cow::Owned(span_boxes_in(span_boxes, self.start, self.end, self.isolates).collect())
     }
 
     /// Content bytes `a..b` on its shaped text, when they meet its words.
@@ -280,6 +301,29 @@ pub(super) fn pills_in<'s>(pills: &'s [PillChip], a: usize, b: usize, isolates: 
 
 pub(super) fn inside(p: &PillChip, a: usize, b: usize) -> bool {
     a <= p.start as usize && p.end as usize <= b && p.start < p.end
+}
+
+/// `span_boxes` meeting content bytes `a..b`, clipped to them and moved onto the shaped text.
+pub(super) fn span_boxes_in<'s>(span_boxes: &'s [SpanBoxRun], a: usize, b: usize, isolates: &'s [(u32, u32)]) -> impl Iterator<Item = SpanBoxRun> + 's {
+    span_boxes.iter().filter(move |sb| (sb.start as usize) < b && a < sb.end as usize && sb.start < sb.end).map(move |sb| {
+        let clip_start = (sb.start as usize) < a;
+        let clip_end = (sb.end as usize) > b;
+        let start = shaped(isolates, (sb.start as usize).max(a) - a) as u32;
+        let end = shaped(isolates, (sb.end as usize).min(b) - a) as u32;
+        let mut style = sb.style;
+        if clip_start || clip_end {
+            let pl = if clip_start { 0.0 } else { style.pad_left() };
+            let pr = if clip_end { 0.0 } else { style.pad_right() };
+            let c = style.corner_radii();
+            style = style.pad_x(pl, pr).corners([
+                if clip_start { 0.0 } else { c[0] },
+                if clip_end { 0.0 } else { c[1] },
+                if clip_end { 0.0 } else { c[2] },
+                if clip_start { 0.0 } else { c[3] },
+            ]);
+        }
+        SpanBoxRun { start, end, style }
+    })
 }
 
 /// A run of paragraphs to draw, or a whole layout.
@@ -412,12 +456,21 @@ impl<'a> TextFlow<'a> {
         }
     }
 
-    /// Where an empty paragraph's caret, `size` px wide, starts: its right edge (the width it
-    /// wraps at) when it reads right to left, else 0.
-    fn blank_start(self, p: &Piece<'_>, size: f32) -> f32 {
+    /// Where an empty paragraph's caret or newline box, `size` px wide, starts: after its left
+    /// indent when reading left to right, or inside its right padding from the wrap width when
+    /// reading right to left.
+    pub(crate) fn blank_start(self, p: &Piece<'_>, size: f32) -> f32 {
+        let indent = if p.index == 0 {
+            match self {
+                TextFlow::Paragraphs(pl) => pl.text_indent_px,
+                TextFlow::Single(_) => 0.0,
+            }
+        } else {
+            0.0
+        };
         match (p.flow, self) {
-            (Flow::Rtl, TextFlow::Paragraphs(pl)) => (pl.max_width.unwrap_or(pl.width) - size).max(0.0),
-            _ => 0.0,
+            (Flow::Rtl, TextFlow::Paragraphs(pl)) => (pl.max_width.unwrap_or(pl.width) - p.pad[1] - indent - size).max(p.pad[0]),
+            _ => p.pad[0] + indent,
         }
     }
 
@@ -443,11 +496,15 @@ impl<'a> TextFlow<'a> {
             return Hit { index: p.start, side: parley::layout::Affinity::Downstream, before: None };
         }
         let cur = cursor_from_point(p.layout, x, y - p.y);
-        let before = (cur.affinity() == parley::layout::Affinity::Upstream)
-            .then(|| cur.index().checked_sub(1).and_then(|b| parley::Cluster::from_byte_index(p.layout, b)))
-            .flatten()
-            .filter(|cl| !cl.is_hard_line_break())
-            .map(|cl| p.content(cl.text_range().start));
+        let before = cursor::cluster_start_at_point(p.layout, x, y - p.y)
+            .map(|b| p.content(b))
+            .or_else(|| {
+                (cur.affinity() == parley::layout::Affinity::Upstream)
+                    .then(|| cur.index().checked_sub(1).and_then(|b| parley::Cluster::from_byte_index(p.layout, b)))
+                    .flatten()
+                    .filter(|cl| !cl.is_hard_line_break())
+                    .map(|cl| p.content(cl.text_range().start))
+            });
         Hit { index: p.content(cur.index()), side: cur.affinity(), before }
     }
 
@@ -456,6 +513,79 @@ impl<'a> TextFlow<'a> {
         let p = self.piece_at(at);
         if p.is_blank() { return p.start; }
         p.content(line_edge(p.layout, p.shaped(at), end))
+    }
+
+    /// Like [`Self::line_edge`], preserving affinity for soft-wrapped line ends.
+    #[doc(hidden)]
+    pub fn line_edge_with_affinity(self, at: usize, side: parley::layout::Affinity, end: bool) -> (usize, parley::layout::Affinity) {
+        let p = self.piece_at(at);
+        if p.is_blank() { return (p.start, parley::layout::Affinity::Downstream); }
+        let (byte, aff) = cursor::line_edge_with_affinity(p.layout, p.shaped(at), side, end);
+        (p.content(byte), aff)
+    }
+
+    /// Like [`Self::move_line`], preserving affinity and returning `None` at both the top and
+    /// bottom visual lines so multi-text navigation can cross to adjacent texts.
+    #[doc(hidden)]
+    pub fn move_line_strict(self, at: usize, side: parley::layout::Affinity, down: bool, goal: Option<f32>) -> Option<(usize, parley::layout::Affinity, f32)> {
+        let pl = match self {
+            TextFlow::Single(l) => return cursor::move_line_strict(l, at, side, down, goal),
+            TextFlow::Paragraphs(pl) => pl,
+        };
+        let p = self.piece_at(at);
+        let (x, line) = if p.is_blank() || p.layout.len() == 0 {
+            (self.blank_start(&p, 0.0), 0)
+        } else {
+            let c = parley::editing::Cursor::from_byte_index(p.layout, p.shaped(at), side);
+            let bb = cursor_geometry(&c, p.layout, 0.0);
+            let mid = ((bb.y0 + bb.y1) * 0.5) as f32;
+            let li = cursor::line_for_offset(p.layout, mid).map_or(p.layout.len() - 1, |(i, _)| i);
+            (bb.x0 as f32, li)
+        };
+        let x = goal.unwrap_or(x);
+        let lines = p.layout.len().max(1);
+        let (k, line) = match down {
+            true if line + 1 < lines => (p.index, line + 1),
+            true if p.index + 1 < pl.paragraphs.len() => (p.index + 1, 0),
+            true => return None,
+            false if line > 0 => (p.index, line - 1),
+            false if p.index > 0 => (p.index - 1, pl.paragraphs[p.index - 1].layout.len().max(1) - 1),
+            false => return None,
+        };
+        let t = Piece::of_paragraph(k, &pl.paragraphs[k], pl.disjoint_spans);
+        let Some(m) = t.layout.get(line).filter(|_| !t.is_blank()).map(|l| *l.metrics()) else {
+            return Some((t.start, parley::layout::Affinity::Downstream, x));
+        };
+        let hit = cursor_from_point(t.layout, x, (m.block_min_coord + m.block_max_coord) * 0.5);
+        Some((t.content(hit.index()), hit.affinity(), x))
+    }
+
+    /// Hit-tests layout x on this flow's first (`first`) or last (`!first`) visual line.
+    #[doc(hidden)]
+    pub fn edge_line_hit(self, x: f32, first: bool) -> (usize, parley::layout::Affinity) {
+        match self {
+            TextFlow::Single(l) => {
+                if l.len() == 0 { return (0, parley::layout::Affinity::Downstream); }
+                let idx = if first { 0 } else { l.len() - 1 };
+                let Some(line) = l.get(idx) else { return (0, parley::layout::Affinity::Downstream) };
+                let m = line.metrics();
+                let cur = cursor_from_point(l, x, (m.block_min_coord + m.block_max_coord) * 0.5);
+                (cur.index(), cur.affinity())
+            }
+            TextFlow::Paragraphs(pl) => {
+                if pl.paragraphs.is_empty() { return (0, parley::layout::Affinity::Downstream); }
+                let k = if first { 0 } else { pl.paragraphs.len() - 1 };
+                let t = Piece::of_paragraph(k, &pl.paragraphs[k], pl.disjoint_spans);
+                if t.is_blank() || t.layout.len() == 0 {
+                    return (t.start, parley::layout::Affinity::Downstream);
+                }
+                let li = if first { 0 } else { t.layout.len() - 1 };
+                let Some(line) = t.layout.get(li) else { return (t.start, parley::layout::Affinity::Downstream) };
+                let m = line.metrics();
+                let cur = cursor_from_point(t.layout, x, (m.block_min_coord + m.block_max_coord) * 0.5);
+                (t.content(cur.index()), cur.affinity())
+            }
+        }
     }
 
     /// The byte on the visual line above (`!down`) or below (`down`) byte `at`'s, at `goal`'s x
@@ -544,12 +674,127 @@ impl<'a> TextFlow<'a> {
         out
     }
 
+    /// Inline font-metric boxes (`[x0, baseline - ascent, x1, baseline + descent]` in device px)
+    /// covering content bytes `a..b`, matching Blink's `Range::getBoundingClientRect()`. Falls
+    /// back to the line box when no glyph run overlaps the range.
+    pub fn inline_range_boxes(self, a: usize, b: usize) -> Vec<parley::BoundingBox> {
+        let piece_boxes = |l: &Layout<Ink>, sa: usize, sb: usize, y_off: f64, out: &mut Vec<parley::BoundingBox>| {
+            for (bb, line_idx) in range_boxes(l, sa, sb, false) {
+                let (mut y0, mut y1) = (bb.y0, bb.y1);
+                if let Some(line) = l.get(line_idx) {
+                    let base = line.metrics().baseline;
+                    let (mut asc, mut desc) = (0.0f32, 0.0f32);
+                    for run in line.runs() {
+                        let r = run.text_range();
+                        if r.start < sb && sa < r.end {
+                            let fm = run.font_metrics();
+                            (asc, desc) = (asc.max(fm.ascent), desc.max(fm.descent.abs()));
+                        }
+                    }
+                    if asc > 0.0 || desc > 0.0 {
+                        y0 = f64::from(base - asc);
+                        y1 = f64::from(base + desc);
+                    }
+                }
+                out.push(parley::BoundingBox::new(bb.x0, y0 + y_off, bb.x1, y1 + y_off));
+            }
+        };
+        let mut out = Vec::new();
+        if a >= b {
+            return out;
+        }
+        match self {
+            TextFlow::Single(l) => piece_boxes(l, a, b, 0.0, &mut out),
+            TextFlow::Paragraphs(pl) => {
+                let from = pl.paragraphs.partition_point(|q| q.end < a);
+                for (k, q) in pl.paragraphs.iter().enumerate().skip(from).take_while(|(_, q)| q.start <= b) {
+                    let p = Piece::of_paragraph(k, q, pl.disjoint_spans);
+                    if let Some((sa, sb)) = p.clip(a, b) {
+                        piece_boxes(p.layout, sa, sb, p.y as f64, &mut out);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// The span its lines cover across, from the leftmost line start to the rightmost end, or
     /// `None` with no lines.
     pub fn extent(self) -> Option<(f32, f32)> {
-        let (lo, hi) = self.pieces().flat_map(|p| p.layout.lines().map(|l| (l.metrics().offset, l.metrics().advance)))
-            .fold((f32::MAX, 0.0f32), |(lo, hi), (offset, advance)| (lo.min(offset), hi.max(offset + advance)));
+        let (lo, hi) = self.pieces().flat_map(|p| p.layout.lines().map(|l| {
+            let m = l.metrics();
+            (m.inline_min_coord + m.offset, m.advance)
+        }))
+            .fold((f32::MAX, f32::NEG_INFINITY), |(lo, hi), (start, advance)| (lo.min(start), hi.max(start + advance)));
         (lo <= hi).then_some((lo, hi))
+    }
+
+    /// Contiguous vertical extent `(top, bottom)` in device px of all visual lines intersecting
+    /// content bytes `start..end`, or `None` when no line intersects it.
+    #[doc(hidden)]
+    pub fn line_span(self, start: usize, end: usize, line_px: f32) -> Option<(f32, f32)> {
+        if start >= end {
+            return None;
+        }
+        let line_bounds = |line: &parley::Line<'_, Ink>| {
+            let m = line.metrics();
+            let bot = if m.block_max_coord > m.block_min_coord {
+                m.block_max_coord
+            } else {
+                m.block_min_coord + line_px
+            };
+            (m.block_min_coord, bot)
+        };
+        match self {
+            TextFlow::Single(layout) => {
+                let mut span: Option<(f32, f32)> = None;
+                for line in layout.lines() {
+                    let r = line.text_range();
+                    if r.start < end && start < r.end {
+                        let (t, b) = line_bounds(&line);
+                        span = Some(match span {
+                            Some((lo, hi)) => (lo.min(t), hi.max(b)),
+                            None => (t, b),
+                        });
+                    }
+                }
+                span
+            }
+            TextFlow::Paragraphs(pl) => {
+                let lo = pl.paragraphs.partition_point(|q| q.end < start || (q.end == start && q.start < q.end));
+                let hi = pl.paragraphs.partition_point(|q| q.start < end);
+                if lo >= hi {
+                    return None;
+                }
+                let para_span = |k: usize, q: &Paragraph| -> (f32, f32) {
+                    if !q.shaped || q.start == q.end {
+                        return (q.y, q.y + q.height);
+                    }
+                    let piece = Piece::of_paragraph(k, q, pl.disjoint_spans);
+                    let Some((sa, sb)) = piece.clip(start, end) else {
+                        return (q.y, q.y + q.height);
+                    };
+                    let mut span: Option<(f32, f32)> = None;
+                    for line in piece.layout.lines() {
+                        let r = line.text_range();
+                        if r.start < sb && sa < r.end {
+                            let (t, b) = line_bounds(&line);
+                            span = Some(match span {
+                                Some((a, c)) => (a.min(t), c.max(b)),
+                                None => (t, b),
+                            });
+                        }
+                    }
+                    match span {
+                        Some((t, b)) => (q.y + t, q.y + b),
+                        None => (q.y, q.y + q.height),
+                    }
+                };
+                let (top, bot0) = para_span(lo, &pl.paragraphs[lo]);
+                let bot = if hi - 1 == lo { bot0 } else { para_span(hi - 1, &pl.paragraphs[hi - 1]).1 };
+                Some((top, bot.max(top)))
+            }
+        }
     }
 
     /// Its lines top to bottom, each marked when a paragraph ends with it.
@@ -591,11 +836,12 @@ impl TextSystem {
         }
         let forced = spec.paragraphs_flow();
         // One paragraph and no pills, as most drafts are: one layout in its own direction.
-        if !spec.by_line && spec.pills.is_empty() && !spec.content.contains('\n') {
+        if !spec.by_line && spec.pills.is_empty() && spec.span_boxes.is_empty() && spec.inline_boxes.is_empty() && !spec.content.contains('\n') {
             let base = forced.or_else(|| flow_of(spec.content, &[])).unwrap_or(spec.plaintext_flow()).base();
             let shape = spec.shape_key.map(|k| hash::directed(k, base));
-            return TextLayout::Single(self.layout_keyed(shape, spec.content, spec.spans, spec.blocks, &[], spec.style, scale, max_width, align, spec.wrap_anywhere, false, Keep::Cached, base));
+            return TextLayout::Single(self.layout_keyed(shape, spec.content, spec.spans, spec.blocks, spec.text_indent, &[], &[], &[], spec.style, scale, max_width, align, spec.wrap_anywhere, false, Keep::Cached, base));
         }
+        self.follow_language();
         let whole = spec.shape_key.unwrap_or_else(|| spec.fresh_shape_key(scale));
         // Lines with no strong character take the element's flow, so it keys the whole too.
         let whole = if forced.unwrap_or(spec.plaintext_flow()) == Flow::Rtl { whole ^ 0x3c6e_f372_fe94_f82b } else { whole };
@@ -603,7 +849,7 @@ impl TextSystem {
         let indented = blocks.iter().any(|&b| b != Block::Paragraph).then_some(blocks);
         let pretty = spec.by_line && spec.pretty && !input && max_width.is_some() && !matches!(spec.style.family, Family::Mono | Family::SystemMono);
         let pretty_bit = if pretty { 0x7072_6574_7479_0001 } else { 0 };
-        let key = hash::break_key(whole ^ PARAGRAPHS, max_width, align, indented) ^ pretty_bit;
+        let key = hash::break_key(whole ^ PARAGRAPHS, max_width, align, indented, spec.text_indent) ^ pretty_bit;
         let g = self.generation;
         if let Some(e) = self.paragraphs.get_mut(&key) {
             e.used = g;
@@ -612,16 +858,17 @@ impl TextSystem {
         // Measuring asks at more than one width: the last text's layout at this one, when it
         // was laid out there too, keeps its paragraphs without breaking them again.
         let prev = match prev {
-            Some(TextLayout::Paragraphs(p)) if p.max_width == max_width && p.align == align => Some(p.clone()),
+            Some(TextLayout::Paragraphs(p)) if p.shaped_epoch != self.shaped_epoch => None,
+            Some(TextLayout::Paragraphs(p)) if p.max_width == max_width && p.align == align && p.text_indent == spec.text_indent => Some(p.clone()),
             Some(TextLayout::Paragraphs(p)) => {
-                let there = hash::break_key(p.whole ^ PARAGRAPHS, max_width, align, indented) ^ pretty_bit;
+                let there = hash::break_key(p.whole ^ PARAGRAPHS, max_width, align, indented, spec.text_indent) ^ pretty_bit;
                 Some(self.paragraphs.get(&there).map_or_else(|| p.clone(), |e| e.value.clone()))
             }
             _ => None,
         };
         // This text laid out at another width measuring asked for this commit: a paragraph
         // neither keeps is broken again from it rather than shaped twice.
-        let other = self.last_paragraphs.clone().filter(|o| o.whole == whole && (o.max_width != max_width || o.align != align));
+        let other = self.last_paragraphs.clone().filter(|o| o.whole == whole && (o.max_width != max_width || o.align != align || o.text_indent != spec.text_indent));
         let (built, fresh) = self.lay_out_paragraphs(spec, input, scale, max_width, align, (whole, key), prev.as_deref(), other.as_deref());
         let built = Rc::new(built);
         self.last_paragraphs = Some(built.clone());
@@ -647,7 +894,8 @@ impl TextSystem {
         // and after it keep their keys (`reuse_keys`), so a keystroke or recolour costs no full scan.
         let layout_spans: Vec<Span> = span::layout_spans(spec.spans).cloned().collect();
         let layout_disjoint = layout_spans.len() <= 1 || layout_spans.windows(2).all(|w| w[0].start < w[0].end && w[0].end <= w[1].start);
-        let plain = layout_spans.is_empty() && spec.pills.is_empty() && spec.blocks.iter().all(|&b| b == Block::Paragraph);
+        let no_pills_or_blocks = spec.pills.is_empty() && spec.span_boxes.is_empty() && spec.inline_boxes.is_empty() && spec.text_indent == 0.0 && spec.blocks.iter().all(|&b| b == Block::Paragraph);
+        let plain = layout_spans.is_empty() && no_pills_or_blocks;
         let disjoint_spans = spec.spans.len() <= 1 || spec.spans.windows(2).all(|w| w[0].start < w[0].end && w[0].end <= w[1].start);
         let forced = spec.paragraphs_flow();
         let start_flow = forced.unwrap_or(spec.plaintext_flow());
@@ -661,7 +909,7 @@ impl TextSystem {
         // A min-content measure of a text whose lines wait keys an edit's lines into runs too,
         // however few: none of them is shown, and its run held them as one record.
         let measuring = prev.is_some_and(|p| p.waiting()) && max_width.is_some_and(|m| m < style.line_px() * scale);
-        let can_defer = plain && (!spec.by_line || (matches!(style.family, Family::Mono | Family::SystemMono)
+        let can_defer = no_pills_or_blocks && (!spec.by_line || (matches!(style.family, Family::Mono | Family::SystemMono)
             && align == Alignment::Start && start_flow == Flow::Ltr && forced != Some(Flow::Rtl)));
         let ascii = (can_defer && (measuring || edited > LAZY_MIN * 8 && count_newlines(&bytes[at..at + edited]) > LAZY_MIN))
             .then(|| self.ascii_line(style, scale, spec.wrap_anywhere)).flatten()
@@ -688,6 +936,7 @@ impl TextSystem {
         let before = found.iter().zip(old).take_while(|(f, o)| f.3 == o.key).count();
         let after = found[before..].iter().rev().zip(old[before..].iter().rev()).take_while(|(f, o)| f.3 == o.key).count();
         let rebreak = prev.is_some_and(|p| p.max_width != max_width || p.align != align);
+        let rebreak_first = prev.is_some_and(|p| p.text_indent != spec.text_indent);
         let line = style.line_px() * scale;
         // Each record found with the one the last layout had for it. A waiting one broken at
         // another width is keyed again there: its lines may not all fit any more.
@@ -696,7 +945,7 @@ impl TextSystem {
             let kept = if k < before { Some(&old[k]) } else if k >= n - after { Some(&old[old.len() - (n - k)]) } else { None };
             match kept {
                 Some(o) if !o.shaped && rebreak => {
-                    let m = match &ascii { Some(m) => Some(m.clone()), None => self.ascii_line(style, scale, spec.wrap_anywhere) };
+                    let m = can_defer.then(|| ascii.clone().or_else(|| self.ascii_line(style, scale, spec.wrap_anywhere).filter(|a| !spec.by_line || a.fixed_pitch))).flatten();
                     let mut again = Vec::new();
                     let from = items.last().map_or(start_flow, |(f, _)| f.2);
                     key_paragraphs(spec, &layout_spans, style_key, layout_disjoint, f.0, f.1, from, forced, m.as_deref().map(|m| Runs { ascii: m, max_width, edit: false, eager: (eager_s, eager_e) }), &mut self.line_scan, &mut again);
@@ -712,10 +961,11 @@ impl TextSystem {
         let (mut width, mut full_width, mut fresh) = (0.0f32, 0.0f32, 0);
         for (k, ((a, b, flow, key, isolates, run), kept)) in items.into_iter().enumerate() {
             let block = spec.blocks.get(k).copied().unwrap_or(Block::Paragraph);
+            let pad = block.pad_px(style.size, scale);
             let blocks: &[Block] = if block == Block::Paragraph { &[] } else { std::slice::from_ref(&block) };
             // A waiting record kept at the same width stays as it was; a run found here waits.
             let wait = match (kept, run) {
-                (Some(o), _) if !o.shaped => ascii.clone().or_else(|| self.ascii_line(style, scale, spec.wrap_anywhere).filter(|a| !spec.by_line || a.fixed_pitch))
+                (Some(o), _) if !o.shaped && can_defer => ascii.clone().or_else(|| self.ascii_line(style, scale, spec.wrap_anywhere).filter(|a| !spec.by_line || a.fixed_pitch))
                     .map(|m| (m.height, o.height, o.widths[0], o.lines, o.layout.clone(), o.run)),
                 (None, Some((height, w, lines))) => ascii.clone().or_else(|| self.ascii_line(style, scale, spec.wrap_anywhere).filter(|a| !spec.by_line || a.fixed_pitch))
                     .map(|m| (m.height, height, w, lines, m.empty.clone(), true)),
@@ -724,21 +974,23 @@ impl TextSystem {
             if let Some((line_h, height, w, lines, layout, run)) = wait {
                 waiting += 1;
                 (width, full_width) = (width.max(w), full_width.max(w));
-                paragraphs.push(Paragraph { start: a, end: b, y: y.round() as f32, y_frac: 0.0, height, widths: [w, w], flow, key, isolates, layout, shaped: false, lines, run });
+                paragraphs.push(Paragraph { start: a, end: b, y: y.round() as f32, y_frac: 0.0, height, widths: [w, w], pad, flow, key, isolates, layout, shaped: false, lines, run });
                 for _ in 0..lines { y += f64::from(line_h); }
                 continue;
             }
+            let para_indent = if k == 0 { spec.text_indent } else { 0.0 };
+            let para_rebreak = rebreak || (k == 0 && rebreak_first);
             // The same paragraph at the other width (the same text, so the same index).
             let twin = other.and_then(|o| o.paragraphs.get(k)).filter(|o| !pretty_active && o.key == key && o.shaped);
-            let kept = kept.filter(|_| !(rebreak && pretty_active));
+            let kept = kept.filter(|_| !(para_rebreak && pretty_active));
             // A kept paragraph broken at another width, or this text's own paragraph at the
             // other width measuring asks for, breaks again here rather than shaping anew.
-            let again = match kept { Some(o) if rebreak => Some(o), Some(_) => None, None => twin };
+            let again = match kept { Some(o) if para_rebreak => Some(o), Some(_) => None, None => twin };
             let mut layout = match (kept, again) {
                 (_, Some(o)) => {
                     fresh += b - a;
                     let mut l = o.layout.clone();
-                    line_break::rebreak(Rc::make_mut(&mut l), blocks, style.size, scale, max_width, align);
+                    line_break::rebreak(Rc::make_mut(&mut l), blocks, para_indent, style.size, scale, max_width, align);
                     // Re-broken, in place or as a copy: the lines it draws now are new.
                     self.layout_ids.build(&l);
                     l
@@ -750,7 +1002,8 @@ impl TextSystem {
                     let text: Cow<str> = if isolates.is_empty() { Cow::Borrowed(words) } else { Cow::Owned(with_isolates(words, &isolates)) };
                     let spans: Vec<Span> = spans_in(&layout_spans, a, b, &isolates, layout_disjoint).collect();
                     let pills: Vec<PillChip> = pills_in(spec.pills, a, b, &isolates).collect();
-                    self.layout_keyed(Some(key), &text, &spans, blocks, &pills, style, scale, max_width, align, spec.wrap_anywhere, pretty, Keep::Owned, flow.base())
+                    let span_boxes: Vec<SpanBoxRun> = span_boxes_in(spec.span_boxes, a, b, &isolates).collect();
+                    self.layout_keyed(Some(key), &text, &spans, blocks, para_indent, &pills, &span_boxes, &[], style, scale, max_width, align, spec.wrap_anywhere, pretty, Keep::Owned, flow.base())
                 }
             };
             // A paragraph kept as it was keeps its measures too: touching 2,000 layouts to read
@@ -762,13 +1015,13 @@ impl TextSystem {
             let want_frac = if layout.len() > 1 { (y - y.floor()) as f32 } else { 0.0 };
             let have_frac = match (kept, again) { (Some(o), None) => o.y_frac, _ => 0.0 };
             if (want_frac - have_frac).abs() > 1e-5 {
-                line_break::rebreak_at_y(Rc::make_mut(&mut layout), blocks, style.size, scale, max_width, align, f64::from(want_frac));
+                line_break::rebreak_at_y(Rc::make_mut(&mut layout), blocks, para_indent, style.size, scale, max_width, align, f64::from(want_frac));
                 self.layout_ids.build(&layout);
                 (height, widths) = (if a == b { layout.height().max(line) } else { layout.height() }, [layout.width(), layout.full_width()]);
             }
             let py = if want_frac != 0.0 { y.floor() as f32 } else { y.round() as f32 };
             (width, full_width) = (width.max(widths[0]), full_width.max(widths[1]));
-            paragraphs.push(Paragraph { start: a, end: b, y: py, y_frac: want_frac, height, widths, flow, key, isolates, layout, shaped: true, lines: 1, run: false });
+            paragraphs.push(Paragraph { start: a, end: b, y: py, y_frac: want_frac, height, widths, pad, flow, key, isolates, layout, shaped: true, lines: 1, run: false });
             y += f64::from(height);
         }
         let (asc, desc) = self.primary_extents(style.family, style.weight, style.italic).unwrap_or((0.8, 0.2));
@@ -785,6 +1038,7 @@ impl TextSystem {
             disjoint_spans: layout_disjoint,
             style, scale, wrap_anywhere: spec.wrap_anywhere, cache_key, style_key, forced, start_flow, ascii,
         }));
-        (ParagraphLayout { paragraphs, width, full_width, height: y as f32, max_width, align, whole, newline, blank_box, disjoint_spans, keyed, lazy }, fresh)
+        let text_indent_px = line_break::indent_px(spec.text_indent, scale);
+        (ParagraphLayout { paragraphs, width, full_width, height: y as f32, max_width, align, text_indent: spec.text_indent, text_indent_px, whole, shaped_epoch: self.shaped_epoch, newline, blank_box, disjoint_spans, keyed, lazy }, fresh)
     }
 }

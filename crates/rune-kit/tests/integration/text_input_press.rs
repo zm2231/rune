@@ -701,3 +701,233 @@ fn secure_text_area_replaces_pristine_secret_on_first_edit() {
     rt.frame(0.0);
     assert_eq!(rt.state.text, "replacement-line-1\nreplacement-line-2\nreplacement-line-3");
 }
+
+#[test]
+fn text_area_on_key_intercepts_paste_and_edit_chords_before_editor() {
+    use rune::{Key, KeyEvent, Mods};
+    struct State {
+        edit: TextEdit,
+        consume: bool,
+        seen: Vec<Key>,
+    }
+    fn view(s: &State, _: &mut Cx<State>) -> El {
+        let k = Kit::neutral(false);
+        col().padding(12.0).child(
+            TextArea::new(&s.edit)
+                .label("Area")
+                .on_edit(|s: &mut State| &mut s.edit)
+                .on_key(|s: &mut State, key, _| {
+                    s.seen.push(key.key.clone());
+                    if s.consume {
+                        if matches!(key.key, Key::Command('v')) {
+                            s.edit.insert("[handled]");
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .build(&k)
+                .key("area"),
+        )
+    }
+
+    let clipboard = rune::clipboard::memory();
+    clipboard.set_text("clipboard");
+    let mut rt = Runtime::new(
+        State { edit: TextEdit::new(""), consume: true, seen: Vec::new() },
+        view,
+        (320.0, 200.0),
+        Env::new(false, 1.0),
+    );
+    rt.use_clipboard(&clipboard);
+    rt.frame(0.0);
+
+    let area = rt.elements().into_iter().find(|e| e.key.as_deref() == Some("area")).unwrap();
+    rt.pointer_down(area.rect[0] + 16.0, area.rect[1] + 16.0);
+    rt.pointer_up(area.rect[0] + 16.0, area.rect[1] + 16.0);
+    rt.frame(0.0);
+
+    let primary = Mods { cmd: true, ctrl: !cfg!(target_os = "macos"), logo: cfg!(target_os = "macos"), ..Mods::default() };
+    let primary_shift = Mods { shift: true, ..primary };
+    let press = |rt: &mut Runtime<State>, key: Key, mods: Mods| {
+        rt.key(KeyEvent { key, mods });
+        rt.frame(0.0);
+        rt.frame(0.0);
+    };
+
+    // Consuming Command('v') in TextArea::on_key prevents clipboard paste.
+    press(&mut rt, Key::Command('v'), primary);
+    assert_eq!(rt.state.edit.text, "[handled]");
+
+    // Consuming select-all, copy, cut, undo, redo prevents editor handling.
+    let sel_before = (rt.state.edit.anchor, rt.state.edit.focus);
+    press(&mut rt, Key::Command('a'), primary);
+    assert_eq!((rt.state.edit.anchor, rt.state.edit.focus), sel_before);
+    press(&mut rt, Key::Command('c'), primary);
+    assert_eq!(clipboard.text().as_deref().map(String::as_str), Some("clipboard"));
+    press(&mut rt, Key::Command('x'), primary);
+    assert_eq!(rt.state.edit.text, "[handled]");
+    press(&mut rt, Key::Command('z'), primary);
+    assert_eq!(rt.state.edit.text, "[handled]");
+    press(&mut rt, Key::Command('z'), primary_shift);
+    assert_eq!(rt.state.edit.text, "[handled]");
+    if !cfg!(target_os = "macos") {
+        press(&mut rt, Key::Command('y'), primary);
+        assert_eq!(rt.state.edit.text, "[handled]");
+    }
+
+    // Declining in TextArea::on_key lets paste, select-all, copy, cut, undo and redo run normally.
+    rt.state.consume = false;
+    press(&mut rt, Key::Command('v'), primary);
+    assert_eq!(rt.state.edit.text, "[handled]clipboard");
+    press(&mut rt, Key::Command('a'), primary);
+    assert_eq!(rt.state.edit.selected(), "[handled]clipboard");
+    press(&mut rt, Key::Command('c'), primary);
+    assert_eq!(clipboard.text().as_deref().map(String::as_str), Some("[handled]clipboard"));
+    press(&mut rt, Key::Command('x'), primary);
+    assert_eq!(rt.state.edit.text, "");
+    press(&mut rt, Key::Command('z'), primary);
+    assert_eq!(rt.state.edit.text, "[handled]clipboard");
+    press(&mut rt, Key::Command('z'), primary_shift);
+    assert_eq!(rt.state.edit.text, "");
+    if !cfg!(target_os = "macos") {
+        press(&mut rt, Key::Command('z'), primary);
+        assert_eq!(rt.state.edit.text, "[handled]clipboard");
+        press(&mut rt, Key::Command('y'), primary);
+        assert_eq!(rt.state.edit.text, "");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_middle_click_on_kit_textbox_padding_focuses_and_blocks_ancestors_and_autoscroll() {
+    use rune::{Cursor, PointerButton, ScrollSpec};
+    struct Form {
+        input: TextEdit,
+        field: TextEdit,
+        area: TextEdit,
+        grow: TextEdit,
+        secret: TextEdit,
+        disabled: TextEdit,
+        readonly: TextEdit,
+        ancestor_middle: usize,
+        ancestor_btn: usize,
+    }
+    fn view(s: &Form, _: &mut Cx<Form>) -> El {
+        let k = Kit::neutral(true);
+        col().key("scroller").size(400.0, 520.0).scroll(ScrollSpec { stick_bottom: false })
+            .child(
+                col().w_full().h(1200.0).padding(12.0).gap(12.0)
+                    .on_middle_press(|s: &mut Form, _| s.ancestor_middle += 1)
+                    .child(
+                        col().w_full().gap(10.0)
+                            .pointer_buttons([PointerButton::Middle])
+                            .on_press(|s: &mut Form| s.ancestor_btn += 1)
+                            .child(
+                                TextInput::new(&s.input)
+                                    .leading_icon(k.glyph.search)
+                                    .clear_button()
+                                    .on_edit(|s: &mut Form| &mut s.input)
+                                    .build(&k)
+                                    .key("ti"),
+                            )
+                            .child(
+                                TextField::new("Field", &s.field)
+                                    .copyable()
+                                    .on_edit(|s: &mut Form| &mut s.field)
+                                    .build(&k)
+                                    .key("tf"),
+                            )
+                            .child(
+                                TextArea::new(&s.area)
+                                    .on_edit(|s: &mut Form| &mut s.area)
+                                    .build(&k)
+                                    .key("ta"),
+                            )
+                            .child(
+                                TextArea::new(&s.grow)
+                                    .auto_grow(2, 2)
+                                    .on_edit(|s: &mut Form| &mut s.grow)
+                                    .build(&k)
+                                    .key("grow"),
+                            ),
+                    )
+                    .child(
+                        TextInput::new(&s.secret)
+                            .secure()
+                            .on_edit(|s: &mut Form| &mut s.secret)
+                            .build(&k)
+                            .key("secret"),
+                    )
+                    .child(
+                        TextInput::new(&s.disabled)
+                            .disabled(true)
+                            .on_edit(|s: &mut Form| &mut s.disabled)
+                            .build(&k)
+                            .key("disabled"),
+                    )
+                    .child(TextInput::new(&s.readonly).build(&k).key("readonly")),
+            )
+    }
+    let mut rt = Runtime::new(
+        Form {
+            input: TextEdit::new("alpha"),
+            field: TextEdit::new("beta"),
+            area: TextEdit::new("gamma"),
+            grow: TextEdit::new("one\ntwo\nthree"),
+            secret: TextEdit::new("hunter2"),
+            disabled: TextEdit::new("locked"),
+            readonly: TextEdit::new("fixed"),
+            ancestor_middle: 0,
+            ancestor_btn: 0,
+        },
+        view,
+        (400.0, 520.0),
+        Env::new(true, 1.0),
+    );
+    rt.frame(0.0);
+    let rect = |rt: &Runtime<Form>, key: &str| {
+        rt.elements().into_iter().find(|e| e.key.as_deref() == Some(key)).unwrap().rect
+    };
+    let mid_click = |rt: &mut Runtime<Form>, x: f32, y: f32| {
+        rt.button_down(x, y, PointerButton::Middle);
+        rt.pointer_move(x, y + 60.0);
+        rt.frame(1.0 / 60.0);
+        assert!(!matches!(rt.cursor(), Cursor::Image(_)), "middle-clicking editable wrapper must not start autoscroll");
+        rt.button_up(x, y + 60.0, PointerButton::Middle);
+        rt.frame(1.0 / 60.0);
+    };
+
+    // TextInput leading icon / padding.
+    let lead = rect(&rt, "leading");
+    mid_click(&mut rt, lead[0] + lead[2] * 0.5, lead[1] + lead[3] * 0.5);
+    assert!(rt.state.input.focused && rt.state.input.range() == (0, 0));
+
+    // TextField wrapper trailing padding.
+    let tf = rect(&rt, "wrapper");
+    mid_click(&mut rt, tf[0] + tf[2] - 32.0, tf[1] + 2.0);
+    assert!(rt.state.field.focused && rt.state.field.range() == (4, 4));
+
+    // TextArea bottom-right padding.
+    let ta = rect(&rt, "ta");
+    mid_click(&mut rt, ta[0] + ta[2] - 4.0, ta[1] + ta[3] - 4.0);
+    assert!(rt.state.area.focused && rt.state.area.range() == (5, 5));
+
+    // Auto-grow TextArea top-left padding.
+    let grow = rect(&rt, "grow");
+    mid_click(&mut rt, grow[0] + 2.0, grow[1] + 2.0);
+    assert!(rt.state.grow.focused && rt.state.grow.range() == (0, 0));
+
+    assert_eq!(rt.state.ancestor_middle, 0, "ancestor on_middle_press must not fire");
+    assert_eq!(rt.state.ancestor_btn, 0, "ancestor pointer_buttons([Middle]) must not fire");
+
+    // Secure, disabled, and read-only TextInputs never take primary paste or focus on middle-click.
+    for key in ["secret", "disabled", "readonly"] {
+        let r = rect(&rt, key);
+        rt.button_down(r[0] + 2.0, r[1] + 2.0, PointerButton::Middle);
+        rt.button_up(r[0] + 2.0, r[1] + 2.0, PointerButton::Middle);
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(!rt.state.secret.focused && !rt.state.disabled.focused && !rt.state.readonly.focused);
+}

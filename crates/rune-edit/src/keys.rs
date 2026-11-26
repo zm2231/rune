@@ -66,15 +66,15 @@ pub struct Mods {
     pub logo: bool,
 }
 
-/// Whether this build's keyboard follows the Mac's conventions: ⌘ is the primary modifier, ⌥
-/// moves by word, Control-letter moves as in AppKit. macOS, and iOS for a hardware keyboard.
-#[doc(hidden)]
-pub const MAC_KEYS: bool = cfg!(any(target_os = "macos", target_os = "ios"));
-
 impl Mods {
     /// Whether the platform's primary shortcut modifier is held: `cmd`.
     pub fn primary(self) -> bool { self.cmd }
 }
+
+/// Whether this build's keyboard follows the Mac's conventions: ⌘ is the primary modifier, ⌥
+/// moves by word, Control-letter moves as in AppKit. macOS, and iOS for a hardware keyboard.
+#[doc(hidden)]
+pub const MAC_KEYS: bool = cfg!(any(target_os = "macos", target_os = "ios"));
 
 /// `bits` with the modifiers that are one key on `platform` merged: Ctrl into the primary
 /// off macOS, the logo key into it on macOS.
@@ -110,6 +110,7 @@ pub(crate) fn primary_alone_on(m: Mods, platform: KeyPlatform) -> bool {
 }
 
 /// [`primary_alone_on`] for [`KeyPlatform::current`].
+#[cfg(test)]
 pub(crate) fn primary_alone(m: Mods) -> bool {
     primary_alone_on(m, KeyPlatform::current())
 }
@@ -133,7 +134,8 @@ pub enum Key {
     PageUp,
     /// Page Down, as `PageUp` the other way.
     PageDown,
-    /// Insert (Help on older Mac keyboards). Text fields ignore it; apps can bind it.
+    /// Insert (Help on older Mac keyboards). Off macOS, `Shift+Insert` pastes into a focused text
+    /// field or root `on_paste` handler; bare `Insert` and other chords are left for apps to bind.
     Insert,
     /// Print Screen (SysRq). Text fields ignore it; apps can bind it. Windows sends it only
     /// on release, so its press and release arrive together.
@@ -165,6 +167,47 @@ pub enum Key {
     /// release doesn't, unless the other Shift is still down. A held modifier never repeats.
     /// Text fields, selection, focus traversal and shortcuts ignore it.
     Modifier { modifier: Modifier, pressed: bool },
+    /// A hardware media transport key (`PlayPause`, `Next`, `Previous`, ...), sent only where
+    /// the app opts in with `App::media_keys` (or `WindowSpec::media_keys`,
+    /// `ConfiguredOverlay::media_keys`, `Runtime::set_media_keys`). Off by default so apps
+    /// written without it receive no new keys and never intercept system media keys on macOS.
+    /// Text fields ignore it; apps can bind it in `on_key`, `El::on_key`, `El::on_key_preview`,
+    /// `El::on_key_up`, and `Chord`.
+    Media(MediaKey),
+}
+
+/// A hardware media transport key carried by [`Key::Media`].
+///
+/// Mirrors the W3C UI Events `KeyboardEvent.key` media values (`MediaPlayPause`, `MediaPlay`,
+/// `MediaPause`, `MediaTrackNext`, `MediaTrackPrevious`, `MediaStop`, `MediaFastForward`,
+/// `MediaRewind`), winit's `NamedKey::Media*` variants, Linux XKB `XF86Audio*` keysyms, and
+/// macOS `NSEventTypeSystemDefined` `NX_KEYTYPE_*` events.
+///
+/// ```
+/// use rune_edit::{Key, KeyEvent, MediaKey};
+///
+/// let ev = KeyEvent::from(Key::Media(MediaKey::PlayPause));
+/// assert_eq!(ev.key, Key::Media(MediaKey::PlayPause));
+/// ```
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MediaKey {
+    /// Combined Play/Pause toggle (the ⏯ key on Mac, Windows, and web keyboards).
+    PlayPause,
+    /// Dedicated Play key (for example Linux XKB `XF86AudioPlay` or media remotes).
+    Play,
+    /// Dedicated Pause key (for example Linux XKB `XF86AudioPause` or media remotes).
+    Pause,
+    /// Next track (⏭).
+    Next,
+    /// Previous track (⏮).
+    Previous,
+    /// Stop playback (⏹).
+    Stop,
+    /// Fast forward (⏩).
+    FastForward,
+    /// Rewind (⏪).
+    Rewind,
 }
 
 /// A modifier key, by side. Alt is Option on macOS; Super is Command on macOS and the Windows
@@ -222,23 +265,37 @@ impl KeyEvent {
         }
     }
 
-    /// Text typed with Cmd (macOS) or Ctrl held, such as an unclaimed Shift-Cmd-Space. It never
-    /// inserts, matching browsers and AppKit, but still reaches key handlers. Ctrl+Alt is AltGr
-    /// on Windows and Linux, so text typed with both still inserts there; Option alone types.
+    /// Text typed with Cmd (macOS), Ctrl, or (off macOS) Alt alone held, such as an unclaimed
+    /// Shift-Cmd-Space or Alt+D. It never inserts, matching browsers, AppKit and GTK, but still
+    /// reaches key handlers. Ctrl+Alt is AltGr on Windows and Linux, so text typed with both
+    /// still inserts there; Option alone types on macOS.
     #[doc(hidden)]
     pub fn is_command_chord(&self) -> bool {
+        self.is_command_chord_on(KeyPlatform::current())
+    }
+
+    pub(crate) fn is_command_chord_on(&self, platform: KeyPlatform) -> bool {
         let m = self.mods;
-        matches!(self.key, Key::Text(_)) && (m.cmd || m.ctrl) && (crate::MAC_KEYS || !m.alt)
+        matches!(self.key, Key::Text(_))
+            && if platform.mac() { m.cmd || m.ctrl } else { (m.cmd || m.ctrl) ^ m.alt }
     }
 
     /// The standard edit command this is (paste, copy, cut, select all, undo, redo, format):
     /// `Key::Command(c)` with the primary modifier alone, ⌘ on macOS and Ctrl elsewhere, or
-    /// Shift too for ⇧⌘Z. Another modifier (Ctrl+Alt+V, ⌃⌘C, Ctrl+Shift+V) makes it an
-    /// app's chord, which reaches `on_key` instead.
+    /// Shift too for ⇧⌘Z, plus `Shift+Insert` for paste off macOS. Another modifier
+    /// (Ctrl+Alt+V, ⌃⌘C, Ctrl+Shift+V, Ctrl+Shift+Insert) makes it an app's chord, which
+    /// reaches `on_key` instead.
     #[doc(hidden)]
     pub fn edit_command(&self) -> Option<char> {
-        let Key::Command(c) = self.key else { return None };
-        (primary_alone(self.mods) && (c == 'z' || !self.mods.shift)).then_some(c)
+        self.edit_command_on(KeyPlatform::current())
+    }
+
+    pub(crate) fn edit_command_on(&self, platform: KeyPlatform) -> Option<char> {
+        match self.key {
+            Key::Command(c) => (primary_alone_on(self.mods, platform) && (c == 'z' || !self.mods.shift)).then_some(c),
+            Key::Insert => (!platform.mac() && held(self.mods, platform) == SHIFT).then_some('v'),
+            _ => None,
+        }
     }
 
     /// Alt+Space off macOS: the window menu's key. It never types a space, and on Windows opens

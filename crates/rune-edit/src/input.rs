@@ -51,13 +51,11 @@ impl TextEdit {
     /// to its logical end. Across lines, the end the arrow steps toward in the focus's paragraph.
     fn collapse_to(&self, layout: Option<TextFlow<'_>>, right: bool) -> usize {
         let (a, b) = self.range();
-        let Some(l) = layout.filter(|_| !self.is_masked()) else { return if right { b } else { a } };
-        let (ca, cb) = (l.caret(self.display_index(a), parley::Affinity::Downstream, 0.0), l.caret(self.display_index(b), parley::Affinity::Upstream, 0.0));
-        if (ca.y0 - cb.y0).abs() < 1.0 {
-            return if (ca.x0 <= cb.x0) != right { a } else { b };
+        if self.is_masked() {
+            return if right { b } else { a };
         }
-        let forward = right == (l.piece_at(self.display_index(self.focus)).flow == Flow::Ltr);
-        if forward { b } else { a }
+        let d = super::caret_motion::collapse_edge(layout, self.display_index(a), self.display_index(b), self.display_index(self.focus), right);
+        self.model_index(d)
     }
 
     /// Applies one key. `layout` is the field's layout for the current text (device px).
@@ -68,8 +66,19 @@ impl TextEdit {
     /// [`Self::key`] with the field's layout as it draws it, one paragraph's or a by-paragraph field's.
     #[doc(hidden)]
     pub fn key_in(&mut self, ev: &KeyEvent, layout: Option<TextFlow<'_>>) -> EditOutcome {
+        self.key_inner(ev, layout, false)
+    }
+
+    /// [`Self::key_in`] for a read-only field: keeps caret navigation, `Shift` selection,
+    /// `Cmd/Ctrl+A`, `Cmd/Ctrl+C`, and `Escape` blur while refusing every mutating key.
+    #[doc(hidden)]
+    pub fn key_in_read_only(&mut self, ev: &KeyEvent, layout: Option<TextFlow<'_>>) -> EditOutcome {
+        self.key_inner(ev, layout, true)
+    }
+
+    fn key_inner(&mut self, ev: &KeyEvent, layout: Option<TextFlow<'_>>, read_only: bool) -> EditOutcome {
         let mut out = EditOutcome::default();
-        if matches!(ev.key, Key::Modifier { .. }) { return out; }
+        if matches!(ev.key, Key::Modifier { .. } | Key::Media(_)) { return out; }
         // Any key but Up and Down lets the column go.
         let column = std::mem::take(&mut self.column);
         self.sync_invariants();
@@ -84,7 +93,10 @@ impl TextEdit {
             let (key, line) = match c {
                 'a' => (Key::Left, true), 'e' => (Key::Right, true), 'b' => (Key::Left, false),
                 'f' => (Key::Right, false), 'p' => (Key::Up, false), 'n' => (Key::Down, false),
-                'd' => (Key::Delete, false), 'h' => (Key::Backspace, false),
+                'd' if !read_only => (Key::Delete, false),
+                'h' if !read_only => (Key::Backspace, false),
+                'd' | 'h' => return out,
+                _ if read_only => return out,
                 _ => {
                     // Ctrl-K deletes to the end of the line, or the line break at its end.
                     self.break_history_group();
@@ -100,7 +112,7 @@ impl TextEdit {
                 }
             };
             self.column = column;
-            return self.key_in(&KeyEvent { key, mods: Mods { shift: m.shift, cmd: line, ..Mods::default() } }, layout);
+            return self.key_inner(&KeyEvent { key, mods: Mods { shift: m.shift, cmd: line, ..Mods::default() } }, layout, read_only);
         }
         if ev.is_command_chord() || ev.is_window_menu_chord() { return out; }
         // Typing, deleting and line breaks join the open undo step (`history::step`); any other key closes it.
@@ -110,6 +122,7 @@ impl TextEdit {
         let word = m.alt || (m.ctrl && !crate::MAC_KEYS);
         let line = m.cmd && (crate::MAC_KEYS || !m.ctrl);
         match &ev.key {
+            Key::Text(_) if read_only => {}
             Key::Text(s) => {
                 if s.chars().any(|c| !c.is_control() || (!self.is_single_line() && matches!(c, '\n' | '\r' | '\t'))) {
                     let s = self.sanitize(s);
@@ -118,6 +131,7 @@ impl TextEdit {
             }
             // A composition's Return and Escape are the input method's.
             Key::Enter | Key::Escape if self.preedit().is_some() => {}
+            Key::Enter if read_only => {}
             Key::Enter => {
                 if self.is_single_line() {
                     out.submit = true;
@@ -170,6 +184,7 @@ impl TextEdit {
                     }
                 }
             }
+            Key::Tab if read_only => {}
             Key::Tab => {
                 if !m.cmd && !m.alt && !m.ctrl && !self.secure && !self.is_single_line() {
                     if self.active_block() == Block::Code && !m.shift {
@@ -183,6 +198,7 @@ impl TextEdit {
             }
             Key::PageUp | Key::PageDown => {}
             Key::Escape => out.blur = true,
+            Key::Backspace if read_only => {}
             Key::Backspace => {
                 let (a, b) = self.range();
                 if a != b || (self.is_hidden_multiline() && self.is_pristine()) {
@@ -223,6 +239,7 @@ impl TextEdit {
                     }
                 }
             }
+            Key::Delete if read_only => {}
             Key::Delete => {
                 let (a, b) = self.range();
                 if a != b || (self.is_hidden_multiline() && self.is_pristine()) {
@@ -237,18 +254,18 @@ impl TextEdit {
                 let i = if line { self.line_edge(layout, false) } else if word { self.prev_word(self.focus) } else { prev_char(&self.text, self.focus) };
                 self.move_h((i, parley::Affinity::Downstream), m.shift, false, layout);
             }
-            Key::Right if !m.shift && !m.cmd && !m.alt && !m.ctrl && self.at_end_of_trailing_block() => self.leave_trailing_block(),
-            Key::Down if !m.shift && !m.cmd && !m.alt && !m.ctrl && self.at_end_of_trailing_block() => self.leave_trailing_block(),
+            Key::Right if !read_only && !m.shift && !m.cmd && !m.alt && !m.ctrl && self.at_end_of_trailing_block() => self.leave_trailing_block(),
+            Key::Down if !read_only && !m.shift && !m.cmd && !m.alt && !m.ctrl && self.at_end_of_trailing_block() => self.leave_trailing_block(),
             Key::Right if !line && let Some(to) = self.visual_step(layout, true, word) => self.move_h(to, m.shift, true, layout),
             Key::Right => {
                 let i = if line { self.line_edge(layout, true) } else if word { self.next_word(self.focus) } else { next_char(&self.text, self.focus) };
                 self.move_h((i, parley::Affinity::Downstream), m.shift, true, layout);
             }
-            // Home and End go to the text's ends on macOS. Elsewhere they go to the line's
-            // edge, and with Ctrl to the text's ends.
+            // Home and End go to the text's ends on macOS unless `line_home_end` opts into
+            // visual line edges (keeping Cmd+Home/End and Ctrl+Home/End on the text's ends).
+            // Elsewhere they go to the line's edge, and with Ctrl to the text's ends.
             Key::Home | Key::End => {
-                let end = ev.key == Key::End;
-                let i = if crate::MAC_KEYS || m.ctrl { if end { self.text.len() } else { 0 } } else { self.line_edge(layout, end) };
+                let i = self.home_end_target(layout, ev.key == Key::End, m, crate::MAC_KEYS);
                 self.set(i, m.shift)
             }
             Key::Up | Key::Down => {
@@ -285,27 +302,27 @@ impl TextEdit {
             }
             // Only the plain chord: with another modifier it's the app's (Ctrl+Alt+Z).
             Key::Command(_) => match ev.edit_command() {
-                Some('z') if m.shift => self.redo(),
-                Some('z') => self.undo(),
-                Some('y') if !crate::MAC_KEYS => self.redo(),
+                Some('z') if !read_only && m.shift => self.redo(),
+                Some('z') if !read_only => self.undo(),
+                Some('y') if !read_only && !crate::MAC_KEYS => self.redo(),
                 Some('a') => {
                     self.anchor = 0;
                     self.focus = self.text.len();
                     self.typing = Typing::Inherited;
                 }
-                Some('b' | 'i' | 'u') => {
+                Some('b' | 'i' | 'u') if !read_only => {
                     if let Some(mark) = self.format_chord(ev) {
                         self.toggle_mark(mark);
                     }
                 }
                 Some('c') if !self.secure => out.copy = Some(self.selected().to_owned()),
-                Some('x') if !self.secure => {
+                Some('x') if !read_only && !self.secure => {
                     out.copy = Some(self.selected().to_owned());
                     self.insert("");
                 }
                 _ => {}
             },
-            Key::Function(_) | Key::ContextMenu | Key::Insert | Key::PrintScreen | Key::ScrollLock | Key::Pause | Key::Modifier { .. } => {}
+            Key::Function(_) | Key::ContextMenu | Key::Insert | Key::PrintScreen | Key::ScrollLock | Key::Pause | Key::Media(_) | Key::Modifier { .. } => {}
         }
         out
     }
@@ -373,6 +390,17 @@ impl TextEdit {
                 (i, parley::Affinity::Downstream)
             }
         })
+    }
+
+    /// Target byte offset for `Key::Home` (`!end`) or `Key::End` (`end`) with modifiers `m` on
+    /// `macos`: document start/end by default on macOS, or visual line start/end when
+    /// `line_home_end` is enabled and neither Cmd nor Ctrl is held.
+    pub(crate) fn home_end_target(&self, layout: Option<TextFlow<'_>>, end: bool, m: Mods, macos: bool) -> usize {
+        if super::caret_motion::home_end_is_doc(m, macos, self.line_home_end) {
+            if end { self.text.len() } else { 0 }
+        } else {
+            self.line_edge(layout, end)
+        }
     }
 
     fn line_edge(&self, layout: Option<TextFlow<'_>>, end: bool) -> usize {
@@ -445,12 +473,13 @@ impl TextEdit {
         if self.secure || html_str.trim().is_empty() {
             return self.paste(plain);
         }
-        let mut frag = Self::from_html(html_str);
+        let mut frag = html::parse_html(html_str).rich();
         if !pills {
             frag.marks.retain(|m| !m.mark.is_pill());
         }
-        // HTML that only colours or lays out text (a code editor's copy) would collapse the
-        // plain text's whitespace for nothing.
+        // HTML with no formatting this field keeps (such as layout-only markup, or a code
+        // editor's copy on a field that has not opted into colour) would collapse plain
+        // whitespace for nothing.
         let frag = self.keep_allowed(frag);
         let unformatted = frag.marks.is_empty() && frag.blocks.iter().all(|&b| b == Block::Paragraph);
         if !plain.is_empty() && (frag.text.is_empty() || unformatted) {
@@ -551,3 +580,7 @@ impl TextEdit {
         EditOutcome::default()
     }
 }
+
+#[cfg(test)]
+#[path = "input_tests.rs"]
+mod tests;

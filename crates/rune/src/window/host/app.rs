@@ -16,7 +16,7 @@ use crate::time::Instant;
 
 /// Non-generic arguments passed to [`WindowApp::render_compositor`], which constructs
 /// [`Frame<'_, S>`] in place.
-pub(in crate::window) struct CompositorFrame<'a> {
+pub(crate) struct CompositorFrame<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
     pub encoder: &'a mut wgpu::CommandEncoder,
@@ -29,17 +29,26 @@ pub(in crate::window) struct CompositorFrame<'a> {
 }
 
 /// Everything the non-generic window host needs of its typed app state `S`.
-pub(in crate::window) trait WindowApp {
+pub(crate) trait WindowApp {
     fn rt(&self) -> &RuntimeCore;
     fn rt_mut(&mut self) -> &mut RuntimeCore;
     fn with_driver(&mut self, f: &mut dyn FnMut(&mut RuntimeCore, &mut dyn AppDriver));
 
     fn enter_turn(&mut self) -> bool;
     fn leave_turn(&mut self);
+    fn run_on_close_request(&mut self) -> Option<crate::CloseResponse>;
+    fn has_quit_request(&self) -> bool;
+    fn run_on_quit_request(&mut self) -> Option<crate::QuitResponse>;
     fn run_on_close(&mut self);
     fn run_on_quit(&mut self) -> bool;
     fn run_on_rest(&mut self);
     fn queue_on_reopen(&mut self, has_visible_windows: bool) -> Option<Arc<AtomicBool>>;
+    /// Whether the app set `App::on_window_geometry`.
+    fn watches_geometry(&self) -> bool;
+    /// Runs `App::on_window_geometry` now.
+    fn run_on_geometry(&mut self, geometry: crate::WindowGeometry);
+    /// Queues `App::on_window_geometry` as an update for the next drain.
+    fn queue_on_geometry(&mut self, geometry: crate::WindowGeometry);
     fn drain_startup(&mut self, shortcuts: &crate::shortcuts::Guard, menus: &mut crate::native_menu::MenuGuard);
     fn drain_window(&mut self, shortcuts: &crate::shortcuts::Guard, menus: &mut crate::native_menu::MenuGuard) -> (WindowRequests, bool, bool);
     fn has_updates(&self) -> bool;
@@ -48,6 +57,7 @@ pub(in crate::window) trait WindowApp {
     fn compositor_animating(&self) -> bool;
     fn compositor_draws_own(&self) -> bool;
     fn render_compositor(&mut self, args: CompositorFrame<'_>) -> bool;
+    fn release_compositor_gpu(&mut self);
     fn inspect_frame(&mut self);
     fn text_idle_owed(&self) -> bool;
     fn text_idle_turn(&mut self) -> bool;
@@ -77,10 +87,6 @@ impl dyn WindowApp + '_ {
 
     pub(in crate::window) fn hidden_wake(&mut self) -> bool {
         self.driver(|rt, app| rt.hidden_wake(app))
-    }
-
-    pub(in crate::window) fn hidden_timer_frame(&mut self) {
-        self.driver(|rt, app| rt.hidden_timer_frame(app));
     }
 
     pub(in crate::window) fn build_for_show(&mut self) -> bool {
@@ -127,6 +133,10 @@ impl dyn WindowApp + '_ {
         self.driver(|rt, app| rt.pointer_move(app, x, y));
     }
 
+    pub(in crate::window) fn observe_pointer(&mut self, x: f32, y: f32) -> bool {
+        self.driver(|rt, app| rt.observe_pointer(app, x, y))
+    }
+
     pub(in crate::window) fn pointer_down(&mut self, x: f32, y: f32) {
         self.driver(|rt, app| rt.pointer_down(app, x, y));
     }
@@ -157,31 +167,135 @@ impl dyn WindowApp + '_ {
 
     pub(in crate::window) fn keyboard(
         &mut self,
-        clipboard: &crate::clipboard::Client,
         event: &winit::event::KeyEvent,
         mods: winit::keyboard::ModifiersState,
         unhandled: Option<crate::runtime::Unhandled>,
     ) -> bool {
-        self.driver(|rt, app| crate::input::host_events::keyboard(rt, app, clipboard, event, mods, unhandled))
+        self.driver(|rt, app| crate::input::host_events::keyboard(rt, app, event, mods, unhandled))
     }
 
     #[cfg(target_os = "macos")]
     pub(in crate::window) fn physical_with_fallback(&mut self, event: crate::PhysicalInput, key: Option<crate::KeyEvent>) -> bool {
         self.driver(|rt, app| rt.physical_with_fallback(app, event, key))
     }
+
+    #[cfg(target_os = "macos")]
+    pub(in crate::window) fn media_key(&mut self, decoded: crate::input::media_keys::DecodedMediaKey, mods: crate::Mods) -> bool {
+        self.driver(|rt, app| crate::input::media_keys::deliver_decoded(rt, app, decoded, mods))
+    }
+}
+
+#[cfg(test)]
+pub(in crate::window) fn test_app<S: 'static>(
+    rt: Runtime<S>,
+    on_close: Option<fn(&mut S, &mut Tx)>,
+    on_quit: Option<fn(&mut S, &mut Tx)>,
+) -> Box<dyn WindowApp> {
+    test_app_with_close_request(rt, None, on_close, on_quit)
+}
+
+#[cfg(test)]
+pub(in crate::window) fn test_app_with_close_request<S: 'static>(
+    rt: Runtime<S>,
+    on_close_request: Option<fn(&mut S, &mut Tx) -> crate::CloseResponse>,
+    on_close: Option<fn(&mut S, &mut Tx)>,
+    on_quit: Option<fn(&mut S, &mut Tx)>,
+) -> Box<dyn WindowApp> {
+    test_app_with_requests(rt, on_close_request, None, on_close, on_quit)
+}
+
+#[cfg(test)]
+pub(in crate::window) fn test_app_with_requests<S: 'static>(
+    rt: Runtime<S>,
+    on_close_request: Option<fn(&mut S, &mut Tx) -> crate::CloseResponse>,
+    on_quit_request: Option<fn(&mut S, &mut Tx) -> crate::QuitResponse>,
+    on_close: Option<fn(&mut S, &mut Tx)>,
+    on_quit: Option<fn(&mut S, &mut Tx)>,
+) -> Box<dyn WindowApp> {
+    Box::new(TypedWindowApp {
+        rt,
+        shared: Arc::new(Shared::default()),
+        comp: None,
+        on_frame_drawn: None,
+        on_close_request,
+        on_quit_request,
+        on_close,
+        on_rest: None,
+        on_quit,
+        on_reopen: None,
+        on_geometry: None,
+        turn_scope: None,
+        keep_layout: None,
+        kept_layout: None,
+    })
 }
 
 /// The only per-state-type structure owned by a native window host.
-pub(super) struct TypedWindowApp<S: 'static> {
-    pub(super) rt: Runtime<S>,
-    pub(super) shared: Arc<Shared<S>>,
+pub(crate) struct TypedWindowApp<S: 'static> {
+    pub(crate) rt: Runtime<S>,
+    pub(crate) shared: Arc<Shared<S>>,
     pub(super) comp: Option<Box<dyn Compositor<S>>>,
     pub(super) on_frame_drawn: Option<OnFrameDrawn<S>>,
+    pub(super) on_close_request: Option<fn(&mut S, &mut Tx) -> crate::CloseResponse>,
+    pub(super) on_quit_request: Option<fn(&mut S, &mut Tx) -> crate::QuitResponse>,
     pub(super) on_close: Option<fn(&mut S, &mut Tx)>,
     pub(super) on_rest: Option<fn(&mut S, &mut Tx) -> bool>,
     pub(super) on_quit: Option<fn(&mut S, &mut Tx)>,
     pub(super) on_reopen: Option<fn(&mut S, bool, &mut Tx) -> bool>,
+    pub(super) on_geometry: Option<crate::window::geometry::OnWindowGeometry<S>>,
     pub(super) turn_scope: Option<TurnScope<S>>,
+    /// `App::layout_seed`'s keeper, and the seed it was last given (or the launch's own).
+    pub(super) keep_layout: Option<Box<dyn FnMut(crate::LayoutSeed)>>,
+    pub(super) kept_layout: Option<crate::LayoutSeed>,
+}
+
+impl<S: 'static> TypedWindowApp<S> {
+    #[cfg(all(test, target_os = "windows"))]
+    pub(in crate::window) fn for_test(rt: Runtime<S>, on_frame_drawn: Option<OnFrameDrawn<S>>) -> Self {
+        Self {
+            rt,
+            shared: Arc::new(Shared::default()),
+            comp: None,
+            on_frame_drawn,
+            on_close_request: None,
+            on_quit_request: None,
+            on_close: None,
+            on_rest: None,
+            on_quit: None,
+            on_reopen: None,
+            on_geometry: None,
+            turn_scope: None,
+            keep_layout: None,
+            kept_layout: None,
+        }
+    }
+
+    #[cfg(all(test, feature = "hot"))]
+    pub(crate) fn from_app(mut app: crate::App<S>, waker: crate::runtime::Waker) -> Self {
+        let (on_close_request, on_quit_request, on_close, on_rest, on_reopen, on_quit, turn_scope) = (
+            app.on_close_request, app.on_quit_request, app.on_close, app.on_rest, app.on_reopen, app.on_quit, app.turn_scope,
+        );
+        let on_geometry = app.on_window_geometry;
+        let comp = app.compositor.take();
+        let (layout_seed, keep_layout) = (app.layout_seed.take(), app.keep_layout.take());
+        let (spec, state, shared, runtime) = app.into_parts(None);
+        let mut rt = crate::tooling::runtime_for(&spec, state, spec.size, crate::runtime::Env::default(), waker);
+        rt.configure(runtime);
+        Self {
+            rt, shared, comp, on_frame_drawn: None, on_close_request, on_quit_request, on_close, on_rest, on_quit, on_reopen, on_geometry, turn_scope,
+            keep_layout, kept_layout: layout_seed,
+        }
+    }
+
+    /// Hands the first view's layout reads to `App::layout_seed`'s keeper when they aren't the
+    /// ones it last had. Before the app's own close, quit and rest hooks, which save.
+    fn keep_layout(&mut self) {
+        let Some(keep) = self.keep_layout.as_mut() else { return };
+        let Some(seed) = self.rt.core().first_layout_seed() else { return };
+        if self.kept_layout.as_ref() == Some(seed) { return; }
+        keep(seed.clone());
+        self.kept_layout = Some(seed.clone());
+    }
 }
 
 impl<S: 'static> WindowApp for TypedWindowApp<S> {
@@ -196,30 +310,76 @@ impl<S: 'static> WindowApp for TypedWindowApp<S> {
 
     fn enter_turn(&mut self) -> bool {
         let Some(scope) = self.turn_scope else { return false };
+        #[cfg(feature = "hot")]
+        crate::hot::patched_or_original!("turn_scope::enter", scope.enter, &mut self.rt.state);
+        #[cfg(not(feature = "hot"))]
         (scope.enter)(&mut self.rt.state);
         true
     }
 
     fn leave_turn(&mut self) {
         if let Some(scope) = self.turn_scope {
+            #[cfg(feature = "hot")]
+            crate::hot::patched_or_original!("turn_scope::leave", scope.leave, &mut self.rt.state);
+            #[cfg(not(feature = "hot"))]
             (scope.leave)(&mut self.rt.state);
         }
     }
 
+    fn run_on_close_request(&mut self) -> Option<crate::CloseResponse> {
+        let f = self.on_close_request?;
+        let mut response = crate::CloseResponse::Close;
+        self.rt.update(|s, tx| {
+            #[cfg(feature = "hot")]
+            { response = crate::hot::patched_or_original!("on_close_request", f, s, tx); }
+            #[cfg(not(feature = "hot"))]
+            { response = f(s, tx); }
+        });
+        Some(response)
+    }
+
+    fn has_quit_request(&self) -> bool {
+        self.on_quit_request.is_some()
+    }
+
+    fn run_on_quit_request(&mut self) -> Option<crate::QuitResponse> {
+        let f = self.on_quit_request?;
+        let mut response = crate::QuitResponse::Quit;
+        self.rt.update(|s, tx| {
+            #[cfg(feature = "hot")]
+            { response = crate::hot::patched_or_original!("on_quit_request", f, s, tx); }
+            #[cfg(not(feature = "hot"))]
+            { response = f(s, tx); }
+        });
+        Some(response)
+    }
+
     fn run_on_close(&mut self) {
+        self.keep_layout();
         if let Some(f) = self.on_close {
+            #[cfg(feature = "hot")]
+            self.rt.update(|s, tx| crate::hot::patched_or_original!("on_close", f, s, tx));
+            #[cfg(not(feature = "hot"))]
             self.rt.update(f);
         }
     }
 
     fn run_on_quit(&mut self) -> bool {
+        self.keep_layout();
         let Some(f) = self.on_quit else { return false };
+        #[cfg(feature = "hot")]
+        self.rt.update(|s, tx| crate::hot::patched_or_original!("on_quit", f, s, tx));
+        #[cfg(not(feature = "hot"))]
         self.rt.update(f);
         true
     }
 
     fn run_on_rest(&mut self) {
+        self.keep_layout();
         if let Some(f) = self.on_rest {
+            #[cfg(feature = "hot")]
+            self.rt.update_if(|s, tx| crate::hot::patched_or_original!("on_rest", f, s, tx));
+            #[cfg(not(feature = "hot"))]
             self.rt.update_if(f);
         }
     }
@@ -229,10 +389,34 @@ impl<S: 'static> WindowApp for TypedWindowApp<S> {
         let handled = Arc::new(AtomicBool::new(false));
         let answer = handled.clone();
         self.shared.queue_update(Box::new(move |s, tx| {
-            answer.store(f(s, has_visible_windows, tx), Ordering::Relaxed);
+            #[cfg(feature = "hot")]
+            let took = crate::hot::patched_or_original!("on_reopen", f, s, has_visible_windows, tx);
+            #[cfg(not(feature = "hot"))]
+            let took = f(s, has_visible_windows, tx);
+            answer.store(took, Ordering::Relaxed);
             true
         }));
         Some(handled)
+    }
+
+    fn watches_geometry(&self) -> bool { self.on_geometry.is_some() }
+
+    fn run_on_geometry(&mut self, geometry: crate::WindowGeometry) {
+        let Some(f) = self.on_geometry else { return };
+        #[cfg(feature = "hot")]
+        self.rt.update_if(|s, tx| crate::hot::patched_or_original!("on_window_geometry", f, s, geometry, tx));
+        #[cfg(not(feature = "hot"))]
+        self.rt.update_if(|s, tx| f(s, geometry, tx));
+    }
+
+    fn queue_on_geometry(&mut self, geometry: crate::WindowGeometry) {
+        let Some(f) = self.on_geometry else { return };
+        self.shared.queue_update(Box::new(move |s, tx| {
+            #[cfg(feature = "hot")]
+            return crate::hot::patched_or_original!("on_window_geometry", f, s, geometry, tx);
+            #[cfg(not(feature = "hot"))]
+            f(s, geometry, tx)
+        }));
     }
 
     fn drain_startup(&mut self, shortcuts: &crate::shortcuts::Guard, menus: &mut crate::native_menu::MenuGuard) {
@@ -287,6 +471,12 @@ impl<S: 'static> WindowApp for TypedWindowApp<S> {
         };
         c.render(&mut f);
         c.animating()
+    }
+
+    fn release_compositor_gpu(&mut self) {
+        if let Some(c) = self.comp.as_mut() {
+            c.release_gpu();
+        }
     }
 
     fn inspect_frame(&mut self) {

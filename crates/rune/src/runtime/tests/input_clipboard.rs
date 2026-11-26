@@ -124,6 +124,78 @@ fn single_line_input_scrolls_to_the_caret_instead_of_wrapping() {
 }
 
 #[test]
+fn single_line_placeholder_clips_to_the_field_box_like_typed_text() {
+    const LONG_LTR: &str = "Search every note, highlight and card in the library";
+    const LONG_RTL: &str = "ابحث في جميع الملاحظات والبطاقات والملفات في المكتبة";
+    struct State {
+        typed: crate::TextEdit,
+        empty: crate::TextEdit,
+        padded: crate::TextEdit,
+        rtl: crate::TextEdit,
+    }
+    fn view(s: &State, _: &mut Cx<State>) -> El {
+        let style = crate::TextStyle::new(14.0, 400.0);
+        let boxed = |edit: &crate::TextEdit, key: &str, placeholder: &str| {
+            crate::el::row().w(120.0).h(28.0).px(8.0).items_center().child(
+                crate::text_input(edit, style)
+                    .single_line()
+                    .key(key)
+                    .grow(1.0)
+                    .min_w(0.0)
+                    .color(crate::Color::WHITE)
+                    .placeholder(placeholder, crate::Color::WHITE),
+            )
+        };
+        let padded = crate::text_input(&s.padded, style)
+            .single_line()
+            .key("padded")
+            .size(120.0, 28.0)
+            .px(8.0)
+            .color(crate::Color::WHITE)
+            .placeholder(LONG_LTR, crate::Color::WHITE);
+        let rtl = crate::el::row().w(120.0).h(28.0).px(8.0).items_center().child(
+            crate::text_input(&s.rtl, style)
+                .single_line()
+                .dir(crate::Direction::Rtl)
+                .key("rtl")
+                .grow(1.0)
+                .min_w(0.0)
+                .color(crate::Color::WHITE)
+                .placeholder(LONG_RTL, crate::Color::WHITE),
+        );
+        col().padding(20.0).gap(20.0)
+            .child(boxed(&s.typed, "typed", LONG_LTR))
+            .child(boxed(&s.empty, "empty", LONG_LTR))
+            .child(padded)
+            .child(rtl)
+    }
+    for scale in [1.0, 2.0] {
+        let s = State {
+            typed: crate::TextEdit::new(LONG_LTR),
+            empty: crate::TextEdit::default(),
+            padded: crate::TextEdit::default(),
+            rtl: crate::TextEdit::default(),
+        };
+        let mut rt = Runtime::new(s, view, (400.0, 260.0), Env::new(true, scale));
+        rt.frame(0.0);
+        for (key, inset) in [("typed", 0.0), ("empty", 0.0), ("padded", 8.0), ("rtl", 0.0)] {
+            let [x, y, w, h] = rt.presented(key).unwrap().0;
+            let (x0, x1) = ((x + inset) * scale, (x + w - inset) * scale);
+            let (y0, y1) = (y * scale, (y + h) * scale);
+            let glyphs: Vec<_> = rt.instances.iter()
+                .filter(|i| i.params[1] == crate::render::KIND_GLYPH && i.fill[3] > 0.0)
+                .filter(|i| (y0..y1).contains(&(i.rect[1] + i.rect[3] * 0.5)))
+                .collect();
+            assert!(!glyphs.is_empty(), "scale={scale} {key}: expected placeholder/text glyphs");
+            let ink_left = glyphs.iter().map(|i| i.rect[0].max(i.clip[0])).fold(f32::INFINITY, f32::min);
+            let ink_right = glyphs.iter().map(|i| (i.rect[0] + i.rect[2]).min(i.clip[2])).fold(0.0, f32::max);
+            assert!(ink_left >= x0 - 0.5, "scale={scale} {key}: ink starts at {ink_left}, before field left {x0}");
+            assert!(ink_right <= x1 + 0.5, "scale={scale} {key}: ink ends at {ink_right}, past field right {x1}");
+        }
+    }
+}
+
+#[test]
 fn grapheme_arrow_caret_hit_tests_roundtrip_after_single_line_scroll() {
     fn view(s: &crate::TextEdit, _: &mut Cx<crate::TextEdit>) -> El {
         crate::text_input(s, crate::TextStyle::new(16.0, 400.0)).single_line()
@@ -420,14 +492,460 @@ fn clipboard_requests_follow_handler_order_and_are_consumed_once() {
     let input = rt.tree.nodes.iter().find(|n| n.key.as_deref() == Some("input")).unwrap().path.clone();
     rt.set_focus(Some(input), true);
     let copy_key = KeyEvent { key: Key::Command('c'), mods: Mods { cmd: true, ..Mods::default() } };
-    rt.frame.queue.push(Action::Press(button.clone(), crate::PointerButton::Primary, false));
+    rt.frame.queue.push(Action::Press(button.clone(), crate::PointerButton::Primary, false, None));
     rt.frame.queue.push(Action::Key { ev: copy_key.clone(), repeat: false, stage: false });
     rt.frame(1.0 / 120.0);
     assert_eq!(rt.copy_request.take().as_deref(), Some("héllo 👋"));
     rt.frame(1.0 / 120.0);
     assert!(rt.copy_request.is_none());
     rt.frame.queue.push(Action::Key { ev: copy_key, repeat: false, stage: false });
-    rt.frame.queue.push(Action::Press(button, crate::PointerButton::Primary, false));
+    rt.frame.queue.push(Action::Press(button, crate::PointerButton::Primary, false, None));
     rt.frame(1.0 / 120.0);
     assert_eq!(rt.copy_request.take().as_deref(), Some("response"));
+}
+
+#[test]
+fn shift_insert_pastes_into_focused_field_and_root_off_macos_only() {
+    use crate::edit::{Key, KeyEvent, Mods, TextEdit};
+    #[derive(Default)]
+    struct State {
+        field: TextEdit,
+        root_pasted: String,
+        intercept_insert: bool,
+        seen_input_keys: Vec<KeyEvent>,
+        seen_app_keys: Vec<KeyEvent>,
+    }
+    fn view(s: &State, _: &mut Cx<State>) -> El {
+        col()
+            .size(240.0, 120.0)
+            .on_paste(|s: &mut State, text, _| s.root_pasted = text.to_owned())
+            .child(
+                crate::text_input(&s.field, crate::TextStyle::new(14.0, 400.0))
+                    .key("field")
+                    .size(200.0, 32.0)
+                    .on_edit(|s: &mut State| &mut s.field)
+                    .on_input_key(|s: &mut State, ev, _| {
+                        s.seen_input_keys.push(ev.clone());
+                        s.intercept_insert && ev.key == Key::Insert
+                    }),
+            )
+            .child(
+                crate::text_input(&TextEdit::new("inert"), crate::TextStyle::new(14.0, 400.0))
+                    .key("inert")
+                    .size(200.0, 32.0)
+                    .inert(),
+            )
+    }
+    let m = crate::clipboard::memory();
+    m.set_text("😀");
+    let mut rt = Runtime::new(State::default(), view, (240.0, 120.0), Env::new(true, 1.0));
+    rt.on_key = Some(|s, ev, _| {
+        s.seen_app_keys.push(ev.clone());
+        false
+    });
+    rt.use_clipboard(&m);
+    rt.frame(0.0);
+
+    let shift_ins = KeyEvent { key: Key::Insert, mods: Mods { shift: true, ..Mods::default() } };
+
+    // Focused field: Shift+Insert pastes off macOS, ignored on macOS (reaches app.on_key).
+    rt.update(|s, _| s.field.focused = true);
+    rt.frame(0.0);
+    rt.key(shift_ins.clone());
+    rt.frame(0.0);
+    rt.frame(0.0);
+    if cfg!(target_os = "macos") {
+        assert_eq!(rt.state.field.text, "");
+        assert_eq!(rt.state.seen_app_keys.last(), Some(&shift_ins));
+    } else {
+        assert_eq!(rt.state.field.text, "😀");
+        assert!(rt.state.seen_app_keys.is_empty(), "consumed paste does not reach app.on_key");
+    }
+
+    // Bare Insert and extra modifiers never paste on any platform.
+    rt.state.field.clear();
+    rt.state.seen_app_keys.clear();
+    for ev in [
+        KeyEvent::from(Key::Insert),
+        KeyEvent { key: Key::Insert, mods: Mods { shift: true, ctrl: true, cmd: true, ..Mods::default() } },
+        KeyEvent { key: Key::Insert, mods: Mods { shift: true, alt: true, ..Mods::default() } },
+        KeyEvent { key: Key::Insert, mods: Mods { shift: true, logo: true, ..Mods::default() } },
+    ] {
+        rt.key(ev.clone());
+        rt.frame(0.0);
+        rt.frame(0.0);
+        assert_eq!(rt.state.field.text, "", "{ev:?} must not paste");
+        assert_eq!(rt.state.seen_app_keys.last(), Some(&ev), "{ev:?} reaches app.on_key");
+    }
+
+    // on_input_key returning true intercepts Shift+Insert before paste.
+    rt.state.intercept_insert = true;
+    rt.state.seen_app_keys.clear();
+    rt.key(shift_ins.clone());
+    rt.frame(0.0);
+    rt.frame(0.0);
+    assert_eq!(rt.state.field.text, "");
+    assert!(rt.state.seen_app_keys.is_empty());
+
+    // Blurred: Shift+Insert reaches root on_paste off macOS only (when app.on_key declines).
+    rt.state.intercept_insert = false;
+    rt.update(|s, _| s.field.focused = false);
+    rt.frame(0.0);
+    rt.key(shift_ins.clone());
+    rt.frame(0.0);
+    rt.frame(0.0);
+    if cfg!(target_os = "macos") {
+        assert_eq!(rt.state.root_pasted, "");
+    } else {
+        assert_eq!(rt.state.root_pasted, "😀");
+    }
+}
+
+#[test]
+fn el_line_home_end_syncs_to_model_and_preserves_model_setting() {
+    use crate::edit::{Key, KeyEvent, Mods, TextEdit};
+    struct State {
+        managed: TextEdit,
+        model_owned: TextEdit,
+        opt_in: bool,
+    }
+    fn view(s: &State, _: &mut Cx<State>) -> El {
+        col()
+            .size(120.0, 200.0)
+            .child(
+                crate::text_input(&s.managed, crate::TextStyle::new(14.0, 400.0))
+                    .key("managed")
+                    .w(90.0)
+                    .line_home_end(s.opt_in)
+                    .on_edit(|s: &mut State| &mut s.managed),
+            )
+            .child(
+                crate::text_input(&s.model_owned, crate::TextStyle::new(14.0, 400.0))
+                    .key("model-owned")
+                    .w(90.0)
+                    .on_edit(|s: &mut State| &mut s.model_owned),
+            )
+    }
+    let mut managed = TextEdit::new("first\nsecond");
+    managed.set_caret(2);
+    managed.focused = true;
+    let model_owned = TextEdit::new("one\ntwo").with_line_home_end(true);
+    let mut rt = Runtime::new(
+        State { managed, model_owned, opt_in: true },
+        view,
+        (120.0, 200.0),
+        Env::new(true, 1.0),
+    );
+    rt.frame(0.0);
+    assert!(rt.state.managed.line_home_end(), "El::line_home_end(true) syncs into TextEdit");
+    assert!(rt.state.model_owned.line_home_end(), "omitting El::line_home_end preserves model flag");
+
+    // Plain End moves to end of line 1 ("first"), then typing inserts before '\n'.
+    rt.key(KeyEvent::from(Key::End));
+    rt.key(KeyEvent::from(Key::Text("!".into())));
+    rt.frame(0.0);
+    assert_eq!(rt.state.managed.text, "first!\nsecond");
+
+    // Shift+Home selects back to line 1 start.
+    rt.key(KeyEvent { key: Key::Home, mods: Mods { shift: true, ..Mods::default() } });
+    rt.frame(0.0);
+    assert_eq!(rt.state.managed.selected(), "first!");
+
+    // Document-end chord (Cmd+End on macOS, Ctrl+End elsewhere) jumps to the end of the text.
+    let doc_end_mods = if cfg!(target_os = "macos") {
+        Mods { cmd: true, ..Mods::default() }
+    } else {
+        Mods { ctrl: true, cmd: true, ..Mods::default() }
+    };
+    rt.key(KeyEvent { key: Key::End, mods: doc_end_mods });
+    rt.frame(0.0);
+    assert_eq!(rt.state.managed.focus, rt.state.managed.text.len());
+
+    // Toggling El::line_home_end(false) syncs back to false and restores macOS document End.
+    rt.update(|s, _| {
+        s.opt_in = false;
+        s.managed.set_caret(2);
+    });
+    rt.frame(0.0);
+    assert!(!rt.state.managed.line_home_end());
+    rt.key(KeyEvent::from(Key::End));
+    rt.frame(0.0);
+    if cfg!(target_os = "macos") {
+        assert_eq!(rt.state.managed.focus, rt.state.managed.text.len());
+    } else {
+        assert_eq!(rt.state.managed.focus, 6);
+    }
+
+    // Focusing model_owned without El::line_home_end keeps its model-level true flag.
+    rt.update(|s, _| {
+        s.managed.focused = false;
+        s.model_owned.focused = true;
+        s.model_owned.set_caret(1);
+    });
+    rt.frame(0.0);
+    assert!(rt.state.model_owned.line_home_end());
+    rt.key(KeyEvent::from(Key::End));
+    rt.frame(0.0);
+    assert_eq!(rt.state.model_owned.focus, 3);
+}
+
+#[test]
+fn on_input_copy_covers_keyboard_and_context_menu_respects_secure_empty_and_has_own_pills() {
+    use crate::ClipboardContent;
+    use crate::edit::{Key, KeyEvent, Mods, TextEdit};
+
+    struct State {
+        rich: TextEdit,
+        dest: TextEdit,
+        secret: TextEdit,
+        disabled: TextEdit,
+        inert: TextEdit,
+        custom: bool,
+        intercept_key: bool,
+        copies: Vec<bool>,
+        changes: u32,
+        pasted_own: Vec<bool>,
+        read_own: Vec<bool>,
+        window_own: Vec<bool>,
+    }
+
+    fn view(s: &State, _: &mut Cx<State>) -> El {
+        let st = crate::TextStyle::new(14.0, 400.0);
+        col()
+            .size(320.0, 260.0)
+            .on_paste_content(|s: &mut State, content, _| s.window_own.push(content.has_own_pills()))
+            .child(
+                crate::text_input(&s.rich, st)
+                    .key("rich")
+                    .label("Rich composer")
+                    .size(300.0, 44.0)
+                    .on_edit(|s: &mut State| &mut s.rich)
+                    .on_input_change(|s: &mut State, _| s.changes += 1)
+                    .on_input_key(|s: &mut State, ev, tx| {
+                        if s.intercept_key && ev.edit_command() == Some('c') {
+                            tx.copy("from-key-hook");
+                            return true;
+                        }
+                        false
+                    })
+                    .on_input_copy(|s: &mut State, cut, _| {
+                        s.copies.push(cut);
+                        if !s.custom {
+                            return None;
+                        }
+                        let plain = format!("custom:{}", s.rich.selected());
+                        Some(ClipboardContent::new(plain).with_html(s.rich.selected_html()))
+                    }),
+            )
+            .child(
+                crate::text_input(&s.dest, st)
+                    .key("dest")
+                    .size(300.0, 44.0)
+                    .on_edit(|s: &mut State| &mut s.dest)
+                    .on_input_paste(|s: &mut State, content, _| {
+                        s.pasted_own.push(content.has_own_pills());
+                        false
+                    }),
+            )
+            .child(
+                crate::text_input(&s.secret, st)
+                    .key("secret")
+                    .secure()
+                    .size(300.0, 36.0)
+                    .on_edit(|s: &mut State| &mut s.secret)
+                    .on_input_copy(|s: &mut State, cut, _| {
+                        s.copies.push(cut);
+                        Some(ClipboardContent::new("LEAK"))
+                    }),
+            )
+            .child(
+                crate::text_input(&s.disabled, st)
+                    .key("disabled")
+                    .disabled(true)
+                    .size(300.0, 36.0)
+                    .on_edit(|s: &mut State| &mut s.disabled)
+                    .on_input_copy(|s: &mut State, cut, _| {
+                        s.copies.push(cut);
+                        Some(ClipboardContent::new("DISABLED"))
+                    }),
+            )
+            .child(
+                col()
+                    .inert()
+                    .child(
+                        crate::text_input(&s.inert, st)
+                            .key("inert")
+                            .size(300.0, 36.0)
+                            .on_edit(|s: &mut State| &mut s.inert)
+                            .on_input_copy(|s: &mut State, cut, _| {
+                                s.copies.push(cut);
+                                Some(ClipboardContent::new("INERT"))
+                            }),
+                    ),
+            )
+    }
+
+    let mut rich = TextEdit::new("Hi ").rich();
+    rich.insert_pill("tpl:sig", "@Sig");
+    rich.insert(" end");
+    rich.focused = true;
+    rich.set_selection(0, rich.text.len());
+    let mut secret = TextEdit::new("s3cr3t");
+    secret.set_selection(0, 6);
+    let mut disabled = TextEdit::new("nope");
+    disabled.set_selection(0, 4);
+    let mut inert = TextEdit::new("nope");
+    inert.set_selection(0, 4);
+
+    let board = crate::clipboard::memory();
+    let mut rt = Runtime::new(
+        State {
+            rich,
+            dest: TextEdit::new("").rich(),
+            secret,
+            disabled,
+            inert,
+            custom: true,
+            intercept_key: false,
+            copies: Vec::new(),
+            changes: 0,
+            pasted_own: Vec::new(),
+            read_own: Vec::new(),
+            window_own: Vec::new(),
+        },
+        view,
+        (320.0, 260.0),
+        Env::new(true, 1.0),
+    );
+    rt.use_clipboard(&board);
+    rt.frame(0.0);
+
+    // Accessibility tree keeps textbox role and label unchanged.
+    let a11y = rt.accessibility_json().to_string();
+    assert!(a11y.contains("Rich composer"), "a11y should keep textbox name: {a11y}");
+
+    let cmd = |c: char| KeyEvent { key: Key::Command(c), mods: Mods { cmd: true, ..Mods::default() } };
+
+    // 1. Keyboard Copy invokes on_input_copy(false) and writes custom ClipboardContent with own pills.
+    rt.key(cmd('c'));
+    rt.frame(0.0);
+    assert_eq!(rt.state.copies, [false]);
+    let copied = board.content().unwrap();
+    assert_eq!(copied.text(), "custom:Hi @Sig end");
+    assert!(copied.html().is_some_and(|h| h.contains(r#"<span data-pill="tpl:sig">@Sig</span>"#)));
+
+    // 2. has_own_pills() is true on paste into on_input_paste, read_clipboard, and root on_paste_content.
+    rt.update(|_, tx| tx.read_clipboard(|s: &mut State, content, _| s.read_own.push(content.has_own_pills())));
+    rt.frame(0.0);
+    rt.frame(0.0);
+    assert_eq!(rt.state.read_own, [true]);
+
+    rt.update(|s, _| { s.rich.focused = false; s.dest.focused = true; });
+    rt.frame(0.0);
+    rt.update(|_, tx| tx.request_paste());
+    rt.frame(0.0);
+    assert_eq!(rt.state.pasted_own, [true]);
+    assert_eq!(rt.state.dest.pills().map(|(r, id)| (r, id.to_owned())).collect::<Vec<_>>(), [(3..7, "tpl:sig".to_owned())]);
+
+    rt.update(|s, _| s.dest.focused = false);
+    rt.frame(0.0);
+    rt.update(|_, tx| tx.request_paste());
+    rt.frame(0.0);
+    assert_eq!(rt.state.window_own, [true]);
+
+    // External HTML with identical pill markup reports has_own_pills() == false.
+    board.set_content(ClipboardContent::new("custom:Hi @Sig end").with_html(copied.html().unwrap()));
+    rt.update(|s, _| { s.dest.clear(); s.dest.focused = true; });
+    rt.frame(0.0);
+    rt.update(|_, tx| tx.request_paste());
+    rt.frame(0.0);
+    assert_eq!(rt.state.pasted_own, [true, false]);
+    assert_eq!(rt.state.dest.pills().count(), 0);
+
+    // 3. Keyboard Cut invokes on_input_copy(true), deletes selection, fires on_input_change, and records undo.
+    rt.update(|s, _| { s.dest.focused = false; s.rich.focused = true; s.rich.set_selection(0, 7); });
+    rt.frame(0.0);
+    rt.key(cmd('x'));
+    rt.frame(0.0);
+    assert_eq!(rt.state.copies, [false, true]);
+    assert_eq!(rt.state.rich.text, " end");
+    assert_eq!(rt.state.changes, 1);
+    assert_eq!(board.content().unwrap().text(), "custom:Hi @Sig");
+    // Undo restores cut text and pill.
+    rt.key(cmd('z'));
+    rt.frame(0.0);
+    assert_eq!(rt.state.rich.text, "Hi @Sig end");
+    assert_eq!(rt.state.rich.pills().count(), 1);
+
+    // 4. Context-menu Copy and Cut invoke on_input_copy too.
+    rt.update(|s, _| s.rich.set_selection(0, 7));
+    rt.frame(0.0);
+    rt.key(KeyEvent::from(Key::ContextMenu));
+    rt.frame(0.0);
+    assert!(rt.popup_menu().is_some(), "ContextMenu opens field_menu");
+    rt.resolve_popup(Some("copy")).unwrap();
+    rt.frame(0.0);
+    assert_eq!(rt.state.copies, [false, true, false]);
+    assert_eq!(board.content().unwrap().text(), "custom:Hi @Sig");
+
+    rt.key(KeyEvent::from(Key::ContextMenu));
+    rt.frame(0.0);
+    rt.resolve_popup(Some("cut")).unwrap();
+    rt.frame(0.0);
+    assert_eq!(rt.state.copies, [false, true, false, true]);
+    assert_eq!(rt.state.rich.text, " end");
+    assert_eq!(board.content().unwrap().text(), "custom:Hi @Sig");
+
+    // 5. Returning None falls back to default plain + rich HTML copy on both keyboard and context menu.
+    rt.key(cmd('z'));
+    rt.frame(0.0);
+    rt.update(|s, _| { s.custom = false; s.rich.set_selection(0, 7); });
+    rt.frame(0.0);
+    rt.key(KeyEvent::from(Key::ContextMenu));
+    rt.frame(0.0);
+    rt.resolve_popup(Some("copy")).unwrap();
+    rt.frame(0.0);
+    let fallback = board.content().unwrap();
+    assert_eq!(fallback.text(), "Hi @Sig");
+    assert!(fallback.html().is_some_and(|h| h.contains(r#"<span data-pill="tpl:sig">@Sig</span>"#)));
+
+    // 6. Existing on_input_key still runs before on_input_copy.
+    let copies_before = rt.state.copies.len();
+    rt.update(|s, _| s.intercept_key = true);
+    rt.frame(0.0);
+    rt.key(cmd('c'));
+    rt.frame(0.0);
+    assert_eq!(rt.state.copies.len(), copies_before);
+    assert_eq!(board.content().unwrap().text(), "from-key-hook");
+
+    // 7. Empty selection skips on_input_copy and leaves clipboard unchanged.
+    rt.update(|s, _| { s.intercept_key = false; s.custom = true; s.rich.set_caret(0); });
+    rt.frame(0.0);
+    rt.key(cmd('c'));
+    rt.key(cmd('x'));
+    rt.frame(0.0);
+    assert_eq!(rt.state.copies.len(), copies_before);
+    assert_eq!(board.content().unwrap().text(), "from-key-hook");
+    assert_eq!(rt.state.rich.text, "Hi @Sig end");
+
+    // 8. Secure fields never invoke on_input_copy or write to the clipboard.
+    rt.update(|s, _| { s.rich.focused = false; s.secret.focused = true; s.secret.set_selection(0, 6); });
+    rt.frame(0.0);
+    rt.key(cmd('c'));
+    rt.key(cmd('x'));
+    rt.frame(0.0);
+    assert_eq!(rt.state.copies.len(), copies_before);
+    assert_eq!(board.content().unwrap().text(), "from-key-hook");
+    assert_eq!(rt.state.secret.text, "s3cr3t");
+
+    // 9. Disabled and inert fields cannot be focused by pointer and never invoke on_input_copy.
+    for key in ["disabled", "inert"] {
+        let (x, y) = rt.find(key).unwrap();
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        rt.key(cmd('c'));
+        rt.frame(0.0);
+    }
+    assert_eq!(rt.state.copies.len(), copies_before);
 }

@@ -9,7 +9,7 @@ mod port;
 pub(super) use asset::extension;
 #[cfg(test)]
 pub(crate) use asset::test_frames;
-pub(super) use asset::{decode, probe};
+pub(super) use asset::{decode, open_thumbnails, probe};
 #[cfg(test)]
 pub(super) use park::{held_capacity, on_kept, parked_free, parked_with};
 
@@ -20,6 +20,7 @@ use crate::native_surface::{ByteFrame, NativeSurface, Orient};
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_av_foundation::{AVAssetImageGenerator, AVPlayer, AVPlayerItem, AVPlayerItemVideoOutput};
+use objc2_core_media::CMTime;
 use port::Av;
 use rune_core::machine::{Attempt, Effects};
 use rune_core::main_queue::on_main;
@@ -48,16 +49,18 @@ pub(crate) struct Native {
 pub(super) type Decoded = Arc<std::sync::OnceLock<Result<Option<super::foreign::Wav>, String>>>;
 #[cfg(not(feature = "ogg-audio"))]
 pub(super) type Decoded = ();
-// The generator is only used under the Shared mutex. Player objects are created, used and
+// SAFETY: the generator is only used under the Shared mutex. Player objects are created, used and
 // released on the main thread: pulls and audio ticks run there and `Player`'s drop hops to it.
+#[allow(unsafe_code)]
 unsafe impl Send for Native {}
 
 #[derive(Default)]
 pub(super) struct Posters {
     want: Option<(f64, Attempt)>,
     busy: bool,
-    /// The asking attempt, and a video poster and its facts, or (no frame) an audio clip's facts.
-    pub(super) done: Option<(Attempt, Result<(Option<ByteFrame>, Meta), String>)>,
+    /// The asking attempt, and a video poster (with its actual PTS) and facts, or (no frame) an
+    /// audio clip's facts.
+    pub(super) done: Option<(Attempt, Result<(Option<(ByteFrame, f64)>, Meta), String>)>,
 }
 
 pub(super) struct Player {
@@ -65,6 +68,12 @@ pub(super) struct Player {
     pub(super) objects: Option<Objects>,
     /// Video: how its buffers turn upright (they ignore the track's `preferredTransform`).
     pub(super) orient: Orient,
+    /// Exact `CMTime` of the last picture delivered by `AVPlayerItemVideoOutput`, preserved
+    /// without an `f64` round-trip so snapping to the frame start cannot round into a neighbour.
+    pub(super) shown_cm: Option<CMTime>,
+    /// Set during a snap-before-step so any duplicate pixel buffer AVFoundation re-emits for the
+    /// already-shown frame is discarded rather than flashing or ending `Settle::Seeking` early.
+    pub(super) suppress_cm: Option<CMTime>,
 }
 pub(super) struct Objects {
     pub(super) player: Retained<AVPlayer>,
@@ -75,23 +84,27 @@ pub(super) struct Objects {
 
 impl Player {
     pub(super) fn new(objects: Objects) -> Self {
-        Self { objects: Some(objects), orient: Orient::UP }
+        Self { objects: Some(objects), orient: Orient::UP, shown_cm: None, suppress_cm: None }
     }
 }
 
 impl Drop for Player {
+    #[allow(unsafe_code)]
     fn drop(&mut self) {
         let Some(objects) = self.objects.take() else { return };
         if MainThreadMarker::new().is_some() {
+            // SAFETY: on the main thread (checked above) and `objects.player` is a live `AVPlayer`.
             unsafe { objects.player.pause() };
             return;
         }
         // The last handle went away on another thread: release on the main queue.
         struct Release(Objects);
+        // SAFETY: `Release` only transfers `Objects` into `on_main` so `AVPlayer` is paused and dropped on the main thread.
         unsafe impl Send for Release {}
         let release = Release(objects);
         on_main(move || {
             let release = release; // Whole, so the closure is Send.
+            // SAFETY: dispatched onto the main queue where `AVPlayer` is owned, and `release.0.player` is live.
             unsafe { release.0.player.pause() };
         });
     }
@@ -243,7 +256,7 @@ pub(super) fn apply(shared: &Arc<Shared>) {
     }
     let playing = {
         let mut c = shared.ctl.lock().unwrap();
-        turn::reconcile(&mut c, &mut Av::new(shared, &mut native, Some(mtm), None), Instant::now());
+        turn::reconcile(&mut c, &mut Av::new(shared, &mut native, Some(mtm), None), rune_core::time::now());
         c.playing()
     };
     drop(native);
@@ -253,21 +266,61 @@ pub(super) fn apply(shared: &Arc<Shared>) {
     }
 }
 
+/// Main thread: carries out the native step once a snap-before-step seek finishes.
+pub(super) fn snap_done(shared: &Arc<Shared>, attempt: Attempt, finished: bool) {
+    if !playback_enabled() {
+        return;
+    }
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let mut native = shared.native.lock().unwrap();
+    if native.player.is_none() {
+        return;
+    }
+    {
+        let mut c = shared.ctl.lock().unwrap();
+        turn::snap_done(&mut c, &mut Av::new(shared, &mut native, Some(mtm), None), attempt, finished);
+    }
+    drop(native);
+    shared.wake_windows();
+}
+
+pub(super) fn is_seeking(shared: &Shared) -> bool {
+    if !playback_enabled() {
+        return false;
+    }
+    shared.ctl.lock().unwrap().is_seeking()
+}
+
+pub(super) fn presented_time(shared: &Shared) -> Option<f64> {
+    if shared.kind == Kind::Audio {
+        return None;
+    }
+    let c = shared.ctl.lock().unwrap();
+    if c.failed() {
+        return None;
+    }
+    c.presented
+}
+
 /// Audio, on the main thread: what a live player (`Control::live`) reports now, while it plays.
 /// `live`: the player's own position is the one to read (`Control::live`).
+#[allow(unsafe_code)]
 pub(super) fn live_time(shared: &Shared, live: bool) -> Option<f64> {
     if !live || shared.kind != Kind::Audio || MainThreadMarker::new().is_none() {
         return None;
     }
     let native = shared.native.try_lock().ok()?;
     let p = native.player.as_ref()?;
+    // SAFETY: on the main thread (checked above) under `shared.native` lock; `player` is a live `AVPlayer`.
     let time = asset::seconds(unsafe { p.objects.as_ref()?.player.currentTime() });
     let c = shared.ctl.lock().unwrap();
     c.playing().then(|| c.duration.map_or(time, |d| time.clamp(0.0, d)))
 }
 
 pub(super) fn pull(shared: &Arc<Shared>, surface: &NativeSurface, target: Instant) -> bool {
-    let now = Instant::now();
+    let now = rune_core::time::now();
     let mut native = shared.native.lock().unwrap();
     let mut c = shared.ctl.lock().unwrap();
     let mut av = Av::new(shared, &mut native, None, Some((surface, target)));
@@ -316,7 +369,7 @@ pub(super) fn drive(shared: &Arc<Shared>) {
 /// Returns whether the clip needs ticking.
 fn step_audio(shared: &Arc<Shared>) -> bool {
     let Some(mtm) = MainThreadMarker::new() else { return false };
-    let now = Instant::now();
+    let now = rune_core::time::now();
     // Already being driven further up this stack (a waker that edits the clip).
     let Ok(mut native) = shared.native.try_lock() else { return true };
     let mut c = shared.ctl.lock().unwrap();

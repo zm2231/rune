@@ -5,7 +5,7 @@
 //!
 //! While it's open, handlers in the stage act on the stage's state: a fresh scene state, a
 //! story's own state, or the real state for a [`Playground::page`]. Its own controls act on
-//! [`Controls`], beside it, through [`crate::states::States`]. The real state keeps polling
+//! `Controls`, beside it, through `crate::states::States`. The real state keeps polling
 //! throughout and is back, untouched, after Back.
 
 use std::any::Any;
@@ -59,7 +59,16 @@ use tree::Row;
 
 /// A storybook for one window, given to [`App::playground`](crate::App::playground):
 ///
-/// ```ignore
+/// ```
+/// # use rune::{App, AppSpec, Cx, El, Play, Playground, Story, el};
+/// # struct State { devices: Vec<&'static str> }
+/// # struct Upload;
+/// # impl Upload { fn new() -> Self { Self } }
+/// # fn devices(_: &State, _: &mut Cx<State>) -> El { el() }
+/// # fn upload(_: &Upload, _: &mut Cx<Upload>) -> El { el() }
+/// # fn run(_: &mut Upload, _: &mut Play<'_, Upload>) {}
+/// # let spec = AppSpec::new("App", (640.0, 480.0), || State { devices: Vec::new() }, devices);
+/// # let _ =
 /// App::new(spec).playground(
 ///     Playground::<State>::new()
 ///         .page("Lists/Live devices", devices)
@@ -67,6 +76,7 @@ use tree::Row;
 ///         .story(Story::new("Progress/Upload", Upload::new, upload).trigger('r', "Run", run))
 ///         .sizes(&[("Compact", (360.0, 240.0)), ("Wide", (900.0, 600.0))]),
 /// )
+/// # ;
 /// ```
 ///
 /// Name the app's state, as `Playground::<State>::new()`, when a closure comes before anything
@@ -423,7 +433,7 @@ pub(crate) fn arg(argv: &[String], i: &mut usize) -> Option<String> {
 }
 
 fn hidden_by_env() -> bool {
-    std::env::var("RUNE_PLAYGROUND").is_ok_and(|v| v == "0")
+    rune_core::env::var("RUNE_PLAYGROUND").is_some_and(|v| v == "0")
 }
 
 pub(crate) fn offered_by_env() -> bool {

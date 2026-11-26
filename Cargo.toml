@@ -28,8 +28,11 @@ members = [
     "crates/rune-taffy",
     "themes/opencode",
     "examples/hello",
+    "examples/hello-floor",
+    "examples/launch-floor",
     "examples/web-hello",
     "examples/web-showcase",
+    "examples/fetch",
     "www/app",
     "examples/todo",
     "examples/settings",
@@ -89,30 +92,51 @@ default-members = [
     "crates/rune-taffy",
     "themes/opencode",
 ]
-exclude = ["tools/rune-dev-guard", "vendor/accesskit_macos", "vendor/accesskit_windows", "vendor/parley_engine", "vendor/sctk-adwaita", "vendor/tiny-skia-path", "vendor/wgpu-hal", "vendor/winit"]
+exclude = ["tools/rune-dev-guard", "tools/ratex-math-wasm", "tools/ratex-math-wasm/pack", "vendor/accesskit_atspi_common", "vendor/accesskit_macos", "vendor/accesskit_windows", "vendor/naga", "vendor/parley_engine", "vendor/sctk-adwaita", "vendor/tiny-skia-path", "vendor/wgpu-hal", "vendor/winit"]
 
 # wgpu-hal as published plus `vendor/wgpu-hal.patch`: `dx12::Instance::expose_adapter` (a `wgpu::Adapter` for the
-# one adapter Rune picks through DXGI, with no device made on the others, `crates/rune-gpu/src/pick.rs`) and FXC loaded on
-# the first compile rather than with the instance (Rune's uber shader is precompiled), and partial presents
+# one adapter Rune picks through DXGI, with no device made on the others, `crates/rune-gpu/src/pick.rs`), FXC loaded on
+# the first compile rather than with the instance (Rune's uber shader is precompiled), partial presents
 # (`Surface::set_present_rects`: `Present1` dirty rectangles on a sequential flip-model swap chain, for
-# `render::damaged`). Re-made by
+# `render::damaged`), Windows system DLLs (`d3d12.dll`, `dxgi.dll`, `dcomp.dll`, `d3dcompiler_47.dll`,
+# `opengl32.dll`) loaded with `LOAD_LIBRARY_SEARCH_SYSTEM32`, a removed D3D12 device's work left
+# pending rather than read as finished (`Device::reached`; Rune sees the removal through
+# `rune_gpu::health::removed`), and GPU-written drain markers (`WriteBufferImmediate`) on software
+# adapters (`DXGI_ADAPTER_FLAG_SOFTWARE`, WARP) so releasing a removed WARP device or unconfiguring
+# its surface waits until queued command lists finish executing instead of freeing resources under
+# its worker threads (`DrainTracker`; hardware adapters pay zero marker cost, while skipping
+# `ExecuteCommandLists` and `allocator.Reset()` once removed on every adapter), Linux `vulkan::Instance::with_direct_drivers` (`VK_LUNARG_direct_driver_loading` exclusive mode), and GLES lazy shader compile-status checks (querying `COMPILE_STATUS`/logs only on link failure) plus opt-in `KHR_parallel_shader_compile` deferred program linking (`gles::Device::{supports_parallel_shader_compile,set_defer_program_links,pending_deferred_links,poll_deferred_links}`). Re-made by
 # `scripts/vendor-wgpu-hal.sh <version>` when wgpu is bumped. An app that builds Rune patches it too:
 # a dependency's `[patch]` doesn't apply to the workspace that depends on it.
 [patch.crates-io]
 wgpu-hal = { path = "vendor/wgpu-hal" }
+# naga as published plus `vendor/naga.patch`: `back::pipeline_constants::process_function` remaps
+# `Statement::Emit` ranges from the per-expression index spans newly appended to
+# `function.expressions` rather than `Range::new_from_bounds(new_pos[first], new_pos[last])`, so
+# constant-folding an expression (such as indexing a `let`-bound constant vector or composite) to an
+# earlier handle neither stretches an `Emit` backwards over earlier emits
+# (`ExpressionAlreadyInScope`) nor inverts it (`NotInScope`; gfx-rs/wgpu#7793). Re-made by
+# `scripts/vendor-naga.sh <version>` when wgpu/naga is bumped; apps that build Rune patch it too.
+naga = { path = "vendor/naga" }
 # winit as published plus `vendor/winit.patch`: on Windows a new window isn't added again to the
 # taskbar it's already on (that took CoInitializeEx and a TaskbarList COM object, about 7,800 µs
-# and nine shell DLLs, before every window's first frame), and a window given a position is made there, so it is
-# born at that display's scale instead of crossing to it and being resized; and
+# and nine shell DLLs, before every window's first frame), a window given a position is made there, so it is
+# born at that display's scale instead of crossing to it and being resized, and Windows system DLLs
+# (`uxtheme.dll`, `user32.dll`, `shcore.dll`, `ntdll.dll`) load via `LoadLibraryExA` with
+# `LOAD_LIBRARY_SEARCH_SYSTEM32`; and
 # `WindowExtWayland::content_corner_radius` tells an app the radius its content leaves its bottom
-# corners to while a client-side frame rounds the window (see `vendor/sctk-adwaita`). Re-made by
+# corners to while a client-side frame rounds the window (see `vendor/sctk-adwaita`); and on a Wayland
+# compositor without the decoration protocol the client-side frame's two system reads start with
+# the event loop (`sctk_adwaita::read_system_config_early`). Re-made by
 # `scripts/vendor-winit.sh <version>` when winit is bumped; apps that build Rune patch it too.
 winit = { path = "vendor/winit" }
 # sctk-adwaita as published plus `vendor/sctk-adwaita.patch`: the visible one-point border a
 # Wayland client-side frame draws follows the window's rounded bottom corners, as the headerbar it
 # draws above them rounds the top two, instead of drawing a square L over the shadow's rounded
 # cut-out; and `AdwaitaFrame::content_corner_radius` says what radius the content's own bottom
-# corners take, for the app to clear outside (`window/surface/corners.rs`). Re-made by
+# corners take, for the app to clear outside (`window/surface/corners.rs`); and
+# `read_system_config_early` starts the first frame's two `dbus-send` reads (colour scheme, button
+# layout) on threads of their own instead of in the window's first configure. Re-made by
 # `scripts/vendor-sctk-adwaita.sh <version>` when sctk-adwaita is bumped; apps that build Rune
 # patch it too.
 sctk-adwaita = { path = "vendor/sctk-adwaita" }
@@ -125,11 +149,20 @@ sctk-adwaita = { path = "vendor/sctk-adwaita" }
 parley_engine = { path = "vendor/parley_engine" }
 # accesskit_windows as published plus `vendor/accesskit_windows.patch`: headings and landmarks reach
 # UI Automation (HeadingLevel, LandmarkType, LocalizedLandmarkType), which Narrator's and NVDA's
-# heading and landmark navigation read; and a field past Rune's 64 KiB text-run limit keeps its text
-# pattern, its lines answered from its value when a reader asks (`src/long_text.rs`). Re-made by
-# `scripts/vendor-accesskit-windows.sh <version>`
-# when AccessKit is bumped; apps that build Rune patch it too.
+# heading and landmark navigation read; a field past Rune's 64 KiB text-run limit keeps its text
+# pattern, its lines answered from its value when a reader asks (`src/long_text.rs`); and item roles
+# read their own `size_of_set` before falling back to `size_of_set_from_container`, so levelled
+# items in a flat tree report their own level's set size without leaking container sizes onto
+# containers. Re-made by `scripts/vendor-accesskit-windows.sh <version>` when AccessKit is bumped;
+# apps that build Rune patch it too.
 accesskit_windows = { path = "vendor/accesskit_windows" }
+# accesskit_atspi_common as published plus `vendor/accesskit_atspi_common.patch`: item roles read
+# their own `size_of_set` before falling back to `size_of_set_from_container`, so levelled items in
+# a flat tree report their own level's `setsize` to AT-SPI without leaking container sizes onto
+# containers. Re-made by `scripts/vendor-accesskit-atspi-common.sh <version>` when AccessKit is
+# bumped; apps that build Rune patch it too (omitting it still compiles and falls back to the
+# container's set size on Linux).
+accesskit_atspi_common = { path = "vendor/accesskit_atspi_common" }
 # accesskit_macos as published plus `vendor/accesskit_macos.patch`: headings reach NSAccessibility as
 # AppKit's `AXHeading` with their level as the value (the published role, `Heading`, is none VoiceOver
 # knows), so VoiceOver's rotor and VO-Command-H find them and say their level; and the accessibility
@@ -163,7 +196,7 @@ rune-mermaid = { path = "crates/rune-mermaid" }
 rune-motion = { path = "crates/rune-motion" }
 rune-notify = { path = "crates/rune-notify" }
 rune-ref = { path = "crates/rune-ref" }
-rune-spell = { path = "crates/rune-spell" }
+rune-spell = { path = "crates/rune-spell", default-features = false }
 rune-staging = { path = "crates/rune-staging" }
 rune-taffy = { path = "crates/rune-taffy" }
 rune-text = { path = "crates/rune-text", default-features = false }
@@ -171,16 +204,20 @@ rune-theme-opencode = { path = "themes/opencode" }
 
 # Shared external crates.
 blake3 = "1"
-block2 = "0.5"
+block2 = "0.6"
 bytemuck = { version = "1.25", features = ["derive"] }
 half = "2"
 image = { version = "0.25", default-features = false }
 js-sys = "0.3"
 libc = "0.2"
-objc2 = "0.5.2"
+miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
+moxcms = "0.8"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false }
 objc2-core-foundation = { version = "0.3", default-features = false }
 objc2-core-graphics = { version = "0.3", default-features = false }
 objc2-core-video = { version = "0.3", default-features = false }
+objc2-foundation = { version = "0.3", default-features = false }
 objc2-metal = { version = "0.3", default-features = false }
 parley = { version = "0.12", default-features = false }
 parley_engine = { version = "0.12", default-features = false }
@@ -190,11 +227,14 @@ resvg = { version = "0.45", default-features = false }
 rustc-hash = "2"
 serde = "1"
 serde_json = "1"
+skrifa = "0.44"
 swash = "0.2.10"
 taffy = { version = "0.15", default-features = false }
+tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }
 unicode-segmentation = "1.13"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
+wasmi = { version = "1.1", default-features = false }
 web-sys = "0.3"
 wgpu = { version = "~30.0.1", default-features = false }
 wgpu-naga-bridge = "~30.0.1"
@@ -215,6 +255,19 @@ debug = false
 [profile.release]
 codegen-units = 16
 incremental = true
+
+# Keep the optional `math` sandbox interpreter compact (saves ~558 KiB in FAT-LTO release builds
+# with zero effect on the UI thread since math typesets on a background worker and caches results).
+[profile.release.package.wasmi]
+opt-level = "z"
+[profile.release.package.wasmi_core]
+opt-level = "z"
+[profile.release.package.wasmi_ir]
+opt-level = "z"
+[profile.release.package.wasmi_collections]
+opt-level = "z"
+[profile.release.package.wasmparser]
+opt-level = "z"
 
 # Benchmarks and perf numbers. Same codegen as release, without incremental, which can move
 # frame timings. The runtime bench scripts refuse binaries built with any other profile.
@@ -247,18 +300,18 @@ opt-level = 3
 unsafe_op_in_unsafe_fn = "deny"
 unused_must_use = "deny"
 # shared-lints end
-unsafe_code = "allow" # shared: forbid; GPU and FFI code needs unsafe
+unsafe_code = "deny" # pure-Rust crates use #![forbid(unsafe_code)]; FFI/SIMD leaf modules opt in locally
 
 [workspace.lints.clippy]
 # shared-lints begin
 await_holding_lock = "deny"
 await_holding_refcell_ref = "deny"
 dbg_macro = "deny"
+disallowed_methods = "deny"
 disallowed_types = "deny"
 expect_used = "warn"
+let_underscore_must_use = "deny"
 todo = "warn"
+undocumented_unsafe_blocks = "deny"
 unwrap_used = "warn"
 # shared-lints end
-undocumented_unsafe_blocks = "warn" # shared: deny; errors left
-let_underscore_must_use = "warn" # shared: deny; errors left
-disallowed_methods = "warn" # shared: deny; errors left

@@ -7,13 +7,15 @@
 //! and the ones that reach it while it runs (`scene:openURLContexts:` for a URL scheme,
 //! `scene:continueUserActivity:` for a universal link).
 
+#![allow(unsafe_code)]
+
 use std::cell::RefCell;
 use std::ffi::{c_char, c_int};
 
-use objc2_foundation_video::NSString;
-use objc2_video::rc::{Allocated, Retained};
-use objc2_video::runtime::{AnyObject, NSObject, NSObjectProtocol};
-use objc2_video::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, extern_protocol, msg_send};
+use objc2_foundation::NSString;
+use objc2::rc::{Allocated, Retained};
+use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
+use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, extern_protocol, msg_send};
 
 use super::links::{self, Activity};
 use super::surface::{self, Mount};

@@ -27,7 +27,10 @@ pub(super) trait HeadlessApp {
     fn rt_mut(&mut self) -> &mut RuntimeCore;
     fn with_driver(&mut self, f: &mut dyn FnMut(&mut RuntimeCore, &mut dyn AppDriver));
     fn run_reopen(&mut self);
+    fn run_close_request(&mut self) -> crate::CloseResponse;
+    fn run_quit_request(&mut self) -> crate::QuitResponse;
     fn run_open_url(&mut self, url: &str);
+    fn run_open_files(&mut self, paths: &[std::path::PathBuf]);
     fn drain_updates(&mut self, menus: &mut crate::native_menu::MenuGuard);
     fn has_compositor(&self) -> bool;
     fn compositor_features(&self) -> wgpu::Features;
@@ -50,6 +53,9 @@ impl dyn HeadlessApp + '_ {
 
     pub(super) fn content_height(&mut self) -> f32 { self.driver(|rt, app| rt.content_height(app)) }
     pub(super) fn frame(&mut self, dt: f64) -> bool { self.driver(|rt, app| rt.frame(app, dt)) }
+    pub(super) fn settle_layout_passes(&mut self, max_passes: usize) -> (usize, Option<bool>) {
+        self.driver(|rt, app| rt.settle_layout_passes(app, max_passes))
+    }
     pub(super) fn open_popup_headless(&mut self) { self.driver(|rt, app| rt.open_popup_headless(app)); }
     pub(super) fn resolve_popup(&mut self, picked: Option<&str>) -> Result<(), crate::PopupMenuError> {
         self.driver(|rt, app| rt.resolve_popup(app, picked))
@@ -63,8 +69,13 @@ pub(super) struct TypedHeadlessApp<S: 'static> {
     pub(super) rt: Runtime<S>,
     pub(super) shared: Arc<Shared<S>>,
     pub(super) comp: Option<Box<dyn Compositor<S>>>,
+    pub(super) on_close_request: Option<fn(&mut S, &mut Tx) -> crate::CloseResponse>,
+    pub(super) on_quit_request: Option<fn(&mut S, &mut Tx) -> crate::QuitResponse>,
+    pub(super) on_close: Option<fn(&mut S, &mut Tx)>,
+    pub(super) on_quit: Option<fn(&mut S, &mut Tx)>,
     pub(super) on_reopen: Option<fn(&mut S, bool, &mut Tx) -> bool>,
     pub(super) on_open_url: Option<crate::open_url::incoming::OnOpenUrl<S>>,
+    pub(super) on_open_files: Option<crate::open_url::incoming::OnOpenFiles<S>>,
 }
 
 impl<S: 'static> HeadlessApp for TypedHeadlessApp<S> {
@@ -77,8 +88,40 @@ impl<S: 'static> HeadlessApp for TypedHeadlessApp<S> {
     fn run_reopen(&mut self) {
         if let Some(f) = self.on_reopen { self.rt.update(|s, tx| { f(s, true, tx); }); }
     }
+    fn run_close_request(&mut self) -> crate::CloseResponse {
+        let decision = match self.on_close_request {
+            Some(f) => {
+                let mut resp = crate::CloseResponse::Close;
+                self.rt.update(|s, tx| { resp = f(s, tx); });
+                resp
+            }
+            None => crate::CloseResponse::Close,
+        };
+        if decision == crate::CloseResponse::Close && let Some(f) = self.on_close {
+            self.rt.update(f);
+        }
+        decision
+    }
+    fn run_quit_request(&mut self) -> crate::QuitResponse {
+        let decision = match self.on_quit_request {
+            Some(f) => {
+                let mut resp = crate::QuitResponse::Quit;
+                self.rt.update(|s, tx| { resp = f(s, tx); });
+                resp
+            }
+            None => crate::QuitResponse::Quit,
+        };
+        if decision == crate::QuitResponse::Quit && let Some(f) = self.on_quit {
+            self.rt.update(f);
+        }
+        decision
+    }
     fn run_open_url(&mut self, url: &str) {
         if let Some(f) = self.on_open_url { self.rt.update(|s, tx| f(s, url, tx)); }
+    }
+    fn run_open_files(&mut self, paths: &[std::path::PathBuf]) {
+        if paths.is_empty() { return; }
+        if let Some(f) = self.on_open_files { self.rt.update(|s, tx| f(s, paths, tx)); }
     }
     fn drain_updates(&mut self, menus: &mut crate::native_menu::MenuGuard) {
         for f in self.shared.take_updates() {
@@ -120,3 +163,7 @@ impl<S: 'static> HeadlessApp for TypedHeadlessApp<S> {
         gate.frame(&mut self.rt, awake);
     }
 }
+
+#[cfg(test)]
+#[path = "app_tests.rs"]
+mod tests;

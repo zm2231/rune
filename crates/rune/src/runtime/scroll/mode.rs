@@ -35,10 +35,29 @@ pub(in crate::runtime) struct Hand {
     /// A hand or an app's instant jump moved it since `El::on_scroll_offset` was last told,
     /// across the frame's steps; taken once at the frame's end.
     pub(in crate::runtime) by_hand: bool,
+    /// Highest-priority cause that moved this viewport since `El::on_scroll_offset` was last told,
+    /// across the frame's steps; taken once at the frame's end.
+    pub(in crate::runtime) source: crate::ScrollSource,
     /// A hand scrolled while the growth stack moved: no shrink glide until it settles.
     pub(in crate::runtime) shrink_cut: bool,
     /// The growth stack's layout end while its rows still move (see `ease_to_shrunk_end`).
     pub(in crate::runtime) laid: Option<f64>,
+}
+
+/// Priority rank for combining multiple scroll causes in the same frame:
+/// `Direct > Momentum > EdgeReturn > Programmatic > None`.
+fn source_rank(source: crate::ScrollSource) -> u8 {
+    match source {
+        crate::ScrollSource::None => 0,
+        crate::ScrollSource::Programmatic => 1,
+        crate::ScrollSource::EdgeReturn => 2,
+        crate::ScrollSource::Momentum => 3,
+        crate::ScrollSource::Direct => 4,
+    }
+}
+
+fn merge_source(current: crate::ScrollSource, next: crate::ScrollSource) -> crate::ScrollSource {
+    if source_rank(next) > source_rank(current) { next } else { current }
 }
 
 impl Default for ScrollMode {
@@ -150,10 +169,12 @@ impl ScrollMode {
 pub(in crate::runtime) enum Event {
     /// A hand or an app put the offset where it is.
     Moved,
+    /// Record what moved the viewport's offset this frame, keeping the highest-priority source.
+    Source(crate::ScrollSource),
     /// A touch holds the viewport (`El::scroll` under a finger).
     Hold,
-    /// A touch's coast moved it (`moving`) or came to rest.
-    Coast { moving: bool },
+    /// A touch's coast moved it (`moving`) or came to rest, with its motion `source`.
+    Coast { moving: bool, source: crate::ScrollSource },
     /// The viewport was concealed: nothing moved it, whatever a hand had done before.
     Still,
     /// A scroll step began: the growth stack is `moving`, so a hand's scroll cuts the shrink
@@ -164,7 +185,7 @@ pub(in crate::runtime) enum Event {
     Step { x_v: f32 },
     /// The growth stack's layout end this frame.
     Laid(Option<f64>),
-    /// `El::on_scroll_offset` asks for a hand move to report.
+    /// `El::on_scroll_offset` asks for the frame's hand move and scroll source to report.
     Take,
     /// The motion stops, unless the viewport follows its bottom.
     Halt,
@@ -176,25 +197,30 @@ pub(in crate::runtime) enum Event {
     Unpin,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::runtime) enum Effect {
-    /// `El::on_scroll_offset`'s handler hears of a hand move at the frame's end.
-    Tell,
+    /// `El::on_scroll_offset`'s handler hears of this frame's scroll at the frame's end.
+    Tell { by_hand: bool, source: crate::ScrollSource },
 }
 
 /// Folds `event` into `mode`, returning what the caller should carry out.
 pub(in crate::runtime) fn step(mode: &mut ScrollMode, event: Event) -> Effects<Effect> {
     match event {
         Event::Moved => mode.hand_mut().direct = true,
+        Event::Source(source) => {
+            let hand = mode.hand_mut();
+            hand.source = merge_source(hand.source, source);
+        }
         Event::Hold => {
             let hand = mode.hand_mut();
             hand.scrolling = true;
             hand.by_hand = true;
         }
-        Event::Coast { moving } => {
+        Event::Coast { moving, source } => {
             let hand = mode.hand_mut();
             hand.scrolling = moving;
             hand.by_hand |= moving;
+            hand.source = merge_source(hand.source, source);
             hand.direct = false;
         }
         Event::Still => mode.hand_mut().scrolling = false,
@@ -212,8 +238,11 @@ pub(in crate::runtime) fn step(mode: &mut ScrollMode, event: Event) -> Effects<E
         }
         Event::Laid(laid) => mode.hand_mut().laid = laid,
         Event::Take => {
-            return if std::mem::take(&mut mode.hand_mut().by_hand) {
-                Effects::one(Effect::Tell)
+            let hand = mode.hand_mut();
+            let by_hand = std::mem::take(&mut hand.by_hand);
+            let source = std::mem::take(&mut hand.source);
+            return if by_hand || source != crate::ScrollSource::None {
+                Effects::one(Effect::Tell { by_hand, source })
             } else {
                 Effects::none()
             };
@@ -239,233 +268,5 @@ pub(in crate::runtime) fn step(mode: &mut ScrollMode, event: Event) -> Effects<E
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// origin/dev's hand latches, transcribed from `runtime/motion/tracks.rs` (the step's
-    /// derivation), `runtime/scroll/offset.rs` (`ease_to_shrunk_end`'s cut) and
-    /// `runtime/scroll/touch.rs` (a finger's hold and coast), as the loose fields they were.
-    #[derive(Default)]
-    struct Dev {
-        direct: bool,
-        scrolling: bool,
-        by_hand: bool,
-        shrink_cut: bool,
-        laid: Option<f64>,
-        mode: DevMode,
-        /// Mode writes made by the last event.
-        writes: usize,
-    }
-
-    #[derive(Clone, Copy, Default, PartialEq, Debug)]
-    enum DevMode {
-        #[default]
-        Rest,
-        Pinned,
-        Momentum(f32),
-        Glide(f32),
-    }
-
-    impl Dev {
-        fn coast(&self) -> f32 {
-            match self.mode {
-                DevMode::Momentum(v) => v,
-                _ => 0.0,
-            }
-        }
-
-        /// `runtime/motion/tracks.rs`: the step's `scrolling`, `by_hand` and `direct`.
-        fn step(&mut self, x_v: f32) {
-            self.scrolling = self.direct || self.coast().abs() > 1.0 || x_v.abs() > 1.0;
-            self.by_hand |= self.scrolling;
-            self.direct = false;
-        }
-
-        /// `runtime/scroll/offset.rs`: the cut a hand puts on a shrink glide.
-        fn growth(&mut self, moving: bool) {
-            self.shrink_cut = moving && (self.shrink_cut || self.direct || self.coast().abs() > 1.0);
-        }
-
-        fn write(&mut self, mode: DevMode) {
-            self.mode = mode;
-            self.writes += 1;
-        }
-
-        /// `ScrollState::pin`: writing nothing when it already follows its bottom.
-        fn pin(&mut self) {
-            if self.mode != DevMode::Pinned { self.write(DevMode::Pinned); }
-        }
-
-        fn halt(&mut self) {
-            if self.mode != DevMode::Pinned { self.write(DevMode::Rest); }
-        }
-
-        fn unpin(&mut self) {
-            if self.mode == DevMode::Pinned { self.write(DevMode::Rest); }
-        }
-
-        /// `ScrollState::land`: a pinned end stays as it is, and `stick` short-circuits the
-        /// comparison with the offset and its max.
-        fn land(&mut self, offset: f64, max: f64, stick: bool) {
-            if stick && offset >= max - 0.5 { self.pin() } else { self.write(DevMode::Rest); }
-        }
-    }
-
-    #[derive(Clone, Copy, Debug)]
-    enum Act {
-        Moved,
-        Hold,
-        Coast(bool),
-        Still,
-        Growth(bool),
-        Step { x_v: f32 },
-        Laid(bool),
-        Take,
-        Rest,
-        Halt,
-        Pin,
-        Unpin,
-        Land { offset: f64, max: f64, stick: bool },
-        Momentum(f32),
-        Glide,
-    }
-
-    fn production_mode(mode: ScrollMode) -> DevMode {
-        match mode {
-            ScrollMode::Rest(_) => DevMode::Rest,
-            ScrollMode::Pinned(_) => DevMode::Pinned,
-            ScrollMode::Momentum { v, .. } => DevMode::Momentum(v),
-            ScrollMode::Glide { v, .. } => DevMode::Glide(v),
-            ScrollMode::Wheel { .. } => unreachable!("no act starts a wheel's ease"),
-        }
-    }
-
-    /// Drives every sequence through the production machine and through dev's fields, one
-    /// event at a time, comparing what each holds, and how many mode writes each made, after
-    /// every event.
-    fn walk(acts: &[Act]) {
-        let (mut st, mut dev) = (ScrollState::default(), Dev::default());
-        for (i, act) in acts.iter().enumerate() {
-            dev.writes = 0;
-            match act {
-                Act::Moved => { st.moved(); dev.direct = true; }
-                Act::Hold => {
-                    let _ = step(&mut st.mode, Event::Hold);
-                    dev.scrolling = true;
-                    dev.by_hand = true;
-                }
-                Act::Coast(moving) => {
-                    let _ = step(&mut st.mode, Event::Coast { moving: *moving });
-                    dev.scrolling = *moving;
-                    dev.by_hand |= *moving;
-                    dev.direct = false;
-                }
-                Act::Still => { let _ = step(&mut st.mode, Event::Still); dev.scrolling = false; }
-                Act::Growth(moving) => { let _ = step(&mut st.mode, Event::Growth { moving: *moving }); dev.growth(*moving); }
-                Act::Step { x_v } => { let _ = step(&mut st.mode, Event::Step { x_v: *x_v }); dev.step(*x_v); }
-                Act::Laid(has) => {
-                    let end = has.then_some(120.0);
-                    let _ = step(&mut st.mode, Event::Laid(end));
-                    dev.laid = end;
-                }
-                Act::Take => {
-                    let effects: Vec<Effect> = step(&mut st.mode, Event::Take).into_iter().collect();
-                    let was = std::mem::take(&mut dev.by_hand);
-                    assert_eq!(effects, if was { vec![Effect::Tell] } else { vec![] }, "{acts:?}, event {i}: the take");
-                }
-                Act::Rest => { st.mode = st.mode.to_rest(); dev.write(DevMode::Rest); }
-                Act::Halt => { st.halt(); dev.halt(); }
-                Act::Pin => { st.pin(); dev.pin(); }
-                Act::Unpin => { st.unpin(); dev.unpin(); }
-                Act::Land { offset, max, stick } => {
-                    st.offset = *offset;
-                    st.max = *max;
-                    st.land(*stick);
-                    dev.land(*offset, *max, *stick);
-                }
-                Act::Momentum(v) => { st.mode = st.mode.to_momentum(*v); dev.write(DevMode::Momentum(*v)); }
-                Act::Glide => { st.mode = st.mode.to_glide(2.0, GlideTo::Bottom); dev.write(DevMode::Glide(2.0)); }
-            }
-            let at = format!("{acts:?}, event {i} ({act:?})");
-            assert_eq!(st.mode.hand().direct, dev.direct, "direct: {at}");
-            assert_eq!(st.mode.hand().scrolling, dev.scrolling, "scrolling: {at}");
-            assert_eq!(st.mode.hand().by_hand, dev.by_hand, "by_hand: {at}");
-            assert_eq!(st.mode.hand().shrink_cut, dev.shrink_cut, "shrink_cut: {at}");
-            assert_eq!(st.mode.hand().laid, dev.laid, "laid: {at}");
-            assert_eq!(production_mode(st.mode), dev.mode, "mode: {at}");
-            assert_eq!(writes::take(), dev.writes, "mode writes: {at}");
-        }
-    }
-
-    /// Every order of hand moves, growth steps, step derivations, takes and motion changes up
-    /// to five long: the folded latches must match dev's loose fields after each event.
-    #[test]
-    fn the_latches_match_devs_fields_over_every_order() {
-        let acts = [
-            Act::Moved, Act::Hold, Act::Coast(true), Act::Coast(false), Act::Still,
-            Act::Growth(true), Act::Growth(false), Act::Step { x_v: 4.0 }, Act::Step { x_v: 0.0 },
-            Act::Laid(true), Act::Laid(false), Act::Take, Act::Rest, Act::Halt, Act::Pin,
-            Act::Unpin, Act::Land { offset: 100.0, max: 100.0, stick: true },
-            Act::Land { offset: 0.0, max: 100.0, stick: true }, Act::Land { offset: 100.0, max: 100.0, stick: false },
-            Act::Momentum(2.0), Act::Glide,
-        ];
-        for len in 0..=4 {
-            walk_all(&acts, len, &mut Vec::new());
-        }
-    }
-
-    /// dev's `land` calls the guarded `pin`, so a landing that changes nothing writes nothing.
-    #[test]
-    fn a_landing_on_a_pinned_viewport_writes_nothing() {
-        let mut st = ScrollState { offset: 100.0, max: 100.0, ..ScrollState::default() };
-        st.pin();
-        let _ = writes::take();
-        st.land(true);
-        assert_eq!(writes::take(), 0, "already at the pinned end, the landing writes nothing");
-        st.land(false);
-        assert_eq!(writes::take(), 1, "off the end it writes the rest");
-        st.offset = 0.0;
-        st.land(true);
-        assert_eq!(writes::take(), 1, "short of the end it writes the rest");
-    }
-
-    fn walk_all(acts: &[Act], len: usize, prefix: &mut Vec<Act>) {
-        if prefix.len() == len {
-            walk(prefix);
-            return;
-        }
-        for &act in acts {
-            prefix.push(act);
-            walk_all(acts, len, prefix);
-            prefix.pop();
-        }
-    }
-
-    /// A hand move is cleared by the step that derives it, and a take reports the hand's move
-    /// once, however many steps grew it.
-    #[test]
-    fn a_hand_move_is_told_once_and_the_steps_keep_growing_it() {
-        let mut mode = ScrollMode::default();
-        let _ = step(&mut mode, Event::Moved);
-        let _ = step(&mut mode, Event::Step { x_v: 0.0 });
-        assert!(mode.hand().scrolling && mode.hand().by_hand && !mode.hand().direct);
-        let _ = step(&mut mode, Event::Step { x_v: 0.0 });
-        assert!(!mode.hand().scrolling, "the step moved nothing");
-        assert!(mode.hand().by_hand, "the watcher still has to hear it");
-        assert_eq!(step(&mut mode, Event::Take).into_iter().collect::<Vec<_>>(), [Effect::Tell]);
-        assert_eq!(step(&mut mode, Event::Take).into_iter().collect::<Vec<_>>(), []);
-    }
-
-    /// Whichever motion the mode changes to, the hand's latches come with it.
-    #[test]
-    fn a_motion_change_keeps_the_hands_latches() {
-        let mut mode = ScrollMode::default();
-        let _ = step(&mut mode, Event::Moved);
-        let _ = step(&mut mode, Event::Laid(Some(300.0)));
-        for changed in [mode.to_glide(1.0, GlideTo::Offset(40.0)), mode.to_momentum(2.0), mode.to_pinned(), mode.to_rest()] {
-            assert!(changed.hand().direct && changed.hand().laid == Some(300.0), "{changed:?}");
-            mode = changed;
-        }
-        assert!(mode.hand().direct && mode.hand().laid == Some(300.0));
-    }
-}
+#[path = "mode_tests.rs"]
+mod tests;

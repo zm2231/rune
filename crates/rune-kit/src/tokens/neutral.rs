@@ -137,6 +137,8 @@ impl Kit {
             blend_over: None,
             ring: None,
             invalid_text: false,
+            forced: None,
+            metrics: crate::Metrics::default(),
         }
     }
 }

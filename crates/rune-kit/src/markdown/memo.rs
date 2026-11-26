@@ -40,7 +40,7 @@ impl Hasher for PairHasher {
     }
 }
 
-struct HashFmt<'a, H>(&'a mut H);
+pub(super) struct HashFmt<'a, H>(pub(super) &'a mut H);
 
 impl<H: Hasher> std::fmt::Write for HashFmt<'_, H> {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
@@ -55,6 +55,9 @@ pub(super) const HAS_IMAGE: u8 = 1 << 2;
 pub(super) const HAS_QUOTE: u8 = 1 << 3;
 pub(super) const HAS_OPEN_TABLE: u8 = 1 << 4;
 pub(super) const HAS_INLINE_CODE: u8 = 1 << 5;
+/// Inline math: like display math, its block builds every time, asking the math cache.
+pub(super) const HAS_MATH: u8 = 1 << 6;
+pub(super) const HAS_DIFF: u8 = 1 << 7;
 
 #[derive(Clone)]
 pub(super) struct PreRow {
@@ -153,6 +156,7 @@ pub(super) fn task_count(root: &Block) -> usize {
 fn scan_inline(inl: &Inline, h: &mut PairHasher, flags: &mut u8, links: &mut Vec<Rc<str>>) {
     (0u8, inl).hash(h);
     if inl.spans.iter().any(|s| matches!(s.2, Style::Code)) { *flags |= HAS_INLINE_CODE; }
+    if inl.spans.iter().any(|s| matches!(s.2, Style::Math)) { *flags |= HAS_MATH; }
     for (_, _, url) in &inl.links { links.push(Rc::from(url.as_str())); }
 }
 
@@ -240,7 +244,7 @@ pub(super) fn precompute_block(root_b: &Block, root_map: Option<&BlockMap>) -> R
                         (Block::Para(inl), _) => { 1u8.hash(&mut h); scan_inline(inl, &mut h, &mut flags, &mut links); }
                         (Block::Heading(level, inl), _) => { (2u8, *level).hash(&mut h); scan_inline(inl, &mut h, &mut flags, &mut links); }
                         (Block::Code(code), _) => { flags |= HAS_CODE; src_n = 1; (3u8, code).hash(&mut h); }
-                        (Block::Diff(src), _) => (4u8, src).hash(&mut h),
+                        (Block::Diff(src), map_opt) => { flags |= HAS_DIFF; let open = matches!(map_opt, Some(BlockMap::Diff { open: true, .. })); (4u8, open, src).hash(&mut h); }
                         (Block::Mermaid(src), _) => { flags |= HAS_MERMAID; src_n = 1; (5u8, src).hash(&mut h); }
                         (Block::Rule, _) => 6u8.hash(&mut h),
                         (Block::Image { src, alt, title }, _) => { flags |= HAS_IMAGE; (7u8, src, alt, title).hash(&mut h); }
@@ -297,17 +301,17 @@ pub(super) fn with_renderer<R>(r: &Renderer, f: impl FnOnce() -> R) -> R {
 /// to compile here until it is either hashed in the base or guarded per block/link below.
 fn compute_base(r: &Renderer) -> (u64, u64) {
     let Renderer {
-        s, highlights, reveal, streaming, tasks_read_only, selectable, scroll_wide, on_link, on_link_secondary,
-        link_look: _, link_help: _, link_ring: _, link_favicon: _, code_link: _,
-        highlighter: _, sources: _, next_source: _, tasks: _, next_task: _, on_task: _,
+        s, highlights, reveal, streaming, tasks_read_only, selectable, scroll_wide, wrap_anywhere, hard_breaks, on_link, on_link_secondary, on_link_hover, link_menu,
+        link_look: _, link_help: _, link_ring: _, link_favicon: _, emoji: _, code_link: _,
+        highlighter: _, sources: _, next_source: _, next_diff: _, tasks: _, next_task: _, on_task: _,
         #[cfg(feature = "mermaid")]
         diagram_frame: _,
-        code_frame: _, quote_frame: _, images: _, on_image: _,
+        code_frame: _, diff_frame: _, quote_frame: _, images: _, on_image: _,
         tentative: _, current_block_key: _, flow: _,
     } = r;
     let mut h = PairHasher::new();
-    (s, highlights, reveal.to_bits(), streaming, tasks_read_only, selectable, scroll_wide,
-        on_link.as_ref().map(|w| w.1), on_link_secondary.as_ref().map(|w| w.1)).hash(&mut h);
+    (s, highlights, reveal.to_bits(), [*streaming, *tasks_read_only, *selectable, *scroll_wide, *wrap_anywhere, *hard_breaks, *link_menu],
+        on_link.as_ref().map(|w| w.1), on_link_secondary.as_ref().map(|w| w.1), on_link_hover.as_ref().map(|w| w.1)).hash(&mut h);
     h.finish128()
 }
 
@@ -379,6 +383,7 @@ fn hash_block_map(root: &BlockMap, h: &mut impl Hasher) {
                     }
                 }
                 BlockMap::DeepTail { lines, map } => { (6u8, *lines).hash(h); hash_span_map(map, h); }
+                BlockMap::Diff { open, map } => { (7u8, *open).hash(h); hash_span_map(map, h); }
                 BlockMap::None => 0u8.hash(h),
             },
         }
@@ -389,11 +394,13 @@ impl Renderer {
     fn can_memo_links(&self, has_links: bool) -> bool {
         !has_links
             || (!self.on_link.as_ref().is_some_and(|w| w.1.is_none())
-                && !self.on_link_secondary.as_ref().is_some_and(|w| w.1.is_none()))
+                && !self.on_link_secondary.as_ref().is_some_and(|w| w.1.is_none())
+                && !self.on_link_hover.as_ref().is_some_and(|w| w.1.is_none()))
     }
 
     fn can_memo_flags(&self, flags: u8) -> bool {
-        if flags & HAS_CODE != 0 && (!self.highlighter.is_builtin() || self.code_frame.is_some()) { return false; }
+        if flags & HAS_MATH != 0 { return false; }
+        if flags & HAS_CODE != 0 && (!self.highlighter.is_builtin() || self.code_frame.as_ref().is_some_and(|w| w.frame.is_some() || w.wrap.is_some())) { return false; }
         if flags & HAS_MERMAID != 0 {
             #[cfg(feature = "mermaid")]
             if self.diagram_frame.is_some() { return false; }
@@ -401,6 +408,7 @@ impl Renderer {
         }
         if flags & HAS_IMAGE != 0 && (self.images.is_some() || self.on_image.is_some()) { return false; }
         if flags & HAS_QUOTE != 0 && self.quote_frame.is_some() { return false; }
+        if flags & HAS_DIFF != 0 && self.diff_frame.is_some() { return false; }
         if flags & HAS_OPEN_TABLE != 0 && self.streaming { return false; }
         true
     }
@@ -412,7 +420,7 @@ impl Renderer {
                 Some((sp, lp)) => {
                     1u8.hash(h);
                     hash_span(&sp, h);
-                    let _ = std::fmt::write(&mut HashFmt(h), format_args!("{lp:?}"));
+                    std::fmt::write(&mut HashFmt(h), format_args!("{lp:?}")).ok();
                 }
             }
         }
@@ -425,15 +433,17 @@ impl Renderer {
         {
             match fav(url) {
                 None => 0u8.hash(h),
-                Some(px) => { 1u8.hash(h); let _ = std::fmt::write(&mut HashFmt(h), format_args!("{px:?}")); }
+                Some(px) => { 1u8.hash(h); std::fmt::write(&mut HashFmt(h), format_args!("{px:?}")).ok(); }
             }
         }
     }
 
     pub(super) fn hash_inline_direct(&self, inl: &Inline, h: &mut PairHasher) -> bool {
+        if inl.spans.iter().any(|s| matches!(s.2, Style::Math)) { return false; }
         let resolved = self.with_code_links(inl);
         if !self.can_memo_links(!resolved.links.is_empty()) { return false; }
         (1u8, &*resolved).hash(h);
+        self.hash_emoji(inl, h);
         for (a, b, url) in &resolved.links {
             self.code_link_color(*a, *b, &resolved).hash(h);
             self.hash_link_url(url, h);
@@ -451,8 +461,8 @@ impl Renderer {
                     (Block::Para(inl), Some(BlockMap::DeepTail { lines, .. })) => (11u8, *lines, &inl.text).hash(h),
                     (Block::Para(inl), _) => { 1u8.hash(h); if !self.hash_inline_direct(inl, h) { return false; } }
                     (Block::Heading(level, inl), _) => { (2u8, *level).hash(h); if !self.hash_inline_direct(inl, h) { return false; } }
-                    (Block::Code(code), _) => { if !self.can_memo_flags(HAS_CODE) { return false; } (3u8, code).hash(h); }
-                    (Block::Diff(src), _) => (4u8, src).hash(h),
+                    (Block::Code(code), _) => { if !self.can_memo_flags(HAS_CODE) { return false; } (3u8, self.wrap_code_default(), code).hash(h); }
+                    (Block::Diff(src), map_opt) => { if !self.can_memo_flags(HAS_DIFF) { return false; } let open = matches!(map_opt, Some(BlockMap::Diff { open: true, .. })); (4u8, open, src).hash(h); }
                     (Block::Mermaid(src), _) => { if !self.can_memo_flags(HAS_MERMAID) { return false; } (5u8, src).hash(h); }
                     (Block::Rule, _) => 6u8.hash(h),
                     (Block::Image { src, alt, title }, _) => { if !self.can_memo_flags(HAS_IMAGE) { return false; } (7u8, src, alt, title).hash(h); }
@@ -490,24 +500,32 @@ impl Renderer {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn settled_block_digest(
         &self, b: &Block, pre: Option<&PreBlock>, map: &BlockMap, key: &str, top: f32,
-        dir: Option<rune::Direction>, (src_at, src_n): (usize, usize), (task_at, task_n): (usize, usize),
+        dir: Option<rune::Direction>, cap_prose: bool, (src_at, src_n): (usize, usize), (task_at, task_n): (usize, usize),
     ) -> Option<(u64, u64)> {
         let srcs = self.sources.get(src_at..src_at + src_n)?;
         if srcs.iter().any(|s| s.open) { return None; }
         let tasks = self.tasks.get(task_at..task_at + task_n)?;
         if self.on_task.is_some() && !self.tasks_read_only && tasks.iter().any(Option::is_some) { return None; }
         let mut h = PairHasher::new();
-        (1u8, self.base_hash(), key, top.to_bits(), dir).hash(&mut h);
-        match pre.filter(|p| self.code_link.is_none() || p.flags & HAS_INLINE_CODE == 0) {
+        (1u8, self.base_hash(), key, top.to_bits(), dir, cap_prose).hash(&mut h);
+        match pre.filter(|p| self.emoji.is_none() && (self.code_link.is_none() || p.flags & HAS_INLINE_CODE == 0)) {
             Some(p) => {
                 if !self.can_memo_flags(p.flags) || !self.can_memo_links(!p.links.is_empty()) { return None; }
                 p.digest.hash(&mut h);
+                if p.flags & HAS_CODE != 0 { self.wrap_code_default().hash(&mut h); }
                 for url in &p.links { self.hash_link_url(url, &mut h); }
             }
             None => if !self.hash_block_direct(b, Some(map), &mut h) { return None; },
         }
         hash_flow(self.flow.get(), &mut h);
         for s in srcs { (&s.lang, s.len, s.coloured, s.open).hash(&mut h); }
+        // A block with display math builds every time its document does: each build asks the math
+        // cache, so a host's row notes what is still rendering (`math::collect`). The equation's
+        // own element stays memoised (`settled_math_card_digest`).
+        #[cfg(feature = "math")]
+        if srcs.iter().any(|s| crate::math::is_math_fence(s.lang.as_deref())) {
+            return None;
+        }
         tasks.hash(&mut h);
         if !self.highlights.is_empty() { hash_block_map(map, &mut h); }
         Some(h.finish128())
@@ -523,10 +541,11 @@ impl Renderer {
         if self.on_task.is_some() && !self.tasks_read_only && tasks.iter().any(Option::is_some) { return None; }
         let mut h = PairHasher::new();
         (2u8, self.base_hash()).hash(&mut h);
-        match pre.filter(|p| self.code_link.is_none() || p.flags & HAS_INLINE_CODE == 0) {
+        match pre.filter(|p| self.emoji.is_none() && (self.code_link.is_none() || p.flags & HAS_INLINE_CODE == 0)) {
             Some(p) => {
                 if !self.can_memo_flags(p.flags) || !self.can_memo_links(!p.links.is_empty()) { return None; }
                 p.digest.hash(&mut h);
+                if p.flags & HAS_CODE != 0 { self.wrap_code_default().hash(&mut h); }
                 for url in &p.links { self.hash_link_url(url, &mut h); }
             }
             None => {
@@ -538,6 +557,13 @@ impl Renderer {
         }
         hash_flow(self.flow.get(), &mut h);
         for s in srcs { (&s.lang, s.len, s.coloured, s.open).hash(&mut h); }
+        // A block with display math builds every time its document does: each build asks the math
+        // cache, so a host's row notes what is still rendering (`math::collect`). The equation's
+        // own element stays memoised (`settled_math_card_digest`).
+        #[cfg(feature = "math")]
+        if srcs.iter().any(|s| crate::math::is_math_fence(s.lang.as_deref())) {
+            return None;
+        }
         tasks.hash(&mut h);
         if !self.highlights.is_empty() {
             imap.len().hash(&mut h);
@@ -546,16 +572,31 @@ impl Renderer {
         Some(h.finish128())
     }
 
-    pub(super) fn settled_code_card_digest(&self, code: &str, source: Option<&Source>, map: Option<&SpanMap>) -> Option<(u64, u64)> {
+    pub(super) fn settled_code_card_digest(&self, code: &str, source: Option<&Source>, map: Option<&SpanMap>, wrapped: bool) -> Option<(u64, u64)> {
         if !self.highlighter.is_builtin() || source.is_some_and(|s| s.open) { return None; }
         let mut h = PairHasher::new();
-        (3u8, self.base_hash(), code).hash(&mut h);
+        (3u8, self.base_hash(), wrapped, code).hash(&mut h);
         match source {
             Some(s) => (1u8, &s.lang, s.len, s.coloured, s.open).hash(&mut h),
             None => 0u8.hash(&mut h),
         }
         if !self.highlights.is_empty() && let Some(m) = map { hash_span_map(m, &mut h); }
         Some(h.finish128())
+    }
+
+    pub(super) fn settled_diff_card_digest(&self, src: &str, open: bool, map: Option<&SpanMap>) -> Option<(u64, u64)> {
+        if open { return None; }
+        let mut h = PairHasher::new();
+        (6u8, self.base_hash(), src).hash(&mut h);
+        if !self.highlights.is_empty() && let Some(m) = map { hash_span_map(m, &mut h); }
+        Some(h.finish128())
+    }
+
+    #[cfg(feature = "math")]
+    pub(super) fn settled_math_card_digest(&self, code: &str, ink: Color, avail: Option<f32>, rendered_id: u64) -> (u64, u64) {
+        let mut h = PairHasher::new();
+        (5u8, self.base_hash(), ink, avail.map(f32::to_bits), rendered_id, code).hash(&mut h);
+        h.finish128()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -566,9 +607,9 @@ impl Renderer {
     ) -> Option<(u64, u64)> {
         let mut h = PairHasher::new();
         (4u8, self.base_hash(), cell_role, key, extra, font, color, pad.map(f32::to_bits), table_dir).hash(&mut h);
-        match pre.filter(|p| self.code_link.is_none() || p.flags & HAS_INLINE_CODE == 0) {
+        match pre.filter(|p| self.emoji.is_none() && (self.code_link.is_none() || p.flags & HAS_INLINE_CODE == 0)) {
             Some(p) => {
-                if !self.can_memo_links(!p.links.is_empty()) { return None; }
+                if !self.can_memo_flags(p.flags) || !self.can_memo_links(!p.links.is_empty()) { return None; }
                 p.digest.hash(&mut h);
                 for url in &p.links { self.hash_link_url(url, &mut h); }
             }
@@ -598,7 +639,7 @@ impl Renderer {
     ) -> (u64, u64) {
         let mut h = PairHasher::new();
         (n, fkey, inline_code_key, epoch, cells.len().min(n)).hash(&mut h);
-        match pre.filter(|p| cells.len() <= n && (self.code_link.is_none() || p.flags & HAS_INLINE_CODE == 0)) {
+        match pre.filter(|p| cells.len() <= n && self.emoji.is_none() && (self.code_link.is_none() || p.flags & HAS_INLINE_CODE == 0)) {
             Some(p) => {
                 p.digest.hash(&mut h);
                 if let Some(look) = &self.link_look {
@@ -611,6 +652,7 @@ impl Renderer {
                 for inl in cells.iter().take(n) {
                     let resolved = self.with_code_links(inl);
                     resolved.hash(&mut h);
+                    self.hash_emoji(inl, &mut h);
                     if let Some(look) = &self.link_look {
                         for (_, _, url) in &resolved.links {
                             look(url).map(|(sp, _)| (sp.weight.map(f32::to_bits), sp.size.map(f32::to_bits), sp.mono, sp.italic)).hash(&mut h);

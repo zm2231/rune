@@ -13,13 +13,26 @@
 //! The panel is a dev tool: without the `panel` feature, `layer` draws nothing, `key` handles
 //! nothing and `get` returns each knob's default, so a shipped build runs on the constants.
 //!
-//! ```ignore
+//! ```
+//! # use rune::{Color, KeyEvent, el};
+//! # use rune_knobs::{Group, Knob, Knobs, Style};
+//! # struct State { knobs: Knobs }
+//! # let s = State { knobs: Knobs::default() };
+//! # let (panel, root) = (el(), el());
 //! const RIM: Knob = Knob::new("Rim width", 0.0, 3.0, 1.0);
 //! const GROUPS: &[Group] = &[Group::new("Panel", "panel", &[RIM])];
-//! panel.border(knobs.get(&RIM), ..);
-//! root.child(rune_knobs::layer(&s.knobs, GROUPS, Style::dark(), |s: &mut State| &mut s.knobs))
-//! // in on_key: if rune_knobs::key(&mut s.knobs, ev) { return true }
+//! let panel = panel.border(s.knobs.get(&RIM), Color::WHITE);
+//! let _root = root
+//!     .child(panel)
+//!     .child(rune_knobs::layer(&s.knobs, GROUPS, Style::dark(), |s: &mut State| &mut s.knobs));
+//! # fn _on_key(s: &mut State, ev: &KeyEvent) -> bool {
+//! // in on_key:
+//! if rune_knobs::key(&mut s.knobs, ev) { return true; }
+//! # false
+//! # }
 //! ```
+
+#![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -79,7 +92,10 @@ pub struct Knob {
     pub name: &'static str,
     /// What the panel calls it, in plain words, when that differs from `name`.
     pub label: &'static str,
+    /// Lower bound. When `min >= max` or `max` is NaN, the range collapses to `min` (falling
+    /// back to `max`, `default`, or `0.0` if `min` is NaN). A NaN value clamps to `min`.
     pub min: f32,
+    /// Upper bound; see [`Self::min`] when bounds are inverted or NaN.
     pub max: f32,
     pub default: f32,
     pub step: f32,
@@ -120,7 +136,7 @@ static NOTES: std::sync::OnceLock<&'static [Note]> = std::sync::OnceLock::new();
 
 /// Sets the app's notes on its knobs, once; later calls are ignored.
 pub fn describe(notes: &'static [Note]) {
-    let _ = NOTES.set(notes);
+    NOTES.set(notes).ok();
 }
 
 fn note(name: &str) -> Option<&'static Note> {
@@ -173,8 +189,25 @@ impl Knob {
         Self { name, label: "", min: 0.0, max: (labels.len().saturating_sub(1)) as f32, default: default as f32, step: 1.0, labels, about: "", hints: &[] }
     }
     fn clamp(&self, v: f32) -> f32 {
-        let v = v.clamp(self.min, self.max);
-        if self.step > 0.0 { (self.min + ((v - self.min) / self.step).round() * self.step).min(self.max) } else { v }
+        if !(self.min < self.max) {
+            return if !self.min.is_nan() {
+                self.min
+            } else if !self.max.is_nan() {
+                self.max
+            } else if !self.default.is_nan() {
+                self.default
+            } else {
+                0.0
+            };
+        }
+        let v = if v.is_nan() { self.min } else { v.clamp(self.min, self.max) };
+        if self.step > 0.0 && self.step.is_finite() {
+            let snapped = self.min + ((v - self.min) / self.step).round() * self.step;
+            if snapped.is_finite() {
+                return snapped.min(self.max);
+            }
+        }
+        v
     }
 }
 
@@ -566,7 +599,7 @@ impl Knobs {
     pub fn random(&mut self, g: &Group) {
         self.checkpoint();
         if self.seed == 0 {
-            self.seed = rune::time::SystemTime::now().duration_since(rune::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64) | 1;
+            self.seed = rune::time::system_now().duration_since(rune::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64) | 1;
         }
         for k in g.knobs {
             // xorshift64

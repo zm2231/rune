@@ -57,7 +57,7 @@ fn a_window_resize_step_keeps_springs_and_flights_going() {
 fn a_window_that_fits_its_content_refits_after_a_user_resize() {
     fn view(_: &(), _: &mut Cx<()>) -> El { col().key("root").w_full().child(el().size(100.0, 90.0)) }
     let mut rt = Runtime::new((), view, (300.0, 400.0), Env::new(true, 1.0));
-    rt.host.fit_height = true;
+    rt.host.set_fit_height(true);
     let height = rt.content_height();
     rt.set_viewport((300.0, height), 1.0);
     rt.frame(0.0);
@@ -80,7 +80,7 @@ fn a_hidden_window_that_fits_its_content_learns_its_height_before_it_shows() {
         col().key("root").w_full().children((0..s.0).map(|_| el().size(100.0, 40.0)))
     }
     let mut rt = Runtime::new((1, false), view, (300.0, 400.0), Env::new(true, 1.0));
-    rt.host.fit_height = true;
+    rt.host.set_fit_height(true);
     let height = rt.content_height();
     rt.set_viewport((300.0, height), 1.0);
     rt.frame(0.0);
@@ -124,7 +124,7 @@ fn timed_wakes_are_exact_coalesced_and_do_not_commit_or_animate() {
     let mut rt = Runtime::new(Vec::new(), view, (100.0, 100.0), Env::new(true, 1.0));
     rt.poll = Some(poll);
     assert!(!rt.frame(0.0));
-    assert_eq!(rt.frame.wake_deadlines, [0.25, 0.375]);
+    assert_eq!(rt.frame.wake_deadlines(), [0.25, 0.375]);
     assert!(!rt.frame(0.5));
     assert_eq!(rt.state, [0.0, 0.25, 0.375, 0.5]);
     assert_eq!(rt.commit.commits, 1);
@@ -152,7 +152,7 @@ fn wakes_a_poll_keeps_asking_for_collapse_to_one_poll_a_frame() {
             rt.frame(1.0 / 60.0);
             assert_eq!(rt.state.0, 1, "delay {delay}: frame {frame} polled {} times", rt.state.0);
         }
-        assert!(rt.frame.wake_deadlines.len() <= 32, "delay {delay}: {} deadlines pending", rt.frame.wake_deadlines.len());
+        assert!(rt.frame.wake_deadlines().len() <= 32, "delay {delay}: {} deadlines pending", rt.frame.wake_deadlines().len());
     }
 }
 
@@ -272,4 +272,229 @@ fn a_new_system_scroll_bar_setting_rebuilds_the_view_and_its_memos() {
     rt.set_system_scroller_overlay(false);
     rt.frame(5.0);
     assert_eq!((w(&rt, "cx"), w(&rt, "memo")), (80.0, 90.0));
+}
+
+#[test]
+fn drag_resize_window_populates_frame_request_and_merges_with_resize_window() {
+    use crate::{Phase, ResizeEdge};
+    fn view(_: &(), _: &mut Cx<()>) -> El {
+        el().key("grip").size(40.0, 40.0).on_drag(|_: &mut (), d, tx| {
+            if d.phase == Phase::Down {
+                tx.drag_resize_window(ResizeEdge::SouthEast);
+            }
+        })
+    }
+    let mut rt = Runtime::new((), view, (200.0, 200.0), Env::new(true, 1.0));
+    rt.frame(0.0);
+    assert!(rt.host.window_frame.is_none());
+
+    // Triggered from on_drag Phase::Down on a custom grip.
+    rt.pointer_move(20.0, 20.0);
+    rt.pointer_down(20.0, 20.0);
+    rt.frame(1.0 / 60.0);
+    let req = rt.host.window_frame.take().expect("drag_resize_window request");
+    assert_eq!(req.resize_drag, Some(ResizeEdge::SouthEast));
+    assert_eq!(req.size, None);
+    assert!(!req.center);
+    rt.pointer_up(20.0, 20.0);
+    rt.frame(1.0 / 60.0);
+    assert!(rt.host.window_frame.is_none(), "Phase::Up does not re-emit resize_drag");
+
+    // Merges cleanly with resize_window and center_window; later drag_resize_window wins.
+    rt.update(|_, tx| {
+        tx.resize_window((640.0, 480.0));
+        tx.drag_resize_window(ResizeEdge::East);
+        tx.center_window();
+        tx.drag_resize_window(ResizeEdge::NorthWest);
+    });
+    let merged = rt.host.window_frame.take().expect("merged frame request");
+    assert_eq!(merged.size, Some((640.0, 480.0)));
+    assert!(merged.center);
+    assert_eq!(merged.resize_drag, Some(ResizeEdge::NorthWest));
+}
+
+#[test]
+fn maximized_and_full_screen_state_rebuilds_view_and_memos_only_on_confirmed_change() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    struct Counters {
+        view_builds: Rc<Cell<usize>>,
+        memo_builds: Rc<Cell<usize>>,
+        cleared_maximized: Rc<Cell<bool>>,
+        cleared_full_screen: Rc<Cell<bool>>,
+    }
+
+    fn view(c: &Counters, cx: &mut Cx<Counters>) -> El {
+        c.view_builds.set(c.view_builds.get() + 1);
+        let max = cx.is_maximized();
+        let full = cx.is_full_screen();
+        let mut sub = cx.retype::<()>();
+        sub.clear_chrome();
+        c.cleared_maximized.set(sub.is_maximized());
+        c.cleared_full_screen.set(sub.is_full_screen());
+        let memo_builds = c.memo_builds.clone();
+        crate::row().size(300.0, 40.0)
+            .child(el().key("max").size(if max { 80.0 } else { 20.0 }, 10.0))
+            .child(el().key("full").size(if full { 90.0 } else { 30.0 }, 10.0))
+            .child(crate::memo("memo-state", 0, move || {
+                memo_builds.set(memo_builds.get() + 1);
+                el().size(if max { 60.0 } else { 10.0 } + if full { 5.0 } else { 0.0 }, 10.0)
+            }))
+    }
+
+    let view_builds = Rc::new(Cell::new(0));
+    let memo_builds = Rc::new(Cell::new(0));
+    let cleared_maximized = Rc::new(Cell::new(true));
+    let cleared_full_screen = Rc::new(Cell::new(true));
+    let mut rt = Runtime::new(
+        Counters {
+            view_builds: view_builds.clone(),
+            memo_builds: memo_builds.clone(),
+            cleared_maximized: cleared_maximized.clone(),
+            cleared_full_screen: cleared_full_screen.clone(),
+        },
+        view,
+        (300.0, 40.0),
+        Env::new(true, 1.0),
+    );
+    let w = |rt: &Runtime<Counters>, key: &str| rt.presented(key).unwrap().0[2];
+    rt.frame(0.0);
+    assert_eq!((w(&rt, "max"), w(&rt, "full"), w(&rt, "memo-state")), (20.0, 30.0, 10.0));
+    assert_eq!((view_builds.get(), memo_builds.get()), (1, 1));
+
+    // Fire-and-forget requests never flip Cx::is_maximized or Cx::is_full_screen optimistically.
+    rt.update(|_, tx| {
+        tx.toggle_maximized();
+        tx.set_full_screen(true);
+    });
+    rt.frame(1.0);
+    assert_eq!((w(&rt, "max"), w(&rt, "full"), w(&rt, "memo-state")), (20.0, 30.0, 10.0));
+
+    // Setting the already-current state does not mark dirty or rebuild the view or memo.
+    let builds_before = (view_builds.get(), memo_builds.get());
+    rt.set_maximized(false);
+    rt.set_full_screen(false);
+    assert!(!rt.core().stale());
+    rt.frame(2.0);
+    assert_eq!((view_builds.get(), memo_builds.get()), builds_before);
+
+    // Confirmed OS maximize rebuilds the view and invalidates the memo.
+    rt.set_maximized(true);
+    assert!(rt.core().stale());
+    rt.frame(3.0);
+    rt.frame(8.0);
+    assert_eq!((w(&rt, "max"), w(&rt, "full"), w(&rt, "memo-state")), (80.0, 30.0, 60.0));
+    assert_eq!((view_builds.get(), memo_builds.get()), (builds_before.0 + 1, builds_before.1 + 1));
+    assert!(!cleared_maximized.get(), "clear_chrome resets is_maximized for staged subviews");
+
+    // Repeating true is a no-op.
+    let builds_max = (view_builds.get(), memo_builds.get());
+    rt.set_maximized(true);
+    assert!(!rt.core().stale());
+    rt.frame(9.0);
+    assert_eq!((view_builds.get(), memo_builds.get()), builds_max);
+
+    // Confirmed OS full screen rebuilds the view and invalidates the memo.
+    rt.set_full_screen(true);
+    assert!(rt.core().stale());
+    rt.frame(10.0);
+    rt.frame(15.0);
+    assert_eq!((w(&rt, "max"), w(&rt, "full"), w(&rt, "memo-state")), (80.0, 90.0, 65.0));
+    assert_eq!((view_builds.get(), memo_builds.get()), (builds_max.0 + 1, builds_max.1 + 1));
+    assert!(!cleared_full_screen.get(), "clear_chrome resets is_full_screen for staged subviews");
+
+    // Exiting both restores both view and memo back to false.
+    rt.set_maximized(false);
+    rt.set_full_screen(false);
+    rt.frame(16.0);
+    rt.frame(21.0);
+    assert_eq!((w(&rt, "max"), w(&rt, "full"), w(&rt, "memo-state")), (20.0, 30.0, 10.0));
+    assert_eq!((view_builds.get(), memo_builds.get()), (builds_max.0 + 2, builds_max.1 + 2));
+}
+
+#[test]
+fn full_screen_transition_and_failed_revert_keep_inset_and_memo_in_sync() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    struct State {
+        builds: Rc<Cell<usize>>,
+        memo_builds: Rc<Cell<usize>>,
+    }
+
+    fn view(s: &State, cx: &mut Cx<State>) -> El {
+        s.builds.set(s.builds.get() + 1);
+        let full = cx.is_full_screen();
+        let inset = cx.titlebar_inset();
+        let memo_builds = s.memo_builds.clone();
+        crate::row().size(300.0, 40.0)
+            .child(el().key("inset").size(inset.max(1.0), 10.0))
+            .child(crate::memo("titlebar", 0, move || {
+                memo_builds.set(memo_builds.get() + 1);
+                el().size(if full { 120.0 } else { 40.0 } + inset, 10.0)
+            }))
+    }
+
+    let builds = Rc::new(Cell::new(0));
+    let memo_builds = Rc::new(Cell::new(0));
+    let mut rt = Runtime::new(
+        State { builds: builds.clone(), memo_builds: memo_builds.clone() },
+        view,
+        (300.0, 40.0),
+        Env::new(true, 1.0),
+    );
+    let inset = crate::Chrome::DEFAULT.titlebar_inset();
+    rt.set_titlebar_inset(inset);
+    rt.frame(0.0);
+    assert_eq!(rt.presented("inset").unwrap().0[2], inset);
+    assert_eq!(rt.presented("titlebar").unwrap().0[2], 40.0 + inset);
+
+    // Transition start (WillEnter): full_screen flips true and titlebar_inset drops to 0.
+    rt.set_full_screen(true);
+    rt.set_titlebar_inset(0.0);
+    assert!(rt.core().stale());
+    rt.frame(1.0);
+    rt.frame(6.0);
+    assert_eq!(rt.presented("inset").unwrap().0[2], 1.0);
+    assert_eq!(rt.presented("titlebar").unwrap().0[2], 120.0);
+    assert_eq!((builds.get(), memo_builds.get()), (2, 2));
+
+    // Failed enter revert (DidExit / Sync): both flip back and re-run view and memo.
+    rt.set_full_screen(false);
+    rt.set_titlebar_inset(inset);
+    assert!(rt.core().stale());
+    rt.frame(7.0);
+    rt.frame(12.0);
+    assert_eq!(rt.presented("inset").unwrap().0[2], inset);
+    assert_eq!(rt.presented("titlebar").unwrap().0[2], 40.0 + inset);
+    assert_eq!((builds.get(), memo_builds.get()), (3, 3));
+}
+
+#[test]
+fn a_handler_that_queues_work_or_requests_a_poll_has_its_work_polled_in_the_same_frame() {
+    #[derive(Default)]
+    struct App { queued: Vec<u32>, done: Vec<u32>, request: bool }
+    fn view(_: &App, _: &mut Cx<App>) -> El {
+        el().key("go").size(40.0, 40.0).on_press_tx(|s: &mut App, tx: &mut Tx| {
+            s.queued.push(1);
+            if s.request { tx.request_poll(); }
+        })
+    }
+    fn poll(s: &mut App, _: f64, _: &mut Tx) -> bool {
+        let any = !s.queued.is_empty();
+        s.done.append(&mut s.queued);
+        any
+    }
+    for request in [false, true] {
+        let mut rt = Runtime::new(App { request, ..App::default() }, view, (100.0, 100.0), Env::new(true, 1.0));
+        rt.poll = Some(poll);
+        rt.frame(0.0);
+        rt.pointer_down(20.0, 20.0);
+        rt.pointer_up(20.0, 20.0);
+        rt.frame(1.0 / 60.0);
+        assert_eq!(rt.state.done, [1], "request={request}: work queued by a mutating press is polled in the same frame");
+        assert!(rt.state.queued.is_empty());
+        assert_eq!(rt.wake_deadline(), None, "request={request}: no extra wake is left armed");
+    }
 }

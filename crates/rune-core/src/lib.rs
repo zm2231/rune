@@ -7,6 +7,7 @@
 pub mod cold;
 pub mod color;
 pub mod dirs;
+pub mod env;
 pub mod growth;
 pub mod latest;
 pub mod live;
@@ -33,6 +34,8 @@ pub use latest::Latest;
 pub use live::Live;
 pub use live::LiveText;
 pub use live::Tween;
+pub use shape::Area;
+pub use shape::FillRule;
 pub use shape::LineCap;
 pub use shape::Path;
 pub use shape::Shape;

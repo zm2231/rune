@@ -61,6 +61,8 @@ pub(in crate::runtime) struct PaintKeep {
     pub(in crate::runtime) cycles: cycle::CyclePaint,
     recs: Vec<PaintRec>,
     prev: Vec<PaintRec>,
+    shift: Vec<shift::ShiftRec>,
+    prev_shift: Vec<shift::ShiftRec>,
     instances: Vec<Instance>,
     marks: Vec<u32>,
     hits: Vec<(NodeId, [f32; 4])>,
@@ -72,6 +74,7 @@ pub(in crate::runtime) struct PaintKeep {
     drawn_scale: Vec<f32>,
     seen: Vec<bool>,
     inh: Vec<Inh>,
+    inh_cold: Vec<InhCold>,
     sticky_frame: Vec<[f32; 8]>,
     pages: Vec<(u16, u32)>,
     prev_pages: Vec<(u16, u32)>,
@@ -95,14 +98,79 @@ pub(in crate::runtime) struct PaintKeep {
     open: Vec<usize>,
     /// Last paint's index of each node by id, built when this paint's order leaves last paint's.
     by_id: HashMap<NodeId, u32>,
+    /// Viewport bounds in device pixels for this paint pass.
+    vp: [f32; 4],
     /// Debug builds: the last paint's index of a subtree painted to check its copy.
     verify: Vec<u32>,
+    verify_shift: Vec<Option<shift::ShiftPlan>>,
     verify_span: (usize, usize),
+    /// Tests: execute actual keep copies instead of the debug-only verify pass.
+    #[cfg(test)]
+    pub(in crate::runtime) force_copy: bool,
+    /// Tests: nodes copied (or verified as copyable) in the last paint.
+    #[cfg(test)]
+    pub(in crate::runtime) last_kept: usize,
+    /// Tests: suppress strict-mode panic in `record_mismatch` when intentionally probing a mismatch.
+    #[cfg(test)]
+    pub(in crate::runtime) allow_check_mismatch: bool,
     /// Nodes copied this paint, and why the others weren't as they were (`RUNE_PAINT_KEEP_LOG`).
     kept: usize,
     why: [usize; 6],
     /// The next paint paints everything (the raster check's fresh paint).
     pub(in crate::runtime) off_once: bool,
+    /// Debug builds: count of unshifted `keep_check` mismatches observed.
+    #[cfg(debug_assertions)]
+    pub(in crate::runtime) check_mismatches: usize,
+    /// Debug builds: count of scroll-shifted `check_shifted` mismatches observed.
+    #[cfg(debug_assertions)]
+    pub(in crate::runtime) verify_mismatches: usize,
+    /// Debug builds: panic on any self-check mismatch for this runtime (`Runtime::set_paint_keep_strict`).
+    #[cfg(debug_assertions)]
+    pub(in crate::runtime) strict_check: bool,
+}
+
+#[cfg(debug_assertions)]
+fn should_panic_on_mismatch(strict_check: bool, is_test: bool, env: Option<&str>) -> bool {
+    strict_check || env == Some("1") || (is_test && env != Some("0"))
+}
+
+impl PaintKeep {
+    /// Debug builds: records a self-check mismatch, writes the diagnostic to stderr, and panics
+    /// when strict mode is active. Cold path: healthy debug frames never call this, and release
+    /// builds compile it out.
+    #[cold]
+    #[inline(never)]
+    pub(super) fn record_mismatch(&mut self, shifted: bool, path: &str, differ: &[&str]) {
+        #[cfg(debug_assertions)]
+        {
+            if shifted {
+                self.verify_mismatches += 1;
+            } else {
+                self.check_mismatches += 1;
+            }
+            let kind = if shifted { " (scroll)" } else { "" };
+            let joined = differ.join(", ");
+            eprintln!(
+                "rune: paint keep{kind}: {path} would have copied what differs: {joined} (set RUNE_PAINT_KEEP_STRICT=1 to panic)"
+            );
+            #[cfg(test)]
+            let allowed = self.allow_check_mismatch;
+            #[cfg(not(test))]
+            let allowed = false;
+            if !allowed {
+                let env = rune_core::env::var("RUNE_PAINT_KEEP_STRICT");
+                if should_panic_on_mismatch(self.strict_check, cfg!(test), env.as_deref()) {
+                    panic!(
+                        "rune: paint keep{kind}: {path} would have copied what differs: {joined} (set RUNE_PAINT_KEEP_STRICT=1 to panic)"
+                    );
+                }
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = (shifted, path, differ);
+        }
+    }
 }
 
 fn disabled() -> bool {
@@ -127,32 +195,30 @@ fn bits(h: &mut rune_motion::Fx, v: &[f32]) {
     }
 }
 
-/// The bits of what a node inherits.
-pub(in crate::runtime) fn inh_key(p: &Inh) -> u64 {
+pub(super) use inh::{inh_key, inh_keys};
+pub(super) use shift::inh_key_from_base;
+
+/// Inherited state keys for node `i`, folding the enclosing scroll viewport's sticky band
+/// when the tree has sticky elements so a resized viewport under a tighter clip cannot copy
+/// stale `sticky_frame` bounds.
+pub(super) fn inh_keys_for(nodes: &[Node], has_sticky: bool, sticky_frame: &[[f32; 8]], i: usize, p: &Inh, c: &InhCold, is_default_cold: bool) -> (u64, u64) {
+    let (inh, inh_base) = inh_keys(p, c, is_default_cold);
+    if !has_sticky {
+        return (inh, inh_base);
+    }
+    let band = nodes[i].parent.map_or(
+        [f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY],
+        |pr| {
+            let sf = sticky_frame[pr];
+            [sf[0], sf[1], sf[4], sf[5]]
+        },
+    );
     let mut h = rune_motion::Fx::default();
-    bits(&mut h, &[p.opacity, p.paint_opacity, p.first_fade, p.scale, p.blur, p.dy, p.dx, p.group, p.hit_opacity]);
-    for a in [p.clip, p.fade, p.fade_origin, p.paint_clip, p.paint_fade, p.paint_fade_origin, p.group_rect] {
-        bits(&mut h, &a);
-    }
-    bits(&mut h, &p.anchor);
-    bits(&mut h, &p.anchor_to);
-    bits(&mut h, &p.cover);
-    match p.rounded {
-        Some((a, b)) => { h.write_u8(1); bits(&mut h, &a); bits(&mut h, &b); }
-        None => h.write_u8(0),
-    }
-    match p.outer {
-        Some(o) => { h.write_u8(1); for a in o { bits(&mut h, &a); } }
-        None => h.write_u8(0),
-    }
-    h.write_u32(p.mark);
-    h.write_u8(p.scale_motion as u8);
-    bits(&mut h, &[p.still.0]);
-    bits(&mut h, &p.still.1);
-    bits(&mut h, &p.still.2);
-    (p.in_cache, p.skip_paint, p.turn).hash(&mut h);
-    p.snap.hash_bits(&mut h);
-    h.finish()
+    h.write_u64(inh_base);
+    bits(&mut h, &band);
+    let base = h.finish();
+    let full = shift::inh_key_from_base(base, [p.dx, p.dy, p.rigid[0], p.rigid[1]]);
+    (full, base)
 }
 
 impl RuntimeCore {
@@ -176,8 +242,10 @@ impl RuntimeCore {
         std::mem::swap(&mut self.paint.drawn_scale, &mut k.drawn_scale);
         std::mem::swap(&mut self.paint.seen, &mut k.seen);
         std::mem::swap(&mut self.paint.inh_scratch, &mut k.inh);
+        std::mem::swap(&mut self.paint.inh_cold, &mut k.inh_cold);
         std::mem::swap(&mut self.scroll.sticky_frame, &mut k.sticky_frame);
         std::mem::swap(&mut k.recs, &mut k.prev);
+        std::mem::swap(&mut k.shift, &mut k.prev_shift);
         std::mem::swap(&mut k.pages, &mut k.prev_pages);
         // The other pairs too, as the instances above: a paint that grows one buffer doesn't
         // leave the frame after it to grow the other.
@@ -191,6 +259,8 @@ impl RuntimeCore {
         k.pages.clear();
         k.recs.clear();
         k.recs.resize(self.tree.nodes.len(), PaintRec::default());
+        k.shift.clear();
+        k.shift.resize(self.tree.nodes.len(), shift::ShiftRec::default());
         k.open.clear();
         k.kept = 0;
     }
@@ -202,8 +272,8 @@ impl RuntimeCore {
         self.paint.keep.painted = self.paint.keep.frame;
         // Paint goes depth first, siblings in paint order (`update_layer_paint_order`), so a subtree
         // paints in one run unless it holds a node lifted out to paint last.
-        let lifted = !self.motion.flying.is_empty() || self.tree.has_raise;
-        let shareable = !lifted && self.motion.flights.is_empty() && self.paint.paint_rank.is_none()
+        let lifted = !self.motion.flying.is_empty() || self.tree.has_raise || self.paint.has_lifted_anchors();
+        let shareable = !lifted && self.motion.flights().is_empty() && self.paint.paint_rank.is_none()
             && self.kbd.modal_scope.is_none() && !self.commit.defaults.force_focus_rings && !disabled();
         let key = shareable.then(|| {
             let mut h = rune_motion::Fx::default();
@@ -217,15 +287,18 @@ impl RuntimeCore {
             h.finish()
         });
         if logging() && !shareable {
-            eprintln!("rune: paint keep off: raise {}, text flights {}, flying {}, rank {}, modal {}", self.tree.has_raise, self.motion.flights.len(), self.motion.flying.len(), self.paint.paint_rank.is_some(), self.kbd.modal_scope.is_some());
+            eprintln!("rune: paint keep off: raise {}, text flights {}, flying {}, rank {}, modal {}", self.tree.has_raise, self.motion.flights().len(), self.motion.flying.len(), self.paint.paint_rank.is_some(), self.kbd.modal_scope.is_some());
         }
         let k = &mut self.paint.keep;
         k.recording = !lifted;
         k.on = key.is_some() && key == k.key && !second && !std::mem::take(&mut k.off_once) && !k.prev.is_empty();
         k.key = key;
+        k.vp = vp;
         let n = self.tree.nodes.len();
         k.verify.clear();
         k.verify.resize(n, NONE);
+        k.verify_shift.clear();
+        k.verify_shift.resize(n, None);
         k.verify_span = (0, 0);
         if !k.recording {
             return;
@@ -310,7 +383,7 @@ impl RuntimeCore {
 
     /// Opens node `i`'s record, before it paints anything.
     pub(in crate::runtime) fn keep_open(&mut self, i: usize, glyphs: usize, sel: &[(usize, usize, usize)], marks: &[(usize, usize, usize)]) {
-        self.slide_node_opens(i);
+        self.paint.slide_node_opens(i, self.instances.len(), self.env.scale);
         if !self.paint.keep.recording { return; }
         let rec = PaintRec {
             id: self.tree.nodes[i].id,
@@ -336,11 +409,14 @@ impl RuntimeCore {
 
     /// Node `i` inherits `pinh`: copies its subtree from the last paint when that's what it would
     /// paint, and returns how many nodes it holds.
-    pub(in crate::runtime) fn keep_or_paint(&mut self, i: usize, pinh: &Inh, glyph_count: &mut usize) -> Option<usize> {
+    pub(in crate::runtime) fn keep_or_paint(&mut self, i: usize, pinh: &Inh, pcold: &InhCold, is_default_cold: bool, glyph_count: &mut usize) -> Option<usize> {
         // Only a node that can be copied needs what it inherits.
         if !self.paint.keep.recording || !self.paint.keep.recs[i].keep { return None; }
-        let inh = inh_key(pinh);
+        let (inh, inh_base) = inh_keys_for(&self.tree.nodes, self.tree.has_sticky, &self.scroll.sticky_frame, i, pinh, pcold, is_default_cold);
         self.paint.keep.recs[i].inh = inh;
+        let sr = &mut self.paint.keep.shift[i];
+        sr.inh_base = inh_base;
+        sr.origin = [pinh.dx, pinh.dy, pinh.rigid[0], pinh.rigid[1]];
         let k = &self.paint.keep;
         if !k.on || !k.clean[i] {
             return None;
@@ -348,20 +424,40 @@ impl RuntimeCore {
         let o = k.old[i] as usize;
         let r = k.prev[o];
         let end = k.end[i] as usize;
-        if !r.keep || r.inh != inh || r.end as usize - o != end - i {
+        if !r.keep || r.end as usize - o != end - i {
             return None;
         }
-        if cfg!(debug_assertions) {
-            // Checked as one: what it holds paints as it does, inside it.
+        #[cfg(test)]
+        let force_copy = k.force_copy;
+        #[cfg(not(test))]
+        let force_copy = false;
+        if r.inh == inh {
+            if cfg!(debug_assertions) && !force_copy {
+                // Checked as one: what it holds paints as it does, inside it.
+                let (a, b) = self.paint.keep.verify_span;
+                if !(a..b).contains(&i) {
+                    self.paint.keep.verify[i] = o as u32;
+                    self.paint.keep.verify_shift[i] = None;
+                    self.paint.keep.verify_span = (i, end);
+                    self.paint.keep.kept += end - i;
+                }
+                return None;
+            }
+            self.keep_copy(i, o, end, glyph_count);
+            return Some(end - i);
+        }
+        let plan = shift::plan(self, o, pinh, pcold, inh, inh_base)?;
+        if cfg!(debug_assertions) && !force_copy {
             let (a, b) = self.paint.keep.verify_span;
             if !(a..b).contains(&i) {
                 self.paint.keep.verify[i] = o as u32;
+                self.paint.keep.verify_shift[i] = Some(plan);
                 self.paint.keep.verify_span = (i, end);
                 self.paint.keep.kept += end - i;
             }
             return None;
         }
-        self.keep_copy(i, o, end, glyph_count);
+        shift::copy_shifted(self, i, o, end, plan, glyph_count);
         Some(end - i)
     }
 
@@ -395,12 +491,37 @@ impl RuntimeCore {
         self.paint.drawn_scale[i..end].copy_from_slice(&k.drawn_scale[o..o + len]);
         self.paint.seen[i..end].copy_from_slice(&k.seen[o..o + len]);
         self.paint.inh_scratch[i..end].copy_from_slice(&k.inh[o..o + len]);
+        if !k.inh_cold.is_empty() {
+            let (mut last_old, mut last_new) = (0u32, 0u32);
+            for d in 0..len {
+                let old = self.paint.inh_scratch[i + d].cold;
+                if old != 0 {
+                    let mapped = if old == last_old {
+                        last_new
+                    } else if let Some(p) = self.tree.nodes[i + d].parent
+                        && p >= i
+                        && k.inh[o + (p - i)].cold == old
+                    {
+                        self.paint.inh_scratch[p].cold
+                    } else {
+                        let val = k.inh_cold[old as usize - 1];
+                        let next_idx = self.paint.inh_cold.len() as u32 + 1;
+                        self.paint.inh_cold.push(val);
+                        last_old = old;
+                        last_new = next_idx;
+                        next_idx
+                    };
+                    self.paint.inh_scratch[i + d].cold = mapped;
+                }
+            }
+        }
         if self.tree.has_sticky {
             self.scroll.sticky_frame[i..end].copy_from_slice(&k.sticky_frame[o..o + len]);
         }
         // Records for the next paint, as if it had painted them here.
         let shift = |a: [u32; 2], from: u32, to: usize| a.map(|v| v - from + to as u32);
         let glyphs = *glyph_count as u32 - (r.glyphs[1] - r.glyphs[0]);
+        k.shift[i..end].copy_from_slice(&k.prev_shift[o..o + len]);
         for d in 0..len {
             let p = k.prev[o + d];
             k.recs[i + d] = PaintRec {
@@ -421,9 +542,12 @@ impl RuntimeCore {
 
     /// Node `i` painted itself (not yet its children): what it emitted, and what painting it
     /// found, say whether it can be copied.
-    pub(in crate::runtime) fn keep_painted(&mut self, i: usize, painted_ok: bool) {
+    pub(in crate::runtime) fn keep_painted(&mut self, i: usize, painted_ok: bool, shift_node: Option<shift::ShiftNode>) {
+        if !self.paint.keep.recording { return; }
+        if let Some(info) = shift_node {
+            shift::note_painted(self, i, info);
+        }
         let k = &mut self.paint.keep;
-        if !k.recording { return; }
         let start = k.recs[i].inst[0] as usize;
         let mut ok = painted_ok;
         for q in &self.instances[start..] {
@@ -456,7 +580,7 @@ impl RuntimeCore {
                 let before = self.instances.len();
                 if active_cache.is_some_and(|ac| ac.instance_start == start) {
                     let ac = active_cache.take().unwrap();
-                    self.close_cached_layer(ac, start, surface_start, glyph_count);
+                    self.paint.close_cached_layer(&self.tree.nodes, &mut self.instances, &mut self.surfaces, &mut self.marks, self.track_marks, &mut self.text, self.commit.commit_gen(), ac, start, surface_start, glyph_count);
                 } else {
                     crate::render::end_layer(&mut self.instances, &mut self.surfaces, &mut self.marks, start, surface_start);
                 }
@@ -484,8 +608,11 @@ impl RuntimeCore {
             rec.overlay[1] = self.hit.overlay_hits.len() as u32;
             rec.pages[1] = k.pages.len() as u32;
             rec.glyphs[1] = *glyph_count as u32;
-            let keep = rec.keep;
-            if let Some(p) = self.tree.nodes[r].parent { k.recs[p].keep &= keep; }
+            let closed = *rec;
+            if let Some(p) = self.tree.nodes[r].parent {
+                k.recs[p].keep &= closed.keep;
+                shift::fold_into_parent(&self.tree.nodes, &mut k.shift, closed, r, p);
+            }
             if cfg!(debug_assertions) && self.paint.keep.verify.get(r).is_some_and(|&o| o != NONE) {
                 self.keep_check(r);
             }
@@ -495,7 +622,7 @@ impl RuntimeCore {
 
     /// The end of a paint: what was moved is painted, and what wasn't kept is said.
     pub(in crate::runtime) fn keep_end(&mut self) {
-        self.close_slide();
+        self.paint.close_slide(self.instances.len(), self.env.scale);
         let k = &mut self.paint.keep;
         k.moved.clear();
         if !k.recording {
@@ -515,6 +642,10 @@ impl RuntimeCore {
             open.push(i);
         }
         for r in open.drain(..) { k.recs[r].end = n as u32; }
+        #[cfg(test)]
+        {
+            k.last_kept = k.kept;
+        }
         k.moved.clear();
         if logging() {
             eprintln!("rune: paint keep: {} of {} nodes copied (on: {}; unfit {}, new {}, moved {}, rebuilt {}, rows {}, as they were {})", k.kept, n, k.on, k.why[0], k.why[1], k.why[2], k.why[3], k.why[4], k.why[5]);
@@ -524,8 +655,12 @@ impl RuntimeCore {
 
     /// Debug builds: subtree `r` painted what its copy from the last paint would have.
     fn keep_check(&mut self, r: usize) {
+        let o = self.paint.keep.verify[r] as usize;
+        if let Some(plan) = self.paint.keep.verify_shift[r] {
+            shift::check_shifted(self, r, o, plan);
+            return;
+        }
         let k = &self.paint.keep;
-        let o = k.verify[r] as usize;
         let (now, was) = (k.recs[r], k.prev[o]);
         let range = |a: [u32; 2]| a[0] as usize..a[1] as usize;
         let bytes = bytemuck::cast_slice::<Instance, u8>;
@@ -543,21 +678,72 @@ impl RuntimeCore {
         if self.track_marks && self.marks.get(range(now.inst)) != k.marks.get(range(was.inst)) { differ.push("marks"); }
         let len = k.end[r] as usize - r;
         if self.paint.drawn[r..r + len] != k.drawn[o..o + len] || self.paint.drawn_scale[r..r + len] != k.drawn_scale[o..o + len] || self.paint.seen[r..r + len] != k.seen[o..o + len] { differ.push("drawn rects"); }
-        if (0..len).any(|d| inh_key(&self.paint.inh_scratch[r + d]) != inh_key(&k.inh[o + d])) { differ.push("inherited state"); }
+        if (0..len).any(|d| inh_key(&self.paint.inh_scratch[r + d], &self.paint.inh_cold) != inh_key(&k.inh[o + d], &k.inh_cold)) { differ.push("inherited state"); }
         if self.tree.has_sticky && self.scroll.sticky_frame[r..r + len] != k.sticky_frame[o..o + len] { differ.push("sticky frames"); }
         if self.hit.overlay_hits[range(now.overlay)] != k.overlay[range(was.overlay)] { differ.push("overlay hits"); }
         if now.glyphs[1] - now.glyphs[0] != was.glyphs[1] - was.glyphs[0] { differ.push("glyph count"); }
         if k.pages[range(now.pages)] != k.prev_pages[range(was.pages)] { differ.push("atlas pages"); }
         if !differ.is_empty() {
-            eprintln!("rune: paint keep: {} would have copied what differs: {}", self.tree.nodes[r].path, differ.join(", "));
+            let path = self.tree.nodes[r].path.as_str();
+            self.paint.keep.record_mismatch(false, path, &differ);
         }
     }
 }
 
 #[path = "cycle.rs"]
-mod cycle;
+pub(super) mod cycle;
+#[path = "shift.rs"]
+mod shift;
 #[path = "slide.rs"]
 mod slide;
+pub(in crate::runtime) use shift::ShiftNode;
+
+impl PaintKeep {
+    /// Releases excess capacity in `PaintKeep`'s stale swap buffers and live record arrays at rest
+    /// while keeping the last paint's `recs`/`shift`/`pages` intact for the next paint.
+    pub(in crate::runtime) fn rest(&mut self, live_nodes: usize, live_inst: usize) {
+        fn clear_shrink<T>(v: &mut Vec<T>, floor: usize) {
+            v.clear();
+            if v.capacity() > floor { v.shrink_to(floor); }
+        }
+        fn shrink<T>(v: &mut Vec<T>, floor: usize) {
+            let cap = (v.len().saturating_mul(2)).max(floor);
+            if v.capacity() > cap { v.shrink_to(cap); }
+        }
+        let nf = (live_nodes.saturating_mul(2)).max(64);
+        let inf = (live_inst.saturating_mul(2)).max(128);
+        shrink(&mut self.recs, nf);
+        shrink(&mut self.shift, nf);
+        shrink(&mut self.pages, 64);
+        shrink(&mut self.moved, 64);
+        clear_shrink(&mut self.prev, nf);
+        clear_shrink(&mut self.prev_shift, nf);
+        clear_shrink(&mut self.prev_pages, 64);
+        clear_shrink(&mut self.instances, inf);
+        clear_shrink(&mut self.marks, inf);
+        clear_shrink(&mut self.hits, nf);
+        clear_shrink(&mut self.wheel, nf);
+        clear_shrink(&mut self.overlay, 32);
+        clear_shrink(&mut self.help, 32);
+        clear_shrink(&mut self.drop, 32);
+        clear_shrink(&mut self.drawn, nf);
+        clear_shrink(&mut self.drawn_scale, nf);
+        clear_shrink(&mut self.seen, nf);
+        clear_shrink(&mut self.inh, nf);
+        clear_shrink(&mut self.inh_cold, 32);
+        clear_shrink(&mut self.sticky_frame, 32);
+        clear_shrink(&mut self.moved_at, nf);
+        clear_shrink(&mut self.old, nf);
+        clear_shrink(&mut self.end, nf);
+        clear_shrink(&mut self.clean, nf);
+        clear_shrink(&mut self.fits, nf);
+        clear_shrink(&mut self.open, 64);
+        self.by_id.clear();
+        if self.by_id.capacity() > nf { self.by_id.shrink_to(nf); }
+        clear_shrink(&mut self.verify, nf);
+        clear_shrink(&mut self.verify_shift, nf);
+    }
+}
 
 /// `now` with room for as much as `was` holds room for.
 fn twin<T>(now: &mut Vec<T>, was: &Vec<T>) {
@@ -582,16 +768,24 @@ fn static_ok(n: &Node) -> bool {
         && n.vis.backdrop_blur <= 0.0 && n.vis.effect.is_none() && n.vis.pixels.is_none()
         && n.sticky.is_none() && n.above.is_none() && n.matched.is_none()
         && n.static_scale == 1.0 && !n.scale_track && n.vis.mark == 0
-        && n.text.as_ref().is_none_or(|t| t.cold.links.is_empty() && t.cold.live.is_none() && t.cold.advance_in.is_none() && t.reveal < 0.0)
+        && n.text.as_ref().is_none_or(|t| t.cold.links.is_empty() && t.cold.advance_in.is_none()
+            && !t.cold.pills.iter().any(crate::text::PillChip::has_image))
 }
 
 /// What the runtime holds for a node besides it: selection, marks, reveals, loops, scales
-/// settling and folds.
+/// settling, sticky holds, exiting subtrees and folds.
 fn dynamic_ok(rt: &RuntimeCore, i: usize, sel: &[(usize, usize, usize)], marks: &[(usize, usize, usize)]) -> bool {
     let id = rt.tree.nodes[i].id;
     !sel.iter().any(|r| r.0 == i) && !marks.iter().any(|r| r.0 == i)
-        && (rt.motion.reveals.is_empty() || !rt.motion.reveals.contains_key(&id))
-        && (rt.motion.loops.is_empty() || !rt.motion.loops.contains_key(&id))
+        && rt.caret_browse_collapsed_on(i).is_none()
+        && !rt.motion.reveal_fading(id)
+        && !rt.motion.has_loop(id)
         && (rt.paint.static_scales.is_empty() || !rt.paint.static_scales.contains_key(&id))
         && rt.paint.row_mask[i] < 0.0
+        && rt.scroll.hold_of(&rt.tree.nodes[i].path).is_none()
+        && (rt.scene.exiting().is_empty() || !rt.subtree_exiting(i))
 }
+
+#[cfg(test)]
+#[path = "keep_tests.rs"]
+mod tests;

@@ -14,6 +14,10 @@ pub(super) const MAX_ELEMENT_DEPTH: usize = 511;
 /// remaining lines are grouped into one selectable, searchable plain block with a count marker.
 pub(super) const MAX_FLATTENED_TAIL_ITEMS: usize = 64;
 
+/// Maximum columns kept in a GFM table; cells past this column are dropped the way GFM drops a
+/// row's cells past its header's.
+pub(super) const MAX_TABLE_COLUMNS: usize = 128;
+
 /// Maximum nested flex containers on targets without `rune-taffy` stack continuation (`wasm32`,
 /// `ios` 1 MiB main thread, `android` 2 MiB `NativeActivity` thread, etc.). `770` preserves all
 /// `255` nested lists (`765`), `1` quote + `255` lists (`767`), and `10` quotes + `250` lists
@@ -26,7 +30,8 @@ pub(super) enum Fence {
     /// A code block; its language as written, if it names one, and whether its closing fence
     /// has arrived.
     Plain(Option<Rc<str>>, bool),
-    Diff,
+    /// A diff fence; whether its closing fence has arrived.
+    Diff(bool),
     /// A mermaid fence; whether its closing fence has arrived.
     Mermaid(bool),
 }
@@ -86,6 +91,7 @@ pub(super) struct Builder {
     pub(super) image_ranges: Vec<(usize, usize)>,
     /// Each open image's source and title, beside `image_starts`.
     pub(super) image_dests: Vec<(String, String)>,
+    pub(super) skip_cell: bool,
     pub(super) tail: Tail,
 }
 
@@ -108,6 +114,7 @@ impl Builder {
             image_starts: Vec::new(),
             image_ranges: Vec::new(),
             image_dests: Vec::new(),
+            skip_cell: false,
             tail: Tail::None,
         }
     }
@@ -210,16 +217,21 @@ impl Builder {
         }
         map.truncate_out(text.len());
         let block = code_block(text, &fence);
-        if let Block::Code(code) | Block::Mermaid(code) = &block {
-            let (lang, closed) = match fence {
-                Fence::Plain(lang, closed) => (lang, closed),
-                Fence::Mermaid(closed) => (Some("mermaid".into()), closed),
-                Fence::Diff => (None, true),
-            };
-            let coloured = if closed || line_ended { code.len() } else { code.rfind('\n').unwrap_or(0) };
-            self.sources.push(Source { lang, len: code.len(), coloured, open: !closed });
-        }
-        self.push(block, BlockMap::Code(map));
+        let block_map = match &block {
+            Block::Code(code) | Block::Mermaid(code) => {
+                let (lang, closed) = match fence {
+                    Fence::Plain(lang, closed) => (lang, closed),
+                    Fence::Mermaid(closed) => (Some("mermaid".into()), closed),
+                    Fence::Diff(_) => unreachable!(),
+                };
+                let coloured = if closed || line_ended { code.len() } else { code.rfind('\n').unwrap_or(0) };
+                self.sources.push(Source { lang, len: code.len(), coloured, open: !closed });
+                BlockMap::Code(map)
+            }
+            Block::Diff(_) => BlockMap::Diff { open: !matches!(fence, Fence::Diff(true)), map },
+            _ => BlockMap::Code(map),
+        };
+        self.push(block, block_map);
     }
 
     pub(super) fn inline(&mut self) -> &mut (InlineKind, Inline, Vec<Open>, SpanMap) {
@@ -249,8 +261,10 @@ impl Builder {
             self.image_ranges.clear();
             self.image_starts.clear();
             if let InlineKind::Cell = kind {
-                // Empty cells still hold their column.
-                if let Some((Container::Table(_, cells, _, _, cell_maps), _, _)) = self.stack.last_mut() {
+                // Empty cells still hold their column, up to MAX_TABLE_COLUMNS.
+                if let Some((Container::Table(_, cells, _, _, cell_maps), _, _)) = self.stack.last_mut()
+                    && cells.len() < MAX_TABLE_COLUMNS
+                {
                     cells.push(inl);
                     cell_maps.push(map);
                 }
@@ -267,6 +281,10 @@ impl Builder {
                 BlockMap::Inline(map),
             );
         }
+    }
+
+    pub(super) fn in_link(&self) -> bool {
+        self.inline.as_ref().is_some_and(|(_, _, open, _)| open.iter().any(|o| o.style == Style::Link))
     }
 
     /// Closes the innermost container into its parent.
@@ -337,21 +355,24 @@ impl Builder {
     }
 }
 
-/// `inl`'s text without its trailing whitespace and, when inline code ends it, the rest of that
-/// code's padding: the line's end closes the isolate, so text that ends in code is a prefix of
-/// the same text with more after the code, as a stream needs.
+/// `inl`'s text without trailing whitespace, keeping a closed inline code span's closing
+/// `CodePad` (`CLOSE` or `LINK_CLOSE`) so blocks ending in inline code count the chip's
+/// inline-end padding in width, wrapping and alignment, as Chromium does for `padding-inline-end`.
+/// Streaming code spans that are still open drop their closing pad in `stream::drop_closing_pad`.
 fn trimmed_len(inl: &Inline) -> usize {
     let text = inl.text.trim_end();
-    match text.strip_suffix('\u{2069}') {
-        Some(rest) if inl.spans.iter().any(|s| s.2 == Style::CodePad && s.0 == rest.len()) => rest.trim_end().len(),
-        _ => text.len(),
+    if let Some(rest) = text.strip_suffix('\u{2069}')
+        && let Some(pad) = inl.spans.iter().rev().find(|s| s.2 == Style::CodePad && s.0 == rest.len())
+    {
+        return pad.1;
     }
+    text.len()
 }
 
 fn code_block(text: String, fence: &Fence) -> Block {
     match fence {
         Fence::Plain(..) => Block::Code(text),
-        Fence::Diff => Block::Diff(text),
+        Fence::Diff(_) => Block::Diff(text),
         Fence::Mermaid(_) => Block::Mermaid(text),
     }
 }

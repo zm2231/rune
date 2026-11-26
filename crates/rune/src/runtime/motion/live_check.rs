@@ -27,7 +27,7 @@ impl RuntimeCore {
     /// Always empty in release builds.
     pub fn live_only_warnings(&self) -> &[String] {
         #[cfg(debug_assertions)]
-        { &self.frame.live_only_warnings }
+        { self.frame.live_only_warnings() }
         #[cfg(not(debug_assertions))]
         { &[] }
     }
@@ -37,15 +37,15 @@ impl RuntimeCore {
     /// second after the last commit by committing anyway (true) and comparing what it built.
     pub(in crate::runtime) fn skip_view(&mut self, label: impl std::fmt::Display) -> bool {
         #[cfg(debug_assertions)]
-        if self.frame.live_only_check && self.clock - self.commit.last_commit_clock >= LIVE_ONLY_CHECK {
+        if self.frame.live_only_check && self.clock - self.commit.last_commit_clock() >= LIVE_ONLY_CHECK {
             if self.frame.live_check.is_none() { self.frame.live_check = Some((label.to_string(), self.view_print())); }
             self.frame.live_checks += 1;
-            self.frame.live.set();
+            if self.frame.has_live_subscriptions() { self.frame.live.set(); }
             return true;
         }
         let _ = label;
         self.frame.live_only_skips += 1;
-        self.frame.live.set();
+        if self.frame.has_live_subscriptions() { self.frame.live.set(); }
         false
     }
 
@@ -220,18 +220,54 @@ impl NodePrint {
             }
         };
         type TextPart = (&'static str, fn(&TextSpec) -> u64, Option<fn(&TextSpec) -> String>);
-        let parts: [TextPart; 7] = [
+        let parts: [TextPart; 13] = [
             ("text", |t| key(|h| t.cold.live.is_none().then_some(&t.content).hash(h)), Some(snippet)),
             ("text colour", |t| key(|h| rgba(t.color).hash(h)), Some(|t| colour(t.color))),
             ("text style", |t| key(|h| bits(&[t.style.size, t.style.weight]).hash(h)), Some(|t| format!("{:.1}pt weight {}", t.style.size, t.style.weight))),
+            ("text indent", |t| u64::from(if t.cold.text_indent == 0.0 { 0 } else { t.cold.text_indent.to_bits() }), Some(|t| format!("{:.1}pt", t.cold.text_indent))),
+            ("vertical align", |t| t.cold.align_y as u64, Some(|t| format!("{:?}", t.cold.align_y))),
             ("pills", |t| key(|h| for p in &t.cold.pills {
-                (p.start, p.end, p.icon.map(|i| i.name), p.bg, p.fg).hash(h);
-                p.bare.as_ref().map(|b| (b.size.to_bits(), b.gap.to_bits(), b.radius.to_bits(), b.image.as_ref().map(crate::pixels::Pixels::signature))).hash(h);
+                (
+                    p.start,
+                    p.end,
+                    p.icon.map(|i| i.name),
+                    p.image.as_ref().map(crate::pixels::Pixels::signature),
+                    p.bg,
+                    p.fg,
+                    p.ring.map(|(c, w)| (c, w.to_bits())),
+                    p.radius.map(f32::to_bits),
+                ).hash(h);
+                p.bare.as_ref().map(|b| (b.size.to_bits(), b.gap.to_bits(), b.radius.to_bits(), b.image.as_ref().map(crate::pixels::Pixels::signature), b.replace.map(|r| bits(&[r.width, r.ascent, r.descent, r.bleed])), b.label.as_deref(), b.help.as_deref())).hash(h);
             }), None),
             ("rings", |t| key(|h| for &(a, b, c, w) in &t.cold.rings { (a, b, c, w.to_bits()).hash(h) }), None),
             ("strikes", |t| key(|h| t.cold.strikes.hash(h)), None),
+            ("overlines", |t| key(|h| t.cold.overlines.hash(h)), None),
+            ("span boxes", |t| key(|h| for b in &t.cold.span_boxes {
+                (
+                    b.start,
+                    b.end,
+                    b.style.bg_color(),
+                    b.style.pad_left().to_bits(),
+                    b.style.pad_right().to_bits(),
+                    b.style.corner_radii().map(f32::to_bits),
+                    b.style.border_ring().map(|(c, w)| (c, w.to_bits())),
+                ).hash(h);
+            }), None),
+            ("inline boxes", |t| key(|h| for b in &t.cold.inline_boxes {
+                (
+                    b.at,
+                    b.slot.width().to_bits(),
+                    b.slot.height().to_bits(),
+                    b.slot.alignment(),
+                    b.slot.baseline_offset().map(f32::to_bits),
+                    b.child,
+                ).hash(h);
+            }), None),
             ("highlights", |t| key(|h| for hl in &t.cold.highlights {
                 (hl.start, hl.end, hl.bg, hl.fg, hl.pad.to_bits(), &hl.key, hl.ring.map(|(c, w)| (c, w.to_bits()))).hash(h)
+            }), None),
+            ("line fills", |t| key(|h| for f in &t.cold.line_fills {
+                (f.start, f.end, f.bg, f.left_bar.map(|(w, c)| (w.to_bits(), c)), f.radius.to_bits()).hash(h)
             }), None),
         ];
         parts.iter().find(|(_, k, _)| k(a) != k(b)).map(|&(what, _, show)| Difference {

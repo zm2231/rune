@@ -71,15 +71,19 @@ impl Checkbox {
     pub fn build(self, k: &Kit) -> El {
         let c = &k.c;
         let on = self.checked || self.indeterminate;
-        let (fill, border) = match self.state {
-            State::Disabled => (c.surface_disabled, c.border_disabled),
-            State::Hover => (c.surface_hover, c.border_hover),
-            State::Focus => (if on { c.surface_weak } else { Color::TRANSPARENT }, c.border_active),
-            _ if on => (c.surface_weak, c.std_border),
-            _ => (Color::TRANSPARENT, c.border_weak),
+        // A kit's own checked colours hold under the pointer too, with the hover overlay on top.
+        let custom = on && k.metrics.checkbox.is_some();
+        let checked = k.checkbox_colors();
+        let (fill, border, ink) = match self.state {
+            State::Disabled => (c.surface_disabled, c.border_disabled, c.std_icon),
+            State::Hover if custom => (crate::over(c.hover, checked.fill), checked.border, checked.mark),
+            State::Hover => (c.surface_hover, c.border_hover, c.std_icon),
+            _ if on => (checked.fill, checked.border, checked.mark),
+            _ => (Color::TRANSPARENT, c.border_weak, c.std_icon),
         };
         let mark = match self.glyph {
             Some(g) => icon(g, 14.0),
+            None if self.indeterminate => icon(k.glyph.dash, 10.0),
             None => icon(k.glyph.check, 10.0),
         };
         let mut control = el()
@@ -90,13 +94,13 @@ impl Checkbox {
             .fill(fill)
             .border(1.0, border)
             .token_motion(k.motion.control)
-            .child(mark.key("mark").color(c.std_icon).opacity(if on { 1.0 } else { 0.0 }));
+            .child(mark.key("mark").color(ink).opacity(if on { 1.0 } else { 0.0 }));
         if self.state == State::Rest {
-            control = control.hover(c.surface_hover);
+            control = control.hover(if custom { c.hover } else { c.surface_hover });
         }
         let disabled = self.state == State::Disabled;
         let mut root = row().role("checkbox").gap(12.0).center_y()
-            .child(control.focus_ring(1.0, 0.0, c.border_active).a11y_hidden());
+            .child(k.focus_ring_state(control, 2.0, 2.0, self.state == State::Focus).a11y_hidden());
         root = if self.indeterminate { root.checked_mixed() } else { root.checked(self.checked) };
         if let Some(d) = &self.description {
             root = root.description(d.clone());
@@ -104,16 +108,20 @@ impl Checkbox {
         if let Some(l) = &self.label {
             root = root.label(l.clone());
             // The label and description above say it.
-            let mut content = col().key("content").a11y_hidden();
+            let mut content = col().key("content").shrink().a11y_hidden();
             if !self.hide_label {
                 content = content.child(text(l.clone()).key("label").font(k.ty.text_small.lh(24.0)).color(c.std_text));
             }
             if let Some(d) = &self.description {
                 content =
-                    content.child(text(d.clone()).key("description").font(k.ty.text_xsmall.lh(15.6)).color(c.std_text));
+                    content.child(text(d.clone()).key("description").font(k.ty.text_xsmall.lh(15.6)).color(c.std_text).wrap());
             }
             root = root.child(content);
         }
         self.acts.apply(root.focusable(!disabled).disabled(disabled), !disabled)
     }
 }
+
+#[cfg(test)]
+#[path = "checkbox_tests.rs"]
+mod tests;

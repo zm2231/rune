@@ -55,11 +55,19 @@ enum Dock {
     Closed(ClosedPeek),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq)]
 enum ClosedPeek {
     Rest,
-    Shown,
+    /// Bitmask of the peeking sidebar's surfaces currently holding the pointer
+    /// (`PEEK_HOLD`, `PEEK_PANE`, `PEEK_TOGGLE`).
+    Shown(u8),
     Left,
+}
+
+impl PartialEq for ClosedPeek {
+    fn eq(&self, other: &Self) -> bool {
+        matches!((self, other), (Self::Rest, Self::Rest) | (Self::Shown(_), Self::Shown(_)) | (Self::Left, Self::Left))
+    }
 }
 
 impl PaneState {
@@ -126,10 +134,14 @@ impl PaneState {
             self.width = width.round().clamp(self.min, self.max);
         }
     }
+    pub(super) const PEEK_HOLD: u8 = 1;
+    pub(super) const PEEK_PANE: u8 = 2;
+    pub(super) const PEEK_TOGGLE: u8 = 4;
+
     /// Opening a peeking sidebar docks it where it floats; closing ends any peek.
     pub fn set_open(&mut self, open: bool) {
         self.dock = match (self.dock, open) {
-            (Dock::Closed(peek), true) => Dock::Open { from_peek: peek == ClosedPeek::Shown },
+            (Dock::Closed(peek), true) => Dock::Open { from_peek: matches!(peek, ClosedPeek::Shown(_)) },
             (Dock::Open { .. }, false) => Dock::Closed(ClosedPeek::Rest),
             (dock, _) => dock,
         };
@@ -141,7 +153,7 @@ impl PaneState {
     /// Whether the closed sidebar floats over the content (a `SplitView` with
     /// [`SidebarPeek`]).
     pub fn is_peeking(&self) -> bool {
-        self.dock == Dock::Closed(ClosedPeek::Shown)
+        matches!(self.dock, Dock::Closed(ClosedPeek::Shown(_)))
     }
     /// Slides a peeking sidebar away (Escape, say). Leaving it with the pointer, or the window
     /// losing focus, ends a peek too.
@@ -152,15 +164,33 @@ impl PaneState {
     }
     /// Shows the closed sidebar as a peek, over the content.
     pub fn peek(&mut self) {
+        self.peek_from(0);
+    }
+    pub(super) fn peek_from(&mut self, zone: u8) {
         if !self.is_open() {
-            self.dock = Dock::Closed(ClosedPeek::Shown);
+            self.dock = Dock::Closed(ClosedPeek::Shown(zone));
         }
+    }
+    /// Updates whether `zone` holds the pointer while peeking. Returns true when the last held
+    /// zone left and the peek ended.
+    pub(super) fn peek_hover(&mut self, zone: u8, inside: bool) -> bool {
+        let Dock::Closed(ClosedPeek::Shown(mask)) = &mut self.dock else { return false };
+        if inside {
+            *mask |= zone;
+            return false;
+        }
+        *mask &= !zone;
+        if *mask == 0 {
+            self.dock = Dock::Closed(ClosedPeek::Left);
+            return true;
+        }
+        false
     }
     pub(super) fn peek_phase(&self) -> Peek {
         match self.dock {
             Dock::Open { from_peek: true } => Peek::Docked,
             Dock::Open { from_peek: false } | Dock::Closed(ClosedPeek::Rest) => Peek::None,
-            Dock::Closed(ClosedPeek::Shown) => Peek::Shown,
+            Dock::Closed(ClosedPeek::Shown(_)) => Peek::Shown,
             Dock::Closed(ClosedPeek::Left) => Peek::Left,
         }
     }
@@ -186,10 +216,13 @@ impl PaneState {
         self.grip.press(GripStart { width: self.width, open: self.is_open() }, Some(at));
     }
     /// The drag on its edge moved to `at`, `travel` points wider than where it started.
-    pub(super) fn drag_grip(&mut self, at: [f32; 2], travel: f32) {
+    /// Returns true when the pane's visible state (`width` or `dock`) changed.
+    pub(super) fn drag_grip(&mut self, at: [f32; 2], travel: f32) -> bool {
+        let before = (self.width, self.dock);
         if let Some(start) = self.grip.moved(at).copied() {
             self.drag_to(start.width + travel);
         }
+        (self.width, self.dock) != before
     }
     /// The drag on its edge ended; a cancelled one puts the pane back as it was.
     pub(super) fn release_grip(&mut self, cancelled: bool) {
@@ -199,13 +232,18 @@ impl PaneState {
         }
     }
     /// The pointer moved to `at`: a drag that never hears it lost its release, and the pane
-    /// stays where the drag left it.
-    pub(super) fn pointer_grip(&mut self, at: [f32; 2]) {
-        self.grip.pointer(at);
+    /// stays where the drag left it. Returns true when a held grip was released.
+    pub(super) fn pointer_grip(&mut self, at: [f32; 2]) -> bool {
+        self.grip.pointer(at).is_some()
     }
-    /// The window lost focus: a drag whose release didn't come ends where it is.
-    pub(super) fn lose_grip(&mut self) {
-        self.grip.lose();
+    /// The window lost focus: ends any held grip or active peek, returning true if either changed.
+    pub(super) fn blur_clear(&mut self) -> bool {
+        let mut changed = self.grip.lose().is_some();
+        if self.is_peeking() {
+            self.end_peek();
+            changed = true;
+        }
+        changed
     }
 
     fn clamp(&mut self) {
@@ -329,6 +367,8 @@ fn tail_fade(spring: Spring, fraction: f32, open: bool) -> Anim {
 /// sidebar's toggle, slides the sidebar in over the content as a floating surface, without
 /// moving the layout. Leaving it closes it again; pressing the toggle docks it where it is.
 /// `SplitView::sidebar_peek(SidebarPeek::new().edge(16.0, ms(40)).toggle_delay(ms(80)))`.
+const DEFAULT_PEEK_REDUCED_FADE: f32 = 0.15;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SidebarPeek {
     pub(super) edge: f32,
@@ -338,7 +378,7 @@ pub struct SidebarPeek {
     pub(super) margin: f32,
     pub(super) grace: Duration,
     pub(super) spring: Option<Spring>,
-    pub(super) reduced_fade: f32,
+    pub(super) reduced_fade: Option<f32>,
 }
 
 impl SidebarPeek {
@@ -353,7 +393,7 @@ impl SidebarPeek {
             margin: 12.0,
             grace: Duration::from_millis(150),
             spring: None,
-            reduced_fade: 0.15,
+            reduced_fade: None,
         }
     }
     /// The zone along the window's leading edge, `width` points into the content past the
@@ -387,10 +427,18 @@ impl SidebarPeek {
         self.spring = Some(s);
         self
     }
-    /// Under Reduce Motion the peek fades in place over `seconds` instead of sliding.
+    /// Under Reduce Motion the peek fades in place over `seconds` instead of sliding (0 snaps).
+    /// Without this override, a sliding peek fades over 0.15 s and `Spring::NONE` stays instant.
     pub fn reduced_motion_fade(mut self, seconds: f32) -> Self {
-        self.reduced_fade = seconds.max(0.0);
+        self.reduced_fade = Some(seconds.max(0.0));
         self
+    }
+    pub(super) fn reduced_fade_for(&self, spring: Spring) -> f32 {
+        match self.reduced_fade {
+            Some(s) => s,
+            None if spring == Spring::NONE => 0.0,
+            None => DEFAULT_PEEK_REDUCED_FADE,
+        }
     }
 }
 

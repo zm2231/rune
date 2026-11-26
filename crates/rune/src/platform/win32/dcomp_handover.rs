@@ -9,16 +9,22 @@
 //!
 //! `dcomp.dll` loads here, when the GPU is ready, not at launch.
 
+#![allow(unsafe_code)]
+
 use windows::Win32::Graphics::DirectComposition::{IDCompositionDevice, IDCompositionTarget, IDCompositionVisual};
 use windows::core::{GUID, HRESULT, Interface};
 
 pub(crate) struct Handover {
     device: IDCompositionDevice,
-    _target: IDCompositionTarget,
+    target: IDCompositionTarget,
     /// The target's root: no content of its own; the UI's visual and, under it, any clip's layer.
     root: IDCompositionVisual,
     /// The UI's visual, which the wgpu surface goes on.
     visual: IDCompositionVisual,
+    /// Which of the HWND's two documented DirectComposition target slots (`topmost = false` or
+    /// `topmost = true`) `target` currently occupies.
+    #[cfg(feature = "windows-system-material")]
+    topmost: bool,
 }
 
 // SAFETY: DirectComposition objects can be used from any thread one at a time; a `Handover` is
@@ -37,7 +43,50 @@ impl Handover {
             let visual = device.CreateVisual().map_err(|e| format!("CreateVisual: {e}"))?;
             root.AddVisual(&visual, true, None).map_err(|e| format!("AddVisual: {e}"))?;
             target.SetRoot(&root).map_err(|e| format!("SetRoot: {e}"))?;
-            Ok(Handover { device, _target: target, root, visual })
+            Ok(Handover {
+                device,
+                target,
+                root,
+                visual,
+                #[cfg(feature = "windows-system-material")]
+                topmost: false,
+            })
+        }
+    }
+
+    /// Moves this DirectComposition target between the HWND's non-topmost (`false`, default) and
+    /// topmost (`true`) composition target slots so a `Windows.UI.Composition`
+    /// `DesktopWindowTarget(isTopmost = false)` can composite host backdrop brushes underneath
+    /// Rune's premultiplied UI swap chain.
+    #[cfg(feature = "windows-system-material")]
+    pub(crate) fn set_topmost(&mut self, hwnd: isize, topmost: bool) -> Result<(), String> {
+        if self.topmost == topmost {
+            return Ok(());
+        }
+        // SAFETY: COM calls on our device, visuals, and live HWND of this process. Creating the
+        // replacement target in the opposite slot while the old slot is still bound succeeds when
+        // the destination slot is free; detaching, attaching, committing, and dropping the old
+        // target switches slots without a blank frame and frees the old slot for another target.
+        unsafe {
+            let next_target = self
+                .device
+                .CreateTargetForHwnd(windows::Win32::Foundation::HWND(hwnd as *mut _), topmost)
+                .map_err(|e| format!("CreateTargetForHwnd(topmost={topmost}): {e}"))?;
+            self.target
+                .SetRoot(None)
+                .map_err(|e| format!("SetRoot(None): {e}"))?;
+            if let Err(err) = next_target.SetRoot(&self.root) {
+                // Best-effort restore of the previous target root before returning the error.
+                drop(self.target.SetRoot(&self.root));
+                return Err(format!("SetRoot(root): {err}"));
+            }
+            self.device
+                .Commit()
+                .map_err(|e| format!("IDCompositionDevice::Commit: {e}"))?;
+            let old_target = std::mem::replace(&mut self.target, next_target);
+            self.topmost = topmost;
+            drop(old_target);
+            Ok(())
         }
     }
 
@@ -68,7 +117,7 @@ impl Handover {
     /// Takes a visual `add_under` made out of the tree, uncommitted.
     pub(crate) fn remove(&self, visual: &IDCompositionVisual) {
         // SAFETY: a COM call on our root visual.
-        let _ = unsafe { self.root.RemoveVisual(visual) };
+        unsafe { self.root.RemoveVisual(visual) }.ok();
     }
 
     /// Commits, and returns once DWM has taken the commit: a frame presented after this shows
@@ -79,6 +128,22 @@ impl Handover {
         unsafe { self.device.WaitForCommitCompletion() }.map_err(|e| format!("IDCompositionDevice::WaitForCommitCompletion: {e}"))
     }
 
+    /// Detaches the root visual from the window's DirectComposition target and waits for DWM to
+    /// take the commit, revealing the HWND's own redirection surface (used during opt-in
+    /// synchronized drag resize).
+    pub(crate) fn detach_root(&self) -> Result<(), String> {
+        // SAFETY: `SetRoot(None)` is documented to detach the visual tree from `target`.
+        unsafe { self.target.SetRoot(None) }.map_err(|e| format!("SetRoot(None): {e}"))?;
+        self.commit_and_wait()
+    }
+
+    /// Re-attaches the root visual to the window's DirectComposition target and waits for DWM to
+    /// take the commit, restoring normal flip-model DirectComposition presentation.
+    pub(crate) fn attach_root(&self) -> Result<(), String> {
+        // SAFETY: `self.root` is a live visual created on `self.device`.
+        unsafe { self.target.SetRoot(&self.root) }.map_err(|e| format!("SetRoot(root): {e}"))?;
+        self.commit_and_wait()
+    }
 }
 
 fn load_dll(name: &str) -> windows_sys::Win32::Foundation::HMODULE {

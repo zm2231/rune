@@ -2,9 +2,9 @@
 //! the elements starts the runtime's tree, and what a reader does to an element goes to the
 //! runtime as the tree's action.
 
-use objc2_video::DefinedClass;
-use objc2_video::rc::Retained;
-use objc2_video::runtime::AnyObject;
+use objc2::DefinedClass;
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 
 use super::super::pacing::Event;
 use super::RuneView;

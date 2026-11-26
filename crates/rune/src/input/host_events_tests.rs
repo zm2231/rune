@@ -251,11 +251,17 @@ fn keyboard_core_handles_unidentified_repeat_paste_fallback_and_release_gating()
         keys: Vec<(crate::Key, Option<crate::PhysicalKeyCode>, Option<char>, bool)>,
         ups: Vec<crate::Key>,
         listen_up: bool,
+        consume_paste: bool,
+        input_keys: usize,
     }
     fn view(s: &S, _: &mut Cx<S>) -> El {
         let root = crate::col().size(200.0, 100.0)
             .child(crate::text_input(&s.edit, crate::TextStyle::new(14.0, 400.0))
-                .key("field").size(160.0, 40.0).on_edit(|s: &mut S| &mut s.edit));
+                .key("field").size(160.0, 40.0).on_edit(|s: &mut S| &mut s.edit)
+                .on_input_key(|s: &mut S, ev, _| {
+                    s.input_keys += 1;
+                    s.consume_paste && ev.key == crate::Key::Command('v')
+                }));
         if s.listen_up {
             root.on_key_up(|s: &mut S, ev, _| { s.ups.push(ev.key.clone()); true })
         } else {
@@ -272,12 +278,10 @@ fn keyboard_core_handles_unidentified_repeat_paste_fallback_and_release_gating()
     });
     rt.frame(0.0);
 
-    let client = crate::clipboard::Client::default();
-
     // Unidentified physical key with repeat: true uses repeat_key (tx.key_repeat() == true).
     let redraw = {
         let (core, mut app) = rt.split_mut();
-        keyboard_core(core, &mut app, &client, KeyInput {
+        keyboard_core(core, &mut app, KeyInput {
             physical: None,
             logical: Some(crate::KeyEvent { key: crate::Key::Down, mods: crate::Mods::default() }),
             base: None,
@@ -285,6 +289,8 @@ fn keyboard_core_handles_unidentified_repeat_paste_fallback_and_release_gating()
             pressed: true,
             repeat: true,
             unhandled: None,
+            text: None,
+            consumed_mods: Default::default(),
         })
     };
     assert!(redraw);
@@ -294,7 +300,7 @@ fn keyboard_core_handles_unidentified_repeat_paste_fallback_and_release_gating()
     // Unhandled key release with no on_key_up returns false (no redraw).
     let redraw = {
         let (core, mut app) = rt.split_mut();
-        keyboard_core(core, &mut app, &client, KeyInput {
+        keyboard_core(core, &mut app, KeyInput {
             physical: Some(crate::PhysicalKeyCode::ArrowDown),
             logical: None,
             base: None,
@@ -302,6 +308,8 @@ fn keyboard_core_handles_unidentified_repeat_paste_fallback_and_release_gating()
             pressed: false,
             repeat: false,
             unhandled: None,
+            text: None,
+            consumed_mods: Default::default(),
         })
     };
     assert!(!redraw);
@@ -309,7 +317,7 @@ fn keyboard_core_handles_unidentified_repeat_paste_fallback_and_release_gating()
     // Physical key press delivers physical_key, key_base, and key_repeat.
     let redraw = {
         let (core, mut app) = rt.split_mut();
-        keyboard_core(core, &mut app, &client, KeyInput {
+        keyboard_core(core, &mut app, KeyInput {
             physical: Some(crate::PhysicalKeyCode::KeyA),
             logical: Some(crate::KeyEvent { key: crate::Key::Text("A".into()), mods: crate::Mods { shift: true, ..Default::default() } }),
             base: Some('a'),
@@ -317,21 +325,25 @@ fn keyboard_core_handles_unidentified_repeat_paste_fallback_and_release_gating()
             pressed: true,
             repeat: false,
             unhandled: None,
+            text: None,
+            consumed_mods: Default::default(),
         })
     };
     assert!(redraw);
     rt.frame(0.0);
     assert_eq!(rt.state.keys.last(), Some(&(crate::Key::Text("A".into()), Some(crate::PhysicalKeyCode::KeyA), Some('a'), false)));
 
-    // Unidentified physical key Command('v') on a focused text field reads the clipboard instead of falling through.
+    // Unidentified physical key Command('v') offers on_input_key first, then pastes when declined.
     let (fx, fy) = rt.find("field").unwrap();
     rt.pointer_down(fx, fy);
     rt.pointer_up(fx, fy);
     rt.frame(0.0);
     let cmd = crate::Mods { cmd: true, ..crate::Mods::default() };
+    let app_keys_before = rt.state.keys.len();
+    rt.state.consume_paste = true;
     let redraw = {
         let (core, mut app) = rt.split_mut();
-        keyboard_core(core, &mut app, &client, KeyInput {
+        keyboard_core(core, &mut app, KeyInput {
             physical: None,
             logical: Some(crate::KeyEvent { key: crate::Key::Command('v'), mods: cmd }),
             base: None,
@@ -339,19 +351,45 @@ fn keyboard_core_handles_unidentified_repeat_paste_fallback_and_release_gating()
             pressed: true,
             repeat: false,
             unhandled: None,
+            text: None,
+            consumed_mods: Default::default(),
         })
     };
     assert!(redraw);
-    assert!(client.receive_core(rt.core_mut()));
     rt.frame(0.0);
+    rt.frame(0.0);
+    assert_eq!(rt.state.input_keys, 1);
+    assert_eq!(rt.state.edit.text, "", "consuming on_input_key prevents clipboard paste");
+    assert_eq!(rt.state.keys.len(), app_keys_before);
+
+    rt.state.consume_paste = false;
+    let redraw = {
+        let (core, mut app) = rt.split_mut();
+        keyboard_core(core, &mut app, KeyInput {
+            physical: None,
+            logical: Some(crate::KeyEvent { key: crate::Key::Command('v'), mods: cmd }),
+            base: None,
+            mods: cmd,
+            pressed: true,
+            repeat: false,
+            unhandled: None,
+            text: None,
+            consumed_mods: Default::default(),
+        })
+    };
+    assert!(redraw);
+    rt.frame(0.0);
+    rt.frame(0.0);
+    assert_eq!(rt.state.input_keys, 2);
     assert_eq!(rt.state.edit.text, "pasted");
+    assert_eq!(rt.state.keys.len(), app_keys_before);
 
     // With an on_key_up listener, unidentified release delivers key_up and requests redraw.
     rt.update(|s, _| s.listen_up = true);
     rt.frame(0.0);
     let redraw = {
         let (core, mut app) = rt.split_mut();
-        keyboard_core(core, &mut app, &client, KeyInput {
+        keyboard_core(core, &mut app, KeyInput {
             physical: None,
             logical: Some(crate::KeyEvent { key: crate::Key::Escape, mods: crate::Mods::default() }),
             base: None,
@@ -359,6 +397,8 @@ fn keyboard_core_handles_unidentified_repeat_paste_fallback_and_release_gating()
             pressed: false,
             repeat: false,
             unhandled: None,
+            text: None,
+            consumed_mods: Default::default(),
         })
     };
     assert!(redraw);
@@ -583,4 +623,373 @@ fn ime_sync_state_reset_preserves_mirror_diff_when_empty_field_blurs() {
     let changed = rt.core().web_context(&mut mirror);
     assert!(changed || reset, "mirror must sync back to empty key so DOM focus returns to canvas");
     assert!(mirror.key.is_empty());
+}
+
+#[test]
+fn ime_sync_skips_unchanged_cursor_area_and_resends_on_change_reset_or_reentry() {
+    #[derive(Default)]
+    struct S { edit: crate::TextEdit }
+    fn view(s: &S, _: &mut Cx<S>) -> El {
+        crate::col().size(240.0, 120.0)
+            .child(el().key("btn").size(100.0, 40.0).focusable(true))
+            .child(crate::text_input(&s.edit, crate::TextStyle::new(14.0, 400.0))
+                .key("field").label("Field").size(200.0, 40.0).on_edit(|s: &mut S| &mut s.edit))
+    }
+    let mut rt = Runtime::new(S::default(), view, (240.0, 120.0), Env::default());
+    rt.frame(0.0);
+
+    let mut ime = ImeSync::default();
+    let step = ime_sync_step(rt.core_mut(), &mut ime, true);
+    assert_eq!(step, ImeStep { cancel: false, set_allowed: None, cursor_area: None });
+
+    // Focusing a text field enables IME and sends the cursor area once.
+    let (fx, fy) = rt.find("field").unwrap();
+    rt.pointer_down(fx, fy);
+    rt.pointer_up(fx, fy);
+    rt.frame(0.0);
+    let step = ime_sync_step(rt.core_mut(), &mut ime, true);
+    let area = step.cursor_area.expect("first sync after focus sends cursor area");
+    assert_eq!(step.set_allowed, Some(true));
+
+    // An unchanged frame (including after Wayland's empty Preedit reply) must not resend.
+    ime_core(rt.core_mut(), None, Ime::Preedit(String::new(), None, Vec::new()));
+    rt.frame(0.0);
+    let step = ime_sync_step(rt.core_mut(), &mut ime, true);
+    assert_eq!(step, ImeStep { cancel: false, set_allowed: None, cursor_area: None });
+
+    // Moving the caret sends the updated rectangle once, then rests again.
+    ime_core(rt.core_mut(), None, Ime::Commit("abc".into()));
+    rt.frame(0.0);
+    let step = ime_sync_step(rt.core_mut(), &mut ime, true);
+    let moved = step.cursor_area.expect("caret advance sends new cursor area");
+    assert_ne!(moved, area);
+    assert_eq!(step.set_allowed, None);
+    rt.frame(0.0);
+    assert_eq!(ime_sync_step(rt.core_mut(), &mut ime, true).cursor_area, None);
+
+    // An IME reset toggles allowance and resends the same rectangle.
+    rt.core_mut().edit.ime_reset = true;
+    let step = ime_sync_step(rt.core_mut(), &mut ime, true);
+    assert_eq!(step, ImeStep { cancel: true, set_allowed: Some(true), cursor_area: Some(moved) });
+    assert_eq!(ime_sync_step(rt.core_mut(), &mut ime, true).cursor_area, None);
+
+    // A platform Ime::Enabled/Disabled invalidates the sent area so a late text_input enter gets it.
+    ime.invalidate_area();
+    let step = ime_sync_step(rt.core_mut(), &mut ime, true);
+    assert_eq!(step, ImeStep { cancel: false, set_allowed: None, cursor_area: Some(moved) });
+
+    // Scale factor changes resend even when logical coordinates stay identical (Windows/X11 physical coords).
+    rt.core_mut().set_viewport((240.0, 120.0), 2.0);
+    rt.frame(0.0);
+    let step = ime_sync_step(rt.core_mut(), &mut ime, true);
+    assert_eq!(step.set_allowed, None);
+    let scaled_area = step.cursor_area.expect("scale factor change resends cursor area");
+    assert_eq!(ime_sync_step(rt.core_mut(), &mut ime, true).cursor_area, None);
+
+    // Unfocused window disables IME and does not send a cursor area; regaining focus resends.
+    let step = ime_sync_step(rt.core_mut(), &mut ime, false);
+    assert_eq!(step, ImeStep { cancel: false, set_allowed: Some(false), cursor_area: None });
+    assert_eq!(ime_sync_step(rt.core_mut(), &mut ime, false), ImeStep { cancel: false, set_allowed: None, cursor_area: None });
+    let step = ime_sync_step(rt.core_mut(), &mut ime, true);
+    assert_eq!(step, ImeStep { cancel: false, set_allowed: Some(true), cursor_area: Some(scaled_area) });
+
+    // Direct clear (focus loss / hide) forgets both allowance and area.
+    ime.clear();
+    let step = ime_sync_step(rt.core_mut(), &mut ime, true);
+    assert_eq!(step, ImeStep { cancel: false, set_allowed: Some(true), cursor_area: Some(scaled_area) });
+
+    // Blurring the field disables IME without sending an area; refocusing sends it again.
+    let (bx, by) = rt.find("btn").unwrap();
+    rt.pointer_down(bx, by);
+    rt.pointer_up(bx, by);
+    rt.frame(0.0);
+    let step = ime_sync_step(rt.core_mut(), &mut ime, true);
+    assert_eq!(step.set_allowed, Some(false));
+    assert_eq!(step.cursor_area, None);
+    rt.pointer_down(fx, fy);
+    rt.pointer_up(fx, fy);
+    rt.frame(0.0);
+    let step = ime_sync_step(rt.core_mut(), &mut ime, true);
+    assert_eq!(step.set_allowed, Some(true));
+    assert!(step.cursor_area.is_some());
+}
+
+#[test]
+fn wheel_ctrl_shift_keeps_vertical_delta_for_pinch_and_on_wheel() {
+    #[derive(Default)]
+    struct S { wheels: Vec<WheelEvent> }
+    fn view(_: &S, _: &mut Cx<S>) -> El {
+        el().size(200.0, 200.0).hit()
+            .on_wheel(|s: &mut S, ev, _| { s.wheels.push(ev); true })
+    }
+    let mut rt = Runtime::new(S::default(), view, (200.0, 200.0), Env::new(true, 1.0));
+    rt.frame(0.0);
+    rt.pointer_move(50.0, 50.0);
+
+    wheel(
+        rt.core_mut(),
+        MouseScrollDelta::LineDelta(0.0, -1.0),
+        GesturePhase::Moved,
+        1.0,
+        ModifiersState::CONTROL | ModifiersState::SHIFT,
+    );
+    rt.frame(0.0);
+    assert_eq!(rt.state.wheels.len(), 1);
+    assert_eq!(rt.state.wheels[0].dx, 0.0, "Ctrl+Shift+wheel does not turn horizontal");
+    assert!(rt.state.wheels[0].dy < 0.0, "Ctrl+Shift+wheel preserves vertical dy");
+}
+
+#[test]
+fn ime_sync_skips_unchanged_area_for_app_ime_cursor() {
+    struct S { caret_x: f32 }
+    fn view(s: &S, _: &mut Cx<S>) -> El {
+        el().size(200.0, 100.0)
+            .child(el().key("caret").absolute(s.caret_x, 20.0).size(2.0, 18.0).ime_cursor())
+    }
+    let mut rt = Runtime::new(S { caret_x: 16.0 }, view, (200.0, 100.0), Env::default());
+    rt.frame(0.0);
+
+    let mut ime = ImeSync::default();
+    let first = ime_sync_step(rt.core_mut(), &mut ime, true);
+    assert_eq!(first.set_allowed, Some(true));
+    assert_eq!(first.cursor_area, Some([16.0, 20.0, 2.0, 18.0]));
+
+    // Repeated frames with the same El::ime_cursor rect send nothing.
+    rt.frame(0.0);
+    assert_eq!(ime_sync_step(rt.core_mut(), &mut ime, true), ImeStep { cancel: false, set_allowed: None, cursor_area: None });
+
+    // Moving the app-drawn caret sends the new rect once.
+    rt.update(|s, tx| { s.caret_x = 40.0; tx.instant(); });
+    rt.frame(0.0);
+    assert_eq!(ime_sync_step(rt.core_mut(), &mut ime, true), ImeStep { cancel: false, set_allowed: None, cursor_area: Some([40.0, 20.0, 2.0, 18.0]) });
+    rt.frame(0.0);
+    assert_eq!(ime_sync_step(rt.core_mut(), &mut ime, true).cursor_area, None);
+}
+
+#[test]
+fn web_primary_up_activates_only_when_release_focuses_an_editable_field() {
+    #[derive(Default)]
+    struct S {
+        edit: crate::TextEdit,
+        secret: crate::TextEdit,
+        clicks: u32,
+    }
+    fn view(s: &S, _: &mut Cx<S>) -> El {
+        crate::col().size(240.0, 240.0)
+            .child(crate::text("Recall").key("recall").size(100.0, 32.0).on_press_tx(|s: &mut S, tx| {
+                s.edit.replace_text("Recalled text");
+                s.edit.set_caret(s.edit.text.len());
+                tx.focus("editor", false);
+            }))
+            .child(crate::text("Secret").key("focus_secret").size(100.0, 32.0).on_press_tx(|_: &mut S, tx| {
+                tx.focus("secret", false);
+            }))
+            .child(crate::text("Control").key("focus_btn").size(100.0, 32.0).on_press_tx(|_: &mut S, tx| {
+                tx.focus("other", false);
+            }))
+            .child(crate::text("Count").key("plain").size(100.0, 32.0).on_press(|s: &mut S| {
+                s.clicks += 1;
+            }))
+            .child(el().key("other").size(100.0, 24.0).focusable(true))
+            .child(crate::text_input(&s.edit, crate::TextStyle::new(14.0, 400.0))
+                .key("editor").label("Editor").size(200.0, 32.0).on_edit(|s: &mut S| &mut s.edit))
+            .child(crate::text_input(&s.secret, crate::TextStyle::new(14.0, 400.0))
+                .key("secret").label("Secret").secure().size(200.0, 32.0).on_edit(|s: &mut S| &mut s.secret))
+    }
+    let mut rt = Runtime::new(S::default(), view, (240.0, 240.0), Env::default());
+    rt.frame(0.0);
+    let mut mirror = crate::runtime::web_runtime::Mirror::default();
+    let mut control_click = false;
+
+    let click_release = |rt: &mut Runtime<S>, control_click: &mut bool, mirror: &mut crate::runtime::web_runtime::Mirror, key: &str| {
+        let (x, y) = rt.find(key).unwrap();
+        let down = {
+            let (core, mut app) = rt.split_mut();
+            mouse_button_core(core, &mut app, MouseButtonInput {
+                x,
+                y,
+                button: crate::PointerButton::Primary,
+                pressed: true,
+                mods: crate::Mods::default(),
+                ctrl_click_is_secondary: false,
+                queue_mods_on_primary_down: false,
+            }, control_click)
+        };
+        assert_eq!(down, ButtonAction::PrimaryDown);
+        assert!(web_mouse_activate(down).should_activate(rt.core()));
+        rt.frame(0.0);
+        rt.core().web_context(mirror);
+
+        let up = {
+            let (core, mut app) = rt.split_mut();
+            mouse_button_core(core, &mut app, MouseButtonInput {
+                x,
+                y,
+                button: crate::PointerButton::Primary,
+                pressed: false,
+                mods: crate::Mods::default(),
+                ctrl_click_is_secondary: false,
+                queue_mods_on_primary_down: false,
+            }, control_click)
+        };
+        assert_eq!(up, ButtonAction::PrimaryUp);
+        assert!(rt.core().web_release_needs_frame());
+        rt.frame(0.0);
+        rt.core().web_context(mirror);
+        web_mouse_activate(up).should_activate(rt.core())
+    };
+
+    // Release handler focusing a plain editor must activate the DOM editing proxy with synced text and caret.
+    assert!(click_release(&mut rt, &mut control_click, &mut mirror, "recall"));
+    assert!(!mirror.key.is_empty());
+    assert_eq!(mirror.text, "Recalled text");
+    assert_eq!((mirror.anchor, mirror.focus), (13, 13));
+    assert!(!mirror.secure);
+
+    // Ordinary release handler that does not focus an editor must leave DOM focus alone.
+    assert!(!click_release(&mut rt, &mut control_click, &mut mirror, "plain"));
+    assert_eq!(rt.state.clicks, 1);
+    assert!(mirror.key.is_empty());
+
+    // Release handler focusing a non-input control must not activate the editing proxy.
+    assert!(!click_release(&mut rt, &mut control_click, &mut mirror, "focus_btn"));
+    assert!(rt.has_focus());
+    assert!(mirror.key.is_empty());
+
+    // Release handler focusing a secure field must activate its password proxy too.
+    assert!(click_release(&mut rt, &mut control_click, &mut mirror, "focus_secret"));
+    assert!(!mirror.key.is_empty());
+    assert!(mirror.secure);
+
+    // Non-primary mouse actions never activate even while an editor is focused.
+    for action in [
+        ButtonAction::SecondaryDown,
+        ButtonAction::SecondaryUp,
+        ButtonAction::OtherDown(crate::PointerButton::Middle),
+        ButtonAction::OtherUp(crate::PointerButton::Middle),
+    ] {
+        assert!(!web_mouse_activate(action).should_activate(rt.core()));
+    }
+}
+
+#[test]
+fn ctrl_wheel_line_delta_uses_chrome_notch_step_and_keeps_pixel_delta_scale() {
+    #[derive(Default)]
+    struct S { pinches: Vec<crate::MagnifyEvent> }
+    fn view(_: &S, _: &mut Cx<S>) -> El {
+        el().size(200.0, 200.0).hit()
+            .on_magnify(|s: &mut S, ev, _| { s.pinches.push(ev); true })
+    }
+    let mut rt = Runtime::new(S::default(), view, (200.0, 200.0), Env::new(true, 1.0));
+    rt.frame(0.0);
+    rt.pointer_move(50.0, 50.0);
+
+    // One forward notch zooms in by Chrome's 1.2x step (+0.2), independent of OS scroll lines.
+    wheel(rt.core_mut(), MouseScrollDelta::LineDelta(0.0, 1.0), GesturePhase::Moved, 1.0, ModifiersState::CONTROL);
+    // One backward notch zooms out by 1/1.2x (-1/6) so forward + backward round-trips cleanly.
+    wheel(rt.core_mut(), MouseScrollDelta::LineDelta(0.0, -1.0), GesturePhase::Moved, 1.0, ModifiersState::CONTROL);
+    // Pixel-precise Ctrl+wheel keeps dy / 200.0 (at scale 2.0, physical 40 -> 20 pt -> 0.1).
+    wheel(rt.core_mut(), MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, 40.0)), GesturePhase::Moved, 2.0, ModifiersState::CONTROL);
+    // Horizontal line-delta wheel does not pinch.
+    wheel(rt.core_mut(), MouseScrollDelta::LineDelta(1.0, 0.0), GesturePhase::Moved, 1.0, ModifiersState::CONTROL);
+    // Line-delta Ctrl+wheel is independent of scroll-line pixel distance (e.g. WHEEL_PAGESCROLL or 0 lines).
+    let ctrl = crate::Mods { ctrl: true, ..crate::Mods::default() };
+    assert_eq!(
+        wheel_core(rt.core_mut(), WheelInput { dx: 0.0, dy: 700.0, ticks: Some(1.0), mods: ctrl, phase: GesturePhase::Moved, precise: false, notch: true, pinch: true }),
+        WheelOutcome::Pinched,
+    );
+    assert_eq!(
+        wheel_core(rt.core_mut(), WheelInput { dx: 0.0, dy: 0.0, ticks: Some(1.0), mods: ctrl, phase: GesturePhase::Moved, precise: false, notch: true, pinch: true }),
+        WheelOutcome::Pinched,
+    );
+    rt.frame(0.0);
+
+    assert_eq!(rt.state.pinches.len(), 5);
+    let (fwd, back, px, page, zero_lines) = (
+        rt.state.pinches[0],
+        rt.state.pinches[1],
+        rt.state.pinches[2],
+        rt.state.pinches[3],
+        rt.state.pinches[4],
+    );
+    assert!(fwd.wheel && back.wheel && px.wheel && page.wheel && zero_lines.wheel);
+    assert!((fwd.delta - 0.2).abs() < 1e-5, "forward notch delta should be +0.2, got {}", fwd.delta);
+    assert!(((1.0 + fwd.delta) * (1.0 + back.delta) - 1.0).abs() < 1e-5, "forward + backward must round-trip: fwd={}, back={}", fwd.delta, back.delta);
+    assert!((px.delta - 0.1).abs() < 1e-5, "PixelDelta keeps dy / 200.0, got {}", px.delta);
+    assert!((page.delta - 0.2).abs() < 1e-5, "page-scroll dy does not inflate Ctrl+wheel zoom, got {}", page.delta);
+    assert!((zero_lines.delta - 0.2).abs() < 1e-5, "zero scroll lines still zooms by 1.2x per tick, got {}", zero_lines.delta);
+}
+
+#[test]
+fn web_touch_end_does_not_activate_while_popup_menu_is_open_or_touch_ended_in_menu() {
+    #[derive(Default)]
+    struct S { edit: crate::TextEdit, secondary: u32 }
+    fn view(s: &S, _: &mut Cx<S>) -> El {
+        crate::col().size(240.0, 200.0)
+            .child(crate::text_input(&s.edit, crate::TextStyle::new(14.0, 400.0))
+                .key("editor").label("Editor").size(200.0, 32.0).on_edit(|s: &mut S| &mut s.edit))
+            .child(crate::text("Custom").key("custom").size(120.0, 32.0)
+                .on_secondary_press(|s: &mut S, _, _| { s.secondary += 1; }))
+            .child(crate::text("Menu").key("open_menu").size(120.0, 32.0)
+                .on_press_tx(|_: &mut S, tx| {
+                    tx.popup_menu(crate::PopupMenu::new().item(crate::PopupItem::new("a", "A")), "open_menu", |_: &mut S, _, _| {});
+                }))
+    }
+    let mut rt = Runtime::new(S::default(), view, (240.0, 200.0), Env::default());
+    rt.frame(0.0);
+
+    // 1. Long press on a focused text field opens field_menu and enters Mode::Menu.
+    let (ex, ey) = rt.find("editor").unwrap();
+    rt.touch(1, crate::TouchPhase::Started, ex, ey, 0.0);
+    rt.frame(0.0);
+    assert!(rt.core().web_has_editable_focus());
+    rt.frame(0.6);
+    assert!(rt.popup_menu().is_some(), "long press on text field must open field_menu");
+    assert!(rt.core().touch_in_menu(), "long press must transition touch into Mode::Menu");
+
+    // Lifting the finger must not activate the editing proxy while the menu is open.
+    let ended_in_menu = rt.core().touch_in_menu();
+    rt.touch(1, crate::TouchPhase::Ended, ex, ey, 0.6);
+    let act_app = web_touch_end_activate(rt.core(), false, ended_in_menu);
+    let act_doc = web_touch_end_activate(rt.core(), true, ended_in_menu);
+    rt.frame(0.0);
+    assert!(!act_app.should_activate(rt.core()));
+    assert!(!act_doc.should_activate(rt.core()));
+    assert!(!WebActivate::Always.should_activate(rt.core()), "popup menu must block activation");
+
+    // 2. Once dismissed, a normal short tap on the field activates again in both modes.
+    rt.resolve_popup(None).unwrap();
+    rt.frame(0.0);
+    assert!(rt.popup_menu().is_none());
+    rt.touch(2, crate::TouchPhase::Started, ex, ey, 1.0);
+    assert!(!rt.core().touch_in_menu());
+    let ended_in_menu = rt.core().touch_in_menu();
+    rt.touch(2, crate::TouchPhase::Ended, ex, ey, 1.05);
+    let act_app = web_touch_end_activate(rt.core(), false, ended_in_menu);
+    let act_doc = web_touch_end_activate(rt.core(), true, ended_in_menu);
+    rt.frame(0.0);
+    assert!(act_app.should_activate(rt.core()));
+    assert!(act_doc.should_activate(rt.core()));
+
+    // 3. Long press on a custom secondary-press element (no PopupMenu) still ends in Mode::Menu
+    // and suppresses touch-end activation.
+    let (cx, cy) = rt.find("custom").unwrap();
+    rt.touch(3, crate::TouchPhase::Started, cx, cy, 2.0);
+    rt.frame(0.6);
+    assert_eq!(rt.state.secondary, 1);
+    assert!(rt.popup_menu().is_none());
+    assert!(rt.core().touch_in_menu());
+    let ended_in_menu = rt.core().touch_in_menu();
+    rt.touch(3, crate::TouchPhase::Ended, cx, cy, 2.6);
+    assert!(!web_touch_end_activate(rt.core(), false, ended_in_menu).should_activate(rt.core()));
+
+    // 4. A normal tap whose press handler opens a PopupMenu suppresses post-frame activation.
+    let (mx, my) = rt.find("open_menu").unwrap();
+    rt.touch(4, crate::TouchPhase::Started, mx, my, 3.0);
+    let ended_in_menu = rt.core().touch_in_menu();
+    rt.touch(4, crate::TouchPhase::Ended, mx, my, 3.05);
+    let act = web_touch_end_activate(rt.core(), false, ended_in_menu);
+    rt.frame(0.0);
+    assert!(rt.popup_menu().is_some());
+    assert!(!act.should_activate(rt.core()));
 }

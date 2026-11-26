@@ -6,6 +6,7 @@
 
 mod glyph;
 mod segments;
+mod turn;
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,6 +19,7 @@ use super::backdrop;
 use super::blend::{self, Src, q};
 use super::shade::{self, Clip};
 use super::{HalfRounding, Report, Scene, Target};
+use crate::render::instance::shader_consts;
 use crate::render::{Instance, Kind};
 
 const TILE_PX: usize = (TILE_W * TILE_H) as usize;
@@ -29,6 +31,7 @@ pub(super) fn run(scene: &Scene<'_>, bins: &Bins, target: &mut Target<'_>, tiles
     let clear = [q(clear[2]), q(clear[1]), q(clear[0]), q(clear[3])];
     let mut report = Report { threads: exec.threads(), ..Report::default() };
     if tiles.is_empty() { return report; }
+    let turned = turn::prerender(scene, bins, tiles, exec, wide);
     // Each record's blur, or None when no tile painted this frame shows it.
     let mut blurred: Vec<Option<backdrop::Blurred>> = Vec::with_capacity(bins.blurs.len());
     // A backdrop blur splits the frame: what's under it is painted everywhere first.
@@ -44,7 +47,7 @@ pub(super) fn run(scene: &Scene<'_>, bins: &Bins, target: &mut Target<'_>, tiles
             let mut layers: Vec<Scratch> = Vec::new();
             let mut occ: Vec<Occluder> = Vec::new();
             let mut painter = Painter { scene, bins, surface, stats: &mut stats, pow: &mut pow, layers: &mut layers, depth: 0, tile: [0; 4],
-                occ: &mut occ, n: 0, breaks: Vec::new(), segs: Vec::new(), blurred: done };
+                occ: &mut occ, n: 0, breaks: Vec::new(), segs: Vec::new(), blurred: done, turned: &turned };
             // A big frame goes out a page-wide run of tiles at a time (16 tiles: 1,024 pixels of
             // each row, about a page), so threads fault in pages of their own rather than all
             // queuing on the same ones (a fresh buffer: 12,969 to 9,992 µs); a small one tile at
@@ -55,7 +58,7 @@ pub(super) fn run(scene: &Scene<'_>, bins: &Bins, target: &mut Target<'_>, tiles
                 if at >= tiles.len() { break; }
                 for &t in &tiles[at..(at + chunk).min(tiles.len())] {
                 let t = t as usize;
-                let began = crate::time::Instant::now();
+                let began = crate::time::now();
                 painter.tile = painter.tile_rect(t as u32 % bins.cols, t as u32 / bins.cols);
                 if phase == 0 && !bins.covered[t] {
                     painter.surface.fill(painter.tile, clear);
@@ -97,7 +100,7 @@ pub(super) fn run(scene: &Scene<'_>, bins: &Bins, target: &mut Target<'_>, tiles
                 let (tx, ty) = (t % bins.cols, t / bins.cols);
                 ((tx * TILE_W) as i32) < b[2] && (((tx + 1) * TILE_W) as i32) > b[0] && ((ty * TILE_H) as i32) < b[3] && (((ty + 1) * TILE_H) as i32) > b[1]
             });
-            let began = crate::time::Instant::now();
+            let began = crate::time::now();
             blurred.push(shown.then(|| backdrop::blur(rec, scene.size, scene.half, wide, |x, y| {
                 let at = y as usize * stride + x as usize * 4;
                 [px[at + 2] as f32 / 255.0, px[at + 1] as f32 / 255.0, px[at] as f32 / 255.0, px[at + 3] as f32 / 255.0]
@@ -150,6 +153,7 @@ pub(super) fn f16(v: f32, r: HalfRounding) -> f32 {
 
 /// `f16` on four values at once: F16C's conversion where the CPU has it.
 #[inline]
+#[allow(unsafe_code)]
 pub(super) fn f16x4(v: [f32; 4], r: HalfRounding) -> [f32; 4] {
     #[cfg(target_arch = "x86_64")]
     if std::arch::is_x86_feature_detected!("f16c") {
@@ -161,6 +165,7 @@ pub(super) fn f16x4(v: [f32; 4], r: HalfRounding) -> [f32; 4] {
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "f16c")]
+#[allow(unsafe_code)]
 unsafe fn f16x4_f16c(v: [f32; 4], r: HalfRounding) -> [f32; 4] {
     use std::arch::x86_64::*;
     let mut out = [0.0f32; 4];
@@ -186,7 +191,11 @@ struct Surface {
 
 // SAFETY: `run` hands each tile to one thread; a thread writes only pixels of its tile, and the
 // target outlives the scope its threads run in.
+#[allow(unsafe_code)]
 unsafe impl Send for Surface {}
+// SAFETY: as above; `run` partitions the target into disjoint tiles across threads and joins
+// before the target borrow ends.
+#[allow(unsafe_code)]
 unsafe impl Sync for Surface {}
 
 impl Surface {
@@ -195,6 +204,7 @@ impl Surface {
 
     /// `n` pixels of row `y` from `x`, all inside the target and the caller's tile.
     #[inline]
+    #[allow(unsafe_code)]
     fn row(&mut self, x: u32, y: u32, n: u32) -> &mut [u8] {
         let at = self.at(x, y);
         let len = n as usize * 4;
@@ -253,6 +263,8 @@ struct Painter<'p, 's> {
     segs: Vec<Segment>,
     /// The blurs of the frame's backdrop blur records painted so far, in order.
     blurred: &'p [Option<backdrop::Blurred>],
+    /// Each turned layer's upright contents, by plan (`turn::prerender`).
+    turned: &'p [Option<turn::Turned>],
 }
 
 impl Painter<'_, '_> {
@@ -304,25 +316,28 @@ impl Painter<'_, '_> {
         self.n = n;
         match i.kind() {
             Some(Kind::Layer) => self.open(n),
-            Some(Kind::LayerEnd) => self.close(i, r),
-            Some(Kind::Glyph) => { let clip = Clip::of(i); self.glyph(i, r, &clip); }
-            Some(Kind::Image) => { let clip = Clip::of(i); self.image(i, r, &clip); }
-            Some(kind @ (Kind::Rect | Kind::Gradient)) => { let clip = Clip::of(i); self.shaded(i, kind, r, &clip, interior(i)); }
-            Some(Kind::Shadow) => { let clip = Clip::of(i); self.shadow(i, r, &clip); }
+            Some(Kind::LayerEnd) => match self.bins.scope.get(&n).filter(|&&p| self.bins.layers[p as usize].turn.is_some()) {
+                Some(&p) => self.turned(p as usize, r),
+                None => self.close(i, r),
+            },
+            Some(Kind::Glyph) => { let clip = Clip::of_stops(i, self.scene.fade_stops); self.glyph(i, r, &clip); }
+            Some(Kind::Image) => { let clip = Clip::of_stops(i, self.scene.fade_stops); self.image(i, r, &clip); }
+            Some(kind @ (Kind::Rect | Kind::Gradient)) => { let clip = Clip::of_stops(i, self.scene.fade_stops); self.shaded(i, kind, r, &clip, interior(i)); }
+            Some(Kind::Shadow) => { let clip = Clip::of_stops(i, self.scene.fade_stops); self.shadow(i, r, &clip); }
             Some(Kind::Radial) => {
-                let clip = Clip::of(i);
+                let clip = Clip::of_stops(i, self.scene.fade_stops);
                 let solid = Solid {
                     edges: [i.rect[0], i.rect[1], i.rect[0] + i.rect[2], i.rect[1] + i.rect[3]],
                     radii: i.radii,
-                    inset: i.params[2].max(0.5),
+                    inset: i.params[2].max(shader_consts::SOFT_MIN),
                 };
                 self.shaded(i, Kind::Radial, r, &clip, Some(solid));
             }
             Some(kind @ (Kind::Inset | Kind::Segment | Kind::Triangle | Kind::Dashed)) => {
-                let clip = Clip::of(i);
+                let clip = Clip::of_stops(i, self.scene.fade_stops);
                 self.shaded(i, kind, r, &clip, None);
             }
-            Some(Kind::BackdropBlur) => { let clip = Clip::of(i); self.backdrop(i, r, &clip); }
+            Some(Kind::BackdropBlur) => { let clip = Clip::of_stops(i, self.scene.fade_stops); self.backdrop(i, r, &clip); }
             Some(Kind::Effect) | None => {}
         }
     }
@@ -331,7 +346,7 @@ impl Painter<'_, '_> {
     fn open(&mut self, n: u32) {
         let Some(&plan) = self.bins.scope.get(&n) else { return };
         let l = &self.bins.layers[plan as usize];
-        if l.show != Show::Render { return; }
+        if l.show != Show::Render || l.turn.is_some() { return; }
         if self.layers.len() == self.depth { self.layers.push(Scratch { px: vec![[0.0; 4]; TILE_PX], additive: false, plan: 0 }); }
         let s = &mut self.layers[self.depth];
         s.px.fill([0.0; 4]);
@@ -349,7 +364,7 @@ impl Painter<'_, '_> {
         let plan = self.layers[self.depth].plan;
         let l = self.bins.layers[plan];
         let begin = &self.scene.instances[l.begin as usize];
-        let clip = Clip::of(begin);
+        let clip = Clip::of_stops(begin, self.scene.fade_stops);
         let opacity = begin.fill[3];
         let segs = self.segments(r, None, &clip);
         let mut k = 0;

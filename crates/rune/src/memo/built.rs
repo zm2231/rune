@@ -21,6 +21,9 @@ pub(crate) struct Shared {
     pub(crate) has_virtual: bool,
     /// Whether every descendant can reuse its flattened `Node` and Taffy subtree across commits.
     pub(crate) reusable: bool,
+    /// Whether any descendant carries a path-bound hook (`El::bind_path`), so moving the memo
+    /// to a different parent path must re-flatten rather than rebasing stale handlers.
+    pub(crate) has_path_bind: bool,
 }
 
 impl El {
@@ -67,12 +70,13 @@ fn el_flatten_reusable(e: &El) -> bool {
     // (`Measurement::keeps_windows`); one built from children isn't.
     let indexed = c.virtual_rows.is_some();
     (c.virtual_estimate.is_none() || indexed)
+        && c.virtual_items.is_none()
         && (c.growth.is_none() || indexed)
         && c.aspect_fit <= 0.0
         && c.above.is_none()
         && c.input.is_none()
         && e.handlers.get().is_none_or(|h| h.modal.is_none())
-        && e.text.as_ref().is_none_or(|t| !t.redacted && t.cold.live.is_none())
+        && e.text.as_ref().is_none_or(|t| !t.redacted)
         && e.memo_children().is_none_or(|m| m.reusable && !m.duplicate_keys)
         && e.children.iter().all(el_flatten_reusable)
 }
@@ -95,6 +99,12 @@ fn prekey_text_shapes(el: &mut El, scale: f32) {
     }
 }
 
+fn has_path_bind(el: &El) -> bool {
+    el.cold.get().is_some_and(|c| c.on_path.is_some())
+        || el.memo_children().is_some_and(|m| m.has_path_bind)
+        || el.children.iter().any(has_path_bind)
+}
+
 /// Whether `el` or anything under it is a focused field.
 pub(crate) fn has_focused_input(el: &El) -> bool {
     el.cold.input.as_ref().is_some_and(|i| i.edit.focused)
@@ -107,6 +117,8 @@ pub(crate) fn has_focused_input(el: &El) -> bool {
 pub(crate) struct Built {
     pub(crate) id: u64,
     pub(crate) reusable: bool,
+    /// Whether the root or any descendant carries `El::bind_path`.
+    pub(crate) has_path_bind: bool,
     /// Built by a [`region`](super::region): what it shows is what it read, so its virtual lists'
     /// rows can be kept with it while their reads hold.
     pub(crate) region: bool,
@@ -131,12 +143,14 @@ impl Built {
             let duplicate_keys = crate::input::key_diagnostics::memo_children_have_duplicates(&el, &children);
             let has_virtual = children.iter().any(|c| c.flags.has(ElFlags::HAS_VIRTUAL));
             let reusable = !duplicate_keys && children.iter().all(el_flatten_reusable);
-            Rc::new(Shared { children, focused_input, duplicate_keys, has_virtual, reusable })
+            let has_path_bind = children.iter().any(has_path_bind);
+            Rc::new(Shared { children, focused_input, duplicate_keys, has_virtual, reusable, has_path_bind })
         };
         el.flags.set(ElFlags::HAS_VIRTUAL, el.cold.virtual_estimate.is_some());
         let reusable = shared.reusable && !shared.duplicate_keys && el_flatten_reusable(&el);
+        let has_path_bind = shared.has_path_bind || el.cold.get().is_some_and(|c| c.on_path.is_some());
         let id = NEXT_BUILT_ID.fetch_add(1, Ordering::Relaxed);
-        (Rc::new(Built { id, reusable, region, root: el, children: shared }), key)
+        (Rc::new(Built { id, reusable, has_path_bind, region, root: el, children: shared }), key)
     }
 
     /// The root, with its children shared rather than copied.

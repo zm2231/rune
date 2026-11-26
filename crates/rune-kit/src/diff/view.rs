@@ -10,14 +10,16 @@ use std::rc::Rc;
 use rune::{Color, Cursor, Drag, El, GrowthSpec, Icon, Phase, ScrollSpec, Tx, col, icon, memo, rich, row, text};
 
 use super::model::{LineKind, Side};
-use super::state::{Annotation, DiffMode, DiffState, Expand, LINE_H, LineRange, LineRef, Row};
-use crate::Kit;
+use super::state::{Annotation, DiffMode, DiffState, Expand, HEADER_H, LineRange, LineRef, Row};
+use crate::{Kit, ScrollBar, ScrollBarStyle};
 
 mod chrome;
+mod labels;
 mod line_info;
 mod look;
 mod spans;
 
+pub use labels::DiffLabel;
 pub use line_info::FoldRow;
 
 use look::Look;
@@ -37,9 +39,11 @@ const CODE_PAD: (f32, f32) = (12.0, 24.0);
 type Get<S> = Rc<dyn Fn(&S) -> &DiffState>;
 type GetMut<S> = Rc<dyn Fn(&mut S) -> &mut DiffState>;
 type AnnotateFn<S> = Rc<dyn Fn(&S, &Annotation) -> El>;
+type FileHeaderFn<S> = Rc<dyn Fn(&S, usize, bool) -> El>;
 type HeaderFn<S> = Rc<dyn Fn(&S, usize) -> El>;
 type SelectFn<S> = Rc<dyn Fn(&mut S, Option<LineRange>, &mut Tx)>;
 type CommentFn<S> = Rc<dyn Fn(&mut S, LineRange, &mut Tx)>;
+type CommentFilterFn = Rc<dyn Fn(usize, LineRef) -> bool>;
 type VisibleFileFn<S> = Rc<dyn Fn(&mut S, usize)>;
 
 #[derive(Clone, Copy)]
@@ -53,7 +57,9 @@ struct GutterDrag {
 
 trait DiffBind {
     fn has_comment(&self) -> bool;
+    fn can_comment(&self, f: usize, at: LineRef) -> bool;
     fn has_annotation(&self) -> bool;
+    fn file_header(&self, s: &dyn Any, f: usize, collapsed: bool) -> Option<El>;
     fn header_action(&self, s: &dyn Any, f: usize) -> Option<El>;
     fn annotation(&self, s: &dyn Any, a: &Annotation) -> Option<El>;
     fn bind_list(&self, list: El, count: usize, view: Rc<View>) -> El;
@@ -69,15 +75,25 @@ struct DiffHandlers<S> {
     get: Get<S>,
     get_mut: GetMut<S>,
     annotation: Option<AnnotateFn<S>>,
+    file_header: Option<FileHeaderFn<S>>,
     header: Option<HeaderFn<S>>,
     on_select: Option<SelectFn<S>>,
     on_comment: Option<CommentFn<S>>,
+    comment_filter: Option<CommentFilterFn>,
     on_visible_file: Option<VisibleFileFn<S>>,
 }
 
 impl<S: 'static> DiffBind for DiffHandlers<S> {
     fn has_comment(&self) -> bool { self.on_comment.is_some() }
+    fn can_comment(&self, f: usize, at: LineRef) -> bool {
+        self.on_comment.is_some() && self.comment_filter.as_ref().is_none_or(|allow| allow(f, at))
+    }
     fn has_annotation(&self) -> bool { self.annotation.is_some() }
+
+    fn file_header(&self, s: &dyn Any, f: usize, collapsed: bool) -> Option<El> {
+        let s = s.downcast_ref::<S>().expect("diff view state type mismatch");
+        self.file_header.as_ref().map(|h| h(s, f, collapsed))
+    }
 
     fn header_action(&self, s: &dyn Any, f: usize) -> Option<El> {
         let s = s.downcast_ref::<S>().expect("diff view state type mismatch");
@@ -91,7 +107,7 @@ impl<S: 'static> DiffBind for DiffHandlers<S> {
 
     fn bind_list(&self, list: El, count: usize, view: Rc<View>) -> El {
         let (get, row_get, vis_mut, on_file) = (self.get.clone(), self.get.clone(), self.get_mut.clone(), self.on_visible_file.clone());
-        list.virtual_rows(count, LINE_H, keys(get), move |s: &S, i| view.row(s, row_get(s), i))
+        list.virtual_rows(count, view.look.line_h(), keys(get), move |s: &S, i| view.row(s, row_get(s), i))
             .on_visible_rows(move |s: &mut S, rows| {
                 let (reported, sticky_changed) = vis_mut(s).set_visible_rows(rows);
                 if let (Some(f), Some(cb)) = (reported, &on_file) {
@@ -114,8 +130,11 @@ impl<S: 'static> DiffBind for DiffHandlers<S> {
     }
 
     fn bind_plus(&self, el: El, f: usize, at: LineRef) -> El {
-        let (get, cb) = (self.get_mut.clone(), self.on_comment.clone());
+        let (get, cb, filter) = (self.get_mut.clone(), self.on_comment.clone(), self.comment_filter.clone());
         el.on_press_tx(move |s: &mut S, tx| {
+            if filter.as_ref().is_some_and(|allow| !allow(f, at)) {
+                return;
+            }
             let lines = comment_lines(get(s), f, at);
             if let Some(cb) = &cb {
                 cb(s, lines, tx);
@@ -149,20 +168,42 @@ impl<S: 'static> DiffBind for DiffHandlers<S> {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+enum DiffScrollBar {
+    #[default]
+    None,
+    Kit,
+    Styled(ScrollBarStyle),
+}
+
 /// Draws the [`DiffState`] an app keeps in its state: give it the state's accessors and build
 /// it in the view. It fills the height it's given and scrolls; Cmd-C, `j`/`k` and `]`/`[` work
 /// once the app routes keys to [`DiffState::key`].
 ///
-/// ```ignore
+/// ```
+/// # use rune::{El, el};
+/// # use rune_kit::{Kit, diff::{Annotation, DiffState, DiffView, LineRange}};
+/// # struct FileTree;
+/// # impl FileTree { fn reveal(&mut self, _: usize) {} }
+/// # struct App { diff: DiffState, tree: FileTree }
+/// # impl App { fn compose(&mut self, _: LineRange) {} }
+/// # fn comment(_: &App, _: &str) -> El { el() }
+/// # let s = &App { diff: DiffState::default(), tree: FileTree };
+/// # let k = Kit::neutral(true);
+/// # let _ =
 /// DiffView::new(|s: &App| &s.diff, |s: &mut App| &mut s.diff)
 ///     .annotation(|s: &App, a: &Annotation| comment(s, &a.id))
 ///     .on_comment(|s: &mut App, lines, _| s.compose(lines))
 ///     .on_visible_file(|s: &mut App, f| s.tree.reveal(f))
 ///     .build(s, &k)
+/// # ;
 /// ```
 pub struct DiffView<S> {
     key: String,
     fold_row: FoldRow,
+    look: look::LookSpec,
+    labels: Option<labels::LabelsFn>,
+    scroll_bar: DiffScrollBar,
     handlers: DiffHandlers<S>,
 }
 
@@ -171,7 +212,20 @@ impl<S: 'static> DiffView<S> {
         DiffView {
             key: "diff".into(),
             fold_row: FoldRow::default(),
-            handlers: DiffHandlers { get: Rc::new(get), get_mut: Rc::new(get_mut), annotation: None, header: None, on_select: None, on_comment: None, on_visible_file: None },
+            look: look::LookSpec::default(),
+            labels: None,
+            scroll_bar: DiffScrollBar::None,
+            handlers: DiffHandlers {
+                get: Rc::new(get),
+                get_mut: Rc::new(get_mut),
+                annotation: None,
+                file_header: None,
+                header: None,
+                on_select: None,
+                on_comment: None,
+                comment_filter: None,
+                on_visible_file: None,
+            },
         }
     }
 
@@ -182,9 +236,65 @@ impl<S: 'static> DiffView<S> {
     /// [`FoldRow::LineInfo`] as OpenCode Desktop's review has them.
     pub fn fold_row(mut self, fold_row: FoldRow) -> Self { self.fold_row = fold_row; self }
 
+    /// Localise or rename every visible and accessible string `DiffView` emits.
+    ///
+    /// Returning `None` (or an empty or whitespace-only string) keeps the default English text
+    /// for that [`DiffLabel`].
+    ///
+    /// ```
+    /// # use rune_kit::{Kit, diff::{DiffLabel, DiffState, DiffView}};
+    /// # struct App { diff: DiffState }
+    /// # let s = &App { diff: DiffState::default() };
+    /// # let k = Kit::neutral(true);
+    /// # let _ =
+    /// DiffView::new(|s: &App| &s.diff, |s: &mut App| &mut s.diff)
+    ///     .labels(|label| match label {
+    ///         DiffLabel::ExpandFile => Some("Déplier le fichier".into()),
+    ///         DiffLabel::CollapseFile => Some("Replier le fichier".into()),
+    ///         DiffLabel::CommentLine => Some("Commenter cette ligne".into()),
+    ///         _ => None,
+    ///     })
+    ///     .build(s, &k)
+    /// # ;
+    /// ```
+    pub fn labels(mut self, f: impl Fn(DiffLabel<'_>) -> Option<String> + 'static) -> Self {
+        self.labels = Some(Rc::new(f));
+        self
+    }
+
     /// Build each [`Annotation`] under its line. Rows holding annotations are built every
     /// commit, so a widget can read app state (a composer's text) freely.
     pub fn annotation(mut self, f: impl Fn(&S, &Annotation) -> El + 'static) -> Self { self.handlers.annotation = Some(Rc::new(f)); self }
+
+    /// Replace the inner built-in file header for each file (called with the app state, the
+    /// file's index in [`DiffState::files`], and whether it is currently collapsed).
+    ///
+    /// `DiffView` keeps the 44-point header row, its heading accessible label, horizontal
+    /// left-pinning in unwrapped mode, and the sticky top header overlay. Collapse files from
+    /// the custom header via [`DiffState::set_collapsed`]. When set, [`Self::header_actions`]
+    /// is ignored.
+    ///
+    /// ```
+    /// # use rune::{row, text};
+    /// # use rune_kit::{Kit, diff::{DiffState, DiffView}};
+    /// # struct App { diff: DiffState }
+    /// # let s = &App { diff: DiffState::default() };
+    /// # let k = Kit::neutral(true);
+    /// # let _ =
+    /// DiffView::new(|s: &App| &s.diff, |s: &mut App| &mut s.diff)
+    ///     .file_header(|s: &App, file, collapsed| {
+    ///         let path = s.diff.files()[file].path().to_owned();
+    ///         row().w_full().h_full().px(10.0).items_center()
+    ///             .on_press(move |s: &mut App| s.diff.set_collapsed(file, !collapsed))
+    ///             .child(text(path))
+    ///     })
+    ///     .build(s, &k)
+    /// # ;
+    /// ```
+    pub fn file_header(mut self, f: impl Fn(&S, usize, bool) -> El + 'static) -> Self {
+        self.handlers.file_header = Some(Rc::new(f));
+        self
+    }
 
     /// Extra controls at the end of each file's header (a "viewed" toggle, a menu), by file.
     pub fn header_actions(mut self, f: impl Fn(&S, usize) -> El + 'static) -> Self { self.handlers.header = Some(Rc::new(f)); self }
@@ -196,13 +306,94 @@ impl<S: 'static> DiffView<S> {
     /// stands for when pressed: the selection when the line is in it, else that line.
     pub fn on_comment(mut self, f: impl Fn(&mut S, LineRange, &mut Tx) + 'static) -> Self { self.handlers.on_comment = Some(Rc::new(f)); self }
 
+    /// Restrict which lines show the "+" comment button (when [`Self::on_comment`] is set) and
+    /// can invoke it. `file` is the index in [`DiffState::files`] and `at` is the candidate
+    /// line. Both sides are enabled by default.
+    ///
+    /// In [`DiffMode::Unified`], unchanged context lines carry both an old and a new line number;
+    /// the new side is tried first and the old side is used as a fallback so old-side-only filters
+    /// work on context lines too.
+    ///
+    /// ```
+    /// # use rune_kit::{Kit, diff::{DiffState, DiffView, LineRange, Side}};
+    /// # struct App { diff: DiffState }
+    /// # impl App { fn compose(&mut self, _: LineRange) {} }
+    /// # let s = &App { diff: DiffState::default() };
+    /// # let k = Kit::neutral(true);
+    /// # let _ =
+    /// DiffView::new(|s: &App| &s.diff, |s: &mut App| &mut s.diff)
+    ///     .on_comment(|s: &mut App, lines, _| s.compose(lines))
+    ///     .comment_filter(|_, at| at.side == Side::New)
+    ///     .build(s, &k)
+    /// # ;
+    /// ```
+    pub fn comment_filter(mut self, f: impl Fn(usize, LineRef) -> bool + 'static) -> Self {
+        self.handlers.comment_filter = Some(Rc::new(f));
+        self
+    }
+
     /// Called when the file at the top of the view changes as it scrolls, to follow it in a
     /// file tree.
     pub fn on_visible_file(mut self, f: impl Fn(&mut S, usize) + 'static) -> Self { self.handlers.on_visible_file = Some(Rc::new(f)); self }
 
+    /// Draws kit scroll bars on the diff's viewport using [`ScrollBarStyle::from_kit`] when `on`
+    /// is true, following [`rune::system_scroll_bars`]. In unwrapped unified mode, both vertical
+    /// and horizontal bars are attached; when lines wrap (or in [`DiffMode::Split`]), only a
+    /// vertical bar is attached. Off by default.
+    ///
+    /// ```
+    /// # use rune_kit::{Kit, diff::{DiffState, DiffView}};
+    /// # struct App { diff: DiffState }
+    /// # let s = &App { diff: DiffState::default() };
+    /// # let k = Kit::neutral(true);
+    /// # let _ =
+    /// DiffView::new(|s: &App| &s.diff, |s: &mut App| &mut s.diff)
+    ///     .scroll_bar(true)
+    ///     .build(s, &k)
+    /// # ;
+    /// ```
+    pub fn scroll_bar(mut self, on: bool) -> Self {
+        self.scroll_bar = if on { DiffScrollBar::Kit } else { DiffScrollBar::None };
+        self
+    }
+
+    /// Draws scroll bars on the diff's viewport in `style`, following
+    /// [`rune::system_scroll_bars`]. In unwrapped unified mode, the vertical bar uses `style`
+    /// and the horizontal bar uses `style.horizontal()`; when lines wrap (or in
+    /// [`DiffMode::Split`]), only the vertical bar is attached.
+    ///
+    /// ```
+    /// # use rune_kit::{Kit, ScrollBarStyle, diff::{DiffState, DiffView}};
+    /// # struct App { diff: DiffState }
+    /// # let s = &App { diff: DiffState::default() };
+    /// # let k = Kit::neutral(true);
+    /// # let _ =
+    /// DiffView::new(|s: &App| &s.diff, |s: &mut App| &mut s.diff)
+    ///     .scroll_bar_styled(ScrollBarStyle::scroll_view(&k))
+    ///     .build(s, &k)
+    /// # ;
+    /// ```
+    pub fn scroll_bar_styled(mut self, style: ScrollBarStyle) -> Self {
+        self.scroll_bar = DiffScrollBar::Styled(style);
+        self
+    }
+
     pub fn build(self, s: &S, k: &Kit) -> El {
         let st = (self.handlers.get)(s);
-        let view = Rc::new(View { look: Look::new(k), fold_row: self.fold_row, bind: Box::new(self.handlers) });
+        let labels_version = labels::fingerprint(self.labels.as_ref());
+        let scroll_bar = match self.scroll_bar {
+            DiffScrollBar::None => None,
+            DiffScrollBar::Kit => Some(ScrollBarStyle::from_kit(k)),
+            DiffScrollBar::Styled(style) => Some(style),
+        };
+        let view = Rc::new(View {
+            look: Look::new(k, self.look),
+            fold_row: self.fold_row,
+            labels: self.labels,
+            labels_version,
+            scroll_bar,
+            bind: Box::new(self.handlers),
+        });
         view.build_root(st, self.key, s)
     }
 }
@@ -234,31 +425,53 @@ impl Cell<'_> {
         }
     }
 
-    fn label(&self) -> String {
-        let (_, n) = self.source();
-        let kind = match self.kind {
-            LineKind::Added => "added",
-            LineKind::Removed => "removed",
-            LineKind::Context => "unchanged",
-        };
-        format!("{kind} line {n}: {}", self.text)
-    }
 }
 
 struct View {
     look: Look,
     fold_row: FoldRow,
+    labels: Option<labels::LabelsFn>,
+    labels_version: u64,
+    scroll_bar: Option<ScrollBarStyle>,
     bind: Box<dyn DiffBind>,
 }
 
 impl View {
+    pub(super) fn label(&self, label: DiffLabel<'_>) -> String {
+        labels::resolve(self.labels.as_ref(), label)
+    }
+
+    fn cell_label(&self, c: &Cell<'_>) -> String {
+        let (_, number) = c.source();
+        self.label(DiffLabel::Line { kind: c.kind, number, text: c.text })
+    }
+
+    fn comment_sides(&self, st: &DiffState, r: Row) -> (bool, bool) {
+        if !self.bind.has_comment() {
+            return (false, false);
+        }
+        let f = r.file();
+        let can = |side: Side| st.row_line(r, side).is_some_and(|n| self.bind.can_comment(f, LineRef::new(side, n)));
+        (can(Side::Old), can(Side::New))
+    }
+
+    fn unified_comment_target(&self, f: usize, c: Cell<'_>) -> Option<LineRef> {
+        if !self.bind.has_comment() {
+            return None;
+        }
+        let new = c.new.map(|n| LineRef::new(Side::New, n)).filter(|&at| self.bind.can_comment(f, at));
+        new.or_else(|| c.old.map(|n| LineRef::new(Side::Old, n)).filter(|&at| self.bind.can_comment(f, at)))
+    }
+
     fn build_root(self: &Rc<Self>, st: &DiffState, key: String, s: &dyn Any) -> El {
         let wrap = st.wraps();
-        if !wrap && let Some(r) = rune::memo::layout(&format!("{key}/scroll")) {
+        let scroll_path = if self.scroll_bar.is_some() { format!("{key}/scroll-scroll-area/scroll") } else { format!("{key}/scroll") };
+        if !wrap && let Some(r) = rune::memo::layout(&scroll_path) {
             st.set_viewport(r);
         }
+        st.set_line_height(self.look.line_h());
         let count = st.rows.len();
-        let mut list = col().key("rows").w_full().growth(GrowthSpec::default()).selection_group(true).role("list").label("Diff");
+        let mut list = col().key("rows").w_full().growth(GrowthSpec::default()).selection_group(true).role("list").label(self.label(DiffLabel::List));
         if !wrap {
             list = list.min_w(self.content_width(st).max(st.view_width()));
         }
@@ -266,6 +479,15 @@ impl View {
         let scroll = col().key("scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false });
         let scroll = if wrap { scroll } else { scroll.scroll_xy() };
         let scroll = scroll.child(list);
+        let scroll = match self.scroll_bar {
+            None => scroll,
+            Some(style) => {
+                // Keep the vertical track below the 44 pt sticky file header unless the caller
+                // set a custom top offset, so the sticky overlay never covers the top of the thumb.
+                let v = if style.top_offset() == 0.0 { style.track_offset(HEADER_H, style.end_offset()) } else { style };
+                if wrap { scroll.scroll_bar_styled(v) } else { scroll.scroll_bars_xy_styled(v, style.horizontal()) }
+            }
+        };
         // Code reads left to right in any window: gutters at the left, old before new.
         let mut root = col().key(key).dir(rune::Direction::Ltr).w_full().grow(1.0).min_h(0.0).fill(self.look.bg).child(scroll);
         if let Some(f) = st.sticky() {
@@ -293,14 +515,22 @@ impl View {
         let key = st.keys[i].as_str();
         match r {
             Row::File(f) => self.file_header(s, st, f as usize, false),
-            Row::Note(f) => memo(key, (self.look.version, st.rev, st.view_width().to_bits()), || self.note(st, f as usize)),
-            Row::Gap { f, gap } => memo(key, (self.look.version, st.rev, st.view_width().to_bits(), self.fold_row), || match self.fold_row {
+            Row::Note(f) => memo(key, (self.look.version, st.rev, st.view_width().to_bits(), self.labels_version), || self.note(st, f as usize)),
+            Row::Gap { f, gap } => memo(key, (self.look.version, st.rev, st.view_width().to_bits(), self.fold_row, self.labels_version), || match self.fold_row {
                 FoldRow::Summary => self.gap(st, f as usize, gap as usize),
                 FoldRow::LineInfo => self.line_info(st, f as usize, gap as usize),
             }),
             _ if !st.annotations().is_empty() && self.bind.has_annotation() && self.annotated(st, r) => self.line(s, st, i),
             _ => {
-                let version = (self.look.version, st.rev, st.row_selected(i, None), st.copy_side(), st.selection().map(|s| s.start.side));
+                let version = (
+                    self.look.version,
+                    st.rev,
+                    st.row_selected(i, None),
+                    st.copy_side(),
+                    st.selection().map(|s| s.start.side),
+                    self.comment_sides(st, r),
+                    self.labels_version,
+                );
                 memo(key, version, || self.line(s, st, i))
             }
         }
@@ -418,24 +648,21 @@ impl View {
             .child(self.bar(c.kind))
             .child(self.number(st, i, f, c.old, Side::Old, c.kind, selected, digits).key("no"))
             .child(self.number(st, i, f, c.new, Side::New, c.kind, selected, digits).key("nn"));
-        if self.bind.has_comment() {
-            let at = c.new.map(|n| LineRef::new(Side::New, n)).or(c.old.map(|n| LineRef::new(Side::Old, n)));
-            if let Some(at) = at {
-                gutter = gutter.child(self.plus(f, at).absolute(BAR + 2.0 * l.number_w(digits) - 10.0, 2.0));
-            }
+        if let Some(at) = self.unified_comment_target(f, c) {
+            gutter = gutter.child(self.plus(f, at).absolute(BAR + 2.0 * l.number_w(digits) - 10.0, l.plus_y()));
         }
         if !st.wraps() {
             gutter = gutter.sticky_left(0.0);
         }
         row()
             .w_full()
-            .min_h(LINE_H)
+            .min_h(l.line_h())
             .items_start()
             .fill(fill)
             .hover(l.hover)
             .hover_group()
             .role("listitem")
-            .label(c.label())
+            .label(self.cell_label(&c))
             .child(gutter)
             .child(self.code(st, f, &c, copy, hover_side, &st.keys[i]).key("code"))
     }
@@ -446,7 +673,7 @@ impl View {
         let half = |side: Side, c: Option<Cell<'a>>| -> El {
             let l = &self.look;
             let key = if side == Side::Old { "old" } else { "new" };
-            let mut h = row().key(key).w_frac(if single.is_some() { 1.0 } else { 0.5 }).min_w(0.0).min_h(LINE_H).items_start().self_stretch();
+            let mut h = row().key(key).w_frac(if single.is_some() { 1.0 } else { 0.5 }).min_w(0.0).min_h(l.line_h()).items_start().self_stretch();
             let Some(c) = c else {
                 return h.fill(l.empty_bg);
             };
@@ -456,25 +683,28 @@ impl View {
             let fill = if selected { l.selected } else { l.tints(kind).map_or(l.bg, |t| t.line) };
             let n = if side == Side::Old { c.old } else { c.new };
             let mut cell = c;
-            if kind == LineKind::Context {
-                cell.text = st.side_line(f, side, n.unwrap_or(1)).unwrap_or(c.text);
+            if kind == LineKind::Context
+                && let Some(line) = n
+            {
+                cell.text = st.side_line(f, side, line).unwrap_or(c.text);
             }
             let copy = st.copy_side() == side;
+            let number = n.unwrap_or_else(|| cell.source().1);
             h = h
                 .fill(fill)
                 .hover(l.hover)
                 .hover_group()
                 .role("listitem")
-                .label(cell.label())
+                .label(self.label(DiffLabel::Line { kind: cell.kind, number, text: cell.text }))
                 .child(self.bar(kind))
                 .child(self.number(st, i, f, n, side, kind, selected, digits).key("n"))
                 .child(self.code(st, f, &cell, copy, side, &st.keys[i]).key("code"));
-            if let (Some(n), true) = (n, self.bind.has_comment()) {
-                h = h.child(self.plus(f, LineRef::new(side, n)).absolute(BAR + l.number_w(digits) - 10.0, 2.0));
+            if let Some(at) = n.map(|n| LineRef::new(side, n)).filter(|&at| self.bind.can_comment(f, at)) {
+                h = h.child(self.plus(f, at).absolute(BAR + l.number_w(digits) - 10.0, l.plus_y()));
             }
             h
         };
-        let line = row().w_full().min_h(LINE_H).items_stretch();
+        let line = row().w_full().min_h(self.look.line_h()).items_stretch();
         // An added or deleted file has one side: it takes the whole width, as one column.
         match single {
             Some(Side::Old) => line.child(half(Side::Old, old)),
@@ -500,7 +730,7 @@ impl View {
     fn number(&self, st: &DiffState, i: usize, f: usize, n: Option<u32>, side: Side, kind: LineKind, selected: bool, digits: u32) -> El {
         let l = &self.look;
         let unified = st.mode() == DiffMode::Unified;
-        let mut c = row().w(l.number_w(digits)).min_h(LINE_H).self_stretch().px(8.0).justify_end().items_start().a11y_hidden();
+        let mut c = row().w(l.number_w(digits)).min_h(l.line_h()).self_stretch().px(8.0).justify_end().items_start().a11y_hidden();
         if !unified {
             c = c.fill(l.gutter_fill(kind, selected));
         }
@@ -528,7 +758,7 @@ impl View {
             .group_opacity(0.0, 1.0)
             .cursor(Cursor::Pointer)
             .role("button")
-            .label("Comment on this line")
+            .label(self.label(DiffLabel::CommentLine))
             .child(icon(&PLUS, 12.0).color(l.on_accent));
         self.bind.bind_plus(button, f, at)
     }
@@ -536,9 +766,13 @@ impl View {
     /// The code of a line: syntax colours under word changes, tabs padded to four columns.
     fn code(&self, st: &DiffState, f: usize, c: &Cell<'_>, copy: bool, side: Side, row_key: &str) -> El {
         let l = &self.look;
-        let (src, n) = c.source();
+        let (src, n) = match (side, c.old, c.new) {
+            (Side::Old, Some(n), _) => (Side::Old, n),
+            (Side::New, _, Some(n)) => (Side::New, n),
+            _ => c.source(),
+        };
         let syntax: Vec<(Range<usize>, Color)> = st
-            .highlights(f, src, n)
+            .highlights_for(f, src, n, c.text)
             .into_iter()
             .map(|(r, p)| (r, l.syntax.paint(p)))
             .collect();
@@ -557,7 +791,7 @@ impl View {
             format!("{row_key}.{}", side as u8),
         );
         if c.no_newline {
-            code = code.child(text("No newline at end of file").font(l.small).color(l.muted).opacity(0.6).key("eof").pb(2.0));
+            code = code.child(text(self.label(DiffLabel::NoNewlineAtEndOfFile)).font(l.small).color(l.muted).opacity(0.6).key("eof").pb(2.0));
         }
         code
     }

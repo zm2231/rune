@@ -1,14 +1,18 @@
 //! `AVPlayer` + `AVPlayerItemVideoOutput` construction and the `turn::Port` adapter (`Av`).
 
+#![allow(unsafe_code)]
+
 use super::{Decoded, Native, Objects, Player, asset, park};
 use crate::native_surface::macos::PixelBuffer;
 use crate::native_surface::{ByteFrame, NativeSurface};
 use crate::video::phases::Item;
 use crate::video::turn::Port;
 use crate::video::{Kind, MediaSource, Meta, Shared};
+use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
-use objc2::{AnyThread, MainThreadMarker};
+use objc2::runtime::{AnyObject, Bool};
+use objc2::{AnyThread, MainThreadMarker, msg_send};
+use rune_core::main_queue::on_main;
 use objc2_av_foundation::{AVPlayer, AVPlayerItem, AVPlayerItemStatus, AVPlayerItemVideoOutput};
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
 use objc2_core_video::{
@@ -22,18 +26,21 @@ use std::sync::Arc;
 
 fn create_player(source: &MediaSource, headers: &[(String, String)], kind: Kind, decoded: &Decoded, mtm: MainThreadMarker) -> Result<Objects, String> {
     let asset = asset::player_asset(source, headers, decoded)?;
+    // SAFETY: `asset` is a live `AVURLAsset` and `mtm` proves we are on the main thread.
     let item = unsafe { AVPlayerItem::playerItemWithAsset(&asset, mtm) };
     let output = (kind == Kind::Video).then(|| {
         let empty = CFDictionary::<CFString, CFType>::from_slices(&[], &[]);
         let format = CFNumber::new_i32(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange as i32);
+        // SAFETY: the three `kCVPixelBuffer*` keys are immutable static `CFString` constants and values are live `CFType`s.
         let attributes = unsafe {
             CFDictionary::<CFString, CFType>::from_slices(
                 &[kCVPixelBufferPixelFormatTypeKey, kCVPixelBufferIOSurfacePropertiesKey, kCVPixelBufferMetalCompatibilityKey],
                 &[format.as_ref(), AsRef::<CFType>::as_ref(&*empty), CFBoolean::new(true).as_ref()],
             )
         };
-        // CFDictionary and NSDictionary are toll-free bridged.
+        // SAFETY: `CFDictionary` and `NSDictionary` are toll-free bridged, and the reference does not outlive `attributes`.
         let attributes = unsafe { &*(CFRetained::as_ptr(&attributes).as_ptr() as *const NSDictionary<NSString, AnyObject>) };
+        // SAFETY: `attributes` is a valid pixel-buffer dictionary, `output` is freshly allocated, and `item` is a live `AVPlayerItem` on the main thread.
         unsafe {
             let output = AVPlayerItemVideoOutput::initWithPixelBufferAttributes(AVPlayerItemVideoOutput::alloc(), Some(attributes));
             output.setSuppressesPlayerRendering(true);
@@ -41,13 +48,22 @@ fn create_player(source: &MediaSource, headers: &[(String, String)], kind: Kind,
             output
         }
     });
+    // SAFETY: `item` is a live `AVPlayerItem` and `mtm` proves we are on the main thread.
     let player = unsafe { AVPlayer::playerWithPlayerItem(Some(&item), mtm) };
     Ok(Objects { player, item, output })
 }
 
+fn can_step(item: &AVPlayerItem, frames: i32) -> bool {
+    if frames == 0 {
+        return true;
+    }
+    // SAFETY: `item` is a live `AVPlayerItem` accessed on the main thread under `shared.native`.
+    unsafe { if frames > 0 { item.canStepForward() } else { item.canStepBackward() } }
+}
+
 /// Seconds on the host clock (`CACurrentMediaTime`'s) for an `Instant`.
 fn host_seconds(at: Instant) -> f64 {
-    let now = Instant::now();
+    let now = rune_core::time::now();
     let host = CVGetCurrentHostTime() as f64 / CVGetHostClockFrequency();
     if at >= now { host + (at - now).as_secs_f64() } else { host - (now - at).as_secs_f64() }
 }
@@ -60,8 +76,8 @@ pub(super) struct Av<'a> {
     mtm: Option<MainThreadMarker>,
     /// Video, during a pull: the surface and the presentation time its frame is for.
     target: Option<(&'a NativeSurface, Instant)>,
-    /// A finished poster load's frame.
-    poster: Option<ByteFrame>,
+    /// A finished poster load's frame and its actual presentation timestamp.
+    poster: Option<(ByteFrame, f64)>,
     /// A poster the turn asked for, started once the control lock is released.
     pub(super) asked: Option<(f64, Attempt)>,
 }
@@ -99,9 +115,9 @@ impl Port for Av<'_> {
         })))
     }
 
-    fn show_poster(&mut self, next_id: &mut dyn FnMut() -> u64) -> Result<(), String> {
-        let (Some(bytes), Some((surface, _))) = (self.poster.take(), self.target) else { return Ok(()) };
-        surface.push_bytes(bytes, next_id())
+    fn show_poster(&mut self, next_id: &mut dyn FnMut() -> u64) -> Result<Option<f64>, String> {
+        let (Some((bytes, pts)), Some((surface, _))) = (self.poster.take(), self.target) else { return Ok(None) };
+        surface.push_bytes(bytes, next_id()).map(|()| Some(pts))
     }
 
     fn ask_poster(&mut self, at: f64, attempt: Attempt) {
@@ -112,7 +128,7 @@ impl Port for Av<'_> {
         let shared = self.shared;
         let objects = create_player(&shared.source, &shared.headers, shared.kind, &self.native.decoded, self.mtm.unwrap())?;
         self.native.player = Some(Player::new(objects));
-        Ok(Instant::now())
+        Ok(rune_core::time::now())
     }
 
     fn drop_player(&mut self) {
@@ -125,9 +141,12 @@ impl Port for Av<'_> {
 
     fn item(&self) -> Item {
         let item = &self.objects().item;
+        // SAFETY: `item` is a live `AVPlayerItem` accessed on the main thread under `shared.native`.
         let status = unsafe { item.status() };
         if status == AVPlayerItemStatus::Failed {
-            Item::Failed(unsafe { item.error() }.map_or_else(|| "playback failed".into(), |e| e.localizedDescription().to_string()))
+            // SAFETY: `item` is a live `AVPlayerItem` in `Failed` status accessed on the main thread.
+            let error = unsafe { item.error() };
+            Item::Failed(error.map_or_else(|| "playback failed".into(), |e| e.localizedDescription().to_string()))
         } else if status == AVPlayerItemStatus::ReadyToPlay {
             Item::Ready
         } else {
@@ -138,6 +157,7 @@ impl Port for Av<'_> {
     fn orient(&mut self) {
         let o = self.objects();
         if o.output.is_some() {
+            // SAFETY: `o.item` is a live `AVPlayerItem` accessed on the main thread.
             let asset = unsafe { o.item.asset() };
             let orient = asset::orient(&asset);
             self.player().orient = orient;
@@ -146,10 +166,15 @@ impl Port for Av<'_> {
 
     fn item_facts(&self) -> Meta {
         let item = &self.objects().item;
+        // SAFETY: `item` is a live `AVPlayerItem` accessed on the main thread.
         let size = unsafe { item.presentationSize() };
+        // SAFETY: `item` is a live `AVPlayerItem` accessed on the main thread.
         let duration = asset::seconds(unsafe { item.duration() });
         let size = (size.width >= 1.0 && size.height >= 1.0).then(|| (size.width.round() as u32, size.height.round() as u32));
-        Meta { duration, size, frame: 1.0 / 30.0, sound: asset::has_sound(&*unsafe { item.asset() }) }
+        // SAFETY: `item` is a live `AVPlayerItem` accessed on the main thread.
+        let asset = unsafe { item.asset() };
+        let frame = (self.shared.kind == Kind::Video).then(|| asset::frame_duration(&asset)).flatten();
+        Meta { duration, size, frame, sound: asset::has_sound(&asset) }
     }
 
     fn alive(&self) -> bool {
@@ -157,24 +182,89 @@ impl Port for Av<'_> {
     }
 
     fn set_muted(&mut self, muted: bool) {
+        // SAFETY: `player` is a live `AVPlayer` accessed on the main thread.
         unsafe { self.objects().player.setMuted(muted) };
     }
 
     fn set_volume(&mut self, volume: f32) {
+        // SAFETY: `player` is a live `AVPlayer` accessed on the main thread.
         unsafe { self.objects().player.setVolume(volume) };
     }
 
-    fn seek_to(&mut self, at: f64) {
-        unsafe { self.objects().player.seekToTime_toleranceBefore_toleranceAfter(asset::cm(at), asset::zero(), asset::zero()) };
+    fn set_output_device(&mut self, uid: Option<&str>) {
+        let uid = uid.map(NSString::from_str);
+        // SAFETY: `player` is a live `AVPlayer` accessed on the main thread, and `uid` (when `Some`) is a live `NSString` copied by `AVPlayer`.
+        unsafe { self.objects().player.setAudioOutputDeviceUniqueID(uid.as_deref()) };
+    }
+
+    fn seek_to(&mut self, at: f64, exact: bool) {
+        self.player().suppress_cm = None;
+        let tolerance = if exact { asset::zero() } else { asset::positive_infinity() };
+        // SAFETY: `player` is a live `AVPlayer` accessed on the main thread with valid `CMTime` values.
+        unsafe { self.objects().player.seekToTime_toleranceBefore_toleranceAfter(asset::cm(at), tolerance, tolerance) };
+    }
+
+    fn snap_for_step(&mut self, attempt: Attempt, frames: i32) -> bool {
+        let Some(target) = self.native.player.as_ref().and_then(|p| p.shown_cm) else {
+            return false;
+        };
+        if !can_step(&self.objects().item, frames) {
+            return false;
+        }
+        self.player().suppress_cm = Some(target);
+        let clip = Arc::downgrade(self.shared);
+        let done = RcBlock::new(move |finished: Bool| {
+            let finished = finished.as_bool();
+            let clip = clip.clone();
+            on_main(move || {
+                if let Some(clip) = clip.upgrade() {
+                    super::snap_done(&clip, attempt, finished);
+                }
+            });
+        });
+        let player = &self.objects().player;
+        let zero = asset::zero();
+        // SAFETY: `player` is a live `AVPlayer` accessed on the main thread, `target` and `zero`
+        // are valid `CMTime` values, and `&*done` is a live `RcBlock` copied by AVFoundation for
+        // `seekToTime:toleranceBefore:toleranceAfter:completionHandler:`.
+        unsafe {
+            let _: () = msg_send![
+                player,
+                seekToTime: target,
+                toleranceBefore: zero,
+                toleranceAfter: zero,
+                completionHandler: &*done
+            ];
+        }
+        true
+    }
+
+    fn step_by(&mut self, frames: i32) -> bool {
+        if frames == 0 {
+            return true;
+        }
+        let item = &self.objects().item;
+        if !can_step(item, frames) {
+            return false;
+        }
+        // SAFETY: `item` is a live `AVPlayerItem` accessed on the main thread and `canStep*` returned true.
+        unsafe { item.stepByCount(frames as isize) };
+        true
     }
 
     fn set_rate(&mut self, rate: f32) {
+        if rate > 0.0 {
+            self.player().suppress_cm = None;
+        }
         let player = &self.objects().player;
+        // SAFETY: `player` is a live `AVPlayer` accessed on the main thread.
         unsafe { if rate > 0.0 { player.setRate(rate) } else { player.pause() } };
     }
 
     fn restart(&mut self, rate: f32) {
+        self.player().suppress_cm = None;
         let player = &self.objects().player;
+        // SAFETY: `player` is a live `AVPlayer` accessed on the main thread with valid `CMTime` values.
         unsafe {
             player.seekToTime_toleranceBefore_toleranceAfter(asset::zero(), asset::zero(), asset::zero());
             player.setRate(rate);
@@ -183,28 +273,41 @@ impl Port for Av<'_> {
 
     fn frame(&mut self, next_id: &mut dyn FnMut() -> u64) -> (f64, Result<Option<f64>, String>) {
         let (surface, target) = self.target.unwrap();
-        let p = self.native.player.as_ref().unwrap();
+        let p = self.native.player.as_mut().unwrap();
         let output = p.objects.as_ref().unwrap().output.as_ref().unwrap();
+        // SAFETY: `output` is a live `AVPlayerItemVideoOutput` attached to this player's item.
         let item_time = unsafe { output.itemTimeForHostTime(host_seconds(target)) };
         let mut shown = item_time;
         let mut landed = Ok(None);
+        // SAFETY: `output` is a live `AVPlayerItemVideoOutput` and `item_time` came from `itemTimeForHostTime`.
         if unsafe { output.hasNewPixelBufferForItemTime(item_time) }
-            && let Some(buffer) = unsafe { output.copyPixelBufferForItemTime_itemTimeForDisplay(item_time, &mut shown) }
+            && let Some(buffer) =
+                // SAFETY: `output` is live and `&mut shown` is a valid writable `CMTime` out-pointer.
+                unsafe { output.copyPixelBufferForItemTime_itemTimeForDisplay(item_time, &mut shown) }
         {
-            let id = next_id();
-            // SAFETY: AVPlayerItemVideoOutput hands out finished buffers it no longer writes.
-            let pushed = unsafe { PixelBuffer::from_raw(Retained::as_ptr(&buffer) as *mut _) }
-                .and_then(|b| surface.push_oriented(b, id, p.orient));
-            landed = pushed.map(|_| Some(asset::seconds(shown)));
+            // Discard any duplicate buffer AVFoundation re-emits at the exact `CMTime` snapped to
+            // before stepping so it neither flashes nor ends `Settle::Seeking` before the step lands.
+            let suppressed = p.suppress_cm.is_some_and(|prev| asset::same_cm(shown, prev));
+            if !suppressed {
+                p.suppress_cm = None;
+                p.shown_cm = Some(shown);
+                let id = next_id();
+                // SAFETY: AVPlayerItemVideoOutput hands out finished buffers it no longer writes.
+                let pushed = unsafe { PixelBuffer::from_raw(Retained::as_ptr(&buffer) as *mut _) }
+                    .and_then(|b| surface.push_oriented(b, id, p.orient));
+                landed = pushed.map(|_| Some(asset::seconds(shown)));
+            }
         }
         (asset::seconds(item_time), landed)
     }
 
     fn current(&self) -> f64 {
+        // SAFETY: `player` is a live `AVPlayer` accessed on the main thread.
         asset::seconds(unsafe { self.objects().player.currentTime() })
     }
 
     fn stopped(&mut self) -> bool {
+        // SAFETY: `player` is a live `AVPlayer` accessed on the main thread.
         unsafe { self.objects().player.rate() == 0.0 }
     }
 }

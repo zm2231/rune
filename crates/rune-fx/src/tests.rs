@@ -64,7 +64,7 @@ fn layers_that_draw_nothing_never_keep_the_loop_awake() {
     for (live, silent) in pairs {
         let live = live.on(card()).at(1.0);
         assert!(live.is_animating() && live.pack().is_some(), "{live:?}");
-        assert!(!live.opacity(0.0).is_animating(), "zero opacity: {live:?}");
+        assert!(!live.clone().opacity(0.0).is_animating(), "zero opacity: {live:?}");
         let silent = silent.on(card()).at(1.0);
         assert!(!silent.is_animating() && silent.pack().is_none(), "{silent:?}");
     }
@@ -120,13 +120,13 @@ fn opacity_zero_is_culled() {
 #[test]
 fn zaps_and_bursts_live_out_their_window_then_cull() {
     let zap = Fx::electric(ElectricParams { style: ElectricStyle::Arc { a: [0.0, 0.0], b: [200.0, 40.0] }, zap: Some(1.0), ..Default::default() }).on(card());
-    assert!(zap.at(0.9).pack().is_none());
-    assert!(zap.at(1.2).pack().is_some() && zap.at(1.2).is_animating());
-    assert!(zap.at(1.0 + ElectricParams::ZAP_LIFE + 0.01).pack().is_none());
+    assert!(zap.clone().at(0.9).pack().is_none());
+    assert!(zap.clone().at(1.2).pack().is_some() && zap.clone().at(1.2).is_animating());
+    assert!(zap.clone().at(1.0 + ElectricParams::ZAP_LIFE + 0.01).pack().is_none());
     let p = SparkleParams { burst: Some(2.0), ..Default::default() };
     let burst = Fx::sparkles(p).on(card());
-    assert!(burst.at(2.3).pack().is_some());
-    assert!(!burst.at(2.0 + p.burst_life() + 0.01).is_animating());
+    assert!(burst.clone().at(2.3).pack().is_some());
+    assert!(!burst.clone().at(2.0 + p.burst_life() + 0.01).is_animating());
     let mut data = Vec::new();
     let (_, n) = cpu::sparkles(&p, card().rect, 2.0 + p.burst_life() + 0.01, 1, false, &mut data);
     assert_eq!(n, 0.0, "every burst star is gone by burst_life()");
@@ -249,6 +249,71 @@ fn zero_amplitude_electricity_is_a_straight_finite_line() {
     }
 }
 
+#[test]
+fn lens_veil_packs_in_c0_alpha_and_clamps_edges() {
+    let def = LensParams::default();
+    assert_eq!(def.veil, 0.0);
+    assert_eq!(def.frost_sigma, LensParams::DEFAULT_FROST_SIGMA);
+    assert_eq!(LensParams::DEFAULT_FROST_SIGMA, 18.0);
+
+    let layer = Fx::lens(def).on(card());
+    assert!(!layer.is_animating());
+    let (_, inst, _) = layer.pack().unwrap();
+    assert_eq!(inst.c0, [1.0, 1.0, 1.0, 0.0]);
+
+    let dark = rgb(0x18181b);
+    let veiled = Fx::lens(LensParams { tint: dark, veil: 0.6, ..Default::default() }).on(card());
+    assert!(!veiled.is_animating());
+    let (_, inst, _) = veiled.pack().unwrap();
+    assert_eq!(inst.c0, [dark.0[0], dark.0[1], dark.0[2], 0.6]);
+
+    for (raw, want) in [
+        (-0.5, 0.0),
+        (0.0, 0.0),
+        (0.35, 0.35),
+        (1.0, 1.0),
+        (2.5, 1.0),
+        (f32::NAN, 0.0),
+        (f32::INFINITY, 0.0),
+        (f32::NEG_INFINITY, 0.0),
+    ] {
+        let (_, inst, _) = Fx::lens(LensParams { tint: dark, veil: raw, ..Default::default() }).on(card()).pack().unwrap();
+        assert_eq!(inst.c0[3], want, "veil={raw:?}");
+    }
+}
+
+#[test]
+fn lens_frost_blur_pt_scales_with_frost_sigma_and_clamps_edges() {
+    assert_eq!(crate::pack::LENS_FROST_SIGMA, LensParams::DEFAULT_FROST_SIGMA);
+    assert_eq!(LensParams::default().frost_blur_pt(), 0.0);
+    assert_eq!(LensParams { frost: 1.0, ..Default::default() }.frost_blur_pt(), 18.0);
+    assert_eq!(LensParams { frost: 0.5, ..Default::default() }.frost_blur_pt(), 9.0);
+    assert_eq!(LensParams { frost: 1.0, frost_sigma: 6.0, ..Default::default() }.frost_blur_pt(), 6.0);
+    assert_eq!(LensParams { frost: 1.0, frost_sigma: 32.0, ..Default::default() }.frost_blur_pt(), 32.0);
+    assert_eq!(LensParams { frost: 1.0, frost_sigma: 1000.0, ..Default::default() }.frost_blur_pt(), 1000.0);
+    assert_eq!(LensParams { frost: 2.0, frost_sigma: 28.0, ..Default::default() }.frost_blur_pt(), 28.0);
+
+    for (frost, sigma) in [
+        (0.0, 28.0),
+        (-0.5, 28.0),
+        (1.0, 0.0),
+        (1.0, -12.0),
+        (f32::NAN, 18.0),
+        (1.0, f32::NAN),
+        (f32::INFINITY, 18.0),
+        (1.0, f32::INFINITY),
+        (1.0, f32::NEG_INFINITY),
+    ] {
+        let p = LensParams { frost, frost_sigma: sigma, ..Default::default() };
+        assert_eq!(p.frost_blur_pt(), 0.0, "frost={frost:?}, frost_sigma={sigma:?}");
+        let (_, inst, _) = Fx::lens(p).on(card()).pack().unwrap();
+        assert_eq!(inst.p1[1], 0.0, "zero effective blur clears shader frost: frost={frost:?}, frost_sigma={sigma:?}");
+    }
+
+    // Fluted glass stays on the fixed 18 pt constant.
+    assert_eq!(crate::pack::LENS_FROST_SIGMA, 18.0);
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn wgsl_uniform_and_storage_layouts_match_rust() {
@@ -259,7 +324,7 @@ fn wgsl_uniform_and_storage_layouts_match_rust() {
 
     let check = |label: &str, source: &str, structs: &[(&str, usize, &[(&str, usize)])]| {
         let module = wgsl::parse_str(source).unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(source)));
-        Validator::new(ValidationFlags::all(), Capabilities::default() | Capabilities::SHADER_FLOAT16_IN_FLOAT32)
+        Validator::new(ValidationFlags::all(), Capabilities::default())
             .validate(&module)
             .unwrap_or_else(|e| panic!("{label}: {e}"));
         let mut layouter = Layouter::default();
@@ -313,6 +378,15 @@ fn wgsl_uniform_and_storage_layouts_match_rust() {
             ("Inst", std::mem::size_of::<InstRaw>(), inst_fields),
         ],
     );
+    let distort_src = format!("{}\n{}\n{}", crate::pipes::CLIP, crate::pipes::COMMON, crate::pipes::SOURCES[4].1);
+    check(
+        "common+distort.wgsl",
+        &distort_src,
+        &[
+            ("Globals", std::mem::size_of::<Globals>(), globals_fields),
+            ("Inst", std::mem::size_of::<InstRaw>(), inst_fields),
+        ],
+    );
 
     let sim_fields: &[(&str, usize)] = &[
         ("dims", std::mem::offset_of!(SimUniform, dims)),
@@ -327,4 +401,108 @@ fn wgsl_uniform_and_storage_layouts_match_rust() {
         include_str!("shaders/firesim.wgsl"),
         &[("P", std::mem::size_of::<SimUniform>(), sim_fields)],
     );
+}
+
+#[test]
+fn blur_weight_pool_shares_constant_and_repeated_weights_and_bounds_at_256() {
+    use crate::renderer::{BLUR_SLOTS, alloc_blur_weight};
+
+    let mut weights = Vec::new();
+    // Exact 1.0 always maps to permanent slot 0 without uploading or consuming capacity.
+    assert_eq!(alloc_blur_weight(&mut weights, 1.0), Some((0, false)));
+    assert!(weights.is_empty());
+
+    // Signed zero normalizes to positive zero and deduplicates.
+    assert_eq!(alloc_blur_weight(&mut weights, 0.0), Some((1, true)));
+    assert_eq!(alloc_blur_weight(&mut weights, -0.0), Some((1, false)));
+
+    // Repeated fractional weights reuse their slot without re-uploading.
+    assert_eq!(alloc_blur_weight(&mut weights, 0.5), Some((2, true)));
+    assert_eq!(alloc_blur_weight(&mut weights, 0.5), Some((2, false)));
+
+    // Fill the remaining slots up to BLUR_SLOTS - 1 = 255 distinct fractional weights.
+    for i in 3..BLUR_SLOTS {
+        let frac = i as f32 / (BLUR_SLOTS as f32 + 1.0);
+        assert_eq!(alloc_blur_weight(&mut weights, frac), Some((i, true)));
+    }
+    assert_eq!(weights.len(), BLUR_SLOTS - 1);
+
+    // Existing weights and 1.0 still succeed when full; a brand-new weight falls back cleanly.
+    assert_eq!(alloc_blur_weight(&mut weights, 1.0), Some((0, false)));
+    assert_eq!(alloc_blur_weight(&mut weights, 0.5), Some((2, false)));
+    assert_eq!(alloc_blur_weight(&mut weights, 0.123456), None);
+    assert_eq!(weights.len(), BLUR_SLOTS - 1);
+
+    // Clearing for the next frame restores capacity.
+    weights.clear();
+    assert_eq!(alloc_blur_weight(&mut weights, 0.123456), Some((1, true)));
+}
+
+#[test]
+fn support_needs_vertex_and_fragment_storage_and_two_buffers() {
+    let full = wgpu::DownlevelCapabilities::default();
+    assert_eq!(fx_support(&full, &wgpu::Limits::default()), Ok(()));
+    assert_eq!(fx_support(&full, &wgpu::Limits::downlevel_defaults()), Ok(()));
+    // WebGL2 (matches wgpu-hal's GLES 3.0 adapter flags): no storage buffers in any stage.
+    let webgl2 = wgpu::DownlevelCapabilities {
+        flags: wgpu::DownlevelFlags::NON_POWER_OF_TWO_MIPMAPPED_TEXTURES
+            | wgpu::DownlevelFlags::COMPARISON_SAMPLERS
+            | wgpu::DownlevelFlags::SHADER_F16_IN_F32
+            | wgpu::DownlevelFlags::MSL2_1,
+        ..wgpu::DownlevelCapabilities::default()
+    };
+    assert_eq!(fx_support(&webgl2, &wgpu::Limits::downlevel_webgl2_defaults()), Err(FxUnsupported::VertexStorage));
+    let empty = wgpu::DownlevelCapabilities { flags: wgpu::DownlevelFlags::empty(), ..full.clone() };
+    assert_eq!(fx_support(&empty, &wgpu::Limits::downlevel_webgl2_defaults()), Err(FxUnsupported::VertexStorage));
+    assert_eq!(
+        fx_support(&full, &wgpu::Limits::downlevel_webgl2_defaults()),
+        Err(FxUnsupported::StorageBuffers { needed: 2, allowed: 0 })
+    );
+    let fragment_only = wgpu::DownlevelCapabilities { flags: wgpu::DownlevelFlags::all() - wgpu::DownlevelFlags::VERTEX_STORAGE, ..full.clone() };
+    assert_eq!(fx_support(&fragment_only, &wgpu::Limits::default()), Err(FxUnsupported::VertexStorage));
+    let vertex_only = wgpu::DownlevelCapabilities { flags: wgpu::DownlevelFlags::all() - wgpu::DownlevelFlags::FRAGMENT_STORAGE, ..full.clone() };
+    assert_eq!(fx_support(&vertex_only, &wgpu::Limits::default()), Err(FxUnsupported::FragmentStorage));
+    let one = wgpu::Limits { max_storage_buffers_per_shader_stage: 1, ..wgpu::Limits::default() };
+    assert_eq!(fx_support(&full, &one), Err(FxUnsupported::StorageBuffers { needed: 2, allowed: 1 }));
+}
+
+#[test]
+fn motion_samples_stay_out_of_every_layer() {
+    // `MotionSamples` is about 2 KiB; inline, it would make every `Fx` and `FxLayer` that big.
+    assert!(std::mem::size_of::<MotionSamples>() > 2048);
+    assert!(std::mem::size_of::<Fx>() <= 168, "Fx is {} bytes", std::mem::size_of::<Fx>());
+    assert!(std::mem::size_of::<FxLayer>() <= 256, "FxLayer is {} bytes", std::mem::size_of::<FxLayer>());
+    assert!(
+        2_400 * std::mem::size_of::<FxLayer>() <= 600 * 1024,
+        "2,400 FxLayers take {} bytes",
+        2_400 * std::mem::size_of::<FxLayer>()
+    );
+}
+
+#[test]
+fn motion_blur_in_place_sample_update_packs_identically() {
+    let rest = Rect::new(48.0, 24.0, 48.0, 48.0);
+    let shape = Shape::rounded(rest.x, rest.y, rest.w, rest.h, 8.0);
+    let src = Rect::new(0.0, 0.0, 160.0, 96.0);
+    let p = MotionBlurParams::default();
+    let s1 = MotionSamples::from_track(&p, rest, 0.05, 1.0, |t| Pose { x: t * 900.0, ..Default::default() });
+    let s2 = MotionSamples::from_track(&p, rest, 0.15, 1.0, |t| Pose { x: t * 1800.0, ..Default::default() });
+
+    let mut reused = Fx::motion_blur(p, s1).on(shape).source(0, src).at(0.05);
+    if let Fx::MotionBlur(_, samples) = &mut reused.fx {
+        **samples = s2;
+    }
+    reused.time = 0.15;
+    let fresh = Fx::motion_blur(p, s2).on(shape).source(0, src).at(0.15);
+
+    let (k_reused, mut i_reused, b_reused) = reused.pack().unwrap();
+    let (k_fresh, mut i_fresh, b_fresh) = fresh.pack().unwrap();
+    let (mut xf_reused, mut xf_fresh) = (Vec::new(), Vec::new());
+    reused.fill(&mut i_reused, &mut xf_reused);
+    fresh.fill(&mut i_fresh, &mut xf_fresh);
+
+    assert_eq!(k_reused, k_fresh);
+    assert_eq!(b_reused, b_fresh);
+    assert_eq!(bytemuck::bytes_of(&i_reused), bytemuck::bytes_of(&i_fresh));
+    assert_eq!(xf_reused, xf_fresh);
 }

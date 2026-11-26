@@ -4,6 +4,8 @@
 //! opened, and Rune hands the bytes over without copying. The glyph is drawn into a bitmap
 //! of this module's.
 
+#![allow(unsafe_code)]
+
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::Arc;

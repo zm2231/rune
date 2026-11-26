@@ -1,10 +1,12 @@
 //! The `NSUndoManager` a `RuneTextInput` answers UIKit with, and the machine's effects on it.
 
+#![allow(unsafe_code)]
+
 use std::cell::Cell;
 
-use objc2_video::rc::Retained;
-use objc2_video::runtime::AnyObject;
-use objc2_video::{class, msg_send, sel};
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send, sel};
 
 use super::{Action, Effect, Event, Offer, State, step};
 

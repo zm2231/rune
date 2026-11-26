@@ -1,7 +1,7 @@
 use super::*;
 
 fn meta() -> Meta {
-    Meta { duration: 1.0, size: Some((64, 36)), frame: 0.25, sound: false }
+    Meta { duration: 1.0, size: Some((64, 36)), frame: Some(0.25), sound: false }
 }
 
 #[test]
@@ -10,9 +10,13 @@ fn new_videos_are_muted_paused_and_loading() {
     assert!(v.muted());
     assert!(!v.looping());
     assert!(!v.is_playing());
+    assert!(!v.is_seeking());
     assert_eq!(v.rate(), 1.0);
+    assert_eq!(v.output_device(), None);
     assert_eq!(v.time(), 0.0);
     assert_eq!(v.duration(), None);
+    assert_eq!(v.frame_duration(), None);
+    assert_eq!(v.presented_time(), None);
     assert_eq!(v.natural_size(), None);
     assert!(!v.is_audio());
     #[cfg(target_os = "macos")]
@@ -33,7 +37,47 @@ fn audio_starts_unmuted_with_no_size() {
     let a = Player::audio("missing.m4a");
     assert!(a.is_audio());
     assert!(!a.muted(), "audio is audible by default");
+    assert_eq!(a.output_device(), None);
     assert_eq!(a.natural_size(), None);
+}
+
+#[test]
+fn output_device_defaults_to_none_and_round_trips_across_clones() {
+    let a = Player::audio("missing.m4a");
+    let clone = a.clone();
+    assert_eq!(a.output_device(), None);
+    assert_eq!(a.shared.ctl.lock().unwrap().output_generation, 0);
+
+    // Empty and unchanged None are no-ops.
+    a.set_output_device(None);
+    a.set_output_device(Some(""));
+    assert_eq!(a.output_device(), None);
+    assert_eq!(a.shared.ctl.lock().unwrap().output_generation, 0);
+
+    // Setting a UID updates all clones and bumps the generation once.
+    clone.set_output_device(Some("BuiltInSpeakerDevice"));
+    assert_eq!(a.output_device().as_deref(), Some("BuiltInSpeakerDevice"));
+    assert_eq!(clone.output_device().as_deref(), Some("BuiltInSpeakerDevice"));
+    assert_eq!(a.shared.ctl.lock().unwrap().output_generation, 1);
+
+    // Repeating the same UID is a no-op.
+    a.set_output_device(Some("BuiltInSpeakerDevice"));
+    assert_eq!(a.shared.ctl.lock().unwrap().output_generation, 1);
+
+    // Switching to a long / non-ASCII UID works cleanly.
+    let long_uid = format!("USB-DAC-🎧-{}", "x".repeat(512));
+    a.set_output_device(Some(&long_uid));
+    assert_eq!(clone.output_device().as_deref(), Some(long_uid.as_str()));
+    assert_eq!(a.shared.ctl.lock().unwrap().output_generation, 2);
+
+    // Empty string normalizes to system default (None).
+    a.set_output_device(Some(""));
+    assert_eq!(clone.output_device(), None);
+    assert_eq!(a.shared.ctl.lock().unwrap().output_generation, 3);
+
+    // Explicit None when already None is a no-op.
+    a.set_output_device(None);
+    assert_eq!(a.shared.ctl.lock().unwrap().output_generation, 3);
 }
 
 /// A clip's extension comes from the last segment of its path, never the host or query.
@@ -86,6 +130,27 @@ fn quiet_audio() -> Player {
     Player { surface: NativeSurface::with_video(shared.clone()), shared }
 }
 
+/// A video clip no backend has seen, so platform constructors (such as the unsupported backend's
+/// immediate failure) don't pre-fail it before a test drives `Control`.
+fn bare_video() -> Arc<Shared> {
+    Arc::new(Shared {
+        source: MediaSource::from("missing.mp4"),
+        headers: Vec::new(),
+        kind: Kind::Video,
+        ctl: Mutex::new(Control { muted: true, kind: Kind::Video, ..Control::default() }),
+        wakes: Mutex::new(Vec::new()),
+        waker: WakerSlot::default(),
+        notified: AtomicU64::new(0),
+        native: Mutex::new(backend::Native::default()),
+        backend: &BACKEND,
+    })
+}
+
+fn quiet_video() -> Player {
+    let shared = bare_video();
+    Player { surface: NativeSurface::with_video(shared.clone()), shared }
+}
+
 #[test]
 fn the_waker_hears_each_state_change_once() {
     let a = quiet_audio();
@@ -96,7 +161,7 @@ fn the_waker_hears_each_state_change_once() {
     }));
     a.shared.settle(false);
     assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0, "nothing changed yet");
-    a.shared.ctl.lock().unwrap().open(Ok(Meta { duration: 2.0, size: None, frame: 1.0 / 30.0, sound: false }));
+    a.shared.ctl.lock().unwrap().open(Ok(Meta { duration: 2.0, size: None, frame: None, sound: false }));
     a.shared.settle(false);
     a.shared.settle(false);
     assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
@@ -126,10 +191,197 @@ fn a_waker_set_after_a_failure_hears_it_once() {
 fn a_seek_before_the_clip_opens_is_clamped_when_it_does() {
     let v = Video::file("missing.mp4");
     v.seek(30.0);
-    assert_eq!(v.shared.ctl.lock().unwrap().seek, Some(30.0), "no duration yet");
+    assert_eq!(v.shared.ctl.lock().unwrap().pending, Some(Pending::Seek(Seek::exact(30.0))), "no duration yet");
     v.shared.ctl.lock().unwrap().open(Ok(meta()));
     let c = v.shared.ctl.lock().unwrap();
-    assert_eq!((c.seek, c.time), (Some(1.0), 1.0));
+    assert_eq!((c.pending, c.time), (Some(Pending::Seek(Seek::exact(1.0))), 1.0));
+}
+
+#[test]
+fn seek_fast_records_keyframe_seek_clamps_inputs_and_preserves_state() {
+    let v = quiet_video();
+    let other = v.clone();
+    // Before opening: records exact=false, clamps negative/non-finite to 0.
+    v.seek_fast(-5.0);
+    assert_eq!(v.shared.ctl.lock().unwrap().pending, Some(Pending::Seek(Seek { at: 0.0, exact: false })));
+    v.seek_fast(f64::NAN);
+    assert_eq!(v.shared.ctl.lock().unwrap().pending, Some(Pending::Seek(Seek { at: 0.0, exact: false })));
+    v.seek_fast(f64::INFINITY);
+    assert_eq!(v.shared.ctl.lock().unwrap().pending, Some(Pending::Seek(Seek { at: 0.0, exact: false })));
+    // Past duration before open: clamps when metadata arrives and keeps exact=false.
+    other.seek_fast(30.0);
+    assert_eq!(v.shared.ctl.lock().unwrap().pending, Some(Pending::Seek(Seek { at: 30.0, exact: false })));
+    v.shared.ctl.lock().unwrap().open(Ok(meta()));
+    {
+        let c = v.shared.ctl.lock().unwrap();
+        assert_eq!((c.pending, c.time), (Some(Pending::Seek(Seek { at: 1.0, exact: false })), 1.0));
+    }
+    // Headless runs report is_seeking() == false.
+    assert!(!v.is_seeking());
+    assert_eq!(v.state(), PlayerState::Ready);
+
+    // Seeking while playing stays Playing; seeking after Ended returns to Ready.
+    v.play();
+    v.seek_fast(0.5);
+    assert_eq!(v.state(), PlayerState::Playing);
+    assert_eq!(v.shared.ctl.lock().unwrap().pending, Some(Pending::Seek(Seek { at: 0.5, exact: false })));
+    assert!(!v.is_seeking());
+
+    v.shared.ctl.lock().unwrap().run = Run::Ended;
+    assert_eq!(v.state(), PlayerState::Ended);
+    v.seek_fast(0.25);
+    assert_eq!(v.state(), PlayerState::Ready);
+    assert_eq!(v.shared.ctl.lock().unwrap().pending, Some(Pending::Seek(Seek { at: 0.25, exact: false })));
+
+    // A subsequent exact seek replaces the pending keyframe seek.
+    v.seek(0.75);
+    assert_eq!(v.shared.ctl.lock().unwrap().pending, Some(Pending::Seek(Seek::exact(0.75))));
+
+    // Failed clips never report seeking.
+    v.shared.ctl.lock().unwrap().fail("boom".into());
+    v.seek_fast(0.5);
+    assert!(!v.is_seeking());
+}
+
+/// On platforms without a video backend, `seek_fast`, `seek`, and `step` do not panic, keep
+/// the clip in `PlayerState::Failed`, and never report a pending seek or presented frame.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[test]
+fn unsupported_backend_handles_seek_fast_and_step_without_panicking() {
+    let v = Video::file("missing.mp4");
+    assert!(matches!(v.state(), PlayerState::Failed(_)));
+    assert!(!v.is_seeking());
+    assert_eq!(v.frame_duration(), None);
+    assert_eq!(v.presented_time(), None);
+
+    v.seek_fast(1.5);
+    v.seek(0.5);
+    v.step(1);
+    v.step(-1);
+    v.step(0);
+
+    assert!(matches!(v.state(), PlayerState::Failed(_)));
+    assert!(!v.is_seeking());
+    assert_eq!(v.frame_duration(), None);
+    assert_eq!(v.presented_time(), None);
+}
+
+#[test]
+fn frame_duration_and_presented_time_handle_unopened_unknown_audio_and_failure() {
+    let v = Video::file("missing.mp4");
+    assert_eq!(v.frame_duration(), None);
+    assert_eq!(v.presented_time(), None);
+
+    // Stream with unknown frame rate keeps None for frame_duration() while snapping internally.
+    let unknown = Meta { duration: 2.0, size: Some((64, 36)), frame: None, sound: false };
+    v.shared.ctl.lock().unwrap().open(Ok(unknown));
+    assert_eq!(v.frame_duration(), None);
+    assert_eq!(v.presented_time(), None);
+    assert!((unknown.frame_step() - DEFAULT_FRAME).abs() < 1e-12);
+
+    // Known positive rate is exposed as-is.
+    let known = Meta { duration: 1.0, size: Some((64, 36)), frame: Some(0.25), sound: false };
+    v.shared.ctl.lock().unwrap().open(Ok(known));
+    assert_eq!(v.frame_duration(), Some(0.25));
+
+    // Audio always returns None for both and ignores step().
+    let a = quiet_audio();
+    a.shared.ctl.lock().unwrap().open(Ok(Meta { duration: 2.0, size: None, frame: Some(0.25), sound: true }));
+    assert_eq!(a.frame_duration(), None);
+    assert_eq!(a.presented_time(), None);
+    a.play();
+    a.step(1);
+    assert!(a.is_playing(), "audio ignores Player::step");
+    assert_eq!(a.shared.ctl.lock().unwrap().pending, None);
+}
+
+/// Runs a synchronous headless decode test behind a hard deadline so a backend deadlock fails
+/// with a message instead of hanging the test suite.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn run_with_timeout(name: &str, limit: std::time::Duration, body: impl FnOnce() + Send + 'static) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+        // The test thread may have already timed out and dropped the receiver.
+        tx.send(res).ok();
+    });
+    match rx.recv_timeout(limit) {
+        Ok(Ok(())) => {}
+        Ok(Err(payload)) => std::panic::resume_unwind(payload),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            panic!("{name} timed out after {}s", limit.as_secs());
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("{name} worker exited without reporting a result");
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[test]
+fn headless_step_and_presented_time_walk_every_frame_of_real_mp4_and_clamp() {
+    run_with_timeout("headless_step_and_presented_time_walk_every_frame_of_real_mp4_and_clamp", std::time::Duration::from_secs(20), || {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../rune/tests/fixtures/rgbw.mp4");
+    let v = Video::file(path);
+    let wake = rune_core::live::Wake::new(Arc::new(|| {}));
+    let pull = |clock: f64| v.shared.pull(v.surface(), Clock::Virtual(clock), &wake).active;
+
+    // Before first pull: unopened, no presented picture.
+    assert_eq!(v.frame_duration(), None);
+    assert_eq!(v.presented_time(), None);
+
+    // First pull opens and decodes frame 0 (PTS 0.0, 4 fps -> 0.25 s/frame).
+    assert!(!pull(0.0));
+    assert!((v.frame_duration().unwrap() - 0.25).abs() < 1e-3, "{:?}", v.frame_duration());
+    assert!(v.presented_time().unwrap().abs() < 1e-3, "{:?}", v.presented_time());
+    assert!(!v.is_seeking());
+
+    // Stepping backward at frame 0 stays on frame 0 without seeking.
+    v.step(-1);
+    assert!(!pull(0.0));
+    assert!(v.presented_time().unwrap().abs() < 1e-3, "{:?}", v.presented_time());
+
+    // Step forward through frames 1, 2, 3 and verify exact PTS at each step.
+    for expected in [0.25, 0.5, 0.75] {
+        v.step(1);
+        assert!(!v.is_playing());
+        assert!(!pull(0.0));
+        let pts = v.presented_time().expect("presented_time after step");
+        assert!((pts - expected).abs() < 1e-3, "got {pts}, want {expected}");
+    }
+
+    // Stepping forward past last frame clamps on frame 3 (0.75 s).
+    v.step(10);
+    assert!(!pull(0.0));
+    assert!((v.presented_time().unwrap() - 0.75).abs() < 1e-3, "{:?}", v.presented_time());
+
+    // Multi-frame backward step from frame 3 to frame 1 (0.25 s).
+    v.step(-2);
+    assert!(!pull(0.0));
+    assert!((v.presented_time().unwrap() - 0.25).abs() < 1e-3, "{:?}", v.presented_time());
+
+    // Seeking to the middle of frame 2 (0.6 s): time() reports 0.6 while presented_time() reports 0.5.
+    v.seek(0.6);
+    assert!(!pull(0.0));
+    assert!((v.time() - 0.6).abs() < 1e-6, "{}", v.time());
+    assert!((v.presented_time().unwrap() - 0.5).abs() < 1e-3, "{:?}", v.presented_time());
+
+    // Stepping while playing pauses playback and advances one frame to frame 3 (0.75 s).
+    v.play();
+    assert!(pull(0.0));
+    v.step(1);
+    assert!(!v.is_playing());
+    assert!(!pull(0.5), "paused after step requests no further frames");
+    assert!((v.presented_time().unwrap() - 0.75).abs() < 1e-3, "{:?}", v.presented_time());
+
+    // step(0) while playing pauses without moving off the current frame.
+    v.play();
+    assert!(pull(0.5));
+    v.step(0);
+    assert!(!v.is_playing());
+    assert!(!pull(0.6));
+    assert!((v.presented_time().unwrap() - 0.75).abs() < 1e-3, "{:?}", v.presented_time());
+    });
 }
 
 /// The parked list is process-wide: these tests take turns so each sees only its own clips.
@@ -287,7 +539,7 @@ fn virtual_time_loops_rates_and_seeks() {
     c.advance_virtual(0.6);
     assert!((c.time - 0.2).abs() < 1e-9, "1.2 s wraps to 0.2: {}", c.time);
     assert!(c.playing());
-    step(&mut c, Event::Seek(0.75));
+    step(&mut c, Event::Seek { to: 0.75, exact: true });
     c.advance_virtual(5.0);
     assert_eq!(c.time, 0.75);
     c.advance_virtual(5.1);
@@ -310,7 +562,7 @@ fn playing_after_the_end_restarts_from_zero() {
     assert_eq!(v.state(), PlayerState::Ended);
     v.play();
     let c = v.shared.ctl.lock().unwrap();
-    assert_eq!(c.seek, Some(0.0));
+    assert_eq!(c.pending, Some(Pending::Seek(Seek::exact(0.0))));
     assert!(c.playing());
 }
 
@@ -439,7 +691,7 @@ fn serve_with_auth(body: Vec<u8>, content_type: &'static str) -> (String, Arc<st
                     }
                     if !authorized {
                         count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        let _ = stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n");
+                        stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n").ok();
                         continue;
                     }
                     let len = body.len();
@@ -504,7 +756,7 @@ fn preload_decodes_the_first_frame_before_anything_draws_it() {
     assert_eq!(macos::test_poster(&v.shared), None);
     // Preload is a no-op headless (frames decode as they draw), so call the backend directly.
     macos::preload(&v.shared);
-    let start = std::time::Instant::now();
+    let start = rune_core::time::now();
     while macos::test_poster(&v.shared).is_none() && start.elapsed() < std::time::Duration::from_secs(10) {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -513,4 +765,58 @@ fn preload_decodes_the_first_frame_before_anything_draws_it() {
     let audio = Player::audio(sound("silence.wav"));
     macos::preload(&audio.shared);
     assert_eq!(macos::test_poster(&audio.shared), None, "audio has no poster to warm");
+}
+
+/// Exercises the synchronous headless virtual-clock (`Clock::Virtual`) path across exact seeks
+/// spanning the full width of each frame followed by `Player::step`. Display playback paths
+/// (`Clock::Display`) are verified separately in `tests/step_after_seek_macos.rs` and
+/// `tests/step_after_seek_windows.rs`.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[test]
+fn headless_step_after_exact_seek_uses_presented_frame_across_whole_frame_width() {
+    run_with_timeout("headless_step_after_exact_seek_uses_presented_frame_across_whole_frame_width", std::time::Duration::from_secs(20), || {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../rune/tests/fixtures/rgbw.mp4");
+    let v = Video::file(path);
+    let wake = rune_core::live::Wake::new(Arc::new(|| {}));
+    let pull = |clock: f64| v.shared.pull(v.surface(), Clock::Virtual(clock), &wake).active;
+    assert!(!pull(0.0));
+    let tick = 1.0 / 16_384.0;
+    for (seek_t, from_pts, delta, want_pts) in [
+        (0.00, 0.00, 1, 0.25),
+        (0.06, 0.00, 1, 0.25),
+        (0.125, 0.00, 1, 0.25),
+        (0.18, 0.00, 1, 0.25),
+        (0.25 - tick, 0.00, 1, 0.25),
+        (0.25, 0.25, -1, 0.00),
+        (0.43, 0.25, 1, 0.50),
+        (0.43, 0.25, -1, 0.00),
+        (0.50 - tick, 0.25, 1, 0.50),
+        (0.50 - tick, 0.25, -1, 0.00),
+        (0.68, 0.50, 1, 0.75),
+        (0.68, 0.50, -1, 0.25),
+        (0.93, 0.75, -1, 0.50),
+        (1.00 - tick, 0.75, -1, 0.50),
+    ] {
+        v.seek(seek_t);
+        assert!(!pull(0.0));
+        let pts = v.presented_time().unwrap();
+        assert!((pts - from_pts).abs() < 1e-3, "seek({seek_t}): got {pts}, want {from_pts}");
+        v.step(delta);
+        assert!(!pull(0.0));
+        let after = v.presented_time().unwrap();
+        assert!((after - want_pts).abs() < 1e-3, "seek({seek_t}) then step({delta:+}): got {after}, want {want_pts}");
+    }
+    // First and last frame clamps after seeking into the second half of frame 0 / frame 3.
+    v.seek(0.18);
+    assert!(!pull(0.0));
+    v.step(-1);
+    assert!(!pull(0.0));
+    assert!(v.presented_time().unwrap().abs() < 1e-3);
+
+    v.seek(0.93);
+    assert!(!pull(0.0));
+    v.step(1);
+    assert!(!pull(0.0));
+    assert!((v.presented_time().unwrap() - 0.75).abs() < 1e-3);
+    });
 }

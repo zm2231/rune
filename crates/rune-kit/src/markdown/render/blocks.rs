@@ -19,7 +19,7 @@ enum RenderFrame<'a> {
         after_heading: bool,
         last_dir: Option<rune::Direction>,
         col: El,
-        pending: Option<(String, f32, bool, Option<rune::Direction>)>,
+        pending: Option<(String, f32, bool, bool, Option<rune::Direction>)>,
     },
     Quote {
         quote_block: &'a Block,
@@ -142,7 +142,7 @@ impl Renderer {
                         open_tail: false,
                         allow_memo: false,
                         idx: 0,
-                        col: col().role("list").w_full(),
+                        col: list_container(*start),
                         pending_item: None,
                     }],
                     dirs,
@@ -166,8 +166,9 @@ impl Renderer {
             match top_frame {
                 RenderFrame::Blocks { blocks, pre, maps, names, top_level, in_item, open_tail, allow_memo, idx, prev_mb, after_heading, last_dir, col: cur_col, pending } => {
                     if let Some(child_el) = ret.take() {
-                        let (key, top, prose, own) = pending.take().unwrap();
+                        let (key, top, prose, cap_prose, own) = pending.take().unwrap();
                         let drawn = if prose { bidi::directed(child_el, own.or(*last_dir)) } else { child_el };
+                        let drawn = cap_prose_width(drawn, self.s.prose_width.filter(|_| cap_prose));
                         if own.is_some() { *last_dir = own; }
                         *cur_col = std::mem::replace(cur_col, el()).child(drawn.key(key).mt(top));
                         continue;
@@ -201,6 +202,7 @@ impl Renderer {
                         if i > 0 { self.flow.set(Flow { lead: None, ..self.flow.get() }); }
                         let own = dirs.of(b);
                         let prose = !matches!(b, Block::Code(_) | Block::Diff(_) | Block::Mermaid(_) | Block::Image { .. } | Block::Rule);
+                        let cap_prose = *top_level && is_prose_block(b);
                         let dir = prose.then(|| own.or(*last_dir)).flatten();
                         let map = maps_slice.get(i).unwrap_or(EMPTY);
                         let pb = pre_slice.and_then(|ps| ps.get(i)).map(Rc::as_ref);
@@ -210,7 +212,7 @@ impl Renderer {
                         if can_memo_here {
                             let (src_at, src_n) = (self.next_source.get(), pb.map_or_else(|| memo::source_count(b), |p| p.src_n as usize));
                             let (task_at, task_n) = (self.next_task.get(), pb.map_or_else(|| memo::task_count(b), |p| p.task_n as usize));
-                            if let Some(digest) = self.settled_block_digest(b, pb, map, &key, top, dir, (src_at, src_n), (task_at, task_n)) {
+                            if let Some(digest) = self.settled_block_digest(b, pb, map, &key, top, dir, cap_prose, (src_at, src_n), (task_at, task_n)) {
                                 let key_c = key.clone();
                                 let cached_el = rune::memo::cached(digest, || {
                                     memo::note_block_build();
@@ -221,7 +223,7 @@ impl Renderer {
                                     debug_assert_eq!(self.next_source.get(), src_at + src_n);
                                     debug_assert_eq!(self.next_task.get(), task_at + task_n);
                                     let drawn = if prose { bidi::directed(child_el, dir) } else { child_el };
-                                    drawn.key(key_c).mt(top)
+                                    cap_prose_width(drawn, self.s.prose_width.filter(|_| cap_prose)).key(key_c).mt(top)
                                 });
                                 self.next_source.set(src_at + src_n);
                                 self.next_task.set(task_at + task_n);
@@ -233,7 +235,7 @@ impl Renderer {
                         let am = *allow_memo;
                         match b {
                             Block::Quote(inner) => {
-                                *pending = Some((key, top, prose, own));
+                                *pending = Some((key, top, prose, cap_prose, own));
                                 let inner_maps = match map { BlockMap::Quote(m) => m.as_slice(), _ => &[][..] };
                                 let q = self.s.quote;
                                 let saved = self.flow.get();
@@ -245,7 +247,7 @@ impl Renderer {
                                 break;
                             }
                             Block::List { start, items } => {
-                                *pending = Some((key, top, prose, own));
+                                *pending = Some((key, top, prose, cap_prose, own));
                                 let item_maps = match map { BlockMap::List(m) => m.as_slice(), _ => &[][..] };
                                 let saved = self.flow.get();
                                 let indent = match self.s.list_nested {
@@ -253,13 +255,14 @@ impl Renderer {
                                     _ => self.s.list_indent,
                                 };
                                 let space = if self.s.list_outside { rune::text::measure("x x", &[], self.s.body, None).0 - rune::text::measure("xx", &[], self.s.body, None).0 } else { 0.0 };
-                                stack.push(RenderFrame::List { list_block: b, start: *start, items, pre_items: pb.map(|p| &*p.items), item_maps, saved_flow: saved, indent, space, open_tail: child_open_tail, allow_memo: am, idx: 0, col: col().role("list").w_full(), pending_item: None });
+                                stack.push(RenderFrame::List { list_block: b, start: *start, items, pre_items: pb.map(|p| &*p.items), item_maps, saved_flow: saved, indent, space, open_tail: child_open_tail, allow_memo: am, idx: 0, col: list_container(*start), pending_item: None });
                                 descended = true;
                                 break;
                             }
                             _ => {
                                 let child_el = self.leaf_block(b, pb, map);
                                 let drawn = if prose { bidi::directed(child_el, dir) } else { child_el };
+                                let drawn = cap_prose_width(drawn, self.s.prose_width.filter(|_| cap_prose));
                                 if own.is_some() { *last_dir = own; }
                                 *cur_col = std::mem::replace(cur_col, el()).child(drawn.key(key).mt(top));
                             }
@@ -278,7 +281,7 @@ impl Renderer {
                     let quote = bidi::directed(
                         row().role("blockquote").w_full()
                             .child(el().w(q.width).h_full().radius((q.width / 2.0).min(1.0)).fill(self.s.quote_rule))
-                            .child(drawn.grow(1.0).shrink().pl(q.pad)),
+                            .child(drawn.shrink().pl(q.pad)),
                         dirs.of(quote_block),
                     );
                     ret = Some(match &self.quote_frame {
@@ -296,16 +299,17 @@ impl Renderer {
                         let (k, gap_mt, task, is_deep_tail) = pending_item.take().unwrap();
                         if is_deep_tail {
                             *list_col = std::mem::replace(list_col, el()).child(
-                                row().key(format!("i{k}")).w_full().mt(gap_mt).pl(*indent).child(item_body.grow(1.0).shrink()),
+                                row().key(format!("i{k}")).w_full().mt(gap_mt).pl(*indent).child(item_body.shrink()),
                             );
                         } else if let Some((checked, marker_offset)) = task {
                             *list_col = std::mem::replace(list_col, el()).child(self.task_item_body((k, real_n), *indent, &items[k], item_body, marker_offset, checked).mt(gap_mt));
                         } else {
-                            let marker = self.list_marker(*start, k, *indent, *space);
+                            let marker = self.with_reveal(self.list_marker(*start, k, *indent, *space));
+                            let marker = if start.is_some() { marker.role("list-marker") } else { marker.a11y_hidden() };
                             *list_col = std::mem::replace(list_col, el()).child(
                                 row().key(format!("i{k}")).role("listitem").position_in_set(k + 1, real_n).w_full().mt(gap_mt)
-                                    .child(self.with_reveal(marker).a11y_hidden())
-                                    .child(item_body.grow(1.0).shrink()),
+                                    .child(marker)
+                                    .child(item_body.shrink()),
                             );
                         }
                         continue;
@@ -340,7 +344,12 @@ impl Renderer {
                                 (None, Some(num)) => Lead::Number(num + k as u64),
                                 (None, None) => Lead::Bullet,
                             };
-                            self.flow.set(Flow { lists: sf.lists + 1, inset: sf.inset + ind, cols: sf.cols + lead.width(), lead: Some((sf.cols, lead, if k == 0 && sf.lists == 0 { 2 } else { 1 })), ..sf });
+                            let item_inset = if task.is_some() {
+                                ind.max(self.s.task.left + self.s.task.size)
+                            } else {
+                                ind
+                            };
+                            self.flow.set(Flow { lists: sf.lists + 1, inset: sf.inset + item_inset, cols: sf.cols + lead.width(), lead: Some((sf.cols, lead, if k == 0 && sf.lists == 0 { 2 } else { 1 })), ..sf });
                             if task.is_none() && am && !item_open_tail {
                                 let (src_at, src_n) = (self.next_source.get(), ipre.map_or_else(|| item.iter().map(memo::source_count).sum::<usize>(), |p| p.src_n as usize));
                                 let (task_at, task_n) = (self.next_task.get(), ipre.map_or_else(|| item.iter().map(memo::task_count).sum::<usize>(), |p| p.task_n as usize));
@@ -354,17 +363,18 @@ impl Renderer {
                                             vec![RenderFrame::Blocks { blocks: item, pre: ipre.map(|p| &*p.inner), maps: imap, names: rendered_keys(item.len(), &[]), top_level: false, in_item: true, open_tail: false, allow_memo: false, idx: 0, prev_mb: 0.0, after_heading: false, last_dir: None, col: col().w_full(), pending: None }],
                                             dirs,
                                             &mut sub_qpc,
-                                        ).grow(1.0).shrink();
+                                        ).shrink();
                                         debug_assert_eq!(self.next_source.get(), src_at + src_n);
                                         debug_assert_eq!(self.next_task.get(), task_at + task_n);
                                         b
                                     });
                                     self.next_source.set(src_at + src_n);
                                     self.next_task.set(task_at + task_n);
-                                    let marker = self.list_marker(st, k, ind, sp);
+                                    let marker = self.with_reveal(self.list_marker(st, k, ind, sp));
+                                    let marker = if st.is_some() { marker.role("list-marker") } else { marker.a11y_hidden() };
                                     *list_col = std::mem::replace(list_col, el()).child(
                                         row().key(format!("i{k}")).role("listitem").position_in_set(k + 1, real_n).w_full().mt(gap_mt)
-                                            .child(self.with_reveal(marker).a11y_hidden())
+                                            .child(marker)
                                             .child(body),
                                     );
                                     continue;
@@ -421,7 +431,7 @@ impl Renderer {
             .focusable(interactive)
             .w_full()
             .child(control)
-            .child(item_body.grow(1.0).shrink());
+            .child(item_body.shrink());
         if let Some(on_task) = self.on_task.as_ref().filter(|_| !self.tasks_read_only) {
             let block_key = self.current_block_key.borrow().clone();
             r = on_task(r.cursor(Cursor::Pointer), block_key, item_idx, !checked);
@@ -435,7 +445,10 @@ impl Renderer {
             el().w(indent).h(s.body.line_px()).child(el().outside_list_disc(s.body).fill(s.muted))
         } else {
             let words = start.map_or_else(|| "•".into(), |num| format!("{}.", num + k as u64));
-            let marker = text(words).font(s.body).color(s.muted).exact_lines().w(indent);
+            // CSS Lists Level 3 / Blink UA stylesheet sets `::marker { font-variant-numeric: tabular-nums; }`
+            // so `1.` aligns with `2.` and `3.`.
+            let font = if start.is_some() { TextStyle { features: table::with_tnum(s.body.features), ..s.body } } else { s.body };
+            let marker = text(words).font(font).color(s.muted).exact_lines().w(indent);
             if s.list_outside { marker.align(Align::End).pr(space) } else { marker.align(Align::Center) }
         }
     }
@@ -450,7 +463,7 @@ impl Renderer {
             _ => None,
         };
         let code_map = match map {
-            BlockMap::Code(m) => Some(m),
+            BlockMap::Code(m) | BlockMap::Diff { map: m, .. } => Some(m),
             _ => None,
         };
         match b {
@@ -460,21 +473,73 @@ impl Renderer {
                 let n = self.next_source.get();
                 self.next_source.set(n + 1);
                 let source = self.sources.get(n).filter(|src| src.len == code.len());
-                match &self.code_frame {
+                #[cfg(feature = "math")]
+                if !source.is_some_and(|s| s.open)
+                    && crate::math::is_math_fence(source.and_then(|s| s.lang.as_deref()))
+                {
+                    let ink = self.flow.get().ink.unwrap_or(self.s.text);
+                    if let crate::math::MathStatus::Ready(rendered) =
+                        crate::math::poll_or_enqueue(code, self.s.body.size, ink, self.s.math_scale)
+                    {
+                        let avail = self.s.text_width.map(|w| (w - self.flow.get().inset).max(0.0));
+                        let digest = self.settled_math_card_digest(code, ink, avail, rendered.id);
+                        return rune::memo::cached(digest, || {
+                            memo::note_block_build();
+                            crate::math::view(code, &rendered, self.s.wide_fade, avail, self.scroll_wide)
+                        });
+                    }
+                }
+                let wrapped = self.wraps_code(n, code);
+                match self.code_frame.as_ref().and_then(|w| w.frame.as_ref()) {
                     Some(f) => {
-                        let card = match self.settled_code_card_digest(code, source, code_map) {
+                        let card = match self.settled_code_card_digest(code, source, code_map, wrapped) {
                             Some(digest) => rune::memo::cached(digest, || {
                                 memo::note_block_build();
-                                self.code(code, source, code_map).key("card")
+                                self.code(code, source, code_map, wrapped).key("card")
                             }),
-                            None => self.code(code, source, code_map).key("card"),
+                            None => self.code(code, source, code_map, wrapped).key("card"),
                         };
-                        f(card, &CodeFrame { index: n, source: code, language: source.and_then(|s| s.lang.as_deref()), open: source.is_some_and(|s| s.open) })
+                        f(card, &CodeFrame {
+                            index: n,
+                            source: code,
+                            language: source.and_then(|s| s.lang.as_deref()),
+                            open: source.is_some_and(|s| s.open),
+                            wrapped,
+                            digest: pre.map(|p| p.digest),
+                            font: self.s.code_block,
+                            text_width: self.s.text_width,
+                            inset: self.flow.get().inset,
+                            pad_x: self.s.code_block_pad[0],
+                        })
                     }
-                    None => self.code(code, source, code_map),
+                    None if self.code_frame.as_ref().is_some_and(|w| w.wrap.is_some()) => match self.settled_code_card_digest(code, source, code_map, wrapped) {
+                        Some(digest) => rune::memo::cached(digest, || {
+                            memo::note_block_build();
+                            self.code(code, source, code_map, wrapped)
+                        }),
+                        None => self.code(code, source, code_map, wrapped),
+                    },
+                    None => self.code(code, source, code_map, wrapped),
                 }
             }
-            Block::Diff(src) => self.diff(src, code_map),
+            Block::Diff(src) => {
+                let n = self.next_diff.get();
+                self.next_diff.set(n + 1);
+                let open = matches!(map, BlockMap::Diff { open: true, .. });
+                match &self.diff_frame {
+                    Some(f) => {
+                        let card = match self.settled_diff_card_digest(src, open, code_map) {
+                            Some(digest) => rune::memo::cached(digest, || {
+                                memo::note_block_build();
+                                self.diff(src, code_map).key("card")
+                            }),
+                            None => self.diff(src, code_map).key("card"),
+                        };
+                        f(card, &DiffFrame { index: n, source: src, open })
+                    }
+                    None => self.diff(src, code_map),
+                }
+            }
             Block::Mermaid(src) => {
                 let n = self.next_source.get();
                 self.next_source.set(n + 1);
@@ -492,6 +557,25 @@ impl Renderer {
             Block::Rule => el().w_full().h(0.5).fill(s.rule),
             Block::List { .. } | Block::Quote(_) => unreachable!(),
         }
+    }
+}
+
+fn list_container(start: Option<u64>) -> El {
+    let c = col().role("list").w_full();
+    match start {
+        Some(n) => c.list_start(n),
+        None => c,
+    }
+}
+
+fn is_prose_block(b: &Block) -> bool {
+    matches!(b, Block::Para(_) | Block::Heading(..) | Block::List { .. } | Block::Quote(_))
+}
+
+fn cap_prose_width(el: El, width: Option<f32>) -> El {
+    match width {
+        Some(w) => el.max_w(w),
+        None => el,
     }
 }
 

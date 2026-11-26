@@ -26,7 +26,7 @@
 //!   `version`. For a text field that's the
 //!   `TextEdit` itself, which hashes its text, selection, composition and focus.
 //! - **`Cx` reads.** `Cx::layout`, `Cx::layout_with`, `Cx::layout_size`, `Cx::window_layout`,
-//!   `Cx::window_layout_with` and `Cx::caret` called inside the closure are recorded with
+//!   `Cx::window_layout_with`, `Cx::anchor_placement`, `Cx::caret`, `Cx::selection_rects` and `Cx::field_selection_rects` called inside the closure are recorded with
 //!   what they returned. A reuse counts them as read
 //!   again, so the view still re-runs when they move, and builds again when one returns
 //!   something else. They needn't be in `version`.
@@ -41,7 +41,8 @@
 //! The id names the subtree within the window, so it must be unique among the memos of one
 //! view build (a message id, say). A memo inside another's closure is named within it, so
 //! `memo("b0", ..)` inside each message's memo doesn't collide. A second memo with an id
-//! already used in the same build just builds, uncached.
+//! already used in the same build just builds, uncached, and warns once per call site in debug
+//! builds (`RUNE_PERF_WARN=0` silences it).
 //!
 //! Layout isn't stored: a reused subtree still lays out each commit it is mounted, but Taffy
 //! keeps each unchanged node's measured size, so this is cheap while width and constraints hold.
@@ -52,7 +53,7 @@ use std::rc::Rc;
 
 use crate::El;
 use crate::runtime::HashMap;
-use crate::runtime::layout_read::{LayoutRects, SELECTION, note_read};
+use crate::runtime::layout_read::{LayoutRects, SELECTION, anchor_key, field_selection_key, note_read};
 
 mod built;
 mod reads;
@@ -67,13 +68,16 @@ pub(crate) use built::Shared;
 pub(crate) use built::has_focused_input;
 pub(crate) use reads::Reads;
 pub(crate) use reads::Replayed;
+pub(crate) use reads::read_anchor_placement;
 pub(crate) use reads::read_caret;
+pub(crate) use reads::read_field_selection;
 pub(crate) use reads::read_layout;
 pub(crate) use reads::read_layout_with;
 pub(crate) use reads::read_selection;
 pub(crate) use reads::recording;
 use reads::{Read, Seen, dedup_states};
 
+pub use reads::anchor_placement;
 pub use reads::layout;
 pub use reads::layout_size;
 pub use reads::layout_with;
@@ -126,6 +130,37 @@ impl MemoCache {
         self.present_len = 0;
     }
 
+    pub(crate) fn rest(&mut self) {
+        fn shrink_vec<T>(v: &mut Vec<T>, floor: usize) {
+            let cap = (v.len().saturating_mul(2)).max(floor);
+            if v.capacity() > cap { v.shrink_to(cap); }
+        }
+        fn shrink_map<K: Eq + std::hash::Hash, V, S: std::hash::BuildHasher>(m: &mut std::collections::HashMap<K, V, S>, floor: usize) {
+            let cap = (m.len().saturating_mul(2)).max(floor);
+            if m.capacity() > cap { m.shrink_to(cap); }
+        }
+        shrink_map(&mut self.entries, 64);
+        shrink_map(&mut self.flattened, 64);
+        self.pending_scratch.clear();
+        self.reused_scratch.clear();
+        self.skip_scratch.clear();
+        self.split_scratch.clear();
+        self.taken_paths_scratch.clear();
+        self.path_scratch.clear();
+        self.id_scratch.clear();
+        self.pure_counts.clear();
+        self.nested_scratch.clear();
+        shrink_vec(&mut self.pending_scratch, 32);
+        shrink_vec(&mut self.reused_scratch, 32);
+        shrink_vec(&mut self.skip_scratch, 32);
+        shrink_vec(&mut self.split_scratch, 64);
+        shrink_vec(&mut self.taken_paths_scratch, 32);
+        if self.path_scratch.capacity() > 256 { self.path_scratch.shrink_to(256); }
+        if self.id_scratch.capacity() > 256 { self.id_scratch.shrink_to(256); }
+        shrink_map(&mut self.pure_counts, 32);
+        shrink_vec(&mut self.nested_scratch, 32);
+    }
+
     /// No memos, counting passes on from this cache's, for a build that must start from scratch.
     #[cfg(feature = "hot")]
     pub(crate) fn emptied(&self) -> MemoCache {
@@ -169,7 +204,7 @@ impl MemoCache {
 
 impl crate::runtime::RuntimeCore {
     pub(crate) fn invalidate_memos_by_prefix(&mut self, prefix: &str) {
-        self.commit.memo.evict_prefix(prefix);
+        self.commit.evict_memo_prefix(prefix);
         self.invalidate();
     }
 }
@@ -214,8 +249,9 @@ pub(crate) fn enter(
     env: crate::Env,
     accent: crate::SystemAccent,
     reduced_motion: bool,
+    languages_gen: u64,
     srgb_blend: bool,
-    chrome: [u32; 9],
+    chrome: [u32; 5],
     caret: Option<(String, [f32; 4])>,
     layout: LayoutRects,
 ) -> Guard {
@@ -224,10 +260,10 @@ pub(crate) fn enter(
     let accent = [accent.accent(env.system_dark), accent.focus(env.system_dark)].map(|c| [c.r, c.g, c.b, c.a].map(f32::to_bits));
     let scale = env.scale;
     // Theme colours resolve per blend mode (`theme::blends_srgb`), so a switch rebuilds memos.
-    // So does a change to what the window's controls take (`Cx::chrome_insets`), and to the icon
-    // swap, whose icons can take another size (`text::set_icon_swap_size`).
+    // So does a change to what the window's controls take (`Cx::chrome_insets`), to the icon
+    // swap (`text::set_icon_swap_size`), and to overridden languages (`Runtime::set_languages`).
     let icons = crate::text::icon::swap_state();
-    let env = hash_of(&(env.system_dark, scale.to_bits(), reduced_motion, accent, crate::platform::scroll_bars::scoped(), srgb_blend, chrome, icons));
+    let env = hash_of(&(env.system_dark, scale.to_bits(), reduced_motion, languages_gen, accent, crate::platform::scroll_bars::scoped(), srgb_blend, chrome, icons));
     let scope = Scope {
         cache,
         env,
@@ -282,8 +318,9 @@ pub(crate) fn enter_partial(
     env: crate::Env,
     accent: crate::SystemAccent,
     reduced_motion: bool,
+    languages_gen: u64,
     srgb_blend: bool,
-    chrome: [u32; 9],
+    chrome: [u32; 5],
     caret: Option<(String, [f32; 4])>,
     layout: LayoutRects,
 ) -> Guard {
@@ -300,7 +337,7 @@ pub(crate) fn enter_partial(
         keep_nested_rows(&mut cache, &mut nested, next);
     }
     cache.nested_scratch = nested;
-    enter(cache, env, accent, reduced_motion, srgb_blend, chrome, caret, layout)
+    enter(cache, env, accent, reduced_motion, languages_gen, srgb_blend, chrome, caret, layout)
 }
 
 /// Ends the view build [`enter`] began; dropped without [`Guard::finish`] (a panicking view),
@@ -364,15 +401,29 @@ pub fn as_next_build<R>(f: impl FnOnce() -> R) -> R {
 /// environment) differs from the last build's. Otherwise `build` isn't called and the
 /// previous subtree is reused, with the same node ids and state.
 ///
-/// ```ignore
-/// col().growth(GrowthSpec::default()).virtualize(72.0).children(s.messages.iter().map(|m| {
-///     memo(format!("msg-{}", m.id), (m.revision, s.theme), || message_view(m))
-/// }))
+/// ```no_run
+/// # use rune::{El, GrowthSpec, ScrollSpec, col, memo, text};
+/// # struct Message { id: String, revision: u64, body: String }
+/// # struct App { messages: Vec<Message>, theme: u64 }
+/// # fn message_view(m: &Message) -> El { text(&m.body) }
+/// # fn view(s: &App) -> El {
+/// col().scroll(ScrollSpec { stick_bottom: true }).grow(1.0).child(
+///     col().key("rows").growth(GrowthSpec::default()).virtual_rows(
+///         s.messages.len(),
+///         72.0,
+///         |s: &App, i| s.messages[i].id.as_str().into(),
+///         |s: &App, i| {
+///             let m = &s.messages[i];
+///             memo(format!("msg-{}", m.id), (m.revision, s.theme), || message_view(m))
+///         },
+///     ),
+/// )
+/// # }
 /// ```
 ///
 /// Anything the closure reads that can change belongs in `version`, apart from `Cx::layout`,
 /// `Cx::layout_with`, `Cx::layout_size` and `Cx::caret`, which are tracked; see the
-/// [module docs](crate::memo) for handlers, live values and what else invalidates. Outside a view (a test calling a view function directly)
+/// [module docs](mod@crate::memo) for handlers, live values and what else invalidates. Outside a view (a test calling a view function directly)
 /// it just builds.
 #[inline]
 #[cfg_attr(debug_assertions, track_caller)]
@@ -428,7 +479,9 @@ fn memo_inner(key: String, version: u64, region: bool, build: &mut dyn FnMut() -
                         Read::Caret(..) => s.replayed.caret = true,
                         Read::Layout(k, _) => note_read(&mut s.replayed.layout, k, None),
                         Read::LayoutWith(k, same, _) => note_read(&mut s.replayed.layout, k, Some(same.clone())),
+                        Read::AnchorPlacement(k, _) => note_read(&mut s.replayed.layout, &anchor_key(k), None),
                         Read::Selection(_) => note_read(&mut s.replayed.layout, SELECTION, None),
+                        Read::FieldSelection(k, _) => note_read(&mut s.replayed.layout, &field_selection_key(k), None),
                         Read::State(..) => {}
                     }
                 }
@@ -465,6 +518,10 @@ fn memo_inner(key: String, version: u64, region: bool, build: &mut dyn FnMut() -
         Step::Plain => return keyed(build(), key),
         Step::Build { id, version, store } => (id, version, store),
     };
+    #[cfg(debug_assertions)]
+    if !store {
+        crate::tooling::perf_warn::memo_id_reused(&id, std::panic::Location::caller());
+    }
     // A region's `Tracked` reads join its reads; a memo's closure records none of its own (a
     // region inside it still does, and they reach it as any nested read does).
     let (el, states) = if region {
@@ -515,7 +572,9 @@ fn report_miss(key: &str, same_version: bool, reads: &[Read], seen: &Seen) {
         Read::State(id, v) => format!("state {id} v{v}"),
         Read::Layout(k, _) | Read::LayoutWith(k, _, _) => format!("layout {k}"),
         Read::Caret(k, _) => format!("caret {k}"),
+        Read::AnchorPlacement(k, _) => format!("anchor_placement {k}"),
         Read::Selection(_) => "selection".into(),
+        Read::FieldSelection(k, _) => format!("field_selection {k}"),
     };
     eprintln!("rune-miss {key} {why}");
 }
@@ -559,7 +618,7 @@ fn cached_inner((h1, h2): (u64, u64), build: &mut dyn FnMut() -> El) -> El {
                 s.cache.id_scratch.push_str(p);
                 s.cache.id_scratch.push('/');
             }
-            let _ = write!(s.cache.id_scratch, "\0{}:{h1:016x}:{h2:016x}:{occ}", s.virtual_row);
+            write!(s.cache.id_scratch, "\0{}:{h1:016x}:{h2:016x}:{occ}", s.virtual_row).ok();
         }
         let pass = s.cache.pass;
         let has_parent = !s.nested.is_empty();
@@ -576,7 +635,9 @@ fn cached_inner((h1, h2): (u64, u64), build: &mut dyn FnMut() -> El) -> El {
                     Read::Caret(..) => s.replayed.caret = true,
                     Read::Layout(k, _) => note_read(&mut s.replayed.layout, k, None),
                     Read::LayoutWith(k, same, _) => note_read(&mut s.replayed.layout, k, Some(same.clone())),
+                    Read::AnchorPlacement(k, _) => note_read(&mut s.replayed.layout, &anchor_key(k), None),
                     Read::Selection(_) => note_read(&mut s.replayed.layout, SELECTION, None),
+                    Read::FieldSelection(k, _) => note_read(&mut s.replayed.layout, &field_selection_key(k), None),
                     Read::State(..) => {}
                 }
             }

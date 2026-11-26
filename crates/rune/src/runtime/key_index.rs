@@ -75,6 +75,19 @@ impl KeyIndex {
         (self.built == Some(NodesId::of(nodes, commit))).then_some(self)
     }
 
+    pub(super) fn rest(&mut self) {
+        self.built = None;
+        self.seen = None;
+        self.keys.clear();
+        self.next_key.clear();
+        self.marks.clear();
+        self.mark_chain.clear();
+        if self.keys.capacity() > 64 { self.keys.shrink_to(0); }
+        if self.next_key.capacity() > 64 { self.next_key.shrink_to(0); }
+        if self.marks.capacity() > 64 { self.marks.shrink_to(0); }
+        if self.mark_chain.capacity() > 64 { self.mark_chain.shrink_to(0); }
+    }
+
     /// The nodes changed under the same commit.
     pub(super) fn forget(&mut self) {
         self.built = None;
@@ -141,13 +154,14 @@ pub(super) fn scan_first(nodes: &[Node], selector: &str) -> Option<usize> {
 
 impl RuntimeCore {
     /// The kept index, when `nodes` are the current nodes it describes.
+    #[inline]
     pub(super) fn key_index_for(&self, nodes: &[Node]) -> Option<&KeyIndex> {
-        self.tree.key_index.get(nodes, self.commit.commit_gen)
+        self.tree.key_index_for(nodes, self.commit.commit_gen())
     }
 
     /// `self.nodes` changed without a commit: kept per-node answers no longer hold.
+    #[inline]
     pub(super) fn nodes_replaced(&mut self) {
-        self.tree.key_index.forget();
-        self.tree.exit_mask.forget();
+        self.tree.nodes_replaced();
     }
 }

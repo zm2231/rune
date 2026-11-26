@@ -9,17 +9,38 @@
 //! Return opens, and typing a name jumps to it. With [`TreeModel::multi_select`], Shift extends
 //! the selection and Cmd-A selects every row.
 //!
-//! ```ignore
-//! struct App { files: TreeModel<FileNode<Change>> }
+//! ```
+//! # use rune::{PointerPress, Tx};
+//! # use rune_kit::{FileNode, FileTree, Kit, Tree, TreeItem, TreeModel};
+//! # #[derive(Clone)] struct Change { path: String, added: u32, removed: u32 }
+//! # struct Diff;
+//! # impl Diff { fn show(&mut self, _: &str) {} }
+//! struct App {
+//!     files: TreeModel<FileNode<Change>>,
+//! #   diff: Diff,
+//! #   menu: Option<(String, PointerPress)>,
+//! }
+//! # let changes: Vec<Change> = Vec::new();
 //! let files = FileTree::new().build(changes.iter().map(|c| (c.path.as_str(), c.clone())));
+//! # let s = &App { files, diff: Diff, menu: None };
+//! # let kit = Kit::neutral(true);
 //! // In the view:
+//! # let _ =
 //! Tree::new(|s: &App| &s.files, |s: &mut App| &mut s.files, FileNode::label)
-//!     .row(|n, r| TreeItem::file(n, r).changes(n.data.as_ref().map_or((0, 0), |c| (c.added, c.removed))))
+//!     .row(|n, r| {
+//!         let (added, removed) = n.data.as_ref().map_or((0, 0), |c| (c.added, c.removed));
+//!         TreeItem::file(n, r).changes(added, removed)
+//!     })
 //!     .on_select(|s: &mut App, id, _| s.diff.show(id))
+//!     .on_menu(|s: &mut App, id, point, _| s.menu = Some((id.to_owned(), point)))
+//!     .scroll_bar(true)
 //!     .build(s, &kit)
 //!     .h(480.0)
+//! # ;
+//! # fn _follow(s: &mut App, path: &str, tx: &mut Tx) {
 //! // Following another view: open the folders above `path`, select it and scroll to it.
 //! s.files.reveal(path, tx);
+//! # }
 //! ```
 
 use std::cmp::Ordering;
@@ -45,7 +66,7 @@ pub enum TreeKey {
     Ignored,
     /// It moved the cursor, the selection or a folder.
     Handled,
-    /// Return or Space on a row without children: the app opens this id.
+    /// Return or Space on a leaf row: the app opens this id.
     Open(String),
 }
 
@@ -92,7 +113,27 @@ impl<T> TreeModel<T> {
     /// Adds `id` under `parent` (`None` for the top level), after its siblings. Returns false
     /// and adds nothing when `id` is already in the tree or `parent` isn't.
     pub fn insert(&mut self, parent: Option<&str>, id: impl Into<String>, data: T) -> bool {
-        if !self.meta.insert(parent, id.into()) {
+        if !self.meta.insert(parent, id.into(), false) {
+            return false;
+        }
+        self.data.push(data);
+        true
+    }
+
+    /// Adds `id` under `parent` (`None` for the top level) as a branch, even when it has no
+    /// children yet (an unloaded or empty folder). Returns false and adds nothing when `id` is
+    /// already in the tree or `parent` isn't.
+    ///
+    /// ```
+    /// use rune_kit::TreeModel;
+    ///
+    /// let mut tree = TreeModel::new();
+    /// assert!(tree.insert_branch(None, "src", "src"));
+    /// assert!(tree.is_branch("src"));
+    /// assert_eq!(tree.row(0).unwrap().1.expanded, Some(false));
+    /// ```
+    pub fn insert_branch(&mut self, parent: Option<&str>, id: impl Into<String>, data: T) -> bool {
+        if !self.meta.insert(parent, id.into(), true) {
             return false;
         }
         self.data.push(data);
@@ -114,6 +155,31 @@ impl<T> TreeModel<T> {
     /// `id`'s children in order, or the top-level nodes for `None`.
     pub fn children(&self, id: Option<&str>) -> impl Iterator<Item = &str> { self.meta.children(id) }
     pub fn has_children(&self, id: &str) -> bool { self.meta.has_children(id) }
+    /// Marks `id` as a branch (`true`) or leaf (`false`) when it has no children. A node with
+    /// children remains a branch even if `branch` is `false`.
+    ///
+    /// ```
+    /// use rune_kit::TreeModel;
+    ///
+    /// let mut tree = TreeModel::new();
+    /// tree.insert(None, "empty", "empty");
+    /// tree.set_branch("empty", true);
+    /// assert!(tree.is_branch("empty"));
+    /// ```
+    pub fn set_branch(&mut self, id: &str, branch: bool) { self.meta.set_branch(id, branch); }
+    /// Whether `id` is a branch: marked as one with [`Self::insert_branch`] or
+    /// [`Self::set_branch`], or having children.
+    ///
+    /// ```
+    /// use rune_kit::TreeModel;
+    ///
+    /// let mut tree = TreeModel::new();
+    /// tree.insert_branch(None, "dir", "dir");
+    /// tree.insert(None, "file", "file");
+    /// assert!(tree.is_branch("dir"));
+    /// assert!(!tree.is_branch("file"));
+    /// ```
+    pub fn is_branch(&self, id: &str) -> bool { self.meta.is_branch(id) }
     /// 0 at the top level.
     pub fn depth(&self, id: &str) -> Option<u32> { self.meta.depth(id) }
     /// The data of `id` and everything under it, depth first.
@@ -204,7 +270,8 @@ pub struct TreeRow<'a> {
     pub id: &'a str,
     /// 0 at the top level.
     pub depth: u32,
-    /// `Some(open)` for a row with children (shown ones, under a filter), `None` for a leaf.
+    /// `Some(open)` for a branch (a node marked as a branch or with children; under a filter,
+    /// one with shown children), `None` for a leaf.
     pub expanded: Option<bool>,
     pub selected: bool,
     /// The keyboard cursor is on it.

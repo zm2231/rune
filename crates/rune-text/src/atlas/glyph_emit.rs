@@ -19,7 +19,7 @@ impl TextSystem {
     /// `ink_spans` holds sorted, non-overlapping intervals (`set_ink_spans`), so forward glyph
     /// walks step `cursor` in O(1) and jumps fall back to binary search.
     #[inline]
-    pub(super) fn ink_at(&self, byte: u32, cursor: &mut usize) -> u16 {
+    pub(super) fn ink_at(&self, byte: u32, cursor: &mut usize) -> u32 {
         let spans = self.ink_spans.as_slice();
         if let Some(&(a, b, ink)) = spans.get(*cursor) && byte >= a {
             if byte < b {
@@ -38,7 +38,7 @@ impl TextSystem {
         self.ink_search(byte, cursor)
     }
 
-    fn ink_search(&self, byte: u32, cursor: &mut usize) -> u16 {
+    fn ink_search(&self, byte: u32, cursor: &mut usize) -> u32 {
         let spans = self.ink_spans.as_slice();
         let i = spans.partition_point(|&(a, _, _)| a <= byte);
         if i == 0 {
@@ -112,6 +112,10 @@ impl TextSystem {
             let mut gi = 0usize;
             for item in line.items() {
                 let PositionedLayoutItem::GlyphRun(glyph_run) = item else { continue };
+                if crate::is_hidden_size(glyph_run.run().font_size()) {
+                    gi += if need_bytes { glyph_run.glyphs().count() } else { 0 };
+                    continue;
+                }
                 let face = Face::of(&glyph_run, &mut coords);
                 let baseline = (origin[1] + face.baseline * k).round();
                 let mut rel = glyph_run.offset();
@@ -135,6 +139,44 @@ impl TextSystem {
         }
         self.cluster_scratch = table;
         self.coords_scratch = coords;
+    }
+
+    /// Glyph quads for a shaper-verified tabular-digit `LiveText` value, matching
+    /// [`Self::glyphs_in_band`] bit-for-bit without re-walking or reshaping Parley runs.
+    #[allow(clippy::too_many_arguments)]
+    #[doc(hidden)]
+    pub fn glyphs_for_tabular(
+        &mut self,
+        tabular: &TabularGlyphs,
+        origin: [f32; 2],
+        k: f32,
+        bytes: bool,
+        band: std::ops::Range<f32>,
+        out: &mut Vec<GlyphQuad>,
+    ) {
+        let tpl = &tabular.template;
+        if (band.start > 0.0 && tpl.block_max < band.start) || tpl.block_min > band.end {
+            return;
+        }
+        let mut cursor = 0usize;
+        for slot in &tpl.slots {
+            let f = &tpl.faces[slot.face as usize];
+            let baseline = (origin[1] + f.face.baseline * k).round();
+            let ink = if self.ink_spans.is_empty() { 0 } else { self.ink_at(slot.byte, &mut cursor) };
+            let byte = if bytes { slot.byte } else { 0 };
+            let at = if k == 1.0 {
+                [origin[0] + slot.rel + slot.x, baseline + slot.y]
+            } else {
+                [origin[0] + (slot.rel + slot.x) * k, baseline + slot.y * k]
+            };
+            let id = if slot.digit_slot == u8::MAX {
+                slot.glyph_id
+            } else {
+                let ds = slot.digit_slot as usize;
+                tpl.digit_glyphs[ds][tabular.digits[ds] as usize]
+            };
+            self.push_glyph(&f.face, &f.coords, id, at, k, ink, byte, out);
+        }
     }
 
     /// Glyph quads for the grapheme at byte `at` of a shaped run, with the run's top-left at
@@ -164,7 +206,7 @@ impl TextSystem {
 
     /// Rasterizes (once) and appends one glyph at device position `at`, `k` times its size.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn push_glyph(&mut self, face: &Face, coords: &[i16], glyph: u32, at: [f32; 2], k: f32, ink: u16, byte: u32, out: &mut Vec<GlyphQuad>) -> Placed {
+    pub(crate) fn push_glyph(&mut self, face: &Face, coords: &[i16], glyph: u32, at: [f32; 2], k: f32, ink: u32, byte: u32, out: &mut Vec<GlyphQuad>) -> Placed {
         #[cfg(target_arch = "wasm32")]
         if crate::fonts::platform_face::is(&face.font) {
             return self.push_platform_glyph(face, glyph, at, k, ink, byte, out);
@@ -337,7 +379,7 @@ impl TextSystem {
     /// (emoji). Asked for again each frame, as the glyph cache's phases are CoreGraphics'.
     #[cfg(target_arch = "wasm32")]
     #[allow(clippy::too_many_arguments)]
-    fn push_platform_glyph(&mut self, face: &Face, glyph: u32, at: [f32; 2], k: f32, ink: u16, byte: u32, out: &mut Vec<GlyphQuad>) -> Placed {
+    fn push_platform_glyph(&mut self, face: &Face, glyph: u32, at: [f32; 2], k: f32, ink: u32, byte: u32, out: &mut Vec<GlyphQuad>) -> Placed {
         let size = face.size * k;
         let quarters = (at[0] * 4.0).round();
         let fx = (quarters / 4.0).floor();
@@ -424,7 +466,7 @@ pub(crate) enum Placed {
 }
 
 /// The quad of atlas mask `a` for a pen at whole-pixel x `fx` and baseline `gy`.
-pub(crate) fn atlas_quad(a: AtlasGlyph, fx: f32, gy: f32, ink: u16, byte: u32) -> GlyphQuad {
+pub(crate) fn atlas_quad(a: AtlasGlyph, fx: f32, gy: f32, ink: u32, byte: u32) -> GlyphQuad {
     // A subpixel mask is three texels a pixel.
     let w = if a.lcd { a.w / 3 } else { a.w };
     GlyphQuad {
@@ -441,40 +483,27 @@ pub(crate) fn atlas_quad(a: AtlasGlyph, fx: f32, gy: f32, ink: u16, byte: u32) -
 /// Records coloured spans from `spans` into `out` as sorted, non-overlapping `(start, end, ink)`
 /// intervals where later spans win. Spans from `El` are already sorted and disjoint, so the
 /// common case is one linear pass with no allocation or sort.
-pub(crate) fn set_ink_spans(out: &mut Vec<(u32, u32, u16)>, spans: &[Span]) {
+pub(crate) fn set_ink_spans(out: &mut Vec<(u32, u32, u32)>, spans: &[Span]) {
     out.clear();
     let mut disjoint = true;
     let mut last_end = 0u32;
     for (i, s) in spans.iter().enumerate() {
         if s.start < s.end && s.color.is_some() {
+            let Some(ink) = i.checked_add(1).and_then(|n| u32::try_from(n).ok()) else {
+                break;
+            };
             if s.start < last_end {
                 disjoint = false;
             }
             last_end = last_end.max(s.end);
-            out.push((s.start, s.end, i as u16 + 1));
+            out.push((s.start, s.end, ink));
         }
     }
     if disjoint || out.len() <= 1 {
         return;
     }
     let input = std::mem::take(out);
-    let mut bounds = Vec::with_capacity(input.len() * 2);
-    for &(a, b, _) in &input {
-        bounds.push(a);
-        bounds.push(b);
-    }
-    bounds.sort_unstable();
-    bounds.dedup();
-    for w in bounds.windows(2) {
-        let (a, b) = (w[0], w[1]);
-        if let Some(&(_, _, ink)) = input.iter().rev().find(|&&(sa, sb, _)| sa <= a && b <= sb) {
-            if let Some(last) = out.last_mut().filter(|l| l.1 == a && l.2 == ink) {
-                last.1 = b;
-            } else {
-                out.push((a, b, ink));
-            }
-        }
-    }
+    crate::layout::span_map::flatten_into(&input, out);
 }
 
 /// For each glyph that `line.items()`'s `GlyphRun`s yield on `line`, in visual order, the
@@ -519,3 +548,7 @@ impl Face {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "glyph_emit_tests.rs"]
+mod tests;

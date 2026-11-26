@@ -46,9 +46,24 @@ fn auto_layout(natural: &[f32], fit: &[f32], avail: f32, full: bool) -> Vec<f32>
     natural.iter().zip(fit).map(|(w, f)| f + (w - f).max(0.0) * k).collect()
 }
 
+fn rest_table_caches() {
+    WIDTHS.try_with(|c| {
+        if let Ok(mut c) = c.try_borrow_mut() { c.rest(); }
+    }).ok();
+    ROW_WIDTHS.try_with(|c| {
+        if let Ok(mut c) = c.try_borrow_mut() { c.rest(); }
+    }).ok();
+}
+
 thread_local! {
-    static WIDTHS: RefCell<Budget<(u64, u64), Rc<Columns>>> = RefCell::new(Budget::new(WIDTHS_BYTES));
-    static ROW_WIDTHS: RefCell<Budget<(u64, u64), Rc<RowWidths>>> = RefCell::new(Budget::new(ROW_WIDTHS_BYTES));
+    static WIDTHS: RefCell<Budget<(u64, u64), Rc<Columns>>> = {
+        rune::register_thread_rest_hook(rest_table_caches);
+        RefCell::new(Budget::new(WIDTHS_BYTES))
+    };
+    static ROW_WIDTHS: RefCell<Budget<(u64, u64), Rc<RowWidths>>> = {
+        rune::register_thread_rest_hook(rest_table_caches);
+        RefCell::new(Budget::new(ROW_WIDTHS_BYTES))
+    };
 }
 
 fn font_key(f: TextStyle) -> (u32, u32, u32, u32, String) {
@@ -57,7 +72,7 @@ fn font_key(f: TextStyle) -> (u32, u32, u32, u32, String) {
 
 /// `features` with tabular figures on, interned so the result is `'static` like a
 /// [`TextStyle`]'s features (a style has few distinct feature lists).
-fn with_tnum(features: &'static str) -> &'static str {
+pub(super) fn with_tnum(features: &'static str) -> &'static str {
     if features.is_empty() {
         return "'tnum' 1";
     }
@@ -438,13 +453,12 @@ impl Renderer {
                 Align::End if dir.is_some() && dir != table_dir => Align::Start,
                 a => a,
             };
+            let mut cell_text = rich(inl.text.clone(), self.spans(inl, font)).font(font).color(color).align(align);
+            if self.wrap_anywhere {
+                cell_text = cell_text.wrap_anywhere();
+            }
             let content = self
-                .with_reveal(
-                    rich(inl.text.clone(), self.spans(inl, font))
-                        .font(font)
-                        .color(color)
-                        .align(align),
-                )
+                .with_reveal(self.with_emoji(self.with_math(cell_text, inl, font, color), inl, font))
                 .w_full();
             let content = super::bidi::directed(super::bidi::isolated(content, inl), dir);
             // Full width: each column's share of the row is its share of the natural width, so
@@ -518,20 +532,15 @@ impl Renderer {
                 let spans = self.spans(inl, font);
                 // Unrounded, as a browser's table layout sums them; a hair over, so a cell at
                 // its column's natural width never wraps its last word.
-                let (min, max) = rune::text::content_widths(&inl.text, &spans, font);
-                // Inline code's padding is white space set around it, which a line leaves
-                // out of its width where it ends the line; a page counts an inline box's
-                // padding in the cell's widths.
-                let ends_code = |end: usize| inl.text[end..].chars().next().is_none_or(char::is_whitespace);
-                let pad = |hit: bool| if hit { self.s.inline_code_pad } else { 0.0 };
-                let pads = inl.spans.iter().filter(|s| s.2 == Style::CodePad && inl.spans.iter().any(|c| c.2 == Style::Code && c.1 == s.0));
-                let (last, word) = pads.fold((false, false), |(last, word), s| (last || s.1 == inl.text.len(), word || ends_code(s.1)));
-                // Code that ends the cell lost its end padding with the line's trailing space
-                // (`parser::trimmed_len`), but a page still counts it: the cell is as wide as the chip.
-                let ends = inl.spans.iter().any(|c| c.2 == Style::Code && c.1 >= inl.text.len());
-                let (last, word) = (last || ends, word || ends);
-                natural[j] = max + pad(last) + 0.01;
-                fit[j] = min + pad(word) + 0.01;
+                let (min, max) = self.emoji_content_widths(inl, font, rune::text::content_widths(&inl.text, &spans, font));
+                // Closed code spans keep their non-hanging `CLOSE` padding in `inl.text`, so
+                // `content_widths` already counts it; only a streaming open code span whose
+                // closing pad was dropped by `stream::drop_closing_pad` still needs it added.
+                let in_link = |a: usize, b: usize| inl.links.iter().any(|l| l.0 <= a && b <= l.1);
+                let open_end = inl.spans.iter().any(|c| c.2 == Style::Code && c.1 >= inl.text.len() && !in_link(c.0, c.1));
+                let pad = if open_end { self.s.inline_code_pad } else { 0.0 };
+                natural[j] = max + pad + 0.01;
+                fit[j] = min + pad + 0.01;
             }
             let rw = Rc::new(RowWidths { natural: natural.into_boxed_slice(), fit: fit.into_boxed_slice() });
             ROW_WIDTHS.with_borrow_mut(|c| c.insert(rkey, rw.clone(), 8 * n + 48));

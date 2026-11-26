@@ -82,7 +82,13 @@ fn default_faces_keep_batch_c_pixels() {
                 q.uv.map(f32::to_bits).hash(&mut hash);
             }
         }
-        system.atlas.data.hash(&mut hash);
+        // The CPU atlas grows lazily from 2048×128 up to 2048×2048; zero-pad to the full page
+        // size before hashing so the historical golden hashes check every glyph pixel bit-for-bit
+        // independent of the backing buffer's current row capacity.
+        let full = (rune::text::ATLAS_SIZE * rune::text::ATLAS_SIZE) as usize;
+        let mut padded = system.atlas.data.clone();
+        padded.resize(full, 0);
+        padded.hash(&mut hash);
         // At 2× the inline Plex span grows the line, as Chromium's does (#983): each font's box
         // has its ascent and descent rounded to device px and its half-leading floored, and the
         // line is the largest reach above the baseline plus the largest below. Plex reaches a
@@ -92,4 +98,10 @@ fn default_faces_keep_batch_c_pixels() {
         let expected = if scale == 1.0 { 17045220814369067823 } else { 10933675232581112092 };
         assert_eq!(hash.finish(), expected, "sans/mono pixels changed at {scale}×");
     }
+}
+
+#[test]
+fn app_spec_defaults_mono_slot_to_ui_monospace() {
+    let spec = rune::AppSpec::new("mono-default", (320.0, 200.0), || (), |_, _| rune::el());
+    assert_eq!(spec.families, ("Inter", "ui-monospace"));
 }

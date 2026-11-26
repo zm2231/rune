@@ -22,13 +22,13 @@ impl<S: 'static> Runtime<S> {
     /// renderer, which lets go of the textures of what went; `LayerHost::trim_memory` does
     /// both.
     pub fn trim_memory(&mut self) {
-        self.rest(None, None, false);
+        self.rest_with(None, None, false);
         self.text.trim_memory();
     }
 
     /// [`Self::trim_memory`] and `renderer`'s
     /// [`Renderer::trim_memory`](crate::render::Renderer::trim_memory) as one, for a host
-    /// that has the app's `App::on_rest`: a rest of the two ([`Self::rest`] without `all`),
+    /// that has the app's `App::on_rest`: a rest of the two ([`Self::rest_with`] without `all`),
     /// which runs the hook where a window's rest does, and then what the two free on top of
     /// one. Like a rest it encodes, writes and submits nothing.
     ///
@@ -38,7 +38,7 @@ impl<S: 'static> Runtime<S> {
     /// then asks for a frame if its view is on screen.
     #[cfg(any(test, target_vendor = "apple"))]
     pub(crate) fn trim_memory_with(&mut self, on_rest: Option<fn(&mut S, &mut Tx) -> bool>, renderer: &mut crate::render::Renderer) -> bool {
-        self.rest(on_rest, Some(renderer), false);
+        self.rest_with(on_rest, Some(renderer), false);
         self.text.trim_memory();
         renderer.trim_pages(&self.text.atlas, &self.images);
         self.stale() || !self.frame.pending.wakes.is_empty() || self.copy_request.is_some() || self.edit.clear_secret_request

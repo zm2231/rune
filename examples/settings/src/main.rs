@@ -1,20 +1,20 @@
 //! A small Settings window rendered entirely by Rune.
 
+#![forbid(unsafe_code)]
+
 use rune::tok::{self, Theme, motion, radius, space, type_};
 #[cfg(feature = "frame-profile")]
 #[global_allocator]
 static ALLOC: procwatch::alloc::Counting = procwatch::alloc::Counting::system();
-use rune::{Align, AppSpec, Color, Cx, Drag, El, Phase, Spring, col, el, row, text};
+use rune::{Align, App, AppHandle, AppSpec, Color, ColorScheme, Cx, El, MacColorSpace, MacWindowOptions, MenuItem, ResizeSync, ScrollSpec, Spring, Tx, WindowBackdrop, WindowOptions, col, el, row, text};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Appearance {
-    Auto,
-    Light,
-    Dark,
-}
+const DEFAULT_FONT_ID: &str = "__default__";
 
 struct Settings {
-    appearance: Appearance,
+    appearance: ColorScheme,
+    backdrop_enabled: bool,
+    backdrop: WindowBackdrop,
+    app_handle: Option<AppHandle<Settings>>,
     accent: usize,
     launch_at_login: bool,
     menu_bar: bool,
@@ -22,20 +22,59 @@ struct Settings {
     /// Slider position 0..1; animation speed is 2^(2v − 1), so the middle is 1×.
     speed: f32,
     reduce_motion: bool,
+    sans_font: Option<String>,
+    mono_font: Option<String>,
+    sans_picker: rune_kit::ComboboxState,
+    mono_picker: rune_kit::ComboboxState,
+    about_open: bool,
+    quit_confirm: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            appearance: Appearance::Auto,
+            appearance: ColorScheme::System,
+            backdrop_enabled: false,
+            backdrop: WindowBackdrop::None,
+            app_handle: None,
             accent: 0,
             launch_at_login: true,
             menu_bar: true,
             sounds: false,
             speed: 0.5,
             reduce_motion: false,
+            sans_font: None,
+            mono_font: None,
+            sans_picker: rune_kit::ComboboxState::default(),
+            mono_picker: rune_kit::ComboboxState::default(),
+            about_open: false,
+            quit_confirm: false,
         }
     }
+}
+
+impl Settings {
+    fn apply_fonts(&self, tx: &mut Tx) {
+        let quote = |name: &str| format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""));
+        let sans = match &self.sans_font {
+            Some(name) => format!("{}, Inter", quote(name)),
+            None => "Inter".into(),
+        };
+        let mono = match &self.mono_font {
+            Some(name) => format!("{}, ui-monospace", quote(name)),
+            None => "ui-monospace".into(),
+        };
+        tx.set_font_families(sans, mono);
+    }
+}
+
+fn apply_color_scheme(s: &mut Settings, scheme: ColorScheme, tx: &mut Tx) {
+    s.appearance = scheme;
+    tx.set_color_scheme(scheme);
+    if let Some(handle) = &s.app_handle {
+        handle.set_color_scheme(scheme);
+    }
+    tx.color_motion(motion::CALM);
 }
 
 fn speed_of(v: f32) -> f32 {
@@ -59,6 +98,87 @@ fn cancelling_the_speed_slider_restores_its_value_before_a_track_press() {
     assert_eq!(rt.state.speed, 0.5);
 }
 
+#[test]
+fn about_and_quit_confirm_sheets_open_and_dismiss_on_escape() {
+    let mut rt = rune::Runtime::new(Settings::default(), view, (620.0, 520.0), rune::Env::new(true, 1.0));
+    rt.frame(0.0);
+    assert!(rt.find("about-dialog").is_none());
+    assert!(rt.find("quit-dialog").is_none());
+
+    rt.update(|s, _| s.about_open = true);
+    rt.frame(0.0);
+    assert!(rt.find("about-dialog").is_some());
+    rt.key(rune::KeyEvent { key: rune::Key::Escape, mods: rune::Mods::default() });
+    rt.frame(0.0);
+    assert!(!rt.state.about_open);
+
+    rt.update(|s, _| s.quit_confirm = true);
+    rt.frame(0.0);
+    assert!(rt.find("quit-dialog").is_some());
+    rt.key(rune::KeyEvent { key: rune::Key::Escape, mods: rune::Mods::default() });
+    rt.frame(0.0);
+    assert!(!rt.state.quit_confirm);
+}
+
+#[test]
+fn font_picker_lists_installed_families_and_updates_slot() {
+    let mut rt = rune::Runtime::new(Settings::default(), view, (620.0, 640.0), rune::Env::new(true, 1.0));
+    rt.frame(0.0);
+    assert!(!rt.state.mono_picker.is_open());
+
+    rt.update(|s, _| {
+        s.mono_picker.step(rune_kit::ComboboxEvent::Toggle { current: Some(DEFAULT_FONT_ID) });
+    });
+    rt.frame(0.0);
+    assert!(rt.state.mono_picker.is_open());
+
+    if let Some(mono) = rune::text::installed_families().iter().find(|f| f.monospace()) {
+        let name = mono.name().to_owned();
+        rt.update(|s, tx| {
+            s.mono_font = Some(name.clone());
+            s.mono_picker.close();
+            s.apply_fonts(tx);
+        });
+        rt.frame(0.0);
+        assert_eq!(rt.state.mono_font.as_deref(), Some(mono.name()));
+        assert!(!rt.state.mono_picker.is_open());
+    }
+}
+
+#[test]
+fn titlebar_reflects_window_maximized_and_full_screen_state() {
+    let mut rt = rune::Runtime::new(Settings::default(), view, (620.0, 640.0), rune::Env::new(true, 1.0));
+    rt.frame(0.0);
+    use rune::accesskit::Toggled;
+    let node_state = |rt: &mut rune::Runtime<Settings>, key: &str| {
+        let tree = rt.accessibility_tree();
+        tree.nodes
+            .iter()
+            .find(|(_, node)| node.author_id() == Some(key))
+            .map(|(_, node)| (node.label().map(str::to_owned), node.toggled()))
+    };
+    assert_eq!(node_state(&mut rt, "window-state"), Some((Some("Window state: Windowed".into()), None)));
+    assert_eq!(node_state(&mut rt, "window-maximize"), Some((Some("Maximize".into()), Some(Toggled::False))));
+    assert_eq!(node_state(&mut rt, "window-full-screen"), Some((Some("Full screen".into()), Some(Toggled::False))));
+
+    rt.set_maximized(true);
+    rt.frame(1.0);
+    assert_eq!(node_state(&mut rt, "window-state"), Some((Some("Window state: Maximized".into()), None)));
+    assert_eq!(node_state(&mut rt, "window-maximize"), Some((Some("Restore".into()), Some(Toggled::True))));
+
+    rt.set_full_screen(true);
+    rt.frame(2.0);
+    assert_eq!(node_state(&mut rt, "window-state"), Some((Some("Window state: Full screen".into()), None)));
+    assert_eq!(node_state(&mut rt, "window-full-screen"), Some((Some("Exit full screen".into()), Some(Toggled::True))));
+
+    rt.set_maximized(false);
+    rt.set_full_screen(false);
+    rt.frame(3.0);
+    assert_eq!(node_state(&mut rt, "window-state"), Some((Some("Window state: Windowed".into()), None)));
+    assert_eq!(node_state(&mut rt, "window-maximize"), Some((Some("Maximize".into()), Some(Toggled::False))));
+    assert_eq!(node_state(&mut rt, "window-full-screen"), Some((Some("Full screen".into()), Some(Toggled::False))));
+}
+
 /// Everything a component needs to paint itself.
 #[derive(Clone, Copy)]
 struct Paint {
@@ -69,45 +189,81 @@ struct Paint {
 
 fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
     let dark = match s.appearance {
-        Appearance::Auto => cx.system_dark(),
-        Appearance::Light => false,
-        Appearance::Dark => true,
+        ColorScheme::System => cx.system_dark(),
+        ColorScheme::Light => false,
+        ColorScheme::Dark => true,
     };
     cx.reduced_motion(s.reduce_motion);
     cx.time_scale(speed_of(s.speed));
     let p = Paint { t: tok::theme(dark), accent: tok::accent(s.accent, dark), hair: 1.0 / cx.env().scale };
     let t = p.t;
+    let mut k = rune_kit::Kit::neutral(dark);
+    k.c.bg_accent = p.accent;
+    k.c.border_focus = p.accent;
+    let mut overlays = Vec::new();
+    let sans_control = font_picker(
+        &k,
+        &mut overlays,
+        "sans-font",
+        "Interface font",
+        "Default (Inter)",
+        s.sans_font.as_deref(),
+        &s.sans_picker,
+        false,
+        |s| &mut s.sans_picker,
+        |s, chosen, tx| {
+            s.sans_font = (chosen != DEFAULT_FONT_ID).then(|| chosen.to_owned());
+            s.apply_fonts(tx);
+        },
+    );
+    let mono_control = font_picker(
+        &k,
+        &mut overlays,
+        "mono-font",
+        "Monospace font",
+        "Default (System)",
+        s.mono_font.as_deref(),
+        &s.mono_picker,
+        true,
+        |s| &mut s.mono_picker,
+        |s, chosen, tx| {
+            s.mono_font = (chosen != DEFAULT_FONT_ID).then(|| chosen.to_owned());
+            s.apply_fonts(tx);
+        },
+    );
 
-    col()
+    let active_backdrop = cx.window_backdrop();
+    let blur_supported = cx.window_backdrop_supported(WindowBackdrop::Blur);
+    let window_bg = match active_backdrop {
+        WindowBackdrop::Blur => t.bg.alpha(0.75),
+        b if b.is_active() => Color::TRANSPARENT,
+        _ => t.bg,
+    };
+    let mut appearance_rows = vec![
+        setting_row(p, "theme", "Theme", None, segmented(p, s.appearance)),
+        setting_row(p, "accent", "Accent colour", None, swatches(p, s.accent, dark)),
+    ];
+    if s.backdrop_enabled || active_backdrop.is_active() {
+        appearance_rows.push(backdrop_row(p, s.backdrop, active_backdrop, blur_supported));
+    }
+
+    let window = col()
         .key("window")
         .role("window")
-        .fill(t.bg)
-        .child(
-            row()
-                .key("titlebar")
-                .h(40.0)
-                .w_full()
-                .center()
-                .child(text("Settings").key("title").font(type_::TITLE).color(t.text)),
-        )
+        .fill(window_bg)
+        .child(titlebar(p, cx.chrome_insets(), cx.is_maximized(), cx.is_full_screen()))
         .child(
             col()
                 .key("content")
                 .grow(1.0)
+                .min_h(0.0)
+                .scroll(ScrollSpec::default())
                 .px(space::S6)
                 .pt(space::S1)
                 .pb(space::S6)
                 .gap(space::S6)
                 .clip_fade(0.0, space::S1, 0.0, space::S6)
-                .child(section(
-                    p,
-                    "appearance",
-                    "Appearance",
-                    [
-                        setting_row(p, "theme", "Theme", None, segmented(p, s.appearance)),
-                        setting_row(p, "accent", "Accent colour", None, swatches(p, s.accent, dark)),
-                    ],
-                ))
+                .child(section(p, "appearance", "Appearance", appearance_rows))
                 .child(section(
                     p,
                     "general",
@@ -125,16 +281,240 @@ fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
                     "motion",
                     "Motion",
                     [
-                        setting_row(p, "speed", "Animation speed", None, speed_control(p, s.speed)),
+                        setting_row(p, "speed", "Animation speed", None, speed_control(p, dark, s.speed)),
                         toggle_row(p, "reduce", "Reduce motion", s.reduce_motion, |s| {
                             s.reduce_motion = !s.reduce_motion
                         }),
                     ],
+                ))
+                .child(section(
+                    p,
+                    "fonts",
+                    "Fonts",
+                    [
+                        setting_row(p, "sans-font-row", "Interface font", None, sans_control),
+                        setting_row(p, "mono-font-row", "Monospace font", None, mono_control),
+                    ],
                 )),
+        )
+        .children(s.about_open.then(|| modal_sheet(
+            p,
+            "about-dialog",
+            "About Settings",
+            "Custom macOS app-menu About item (MenuItem::about), replacing AppKit's standard About panel.",
+            row().key("actions").justify_end().child(sheet_button(p, "about-done", "Done", true, |s, _| s.about_open = false)),
+            |s| s.about_open = false,
+        )))
+        .children(s.quit_confirm.then(|| modal_sheet(
+            p,
+            "quit-dialog",
+            "Quit Settings?",
+            "⌘Q is claimed by this app's Close Settings menu item; the built-in Quit item yields its shortcut.",
+            row().key("actions").justify_end().gap(space::S2)
+                .child(sheet_button(p, "quit-cancel", "Cancel", false, |s, _| s.quit_confirm = false))
+                .child(sheet_button(p, "quit-confirm", "Quit", true, |_, tx| tx.quit())),
+            |s| s.quit_confirm = false,
+        )));
+
+    rune_kit::root(window, overlays)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn font_picker(
+    k: &rune_kit::Kit,
+    overlays: &mut Vec<El>,
+    key: &'static str,
+    label: &'static str,
+    default_label: &'static str,
+    current: Option<&str>,
+    state: &rune_kit::ComboboxState,
+    mono_only: bool,
+    access: fn(&mut Settings) -> &mut rune_kit::ComboboxState,
+    choose: fn(&mut Settings, &str, &mut rune::Tx),
+) -> El {
+    let current_id = current.unwrap_or(DEFAULT_FONT_ID);
+    // Avoid enumerating system fonts during first-frame launch; query lazily once opened.
+    let options = if state.is_open() {
+        let mut opts = Vec::new();
+        opts.push(rune_kit::ComboboxOption::new(DEFAULT_FONT_ID, default_label));
+        for fam in rune::text::installed_families() {
+            if mono_only && !fam.monospace() {
+                continue;
+            }
+            let mut opt = rune_kit::ComboboxOption::new(fam.name(), fam.name());
+            let n = fam.weights().len();
+            let weights = if n == 1 { "1 weight".to_owned() } else { format!("{n} weights") };
+            opt.detail = if !mono_only && fam.monospace() {
+                format!("Mono · {weights}")
+            } else {
+                weights
+            };
+            opts.push(opt);
+        }
+        opts
+    } else {
+        vec![rune_kit::ComboboxOption::new(current_id, current.unwrap_or(default_label))]
+    };
+    rune_kit::Combobox::new(key, state, &options, access)
+        .label(label)
+        .current(Some(current_id))
+        .placeholder(default_label)
+        .search_placeholder("Search installed fonts…")
+        .width(220.0)
+        .placement(rune_kit::Placement::TopEnd)
+        .on_choose(choose)
+        .build(k, overlays)
+}
+
+fn titlebar(p: Paint, insets: rune::ChromeInsets, maximized: bool, full_screen: bool) -> El {
+    let status = if full_screen {
+        "Full screen"
+    } else if maximized {
+        "Maximized"
+    } else {
+        "Windowed"
+    };
+    let max_label = if maximized { "Restore" } else { "Maximize" };
+    let fs_label = if full_screen { "Exit full screen" } else { "Full screen" };
+    let leading = insets.leading.max(space::S3);
+    let trailing = insets.trailing.max(space::S3);
+    let state_pill = el()
+        .key("window-state")
+        .role("status")
+        .label(format!("Window state: {status}"))
+        .h(22.0)
+        .px(space::S2)
+        .center()
+        .radius(radius::SM)
+        .fill(if full_screen || maximized { p.accent.alpha(0.16) } else { p.t.control_track })
+        .child(
+            text(status)
+                .key("label")
+                .font(type_::LABEL)
+                .color(if full_screen || maximized { p.accent } else { p.t.text_secondary })
+                .a11y_hidden(),
+        );
+    let max_button = titlebar_button(p, "window-maximize", max_label, maximized, |_, tx| {
+        tx.toggle_maximized();
+    });
+    let fs_button = titlebar_button(
+        p,
+        "window-full-screen",
+        fs_label,
+        full_screen,
+        if full_screen {
+            |_, tx| tx.set_full_screen(false)
+        } else {
+            |_, tx| tx.set_full_screen(true)
+        },
+    );
+    row()
+        .key("titlebar")
+        .h(40.0)
+        .w_full()
+        .pl(leading)
+        .pr(trailing)
+        .center_y()
+        .justify_between()
+        .window_drag()
+        .child(row().key("titlebar-left").center_y().gap(space::S2).child(state_pill))
+        .child(text("Settings").key("title").font(type_::TITLE).color(p.t.text))
+        .child(
+            row()
+                .key("titlebar-actions")
+                .center_y()
+                .gap(space::S1)
+                .child(max_button)
+                .child(fs_button),
         )
 }
 
-fn section<const N: usize>(p: Paint, key: &str, title: &str, rows: [El; N]) -> El {
+fn titlebar_button(
+    p: Paint,
+    key: &'static str,
+    label: &'static str,
+    active: bool,
+    action: fn(&mut Settings, &mut rune::Tx),
+) -> El {
+    el().key(key)
+        .role("button")
+        .label(label)
+        .checked(active)
+        .focusable(true)
+        .h(24.0)
+        .px(space::S2)
+        .center()
+        .radius(radius::SM)
+        .fill(if active { p.accent.alpha(0.18) } else { p.t.control_track })
+        .hover(p.t.hover)
+        .press(p.t.press)
+        .on_press_tx(action)
+        .child(
+            text(label)
+                .key("label")
+                .font(type_::LABEL)
+                .color(if active { p.accent } else { p.t.text })
+                .a11y_hidden(),
+        )
+}
+
+fn modal_sheet(
+    p: Paint,
+    key: &'static str,
+    title: &'static str,
+    body: &'static str,
+    actions: El,
+    dismiss: fn(&mut Settings),
+) -> El {
+    el().key("backdrop")
+        .absolute(0.0, 0.0)
+        .w_full()
+        .h_full()
+        .center()
+        .fill(Color::BLACK.alpha(0.32))
+        .child(
+            col().key(key)
+                .role("dialog")
+                .label(title)
+                .modal(true, dismiss)
+                .w(360.0)
+                .padding(space::S6)
+                .gap(space::S3)
+                .fill(p.t.card)
+                .radius(radius::LG)
+                .border(p.hair, p.t.card_border)
+                .shadow(8.0, 28.0, p.t.shadow)
+                .child(text(title).key("title").font(type_::TITLE).color(p.t.text))
+                .child(text(body).key("body").w_full().wrap().font(type_::BODY).color(p.t.text_secondary))
+                .child(actions),
+        )
+}
+
+fn sheet_button(
+    p: Paint,
+    key: &'static str,
+    label: &'static str,
+    primary: bool,
+    action: fn(&mut Settings, &mut rune::Tx),
+) -> El {
+    el().key(key)
+        .role("button")
+        .label(label)
+        .focusable(true)
+        .h(28.0)
+        .px(space::S3)
+        .center()
+        .radius(radius::MD)
+        .fill(if primary { p.accent } else { p.t.control_track })
+        .hover(if primary { p.accent.alpha(0.88) } else { p.t.hover })
+        .press(p.t.press)
+        .on_press_tx(action)
+        .child(text(label).key("label").font(type_::LABEL).color(if primary { Color::WHITE } else { p.t.text }).a11y_hidden())
+}
+
+fn section(p: Paint, key: &str, title: &str, rows: impl IntoIterator<Item = El>) -> El {
+    let rows: Vec<El> = rows.into_iter().collect();
+    let count = rows.len();
     let mut card = col()
         .key("card")
         .padding(space::S1)
@@ -145,7 +525,7 @@ fn section<const N: usize>(p: Paint, key: &str, title: &str, rows: [El; N]) -> E
         .shadow(8.0, 24.0, p.t.shadow_soft);
     for (i, r) in rows.into_iter().enumerate() {
         card = card.child(r);
-        if i + 1 < N {
+        if i + 1 < count {
             card = card.child(el().key(format!("sep{i}")).h(p.hair).ml(space::S3).mr(space::S3).fill(p.t.separator).a11y_hidden());
         }
     }
@@ -197,10 +577,10 @@ fn toggle(p: Paint, on: bool) -> El {
         )
 }
 
-const APPEARANCES: [(Appearance, &str); 3] =
-    [(Appearance::Auto, "Auto"), (Appearance::Light, "Light"), (Appearance::Dark, "Dark")];
+const APPEARANCES: [(ColorScheme, &str); 3] =
+    [(ColorScheme::System, "System"), (ColorScheme::Light, "Light"), (ColorScheme::Dark, "Dark")];
 
-fn segmented(p: Paint, current: Appearance) -> El {
+fn segmented(p: Paint, current: ColorScheme) -> El {
     let (w, h, pad) = (205.0, 28.0, 2.0);
     let seg = (w - 2.0 * pad) / 3.0;
     let idx = APPEARANCES.iter().position(|(a, _)| *a == current).unwrap_or(0);
@@ -218,8 +598,7 @@ fn segmented(p: Paint, current: Appearance) -> El {
                 .radius(radius::SM)
                 .hover(if selected { Color::TRANSPARENT } else { p.t.hover })
                 .on_press_tx(move |s: &mut Settings, tx| {
-                    s.appearance = a;
-                    tx.color_motion(motion::CALM);
+                    apply_color_scheme(s, a, tx);
                 })
                 .child(
                     text(name)
@@ -281,68 +660,23 @@ fn swatches(p: Paint, current: usize, dark: bool) -> El {
     r
 }
 
-fn speed_control(p: Paint, v: f32) -> El {
-    let (w, h, k, bar) = (180.0, 22.0, 18.0, 4.0);
-    let travel = w - k;
-    let to_value = move |x: f32| ((x - k / 2.0) / travel).clamp(0.0, 1.0);
+fn speed_control(p: Paint, dark: bool, v: f32) -> El {
+    let mut k = rune_kit::Kit::neutral(dark);
+    k.c.bg_accent = p.accent;
+    k.c.border_focus = p.accent;
     row()
         .key("speed-control")
         .gap(space::S3)
         .center_y()
         .child(
-            el().key("slider")
-                .role("slider")
+            rune_kit::Slider::new("slider", v)
+                .range(0.0..=1.0)
                 .label("Animation speed")
-                // The slider's position, in twentieths; it reads as the speed it gives.
-                .range_value(f64::from(v), 0.0, 1.0)
-                .range_step(0.05)
-                .a11y_value(format!("{:.2}×", speed_of(v)))
-                .on_step(|s: &mut Settings, steps, _| s.speed = (s.speed + steps as f32 * 0.05).clamp(0.0, 1.0))
-                .size(w, h)
-                .motion(motion::SNAPPY)
-                .on_drag(move |s: &mut Settings, d: &mut Drag, tx| match d.phase {
-                    Phase::Down => {
-                        d.data = s.speed;
-                        let knob = k / 2.0 + v * travel;
-                        if (d.x - knob).abs() > k / 2.0 + 2.0 {
-                            // Clicked the track: the knob animates there.
-                            s.speed = to_value(d.x);
-                        }
-                    }
-                    Phase::Move => {
-                        let knob = k / 2.0 + d.data * travel;
-                        let grab = if (d.start_x - knob).abs() <= k / 2.0 + 2.0 { d.start_x - knob } else { 0.0 };
-                        s.speed = to_value(d.x - grab);
-                        tx.instant();
-                    }
-                    Phase::Up => { if d.cancelled() { s.speed = d.data; } }
-                })
-                .child(
-                    el().key("track")
-                        .size(w, bar)
-                        .absolute(0.0, (h - bar) / 2.0)
-                        .radius(bar / 2.0)
-                        .fill(p.t.control_off)
-                        .a11y_hidden(),
-                )
-                .child(
-                    el().key("fill")
-                        .size(k / 2.0 + v * travel, bar)
-                        .absolute(0.0, (h - bar) / 2.0)
-                        .radius(bar / 2.0)
-                        .fill(p.accent)
-                        .a11y_hidden(),
-                )
-                .child(
-                    el().key("knob")
-                        .size(k, k)
-                        .absolute(v * travel, (h - k) / 2.0)
-                        .radius(k / 2.0)
-                        .fill(p.t.knob)
-                        .shadow(1.0, 3.0, p.t.knob_shadow)
-                        .shadow(0.0, 0.5, p.t.edge)
-                        .a11y_hidden(),
-                ),
+                .hide_label()
+                .value_text(format!("{:.2}×", speed_of(v)))
+                .width(180.0)
+                .on_change(|s: &mut Settings, v, _| s.speed = v)
+                .build(&k),
         )
         .child(
             text(format!("{:.2}×", speed_of(v)))
@@ -355,12 +689,234 @@ fn speed_control(p: Paint, v: f32) -> El {
         )
 }
 
+fn accent_title(name: &str) -> String {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+        None => String::new(),
+    }
+}
+
+fn native_menu_items() -> Vec<MenuItem<Settings>> {
+    let appearance_items = APPEARANCES.into_iter().map(|(appearance, name)| {
+        MenuItem::with_action(name, move |s: &mut Settings, tx| {
+            apply_color_scheme(s, appearance, tx);
+        })
+        .id(format!("appearance-{}", name.to_ascii_lowercase()))
+    });
+
+    let accent_items = tok::ACCENT_NAMES.iter().enumerate().map(|(index, &name)| {
+        MenuItem::with_action(accent_title(name), move |s: &mut Settings, _| {
+            s.accent = index;
+        })
+        .id(format!("accent-{name}"))
+    });
+
+    let speed_presets: [(&str, &str, f32); 3] = [
+        ("speed-slow", "0.5× (Slow)", 0.0),
+        ("speed-normal", "1.0× (Normal)", 0.5),
+        ("speed-fast", "2.0× (Fast)", 1.0),
+    ];
+    let speed_items = speed_presets.into_iter().map(|(id, title, value)| {
+        MenuItem::with_action(title, move |s: &mut Settings, _| {
+            s.speed = value;
+        })
+        .id(id)
+    });
+
+    let mut appearance_children: Vec<MenuItem<Settings>> = appearance_items.collect();
+    appearance_children.push(MenuItem::separator());
+    appearance_children.push(MenuItem::submenu("Accent Colour", accent_items).id("accent-submenu"));
+
+    vec![
+        MenuItem::about("About Settings", |s: &mut Settings, _| {
+            s.quit_confirm = false;
+            s.about_open = true;
+        })
+        .id("about"),
+        MenuItem::new("Close Settings…", |s: &mut Settings, tx| {
+            if s.quit_confirm {
+                tx.quit();
+            } else {
+                s.about_open = false;
+                s.quit_confirm = true;
+            }
+        })
+        .id("close-settings")
+        .key_equivalent("cmd+q".parse().expect("valid cmd+q shortcut")),
+        MenuItem::submenu("Appearance", appearance_children)
+            .id("appearance-submenu")
+            .menu("View"),
+        MenuItem::submenu("Animation Speed", speed_items)
+            .id("speed-submenu")
+            .menu("View"),
+    ]
+}
+
+const BACKDROPS: [(WindowBackdrop, &str); 5] = [
+    (WindowBackdrop::None, "None"),
+    (WindowBackdrop::Blur, "Blur"),
+    (WindowBackdrop::Mica, "Mica"),
+    (WindowBackdrop::MicaAlt, "Mica Alt"),
+    (WindowBackdrop::Acrylic, "Acrylic"),
+];
+
+fn backdrop_name(backdrop: WindowBackdrop) -> &'static str {
+    BACKDROPS.iter().find_map(|&(b, name)| (b == backdrop).then_some(name)).unwrap_or("None")
+}
+
+fn backdrop_row(p: Paint, requested: WindowBackdrop, active: WindowBackdrop, blur_supported: bool) -> El {
+    let status = if active.is_active() {
+        format!("Active: {}", backdrop_name(active))
+    } else if blur_supported {
+        "Blur supported".to_owned()
+    } else {
+        "Inactive".to_owned()
+    };
+    let (w, h, pad) = (314.0, 28.0, 2.0);
+    let seg = (w - 2.0 * pad) / BACKDROPS.len() as f32;
+    let idx = BACKDROPS.iter().position(|(b, _)| *b == requested).unwrap_or(0);
+    let mut segs = row().key("backdrop-segments");
+    for (i, (b, name)) in BACKDROPS.into_iter().enumerate() {
+        let selected = i == idx;
+        segs = segs.child(
+            el().key(format!("backdrop-{name}"))
+                .role("segment")
+                .label(format!("Backdrop {name}"))
+                .checked(selected)
+                .focusable(true)
+                .size(seg, h - 2.0 * pad)
+                .center()
+                .radius(radius::SM)
+                .hover(if selected { Color::TRANSPARENT } else { p.t.hover })
+                .on_press_tx(move |s: &mut Settings, tx| {
+                    s.backdrop = b;
+                    tx.set_window_backdrop(b);
+                })
+                .child(
+                    text(name)
+                        .key("label")
+                        .font(type_::LABEL)
+                        .color(if selected { p.t.text } else { p.t.text_secondary })
+                        .a11y_hidden(),
+                ),
+        );
+    }
+    let switcher = el()
+        .key("backdrop-segmented")
+        .role("segmented")
+        .size(w, h)
+        .padding(pad)
+        .radius(radius::MD)
+        .fill(p.t.control_track)
+        .motion(motion::SNAPPY)
+        .child(
+            el().key("indicator")
+                .size(seg, h - 2.0 * pad)
+                .absolute(pad + idx as f32 * seg, pad)
+                .radius(radius::SM)
+                .fill(p.t.indicator)
+                .shadow(1.0, 3.0, p.t.shadow)
+                .shadow(0.0, 0.5, p.t.edge)
+                .lead(motion::LEAD, motion::DEFAULT)
+                .a11y_hidden(),
+        )
+        .child(segs);
+    let badge = el()
+        .key("backdrop-status")
+        .role("status")
+        .label(format!("Window backdrop: {status}"))
+        .h(22.0)
+        .px(space::S2)
+        .center()
+        .radius(radius::SM)
+        .fill(if active.is_active() { p.accent.alpha(0.16) } else { p.t.control_track })
+        .child(
+            text(status)
+                .key("label")
+                .font(type_::LABEL)
+                .color(if active.is_active() { p.accent } else { p.t.text_secondary })
+                .a11y_hidden(),
+        );
+    setting_row(
+        p,
+        "backdrop-row",
+        "Backdrop",
+        None,
+        row().key("backdrop-controls").center_y().gap(space::S2).child(badge).child(switcher),
+    )
+}
+
+fn parse_backdrop_value(raw: &str) -> Option<WindowBackdrop> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "none" => Some(WindowBackdrop::None),
+        "blur" => Some(WindowBackdrop::Blur),
+        "mica" => Some(WindowBackdrop::Mica),
+        "mica-alt" | "mica_alt" | "micaalt" => Some(WindowBackdrop::MicaAlt),
+        "acrylic" => Some(WindowBackdrop::Acrylic),
+        _ => None,
+    }
+}
+
+fn parse_backdrop_arg(args: &[String]) -> Option<WindowBackdrop> {
+    let mut out = None;
+    let mut i = 0;
+    while i < args.len() {
+        if let Some(val) = args[i].strip_prefix("--backdrop=") {
+            if let Some(b) = parse_backdrop_value(val) {
+                out = Some(b);
+            }
+        } else if args[i] == "--backdrop"
+            && let Some(val) = args.get(i + 1)
+            && let Some(b) = parse_backdrop_value(val)
+        {
+            out = Some(b);
+            i += 1;
+        }
+        i += 1;
+    }
+    out
+}
+
+fn parse_resize_sync_arg(args: &[String]) -> ResizeSync {
+    let parse_val = |v: &str| match v.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(ResizeSync::On),
+        "0" | "false" | "no" | "off" => Some(ResizeSync::Off),
+        "auto" => Some(ResizeSync::Auto),
+        _ => None,
+    };
+    let mut out = ResizeSync::Auto;
+    let mut i = 0;
+    while i < args.len() {
+        if let Some(val) = args[i].strip_prefix("--resize-sync=") {
+            if let Some(mode) = parse_val(val) { out = mode; }
+        } else if args[i] == "--resize-sync" {
+            if let Some(next) = args.get(i + 1).and_then(|v| parse_val(v)) {
+                out = next;
+                i += 1;
+            } else {
+                out = ResizeSync::On;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+fn parse_mac_color_space(value: Option<&str>) -> MacColorSpace {
+    if value.is_some_and(|v| v.trim().eq_ignore_ascii_case("unmanaged")) { MacColorSpace::Unmanaged } else { MacColorSpace::Srgb }
+}
+
 fn main() {
-    rune::run(AppSpec::<Settings> {
+    let spec = AppSpec::<Settings> {
         scenes: &[
             ("default", |_| {}),
-            ("light", |s| s.appearance = Appearance::Light),
-            ("dark", |s| s.appearance = Appearance::Dark),
+            ("light", |s| s.appearance = ColorScheme::Light),
+            ("dark", |s| s.appearance = ColorScheme::Dark),
+            ("backdrop", |s| {
+                s.backdrop_enabled = true;
+                s.backdrop = WindowBackdrop::Mica;
+            }),
             ("reduced-motion", |s| s.reduce_motion = true),
             ("toggles-off", |s| {
                 s.launch_at_login = false;
@@ -369,7 +925,142 @@ fn main() {
             }),
             ("accent-pink", |s| s.accent = 2),
             ("slow", |s| s.speed = 0.0),
+            ("fonts", |s| {
+                s.mono_picker.step(rune_kit::ComboboxEvent::Toggle { current: Some(DEFAULT_FONT_ID) });
+            }),
+            ("about", |s| s.about_open = true),
+            ("quit-confirm", |s| s.quit_confirm = true),
         ],
-        ..AppSpec::new("Settings", (620.0, 520.0), Settings::default, view)
-    });
+        ..AppSpec::new("Settings", (620.0, 640.0), Settings::default, view)
+    };
+    let color_space = parse_mac_color_space(rune::env::var("SETTINGS_MAC_COLOR_SPACE").as_deref());
+    let cli_backdrop = parse_backdrop_arg(rune::extra_args());
+    let cli_resize_sync = parse_resize_sync_arg(rune::extra_args());
+    let mut base = App::new(spec)
+        .color_scheme(ColorScheme::System)
+        .resize_sync(cli_resize_sync)
+        .macos_window(MacWindowOptions::default().color_space(color_space));
+    if let Some(backdrop) = cli_backdrop {
+        base = base
+            .window_options(WindowOptions { transparent: true, ..Default::default() })
+            .window_backdrop(backdrop);
+    }
+    let app = native_menu_items().into_iter().fold(base, App::menu_item);
+    let handle = app.handle();
+    app.init(move || Settings {
+        app_handle: Some(handle),
+        backdrop_enabled: cli_backdrop.is_some(),
+        backdrop: cli_backdrop.unwrap_or(WindowBackdrop::None),
+        ..Settings::default()
+    })
+    .run();
+}
+
+#[test]
+fn parse_resize_sync_cli_flag_handles_all_variants() {
+    assert_eq!(parse_resize_sync_arg(&[]), ResizeSync::Auto);
+    assert_eq!(parse_resize_sync_arg(&["--resize-sync".into()]), ResizeSync::On);
+    assert_eq!(parse_resize_sync_arg(&["--resize-sync=on".into()]), ResizeSync::On);
+    assert_eq!(parse_resize_sync_arg(&["--resize-sync=off".into()]), ResizeSync::Off);
+    assert_eq!(parse_resize_sync_arg(&["--resize-sync=auto".into()]), ResizeSync::Auto);
+    assert_eq!(parse_resize_sync_arg(&["--resize-sync".into(), "off".into()]), ResizeSync::Off);
+    assert_eq!(parse_resize_sync_arg(&["--resize-sync".into(), "--backdrop".into()]), ResizeSync::On);
+    assert_eq!(parse_resize_sync_arg(&["--resize-sync=unknown".into()]), ResizeSync::Auto);
+}
+
+#[test]
+fn parse_backdrop_cli_flag_handles_all_variants() {
+    assert_eq!(parse_backdrop_arg(&[]), None);
+    assert_eq!(parse_backdrop_arg(&["--backdrop".into(), "none".into()]), Some(WindowBackdrop::None));
+    assert_eq!(parse_backdrop_arg(&["--backdrop".into(), "mica".into()]), Some(WindowBackdrop::Mica));
+    assert_eq!(parse_backdrop_arg(&["--backdrop=mica-alt".into()]), Some(WindowBackdrop::MicaAlt));
+    assert_eq!(parse_backdrop_arg(&["--backdrop".into(), "ACRYLIC".into()]), Some(WindowBackdrop::Acrylic));
+    assert_eq!(parse_backdrop_arg(&["--backdrop".into(), "blur".into()]), Some(WindowBackdrop::Blur));
+    assert_eq!(parse_backdrop_arg(&["--backdrop=BLUR".into()]), Some(WindowBackdrop::Blur));
+    assert_eq!(parse_backdrop_arg(&["--backdrop".into(), "unknown".into()]), None);
+}
+
+#[test]
+fn backdrop_switcher_updates_state_and_cx_window_backdrop_controls_status() {
+    // Default view omits the opt-in backdrop row so existing snaps remain unchanged.
+    let mut default_rt = rune::Runtime::new(Settings::default(), view, (620.0, 520.0), rune::Env::new(true, 1.0));
+    default_rt.frame(0.0);
+    assert!(default_rt.find("backdrop-status").is_none());
+
+    // Opt-in backdrop mode displays the switcher and reacts to Cx::window_backdrop().
+    let mut rt = rune::Runtime::new(
+        Settings { backdrop_enabled: true, ..Settings::default() },
+        view,
+        (620.0, 640.0),
+        rune::Env::new(true, 1.0),
+    );
+    rt.frame(0.0);
+    let status_label = |rt: &mut rune::Runtime<Settings>| {
+        rt.accessibility_tree()
+            .nodes
+            .iter()
+            .find(|(_, node)| node.author_id() == Some("backdrop-status"))
+            .and_then(|(_, node)| node.label().map(str::to_owned))
+    };
+    assert_eq!(status_label(&mut rt), Some("Window backdrop: Inactive".into()));
+
+    let (x, y) = rt.find("backdrop-Mica").expect("Mica backdrop segment");
+    rt.pointer_down(x, y);
+    rt.pointer_up(x, y);
+    rt.frame(0.0);
+    assert_eq!(rt.state.backdrop, WindowBackdrop::Mica);
+    assert_eq!(status_label(&mut rt), Some("Window backdrop: Inactive".into()));
+
+    rt.set_window_backdrop(WindowBackdrop::Mica);
+    rt.frame(1.0);
+    assert_eq!(status_label(&mut rt), Some("Window backdrop: Active: Mica".into()));
+
+    rt.set_window_backdrop(WindowBackdrop::MicaAlt);
+    rt.frame(2.0);
+    assert_eq!(status_label(&mut rt), Some("Window backdrop: Active: Mica Alt".into()));
+
+    rt.set_window_backdrop(WindowBackdrop::None);
+    rt.frame(3.0);
+    assert_eq!(status_label(&mut rt), Some("Window backdrop: Inactive".into()));
+
+    // Capability query reports Wayland Blur support even while WindowBackdrop::None is active.
+    rt.set_window_backdrop_supported(WindowBackdrop::Blur, true);
+    rt.frame(4.0);
+    assert_eq!(status_label(&mut rt), Some("Window backdrop: Blur supported".into()));
+
+    rt.set_window_backdrop(WindowBackdrop::Blur);
+    rt.frame(5.0);
+    assert_eq!(status_label(&mut rt), Some("Window backdrop: Active: Blur".into()));
+}
+
+#[test]
+fn appearance_picker_switches_color_scheme_and_updates_accessibility_state() {
+    let mut rt = rune::Runtime::new(Settings::default(), view, (620.0, 520.0), rune::Env::new(true, 1.0));
+    rt.frame(0.0);
+    assert_eq!(rt.state.appearance, ColorScheme::System);
+
+    for (label, expected) in [
+        ("Light", ColorScheme::Light),
+        ("Dark", ColorScheme::Dark),
+        ("System", ColorScheme::System),
+    ] {
+        let (x, y) = rt.find(label).expect("appearance segment");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        assert_eq!(rt.state.appearance, expected);
+        let tree = rt.accessibility_tree();
+        let selected = tree.nodes.iter().find(|(_, n)| n.label() == Some(label)).expect("segment a11y node");
+        assert_eq!(selected.1.toggled(), Some(rune::accesskit::Toggled::True));
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn mac_color_space_env_parser_defaults_to_srgb_and_accepts_unmanaged() {
+    assert_eq!(parse_mac_color_space(None), MacColorSpace::Srgb);
+    assert_eq!(parse_mac_color_space(Some("")), MacColorSpace::Srgb);
+    assert_eq!(parse_mac_color_space(Some("srgb")), MacColorSpace::Srgb);
+    assert_eq!(parse_mac_color_space(Some("unmanaged")), MacColorSpace::Unmanaged);
+    assert_eq!(parse_mac_color_space(Some(" UNMANAGED ")), MacColorSpace::Unmanaged);
 }

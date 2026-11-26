@@ -34,11 +34,11 @@ return {
 | Call | What it does |
 | --- | --- |
 | `Script::new(name, sources)`, `Script::with_options(..)` | Compiles and starts a script. One that fails to start still renders, as an error card. |
-| `ScriptOptions::new().palette(..).setup(..).node(..).time_limit(..).memory_limit(..).on_log(..)` | Colour names, host bindings for each new VM, host-built `ui.*` nodes, the watchdog limit (250 ms), the heap limit (64 MB), and a log sink. |
+| `ScriptOptions::new().palette(..).setup(..).node(..).time_limit(..).memory_limit(..).on_log(..)` | Colour names, host bindings for each new VM, host-built `ui.*` nodes, the watchdog's CPU-time budget (250 ms), the heap limit (64 MB), and a log sink. |
 | `ScriptOptions::start(..).around(..).around_read(..).shadows(..).text(..)` | A hook that runs with each new VM and the table its entry returned (call a setup function it hands over); hooks around entries from the UI with the app's state and transaction; elevation shadows; the base text style and the weights `regular`..`bold` name. |
 | `Sources::entry(path)` | Starts from another module than `init.luau` (`app.luau` beside it). |
-| `script.render_fn(id, version, dark, f, args)`, `script.spawn_fn(f, args, tx)`, `script.eval_fn(f, args)` | Functions a script handed the host: render one as a memoized surface, run one as a task, or call one at once without letting it wait. `script.version()` moves whenever script code runs. |
-| `script.view(cx)`, `script.surface(cx, name)` | The module's `render(view)` (or `name(view)`), memoized on the script's version: a view rebuilt for other reasons reuses it without entering the VM. |
+| `script.render_fn(id, version, dark, f, args)`, `script.try_render_fn(dark, f, args)`, `script.spawn_fn(f, args, tx)`, `script.eval_fn(f, args)` | Functions a script handed the host: render one as a memoized surface (or once, unmemoized, as `Result<El, ScriptError>` with no error card), run one as a task, or call one at once without letting it wait. `script.version()` moves whenever script code runs. |
+| `script.view(cx)`, `script.surface(cx, name)` | The module's `render(view)` (or `name(view)`), memoized on the script's version and `Cx::is_reduced_motion()`: a view rebuilt for other reasons reuses it without entering the VM, while toggling reduced motion rebuilds the surface and nested memos. Host nodes read the same flag via `NodeArgs::reduced_motion()`. |
 | `script.poll(now, tx)` | Runs finished host calls, due `task.wait`/`task.delay` deadlines and deferred tasks, then arms `Tx::wake_after` for the next deadline. With nothing due it never enters the VM. |
 | `script.reload(sources)`, `script.watch(dir)` | Hot reload: the new VM gets `loadHotState(saveHotState())`. A compile or start error keeps the running VM. |
 | `script.fire(name, data)`, `script.call(name, data)`, `script.query(name, data)` | Fires a host signal; runs an export as a task; calls an export and returns its result. |
@@ -55,21 +55,23 @@ return {
   a small table of its own after it, laid over it (`ui.row(ROW, { key = id }, children)`,
   `ui.text(words, LABEL, { color = ink })`, host nodes too), and only that table is decoded.
   Values after a text's props fill `{1}`, `{2}`... in its content, straight into the string the
-  element keeps (`ui.text("{1} / {2}", VALUE, read, write)`). Props: `key`, `w`/`h` (points or `"full"`), `minW`..`maxH`, `grow`, `shrink`, `pad`,
+  element keeps (`ui.text("{1} / {2}", VALUE, read, write)`). Props: `key`, `w`/`h` (points, `"full"`, or a non-negative CSS percentage string such as `"40%"`), `minW`..`maxH`, `grow`, `shrink`, `cols` (positive integer equal-width grid columns, `El::equal_columns`), `aspect` (positive finite aspect ratio, `El::aspect_ratio`), `pad`,
   `px`..`pl`, `m`..`ml`, `gap`, `align`, `justify`, `center`, `wrap`, `fill`, `hover`, `press`,
-  `border`, `borderWidth`, `radius`, `clip`, `scrollY`, `scrollX`, `opacity`, `role`, `label`,
-  `help`, `helpSide`, `dir` (`"ltr"`, `"rtl"` or `"auto"`), `pin`, `corners`, `shadow`, `selected`, `focusable`, `disabled`, `hoverTransition`, `hoverGroup`, `hoverGroupColor`, `revealOnHover`, `onPress`, `onMiddlePress` (a middle click: a `middle-press` event), `menuTrigger` (its `onPress` opens a menu: a mouse runs it as the button goes down, as Kobalte's `Menu.Trigger`; a key, a screen reader's Invoke or a tap runs it on the click), `onHover`, and for text `size`, `weight`, `lineHeight`, `tracking`, `color`, `mono`,
-  `tabular`, `noWrap`, `truncate`, `fadeOut`, `selectable`, `textAlign`. Colours are palette names or
-  `ui.hex("#rrggbb")`.
+  `border`, `borderWidth`, `outline`, `outlineWidth` (default `1.0`, `El::outline(width, 0.0, color)`), `radius`, `clip` (`true` for rectangular soft clip or a non-negative radius number for `El::clip_rounded`), `scrollY`, `scrollX`, `stickBottom`, `onScroll` (coalesced scroll callback on scroll views and `ui.virtualList`, delivering `{ kind = "scroll", key?, x, y, maxX, maxY, fy }` at `poll` only when `(offset, max)` changed, so unchanged re-renders never wake idle scripts), `opacity`, `pressScale` (positive scale while held), `scale` (non-negative uniform scale), `rotate` (clockwise degrees), `origin` (`{ x?, y? }`, unset axes default to `0.5`), `offset` (`{ x?, y? }`, unset axes default to `0.0`), `raise` (`El::raise`), `matched` (non-empty shared-element flight id, `El::matched`), `matchedCrop` (boolean, `El::matched_crop`), `enter`/`exit` (the node's entrance and exit, as parts separated by spaces, each a name and an optional amount after a colon: `fade[:opacity]`, `scale[:s]`, `slide-up`/`slide-down`/`slide-left`/`slide-right[:points]` (8 by default; an entrance sliding up rises into place, an exit sliding up rises out), `blur[:sigma]`, `spring:<secs>[:<bounce>]` to time that side, or `none` alone to show or remove the node at once (`El::transition` and `El::transition_motion`); `"fade slide-up:24 spring:0.25"`), `layout` (boolean, `El::animate_layout`), `role` (`"none"`, `"group"`, `"region"`, `"button"`, `"link"`, `"switch"`, `"checkbox"`, `"radio"`, `"tab"`, `"tablist"`, `"list"`, `"listitem"`, `"heading"`, `"img"`, `"status"`, `"timer"`, `"alert"`, `"slider"`, `"spinbutton"`, `"textbox"`, `"progressbar"`, `"dialog"`, `"combobox"`, `"tooltip"`), `label`,
+  `help`, `helpSide`, `helpOpen` (keeps the tooltip up while true, as a `Tooltip forceOpen`), `dir` (`"ltr"`, `"rtl"` or `"auto"`), `cursor` (the pointer's shape over the node, by its CSS name: `"default"`, `"pointer"`, `"text"`, `"not-allowed"`, `"grab"`, `"col-resize"`, ...), `pin`, `corners`, `shadow`, `selected`, `focusable`, `disabled`, `hoverTransition`, `hoverGroup`, `hoverGroupColor`, `revealOnHover`, `onPress`, `onMiddlePress` (a middle click: a `middle-press` event), `menuTrigger` (its `onPress` opens a menu: a mouse runs it as the button goes down, as Kobalte's `Menu.Trigger`; a key, a screen reader's Invoke or a tap runs it on the click), `onHover`, and for text `size`, `weight`, `lineHeight`, `tracking`, `color`, `mono`,
+  `tabular`, `noWrap`, `truncate`, `fadeOut`, `maxLines` (non-negative integer line clamp with ellipsis; `0` shows every wrapped line), `selectable`, `textAlign`. Colours are palette names or
+  `ui.hex("#rrggbb")`. Inside `view:Memo`, `matched` nodes still participate in shared-element flights (Rune does not skip matched elements during memo reuse); inside `ui.virtualList`, only rows currently built in the rendered window participate, as with `El::virtual_rows`.
 - **`view:Memo(key, version, build)`** reuses the subtree while `version` (a string, number or
-  boolean) is unchanged, without calling `build`. Its memo id, and its root's key, is `key` under
-  the script's prefix (`luau:<name>:<key>`), so scripts in one window never share a memo. **`view:Handler(fn)`** returns `fn`; handlers
-  run as tasks and receive a `UiEvent` (`kind`, `key`, `shift`, `alt`, `mod`).
+  boolean) is unchanged (and `view.reducedMotion` has not flipped), without calling `build`. Its
+  memo id, and its root's key, is `key` under the script's prefix (`luau:<name>:<key>`), so
+  scripts in one window never share a memo. **`view.dark`** and **`view.reducedMotion`** expose
+  the host's appearance and reduced-motion state. Under reduced motion a node's `enter`, `exit` and `layout` are dropped, and the default transitions apply; an `enter` or `exit` of `none` still holds. **`view:Handler(fn)`** returns `fn`; handlers
+  run as tasks and receive a `UiEvent` (`kind`, `key`, `shift`, `alt`, `mod`; or `x`, `y`, `maxX`, `maxY`, `fy` for `scroll`).
 - **`ui.each(items, key, version, build)`** returns `build(item, index)` for each item as a list
   of children, each a memo of its own on the item's key (also its node's key) and version, so a
   render rebuilds only the items whose version moved. `key` and `version` are field names or
   functions of `(item, index)`.
-- **`ui.virtualList({ count, estimatedRowHeight, version, renderRow, rowKey?, rowVersions?, onVisibleRows?, gap?, scrollY? })`**
+- **`ui.virtualList({ count, estimatedRowHeight, version, renderRow, rowKey?, rowVersions?, onVisibleRows?, onScroll?, gap?, scrollY? })`**
   is `El::virtual_rows`: `renderRow(i)` (from 1) runs only for rows entering the window, and each
   row is memoized on `version` and its entry in `rowVersions`. With `scrollY = false` it has no
   viewport of its own: it sits in a scrolling column under or among other content and builds the
@@ -89,15 +91,18 @@ return {
 ## Errors
 
 Nothing a script does panics the app. A render error shows an error card with a Reload button;
-a task error is logged; the watchdog stops any entry that runs longer than 250 ms, at a Luau
-safepoint, and that script carries on with its next call.
+a task error is logged; the watchdog stops any entry that uses more than 250 ms of its thread's
+CPU time (time spent waiting for a CPU or on a host call isn't charged; 20 times that in wall time
+bounds it), at a Luau safepoint, and that script carries on with its next call.
 
 ## Platforms
 
 Scripts run in Luau's interpreter. The `native-code` feature adds Luau's native code generation
 for modules that open with `--!native`, on Windows and Linux (x86-64, arm64) only: enable it for
 those targets alone. It costs every VM a 4 MiB committed code block as the VM starts, whether a
-native module ever loads or not. On `wasm32-unknown-unknown`, Luau's C++ builds with
+native module ever loads or not. Native builds compile Luau's C++ sources via `mlua`
+(`luau0-src`/`cc`) and require a host C++ compiler (`c++`/`g++`/`clang++`, or Visual Studio C++
+build tools on Windows). On `wasm32-unknown-unknown`, Luau's C++ builds with
 [WASI SDK](https://github.com/WebAssembly/wasi-sdk) 33 or newer and WebAssembly exception
 handling: set `WASI_SDK_PATH` and `scripts/web-build.sh` sets the compilers up; this crate links
 the SDK's C runtime and defines the few WASI calls it makes, so the page needs nothing extra.
@@ -109,6 +114,9 @@ finish browser-async work (a `fetch`) from its own callback through the `Complet
 
 ## Example
 
-`examples/luau-panel`: a header, a pulse driven by `task.wait`, a signal and a 1,000-row virtual
-list. `cargo run -p luau-panel`; `cargo run -p luau-panel --bin luau-bench --profile perf`
-measures idle frames, memo hits, a 20-row rebuild, list scrolling and hot reload.
+`examples/luau-panel`: a header, a pulse driven by `task.wait`, a signal, a 1,000-row virtual
+list, and a **Props** showcase (`--scene props`) covering `maxLines`, `matched`/`matchedCrop`,
+transforms, `outline`, `raise`, rounded `clip`, `cols`, `aspect`, percentage `w`/`h`, ARIA
+roles, a coalesced `onScroll` indicator, and a `view.reducedMotion` readout. `cargo run -p luau-panel --bin luau-panel` (or `-- --scene props --snap target/luau-panel-props.png`);
+`cargo run -p luau-panel --bin luau-bench --profile perf` measures idle frames, memo hits, a 20-row
+rebuild, list scrolling and hot reload.

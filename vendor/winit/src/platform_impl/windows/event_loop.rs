@@ -52,7 +52,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     PT_TOUCH, QS_ALLINPUT, RI_MOUSE_HWHEEL, RI_MOUSE_WHEEL, SC_MINIMIZE, SC_RESTORE,
     SIZE_MAXIMIZED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WHEEL_DELTA, WINDOWPOS,
     WMSZ_BOTTOM, WMSZ_BOTTOMLEFT, WMSZ_BOTTOMRIGHT, WMSZ_LEFT, WMSZ_RIGHT, WMSZ_TOP, WMSZ_TOPLEFT,
-    WMSZ_TOPRIGHT, WM_CAPTURECHANGED, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
+    WMSZ_TOPRIGHT, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
     WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION,
     WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION, WM_INPUT, WM_INPUT_DEVICE_CHANGE, WM_KEYDOWN,
     WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
@@ -1149,8 +1149,17 @@ unsafe fn public_window_callback_inner(
 
     let keyboard_callback = || {
         use crate::event::WindowEvent::KeyboardInput;
-        let events =
-            userdata.key_event_builder.process_message(window, msg, wparam, lparam, &mut result);
+        // Rune: a bare WM_CHAR is dropped while an input method's composition is open.
+        let ime_composing =
+            msg == WM_CHAR && userdata.window_state_lock().ime_state != ImeState::Disabled;
+        let events = userdata.key_event_builder.process_message(
+            window,
+            msg,
+            wparam,
+            lparam,
+            ime_composing,
+            &mut result,
+        );
         for event in events {
             userdata.send_event(Event::WindowEvent {
                 window_id: RootWindowId(WindowId(window)),
@@ -1229,35 +1238,47 @@ unsafe fn public_window_callback_inner(
         },
 
         WM_NCLBUTTONDOWN => {
-            if wparam == HTCAPTION as _ {
-                // Prevent the user event loop from pausing when left clicking the title bar.
-                //
-                // When the user interacts with the title bar, Windows enters the modal event
-                // loop. Currently, a left click causes a pause for about 500ms. Sending a dummy
-                // mouse-move event seems to cancel the modal loop early, preventing the pause.
-                // The application will never see this dummy event.
-                //
-                // The mouse coordinates are encoded into the lparam value, however the WM_MOUSEMOVE
-                // event is not using the same coordinate system of the WM_NCLBUTTONDOWN event.
-                // One uses client-area coordinates and the other is screen-coordinates. In any
-                // case, passing the lparam as-is with the dummy event does not seem the cancel
-                // the modal loop.
-                //
-                // However, passing in a value of 0 has been observed to always cancel the pause.
-                //
-                // Other notes:
-                //
-                // For some unknown reason, the cursor will blink when clicking the title bar.
-                // Cancelling the modal loop early causes the blink to happen *immediately*.
-                // Otherwise, the blank happens *after* the pause.
-                //
-                // When right-click the title bar, the system window menu is presented to the user,
-                // and the modal event loop begins. This dummy event does *not* prevent the freeze
-                // in the main event loop caused by that popup menu.
-                let lparam = 0;
-                unsafe { PostMessageW(window, WM_MOUSEMOVE, 0, lparam) };
+            if userdata.window_state_lock().dragging {
+                let res = unsafe { DefWindowProcW(window, msg, wparam, lparam) };
+                let mut state = userdata.window_state_lock();
+                if state.dragging {
+                    state.dragging = false;
+                    if !userdata.userdata_removed.get() {
+                        unsafe { PostMessageW(window, WM_LBUTTONUP, 0, lparam) };
+                    }
+                }
+                result = ProcResult::Value(res);
+            } else {
+                if wparam == HTCAPTION as _ {
+                    // Prevent the user event loop from pausing when left clicking the title bar.
+                    //
+                    // When the user interacts with the title bar, Windows enters the modal event
+                    // loop. Currently, a left click causes a pause for about 500ms. Sending a dummy
+                    // mouse-move event seems to cancel the modal loop early, preventing the pause.
+                    // The application will never see this dummy event.
+                    //
+                    // The mouse coordinates are encoded into the lparam value, however the WM_MOUSEMOVE
+                    // event is not using the same coordinate system of the WM_NCLBUTTONDOWN event.
+                    // One uses client-area coordinates and the other is screen-coordinates. In any
+                    // case, passing the lparam as-is with the dummy event does not seem the cancel
+                    // the modal loop.
+                    //
+                    // However, passing in a value of 0 has been observed to always cancel the pause.
+                    //
+                    // Other notes:
+                    //
+                    // For some unknown reason, the cursor will blink when clicking the title bar.
+                    // Cancelling the modal loop early causes the blink to happen *immediately*.
+                    // Otherwise, the blank happens *after* the pause.
+                    //
+                    // When right-click the title bar, the system window menu is presented to the user,
+                    // and the modal event loop begins. This dummy event does *not* prevent the freeze
+                    // in the main event loop caused by that popup menu.
+                    let lparam = 0;
+                    unsafe { PostMessageW(window, WM_MOUSEMOVE, 0, lparam) };
+                }
+                result = ProcResult::DefWindowProc(wparam);
             }
-            result = ProcResult::DefWindowProc(wparam);
         },
 
         WM_CLOSE => {

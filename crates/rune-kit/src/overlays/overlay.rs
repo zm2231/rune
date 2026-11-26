@@ -8,13 +8,19 @@
 
 use std::rc::Rc;
 
-use rune::{Align, Color, El, Shadow, Side, TextStyle, Transition, col, el, row, text};
+use rune::{Align, Color, El, Shadow, Side, TextStyle, Transition, Tx, col, el, row, text};
 use rune_motion::{Spring, Vec2};
 
 use super::popover::{fit, raised};
 use crate::{Acts, ControlSize, IconButton, IconButtonVariant, Kit};
 
-/// Where an overlay sits relative to its trigger (Kobalte/Floating UI placements).
+/// Where an overlay sits relative to its trigger (Kobalte/Floating UI's 12 placements).
+///
+/// ```
+/// use rune_kit::{HoverCard, Placement};
+///
+/// let _card = HoverCard::new("preview").placement(Placement::LeftStart);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Placement {
     Top,
@@ -24,8 +30,35 @@ pub enum Placement {
     BottomStart,
     BottomEnd,
     Left,
+    /// To the left of its trigger, top-aligned with the trigger's start edge.
+    ///
+    /// ```
+    /// use rune_kit::{Placement, popover};
+    ///
+    /// let r = popover::anchor_rect([200.0, 100.0, 260.0, 130.0], (80.0, 40.0), Placement::LeftStart, 4.0, (400.0, 300.0));
+    /// assert_eq!(r, [116.0, 100.0, 196.0, 140.0]);
+    /// ```
+    LeftStart,
+    /// To the left of its trigger, bottom-aligned with the trigger's end edge.
+    ///
+    /// ```
+    /// use rune_kit::{Placement, popover};
+    ///
+    /// let r = popover::anchor_rect([200.0, 100.0, 260.0, 130.0], (80.0, 40.0), Placement::LeftEnd, 4.0, (400.0, 300.0));
+    /// assert_eq!(r, [116.0, 90.0, 196.0, 130.0]);
+    /// ```
+    LeftEnd,
     Right,
     RightStart,
+    /// To the right of its trigger, bottom-aligned with the trigger's end edge.
+    ///
+    /// ```
+    /// use rune_kit::{Placement, popover};
+    ///
+    /// let r = popover::anchor_rect([40.0, 100.0, 100.0, 130.0], (80.0, 40.0), Placement::RightEnd, 4.0, (400.0, 300.0));
+    /// assert_eq!(r, [104.0, 90.0, 184.0, 130.0]);
+    /// ```
+    RightEnd,
 }
 
 impl Placement {
@@ -38,8 +71,11 @@ impl Placement {
             Placement::BottomStart => (Side::Bottom, Align::Start),
             Placement::BottomEnd => (Side::Bottom, Align::End),
             Placement::Left => (Side::Left, Align::Center),
+            Placement::LeftStart => (Side::Left, Align::Start),
+            Placement::LeftEnd => (Side::Left, Align::End),
             Placement::Right => (Side::Right, Align::Center),
             Placement::RightStart => (Side::Right, Align::Start),
+            Placement::RightEnd => (Side::Right, Align::End),
         }
     }
 }
@@ -66,7 +102,7 @@ pub(crate) fn anchor_at(k: &Kit, content: El, anchor: &str, side: Side, align: A
         .token_motion(k.motion.overlay)
 }
 
-fn anchor_with(motion: Spring, content: El, anchor: &str, placement: Placement, gap: f32) -> El {
+pub(crate) fn anchor_with(motion: Spring, content: El, anchor: &str, placement: Placement, gap: f32) -> El {
     let (side, align) = placement.split();
     content
         .anchored(anchor, side, align, gap)
@@ -76,7 +112,28 @@ fn anchor_with(motion: Spring, content: El, anchor: &str, placement: Placement, 
 
 /// A transparent full-window press target under an open overlay: pressing outside closes it.
 pub fn scrim<S: 'static>(key: impl Into<String>, close: impl Fn(&mut S) + 'static) -> El {
-    el().key(key).role("none").absolute(0.0, 0.0).w_full().h_full().on_press(close)
+    scrim_tx(key, move |s: &mut S, _| close(s))
+}
+
+/// [`scrim`] whose close callback receives the change's [`Tx`], so an outside press can focus,
+/// scroll, or announce in the same commit.
+///
+/// ```
+/// use rune::Tx;
+/// use rune_kit::scrim_tx;
+///
+/// struct App { open: bool }
+/// let _scrim = scrim_tx("popover-scrim", |s: &mut App, tx: &mut Tx| {
+///     s.open = false;
+///     tx.focus("after", true);
+/// });
+/// ```
+pub fn scrim_tx<S: 'static>(key: impl Into<String>, close: impl Fn(&mut S, &mut Tx) + 'static) -> El {
+    let close = Rc::new(close);
+    let secondary = close.clone();
+    el().key(key).role("none").absolute(0.0, 0.0).w_full().h_full()
+        .on_press_tx(move |s: &mut S, tx: &mut Tx| close(s, tx))
+        .on_secondary_press(move |s: &mut S, _, tx: &mut Tx| secondary(s, tx))
 }
 
 /// Makes an open surface modal: it takes focus, Escape and outside presses dismiss it, and
@@ -103,9 +160,17 @@ pub(crate) fn anchor_trigger(anchor_key: String, trigger: Option<El>) -> El {
 
 /// The outside-press scrim and the modal wrapper for a close request.
 pub(crate) fn dismissal<S: 'static>(key: String, close: impl Fn(&mut S) + 'static) -> (El, Modal) {
+    dismissal_tx(key, move |s: &mut S, _| close(s))
+}
+
+/// [`dismissal`] whose close callback receives the change's [`Tx`].
+pub(crate) fn dismissal_tx<S: 'static>(key: String, close: impl Fn(&mut S, &mut Tx) + 'static) -> (El, Modal) {
     let close = Rc::new(close);
     let outside = close.clone();
-    (scrim(key, move |s: &mut S| outside(s)), Box::new(move |e: El| e.modal(true, move |s: &mut S| close(s))))
+    (
+        scrim_tx(key, move |s: &mut S, tx: &mut Tx| outside(s, tx)),
+        Box::new(move |e: El| e.modal_tx(true, move |s: &mut S, tx: &mut Tx| close(s, tx))),
+    )
 }
 
 /// Mounts a dismissal's scrim into `layer` and hands back its modal wrapper.
@@ -154,8 +219,8 @@ pub(crate) fn push_raised_anchored(
 
 /// `Popover::new("share").trigger(button).title("Share").open(s.open).build(&kit, &mut layer)`.
 ///
-/// Above or below its trigger it is at most as tall as the window leaves it, and its body
-/// shrinks: give a long body a scroll viewport (`.shrink().min_h(0.0)`) to scroll in.
+/// It stays inside the window on both axes when overflowing, and its body shrinks: give a long
+/// body a scroll viewport (`.shrink().min_h(0.0)`) to scroll in.
 pub struct Popover {
     key: String,
     trigger: Option<El>,
@@ -167,6 +232,7 @@ pub struct Popover {
     placement: Placement,
     gutter: f32,
     padding: f32,
+    width: Option<f32>,
     close: Acts,
     dismiss: Option<El>,
 }
@@ -184,6 +250,7 @@ impl Popover {
             placement: Placement::Bottom,
             gutter: 4.0,
             padding: 12.0,
+            width: None,
             close: Acts::default(),
             dismiss: None,
         }
@@ -227,10 +294,35 @@ impl Popover {
         self.gutter = g;
         self
     }
+    /// Fixes the surface width in points in place of the default 200..320 clamp.
+    pub(crate) fn width(mut self, w: f32) -> Self {
+        self.width = Some(w);
+        self
+    }
     /// Close requests: the close button and presses outside.
     pub fn on_close<S: 'static>(mut self, f: impl Fn(&mut S) + Clone + 'static) -> Self {
         self.dismiss = Some(scrim(scrim_key(&self.key), f.clone()));
         self.close.press(f);
+        self
+    }
+    /// [`Self::on_close`] whose callback receives the change's [`Tx`], so closing from the
+    /// close button or an outside press can focus, scroll, or announce in the same commit.
+    ///
+    /// ```
+    /// use rune::Tx;
+    /// use rune_kit::Popover;
+    ///
+    /// struct App { open: bool }
+    /// let _popover = Popover::new("share").on_close_tx(|s: &mut App, tx: &mut Tx| {
+    ///     s.open = false;
+    ///     tx.focus("after", true);
+    /// });
+    /// ```
+    pub fn on_close_tx<S: 'static>(mut self, f: impl Fn(&mut S, &mut Tx) + 'static) -> Self {
+        let f = Rc::new(f);
+        let outside = f.clone();
+        self.dismiss = Some(scrim_tx(scrim_key(&self.key), move |s: &mut S, tx: &mut Tx| outside(s, tx)));
+        self.close.press_tx(move |s: &mut S, tx: &mut Tx| f(s, tx));
         self
     }
 
@@ -245,7 +337,12 @@ impl Popover {
         }
         let mut content = col().key(content_key(&self.key)).role("dialog")
             .description(self.description.clone().unwrap_or_default())
-            .focus_return(&anchor_key).min_w(200.0).max_w(320.0);
+            .focus_return(&anchor_key);
+        let pm = k.popover_metrics();
+        content = match self.width {
+            Some(w) => content.w(w),
+            None => content.min_w(pm.min_width).max_w(pm.max_width),
+        };
         if let Some(l) = &self.label {
             content = content.label(l.clone());
         }
@@ -263,13 +360,13 @@ impl Popover {
                     .gap(8.0)
                     .center_y()
                     .justify_between()
-                    .child(text(t.clone()).key("title").font(k.ty.body_medium).color(c.text_strong).grow(1.0))
+                    .child(text(t.clone()).key("title").font(k.ty.body_medium).color(c.text_strong).truncate())
                     .child(close),
             );
         }
         if let Some(d) = &self.description {
             content = content.child(
-                row().key("description").px(12.0).child(text(d.clone()).font(k.ty.text_small).color(c.std_text)),
+                row().key("description").px(12.0).child(text(d.clone()).font(k.ty.text_small).color(c.std_text).wrap().shrink()),
             );
         }
         content = content.child(col().key("body").padding(self.padding).shrink().min_h(0.0).children(self.body));
@@ -313,6 +410,8 @@ pub struct TooltipStyle {
     motion: Spring,
     /// A keybind's keys (`keybind-v2` neutral): their fill and label colour.
     keys: (Color, Color),
+    /// The positioner's line it sits on, for the `inline-flex` appearances (`tooltip.css`).
+    line: Option<TextStyle>,
 }
 
 impl TooltipStyle {
@@ -330,6 +429,8 @@ impl TooltipStyle {
             shadows: k.shadow_layers(&k.elevation.floating).collect(),
             motion: k.motion.overlay,
             keys: (c.layer_03, c.text_muted),
+            // The page's 13/24 line (`base.css` `html`, measured on the positioner).
+            line: Some(TextStyle { family: k.ty.small_medium.family, ..TextStyle::new(13.0, 400.0).lh(24.0) }),
         };
         match appearance {
             TooltipAppearance::Compact => base,
@@ -345,6 +446,8 @@ impl TooltipStyle {
                 font: k.ty.text_small_medium,
                 ink: c.text_invert_strong,
                 shadows: k.shadow_layers(&k.elevation.md).collect(),
+                // `display: block`: it doesn't sit on the positioner's line.
+                line: None,
                 ..base
             },
         }
@@ -405,16 +508,19 @@ impl TooltipStyle {
     }
     /// This look for Rune's own [`El::help`](rune::El::help) tooltips
     /// ([`Cx::help_look`](rune::Cx::help_look)), placed and timed as `@opencode/ui`'s
-    /// `Tooltip` sets Kobalte's: 4 pt from its element, 8 pt inside the window, after 400 ms,
-    /// and at once within 300 ms of the last one hiding; it fades and scales in from 0.96 over
+    /// `Tooltip` sets Kobalte's: 4 pt from its element, 8 pt inside the window, after 600 ms,
+    /// at once within 300 ms of the last one hiding, and at once when the keyboard focuses its
+    /// element (opencode#63834); it fades and scales in from 0.96 over
     /// 120 ms ease-out and out over 80 ms ease-in (`tooltip.css`). Its keycaps are `keybind-v2`'s
     /// neutral keys: 14 pt, 4 pt in, 2 pt corners and 2 pt apart, 6 pt after the text, their
     /// labels in uppercase 11/530. Rows ([`El::help_row`](rune::El::help_row)) stack 6 pt apart,
-    /// as a tooltip listing two commands does (`line-comment.tsx`, `flex-col gap-1.5`).
+    /// as a tooltip listing two commands does (`line-comment.tsx`, `flex-col gap-1.5`). Compact
+    /// and large sit on their positioner's 13/24 line (`display: inline-flex` in a block,
+    /// `tooltip.css`), so under its element one shows 1 or 2 pt lower than the 4 pt gap puts it.
     pub fn help_look(&self) -> rune::HelpLook {
         let (ring_w, ring) = self.border.unwrap_or((0.0, Color::TRANSPARENT));
         let key = TextStyle::new(11.0, 530.0).lh(11.0).tracking(0.05).features("'tnum' 1, 'lnum' 1");
-        rune::HelpLook::system(false)
+        let look = rune::HelpLook::system(false)
             .fill(self.fill)
             .ink(self.ink)
             .ring(ring_w, ring)
@@ -425,12 +531,17 @@ impl TooltipStyle {
             .shadows(self.shadows.iter().copied())
             .gap(4.0)
             .margin(8.0)
-            .delay(0.4)
+            .delay(0.6)
             .skip_delay(0.3)
+            .on_focus(true)
             .fade(0.12, 0.08, 0.96)
             .keycaps(self.keys.0, self.keys.1, TextStyle { family: self.font.family, ..key }, true)
             .keycap_shape(14.0, 4.0, 2.0, 2.0, 6.0)
-            .row_gap(6.0)
+            .row_gap(6.0);
+        match self.line {
+            Some(line) => look.sit_on_line(line),
+            None => look,
+        }
     }
 }
 
@@ -564,55 +675,32 @@ impl Tooltip {
     }
 }
 
-/// A hover card: rich preview content anchored under its trigger.
-pub struct HoverCard {
-    key: String,
-    trigger: Option<El>,
-    body: Vec<El>,
-    open: bool,
-    placement: Placement,
-}
-
-impl HoverCard {
-    pub fn new(key: impl Into<String>) -> HoverCard {
-        HoverCard { key: key.into(), trigger: None, body: Vec::new(), open: false, placement: Placement::Bottom }
-    }
-    pub fn trigger(mut self, t: El) -> Self {
-        self.trigger = Some(t);
-        self
-    }
-    pub fn child(mut self, c: El) -> Self {
-        self.body.push(c);
-        self
-    }
-    pub fn open(mut self, o: bool) -> Self {
-        self.open = o;
-        self
-    }
-    pub fn placement(mut self, p: Placement) -> Self {
-        self.placement = p;
-        self
-    }
-    /// Open on hover: the trigger reports entering (the app closes it on leaving or elsewhere).
-    pub fn build(self, k: &Kit, layer: &mut Vec<El>) -> El {
-        let anchor_key = trigger_key(&self.key);
-        let trigger = anchor_trigger(anchor_key.clone(), self.trigger).w_full();
-        if !self.open {
-            return trigger;
-        }
-        let content = col()
-            .key(format!("{}-card", self.key))
-            .min_w(200.0)
-            .max_w(320.0)
-            .child(col().padding(4.0).children(self.body));
-        layer.push(anchor_with(k.motion.overlay, raised(k, content, k.radius.lg), &anchor_key, self.placement, 4.0));
-        trigger
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_twelve_placements_split_to_side_and_align() {
+        let cases = [
+            (Placement::Top, (Side::Top, Align::Center), Vec2::new(0.5, 1.0)),
+            (Placement::TopStart, (Side::Top, Align::Start), Vec2::new(0.0, 1.0)),
+            (Placement::TopEnd, (Side::Top, Align::End), Vec2::new(1.0, 1.0)),
+            (Placement::Bottom, (Side::Bottom, Align::Center), Vec2::new(0.5, 0.0)),
+            (Placement::BottomStart, (Side::Bottom, Align::Start), Vec2::new(0.0, 0.0)),
+            (Placement::BottomEnd, (Side::Bottom, Align::End), Vec2::new(1.0, 0.0)),
+            (Placement::Left, (Side::Left, Align::Center), Vec2::new(1.0, 0.5)),
+            (Placement::LeftStart, (Side::Left, Align::Start), Vec2::new(1.0, 0.0)),
+            (Placement::LeftEnd, (Side::Left, Align::End), Vec2::new(1.0, 1.0)),
+            (Placement::Right, (Side::Right, Align::Center), Vec2::new(0.0, 0.5)),
+            (Placement::RightStart, (Side::Right, Align::Start), Vec2::new(0.0, 0.0)),
+            (Placement::RightEnd, (Side::Right, Align::End), Vec2::new(0.0, 1.0)),
+        ];
+        for (placement, expected_split, expected_origin) in cases {
+            let (side, align) = placement.split();
+            assert_eq!((side, align), expected_split, "{placement:?}");
+            assert_eq!(anchor_origin(side, align), expected_origin, "{placement:?}");
+        }
+    }
 
     #[test]
     fn overlay_key_helpers_and_layer_order_stay_canonical() {
@@ -626,9 +714,19 @@ mod tests {
         push_raised_anchored(&k, &mut layer, Some(s), col().key(content_key("p")), "p-trigger", Side::Bottom, Align::Start, 4.0);
         assert_eq!(layer.len(), 2, "scrim mounts before anchored surface");
 
+        let mut tx_layer = Vec::new();
+        let s_tx = scrim_tx(scrim_key("ptx"), |_: &mut (), _: &mut Tx| {});
+        push_raised_anchored(&k, &mut tx_layer, Some(s_tx), col().key(content_key("ptx")), "ptx-trigger", Side::Bottom, Align::Start, 4.0);
+        assert_eq!(tx_layer.len(), 2, "scrim_tx mounts before anchored surface");
+
         let mut modal_layer = Vec::new();
         let d = dismissal(scrim_key("m"), |_: &mut ()| {});
         push_anchored_modal(&k, &mut modal_layer, Some(d), col().key("m-menu"), "m-trigger", Placement::BottomStart, 6.0);
         assert_eq!(modal_layer.len(), 2, "modal scrim mounts before anchored modal surface");
+
+        let mut modal_tx_layer = Vec::new();
+        let d_tx = dismissal_tx(scrim_key("mtx"), |_: &mut (), _: &mut Tx| {});
+        push_anchored_modal(&k, &mut modal_tx_layer, Some(d_tx), col().key("mtx-menu"), "mtx-trigger", Placement::LeftStart, 6.0);
+        assert_eq!(modal_tx_layer.len(), 2, "modal dismissal_tx scrim mounts before anchored modal surface");
     }
 }

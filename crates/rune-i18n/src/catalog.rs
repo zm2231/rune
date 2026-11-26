@@ -68,15 +68,17 @@ impl Messages {
     /// The message for key index `key`, or `None` when this locale lacks it.
     pub fn get(&self, key: usize) -> Option<&'static str> {
         let (text, spans) = self.embedded.or_else(|| self.loaded.get().copied())?;
-        let at = key * 8;
-        let span = spans.get(at..at + 8)?;
+        let at = key.checked_mul(8)?;
+        let end = at.checked_add(8)?;
+        let span = spans.get(at..end)?;
 
         let start = u32::from_le_bytes([span[0], span[1], span[2], span[3]]);
         if start == u32::MAX {
             return None;
         }
         let len = u32::from_le_bytes([span[4], span[5], span[6], span[7]]);
-        text.get(start as usize..(start + len) as usize)
+        let text_end = start.checked_add(len)?;
+        text.get(start as usize..text_end as usize)
     }
 }
 
@@ -107,7 +109,7 @@ pub(crate) fn blob<'m, 's>(keys: &[&str], message: impl Fn(&str) -> Option<&'m s
     (text, spans)
 }
 
-/// Everything [`crate::codegen::generate`] emits, in one static.
+/// Everything `codegen::generate` emits, in one static.
 #[derive(Debug)]
 pub struct Catalog {
     keys: &'static [&'static str],
@@ -161,7 +163,22 @@ impl Catalog {
         let rtl = self.locales.get(locale).is_some_and(LocaleInfo::rtl) && !self.locales.first().is_some_and(LocaleInfo::rtl);
         let isolate: Option<&dyn Fn(&str) -> Option<&'static str>> = if rtl { Some(&source) } else { None };
         let (text, spans) = blob(self.keys, |key| map.get(key).and_then(serde_json::Value::as_str), isolate);
-        let _ = messages.loaded.set((Box::leak(text.into_boxed_str()), Box::leak(spans.into_boxed_slice())));
+        messages.loaded.set((Box::leak(text.into_boxed_str()), Box::leak(spans.into_boxed_slice()))).ok();
+        Ok(())
+    }
+
+    /// Fills a locale the build left for run time (`Messages::later`) from the blob the build
+    /// wrote for it (`codegen::generate_later`: `<id>.txt` and `<id>.spans`), with nothing to
+    /// parse. The blob must come from the same build as the program: its span table has one
+    /// entry per key, and one of another length is refused. A locale that's here already is left
+    /// as it is.
+    pub fn load_blob(&self, locale: usize, text: &'static str, spans: &'static [u8]) -> Result<(), String> {
+        let Some(messages) = self.messages.get(locale) else { return Err(format!("no locale {locale}")) };
+        if messages.present() { return Ok(()); }
+        if spans.len() != self.keys.len() * 8 {
+            return Err(format!("the span table has {} bytes, the catalog has {} keys", spans.len(), self.keys.len()));
+        }
+        messages.loaded.set((text, spans)).ok();
         Ok(())
     }
 
@@ -244,3 +261,7 @@ const fn compare(a: &[u8], b: &[u8]) -> Ordering {
     }
     Ordering::Equal
 }
+
+#[cfg(test)]
+#[path = "catalog_tests.rs"]
+mod tests;

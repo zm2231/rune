@@ -99,7 +99,17 @@ pub struct Recording {
 /// Records the microphone to a file. Clones share one recorder; dropping the last clone while
 /// recording stops it and keeps the file.
 ///
-/// ```ignore
+/// ```no_run
+/// # mod rune {
+/// #     pub use rune_media::{Player, Recorder};
+/// #     pub struct El;
+/// #     impl El {
+/// #         pub fn w(self, _: f32) -> Self { self }
+/// #         pub fn h(self, _: f32) -> Self { self }
+/// #         pub fn live_scale(self, _: &rune_core::Live<f32>) -> Self { self }
+/// #     }
+/// #     pub fn el() -> El { El }
+/// # }
 /// let rec = rune::Recorder::to_file("note.m4a"); // AAC; "note.wav" records WAV
 /// rec.start();
 /// // In a view, a level bar that redraws without re-running the view:
@@ -160,7 +170,7 @@ fn devices() -> bool {
 /// Seconds since the first recorder looked, for elapsed time in a window.
 fn wall_now() -> f64 {
     static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-    ORIGIN.get_or_init(Instant::now).elapsed().as_secs_f64()
+    ORIGIN.get_or_init(rune_core::time::now).elapsed().as_secs_f64()
 }
 
 thread_local! {
@@ -456,7 +466,7 @@ impl Shared {
                 None
             }
             Unlocked::RemoveFile(path) => {
-                let _ = std::fs::remove_file(path);
+                std::fs::remove_file(path).ok();
                 None
             }
         }
@@ -563,7 +573,7 @@ impl Drop for Shared {
         };
         match source {
             Source::Fake(fake) => {
-                let _ = fake.write(c.elapsed);
+                fake.write(c.elapsed).ok();
             }
             Source::Device(session) => backend::finish(session),
         }

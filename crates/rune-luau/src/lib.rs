@@ -26,7 +26,7 @@
 //!   `poll` receives; an idle script never enters its VM. A host's **`Signal`** has `Connect`,
 //!   `Once` and `Wait`; a `ScriptSignal` adds `Fire` and `Version`. Connections run as tasks.
 //! - **Errors never panic**: a failed render shows an error card, a failed task is logged, and a
-//!   watchdog stops any entry that runs past 250 ms.
+//!   watchdog stops any entry that uses more than 250 ms of its thread's CPU time.
 //! - **Hot reload**: [`Script::reload`] (or `Script::watch` with the `watch` feature) swaps the
 //!   VM, carrying `saveHotState()` into `loadHotState(state)`.
 //!
@@ -41,6 +41,7 @@ mod functions;
 mod options;
 mod require;
 mod script;
+mod scroll;
 mod sources;
 mod task;
 mod ui;

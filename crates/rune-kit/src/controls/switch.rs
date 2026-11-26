@@ -10,6 +10,7 @@ pub struct Switch {
     checked: bool,
     standard: bool,
     web: bool,
+    flat: bool,
     size: ControlSize,
     hide_label: bool,
     description: Option<String>,
@@ -24,6 +25,7 @@ impl Switch {
             checked,
             standard: false,
             web: false,
+            flat: false,
             size: ControlSize::Mini,
             hide_label: false,
             description: None,
@@ -56,8 +58,22 @@ impl Switch {
         self.web = true;
         self
     }
+    /// Omit the track sheen gradient, knob depth gradient, 0.5 point knob rim, and track and knob
+    /// shadows on this compact or web switch without mutating `Kit::elevation`. For a theme-wide
+    /// setting, use [`Kit::metrics`](Kit::metrics)'s `switch_look` ([`SwitchLook`](crate::SwitchLook)).
+    ///
+    /// ```
+    /// # use rune_kit::{Kit, Switch};
+    /// let k = Kit::neutral(true);
+    /// let _ = Switch::new(true).flat().build(&k);
+    /// ```
+    pub fn flat(mut self) -> Self {
+        self.flat = true;
+        self
+    }
     /// The track and knob of an `NSSwitch` of this size on macOS 27: Mini (36 × 16, the size
-    /// System Settings uses) unless set. The standard appearance keeps its own size.
+    /// System Settings uses) unless set, or the kit's own size from `Kit::metrics.switch`. The
+    /// standard and web appearances keep their own size.
     pub fn control_size(mut self, s: ControlSize) -> Self {
         self.size = s;
         self
@@ -92,7 +108,7 @@ impl Switch {
             (false, false) => self.compact_control(k),
         };
         let control = k.disabled_dim(control, disabled && !self.standard);
-        let control = k.focus_ring_state(control, 2.0, 1.0, self.state == State::Focus && !self.standard);
+        let control = k.focus_ring_state(control, 2.0, 2.0, self.state == State::Focus);
         // The switch's label, description and on state say what its text and track show.
         let mut root = row().role("switch").checked(self.checked).gap(8.0).center_y();
         if let Some(l) = &self.label {
@@ -109,21 +125,16 @@ impl Switch {
         if let Some(d) = &self.description {
             root = root
                 .description(d.clone())
-                .child(text(d.clone()).key("description").font(k.ty.text_xsmall.lh(15.6)).color(c.std_text).a11y_hidden());
+                .child(text(d.clone()).key("description").font(k.ty.text_xsmall.lh(15.6)).color(c.std_text).wrap().shrink().a11y_hidden());
         }
         root = root.child(control.key("control").a11y_hidden());
         self.acts.apply(root.focusable(!disabled).disabled(disabled), !disabled)
     }
 
     fn compact_control(&self, k: &Kit) -> El {
-        // NSSwitch's capsule track and pill knob, measured on macOS 27: (track w, h, knob w, h, inset).
-        let (tw, th, kw, kh, inset) = match self.size {
-            ControlSize::Mini => (36.0, 16.0, 21.0, 14.0, 1.0),
-            ControlSize::Small => (44.0, 20.0, 26.0, 16.0, 2.0),
-            ControlSize::Regular => (54.0, 24.0, 32.0, 20.0, 2.0),
-            ControlSize::Large => (64.0, 28.0, 38.0, 24.0, 2.0),
-            ControlSize::ExtraLarge => (80.0, 36.0, 48.0, 30.0, 3.0),
-        };
+        // A capsule track and pill knob: NSSwitch's, measured on macOS 27, unless the kit sets its own.
+        let m = k.switch_metrics(self.size);
+        let (tw, th, kw, kh, inset) = (m.track_width, m.track_height, m.knob_width, m.knob_height, m.inset);
         // The knob stretches towards the middle on hover, and further while pressed.
         let stretch = match self.state {
             State::Hover => (kh * 0.15f32).round(),
@@ -144,33 +155,30 @@ impl Switch {
 
     fn raised_switch(&self, k: &Kit, track_box: (f32, f32, f32), thumb_box: (f32, f32, f32, f32, f32)) -> El {
         let c = &k.c;
-        let (base, sheen_bottom, elevation, knob) = if self.checked {
-            (c.bg_accent, k.light_on(0.1, c.bg_accent), &k.elevation.switch_on, c.knob_on)
+        let look = k.switch_look();
+        let (base, sheen_bottom, elevation, knob, border) = if self.checked {
+            (c.bg_accent, k.light_on(0.1, c.bg_accent), &k.elevation.switch_on, c.knob_on, look.track_border_on)
         } else {
-            (c.layer_04, k.light_on(0.2, c.layer_04), &k.elevation.switch_off, c.knob)
+            (c.layer_04, k.light_on(0.2, c.layer_04), &k.elevation.switch_off, c.knob, look.track_border_off)
         };
         let overlay = if self.checked { k.on(c.contrast_hover, c.bg_accent) } else { c.hover };
         let (tw, th, tr) = track_box;
         let (w, h, x, y, r) = thumb_box;
-        let thumb = k.elevate(
-            el().key("thumb")
-                .size(w, h)
-                .absolute(x, y)
-                .radius(r)
-                .fill(knob)
-                .gradient(k.on(c.depth_top, knob), k.on(c.depth_bottom, knob))
-                .border(0.5, k.on(c.depth_top, knob)),
-            &k.elevation.elements,
-        )
-        .motion(k.motion.control);
-        let track = k.hover_surface(
-            el().size(tw, th).radius(tr).gradient(k.light(0.0), sheen_bottom),
-            base,
-            overlay,
-            self.state == State::Hover,
-            self.state == State::Rest,
-        );
-        k.elevate(track, elevation).motion(k.motion.control).child(thumb)
+        let mut thumb = el().key("thumb").size(w, h).absolute(x, y).radius(r).fill(knob);
+        if !self.flat && look.knob_depth {
+            thumb = thumb.gradient(k.on(c.depth_top, knob), k.on(c.depth_bottom, knob)).border(0.5, k.on(c.depth_top, knob));
+        }
+        let thumb = if self.flat { thumb } else { k.elevate(thumb, &k.elevation.elements) }.motion(k.motion.control);
+        let mut track = el().size(tw, th).radius(tr);
+        if !self.flat && look.sheen {
+            track = track.gradient(k.light(0.0), sheen_bottom);
+        }
+        if look.track_border > 0.0 && border.a > 0.0 {
+            track = track.border(look.track_border, border);
+        }
+        let track = k.hover_surface(track, base, overlay, self.state == State::Hover, self.state == State::Rest);
+        let track = if self.flat { track } else { k.elevate(track, elevation) };
+        track.motion(k.motion.control).child(thumb)
     }
 
     fn standard_control(&self, k: &Kit, hover: bool) -> El {
@@ -188,15 +196,29 @@ impl Switch {
         // A content-box thumb (14 + 1 px border each side) nudged 1 px left over the 1 px track
         // border; when on it loses its border and moves 12 px right. Pressed, it stretches
         // towards the middle.
+        let m = k.standard_switch_metrics();
+        let (tw, th, thumb_size, inset) = (m.track_width, m.track_height, m.thumb, m.inset);
         let thumb_fill = if disabled { c.std_icon } else { c.std_icon_invert };
-        let stretch = if self.state == State::Pressed { 4.0 } else { 0.0 };
         let mut thumb = el().key("thumb").fill(thumb_fill);
         thumb = if self.checked {
-            thumb.size(14.0 + stretch, 14.0).absolute(13.0 - stretch, 1.0).radius(7.0)
+            let max_stretch = (tw - 2.0 * inset - thumb_size).max(0.0);
+            let stretch = if self.state == State::Pressed { 4.0f32.min(max_stretch) } else { 0.0 };
+            let x = (tw - inset - thumb_size - stretch).max(0.0);
+            let y = ((th - thumb_size) * 0.5).max(0.0);
+            thumb.size(thumb_size + stretch, thumb_size).absolute(x, y).radius(thumb_size * 0.5)
         } else {
-            thumb.size(16.0 + stretch, 16.0).absolute(0.0, 0.0).radius(8.0).border(1.0, c.std_border)
+            let off_size = thumb_size + 2.0;
+            let x = (inset - 1.0).max(0.0);
+            let y = ((th - off_size) * 0.5).max(0.0);
+            let max_stretch = (tw - x - off_size).max(0.0);
+            let stretch = if self.state == State::Pressed { 4.0f32.min(max_stretch) } else { 0.0 };
+            thumb
+                .size(off_size + stretch, off_size)
+                .absolute(x, y)
+                .radius(off_size * 0.5)
+                .border(1.0, c.std_border)
         };
         thumb = k.elevate(thumb, &k.elevation.knob).motion(k.motion.control);
-        el().size(28.0, 16.0).radius(8.0).fill(fill).border(1.0, border).motion(k.motion.control).child(thumb)
+        el().size(tw, th).radius(th * 0.5).fill(fill).border(1.0, border).motion(k.motion.control).child(thumb)
     }
 }

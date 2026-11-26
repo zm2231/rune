@@ -1,8 +1,9 @@
 //! What a `RuneView` draws: one app's runtime and renderer on the view's `CAMetalLayer`, with the
 //! app's state type erased so one Objective-C class serves every app.
 
+#![allow(unsafe_code)]
+
 use std::ffi::c_void;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -18,7 +19,7 @@ use super::text::undo::Offer;
 use crate::a11y::AccessibilityLink;
 use crate::app::{App, OnWindow, Shared};
 use crate::embed::{EmbedFrame, LayerHost};
-use crate::file_dialog::{FileDialogError, FileDialogKind, FileDialogOptions};
+use crate::file_dialog::{DialogAnswer, FileDialogError, FileDialogKind, FileDialogOptions};
 use crate::popup_menu::Show;
 use crate::runtime::{TouchPhase, Waker};
 use crate::time::Instant;
@@ -75,9 +76,9 @@ pub(crate) trait Surface {
     /// The menu showing was answered with an item's id, or dismissed.
     fn popup_pick(&mut self, picked: Option<String>);
     /// The file dialog to show, once the frame that asked for it is done.
-    fn file_dialog(&mut self) -> Option<(u64, FileDialogKind, FileDialogOptions)>;
+    fn file_dialog(&mut self) -> Option<(u64, FileDialogKind, bool, FileDialogOptions)>;
     /// The dialog's answer: the chosen file, none when cancelled, or why it could not show.
-    fn file_dialog_answer(&mut self, id: u64, answer: Result<Option<PathBuf>, String>);
+    fn file_dialog_answer(&mut self, id: u64, answer: Result<DialogAnswer, String>);
 
     // Keys and text.
     /// A key from the soft keyboard, or an edit action UIKit sent.
@@ -145,7 +146,7 @@ struct Hosted<S: 'static> {
     /// What a finger on the focused field is doing, and the field's menu.
     field: field_touch::State,
     /// Its place among the apps receiving links (`App::on_open_url`).
-    _open_urls: Option<crate::open_url::incoming::Listening>,
+    _open_urls: crate::open_url::incoming::Listeners,
     wake: Waker,
 }
 
@@ -281,20 +282,20 @@ impl<S: 'static> Surface for Hosted<S> {
                 Some((show, field))
             }
             // It can't open: its anchor is gone.
-            None => { let _ = rt.resolve_popup(None); None }
+            None => { rt.resolve_popup(None).ok(); None }
         }
     }
 
     fn popup_pick(&mut self, picked: Option<String>) {
-        let _ = self.host.runtime_mut().resolve_popup(picked.as_deref());
+        self.host.runtime_mut().resolve_popup(picked.as_deref()).ok();
         self.field_step(field_touch::Event::Answered { select_all: picked.as_deref() == Some("select-all") });
     }
 
-    fn file_dialog(&mut self) -> Option<(u64, FileDialogKind, FileDialogOptions)> {
+    fn file_dialog(&mut self) -> Option<(u64, FileDialogKind, bool, FileDialogOptions)> {
         self.host.runtime_mut().core_mut().take_file_dialog()
     }
 
-    fn file_dialog_answer(&mut self, id: u64, answer: Result<Option<PathBuf>, String>) {
+    fn file_dialog_answer(&mut self, id: u64, answer: Result<DialogAnswer, String>) {
         self.host.runtime_mut().core_mut().answer_file_dialog(id, answer.map_err(FileDialogError));
     }
 
@@ -310,7 +311,7 @@ impl<S: 'static> Surface for Hosted<S> {
             Some(code) => {
                 // A `keys_first` menu item's chord runs the item when no handler takes it.
                 let unhandled = key.as_ref().filter(|_| pressed).and_then(crate::native_menu::keys_first);
-                rt.physical_then(PhysicalInput::Key { key: code, mods, pressed, repeat }, key, base, unhandled);
+                rt.physical_then(PhysicalInput::Key { key: code, mods, pressed, repeat, text: None, consumed_mods: Default::default() }, key, base, unhandled);
             }
             // A key with no physical code still edits and moves.
             None => if let Some(key) = key.filter(|_| pressed) { self.host.key(key) },

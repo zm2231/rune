@@ -158,6 +158,8 @@ impl Dev {
         let clicks = self.press_count(&path(row), point(spot)).min(3);
         let unit = match clicks { 1 => U::Char, 2 => U::Word, _ => U::Paragraph };
         let origin = unit_at(at, unit);
+        // On Windows a double-click on "row" takes the space after it (`selectable::with_trailing_space`).
+        let origin = if cfg!(target_os = "windows") && unit == U::Word && origin == (0, 3) { (0, 4) } else { origin };
         (self.unit, self.origin) = (unit, origin);
         (self.anchor, self.focus) = origin;
         self.path = Some(path(row));
@@ -299,7 +301,7 @@ impl Walk {
         self.rt.edit.selectable = Default::default();
         self.rt.sync_selection_pins();
         self.rt.frame.queue.retain(|_| false);
-        self.rt.frame.wake_deadlines.clear();
+        self.rt.frame.clear_wake_deadlines();
         if self.offset() != 0.0 {
             self.rt.wheel(150.0, 60.0, 10_000.0);
             self.settle();
@@ -407,7 +409,7 @@ impl Walk {
                 }
             }
             (phase, _) => {
-                let phase = match phase { Phase::Empty => "empty", Phase::Placed(_) => "placed", Phase::Dragging { .. } => "dragging" };
+                let phase = match phase { Phase::Empty => "empty", Phase::Placed(_) => "placed", Phase::Armed { .. } => "armed", Phase::Dragging { .. } => "dragging" };
                 return Err(format!("after {letter:?}: {phase}, dev path {:?} dragging {}", dev.path, dev.dragging));
             }
         }

@@ -2,7 +2,7 @@
 //! with `Runtime::set_srgb_blend`, hover and press tints included, as an `App::srgb_blend`
 //! window does.
 use rune::color::over;
-use rune::render::{Gpu, OFFSCREEN_FORMAT, Offscreen, Renderer};
+use rune::render::{Gpu, OFFSCREEN_FORMAT, OFFSCREEN_FORMAT_LINEAR, Offscreen, Renderer};
 use rune::text::TextSystem;
 use rune::{Color, Cx, El, Env, Runtime, el};
 
@@ -29,7 +29,7 @@ fn tinted(rt: &Runtime<()>) -> [f32; 4] {
 }
 
 fn pixel(gpu: &Gpu, rt: &mut Runtime<()>) -> [u8; 4] {
-    let format = if rt.srgb_blend() { OFFSCREEN_FORMAT.remove_srgb_suffix() } else { OFFSCREEN_FORMAT };
+    let format = if rt.srgb_blend() { OFFSCREEN_FORMAT } else { OFFSCREEN_FORMAT_LINEAR };
     let mut renderer = Renderer::new(&gpu.device, format);
     renderer.set_srgb_blend(rt.srgb_blend());
     let target = Offscreen::with_format(&gpu.device, 40, 40, format);
@@ -55,7 +55,7 @@ fn hover_tints_follow_the_runtime_blend_mode() {
 
 #[test]
 fn a_self_drawn_runtime_renders_gamma_blended_pixels() {
-    let gpu = Gpu::headless();
+    let Some(gpu) = Gpu::test_headless() else { return };
     let near = |got: [u8; 4], want: [u8; 4]| assert!(got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= 1), "{got:?} != {want:?}");
     // Half white over red: 128 in sRGB space, as CSS draws it; linear light reads 188.
     near(pixel(&gpu, &mut hovered(true)), [255, 128, 128, 255]);
@@ -92,6 +92,7 @@ fn a_handler_switches_blend_mode_live() {
 /// compositor's `Frame` change format on the frame that switches.
 #[test]
 fn a_headless_run_follows_a_live_switch() {
+    if !Gpu::test_adapter_available() { return; }
     use rune::compose::{Compositor, Frame};
     use rune::{App, AppSpec};
     use std::sync::Mutex;
@@ -115,7 +116,8 @@ fn a_headless_run_follows_a_live_switch() {
     };
     App::new(AppSpec::new("srgb-live", (40.0, 40.0), || (), view)).srgb_blend(false).compositor(Watch)
         .args(["--snap", png.to_str().unwrap(), "--scale", "1", "--script", script.to_str().unwrap(), "--at", "0.5"].map(String::from))
-        .run();
+        .try_run()
+        .unwrap();
     let decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(&png).unwrap()));
     let mut reader = decoder.read_info().unwrap();
     let mut buf = vec![0u8; reader.output_buffer_size().unwrap()];
@@ -124,33 +126,37 @@ fn a_headless_run_follows_a_live_switch() {
     let at = (20 * 40 + 20) * 4;
     let px = &buf[at..at + 4];
     // Half white over red reads 128 blended in sRGB, 188 in linear light.
-    assert!(px[1].abs_diff(128) <= 1 && px[0] == 255, "gamma-blended after the switch, got {px:?}");
+    // Premultiplied half-white can quantize to RGB 127 and alpha 128 on UNORM8 blenders, giving R = 254.
+    assert!(
+        px[1].abs_diff(128) <= 1 && px[0].abs_diff(255) <= 1,
+        "gamma-blended after the switch, got {px:?}"
+    );
     let seen = SEEN.lock().unwrap();
-    assert_eq!(seen.first(), Some(&(false, OFFSCREEN_FORMAT)), "starts linear");
-    assert_eq!(seen.last(), Some(&(true, OFFSCREEN_FORMAT.remove_srgb_suffix())), "ends gamma-space");
+    assert_eq!(seen.first(), Some(&(false, OFFSCREEN_FORMAT_LINEAR)), "starts linear");
+    assert_eq!(seen.last(), Some(&(true, OFFSCREEN_FORMAT)), "ends gamma-space");
 }
 
 #[test]
 fn switching_format_keeps_the_glyph_atlas_and_extra_pipelines() {
-    let gpu = Gpu::headless();
+    let Some(gpu) = Gpu::test_headless() else { return };
     let text = TextSystem::new(&[], ("Inter", "Inter"));
     let view = |_: &(), _: &mut Cx<()>| {
         el().size(80.0, 40.0).fill(RED)
             .child(rune::text("hello"))
     };
     let mut rt = Runtime::with_text((), view, (80.0, 40.0), Env::new(true, 1.0), text);
+    rt.set_srgb_blend(false);
     rt.frame(0.0);
-    let mut renderer = Renderer::new(&gpu.device, OFFSCREEN_FORMAT);
+    let mut renderer = Renderer::new(&gpu.device, OFFSCREEN_FORMAT_LINEAR);
     renderer.add_format(&gpu.device, wgpu::TextureFormat::Rgba16Float);
     renderer.prepare(&gpu.device, &gpu.queue, &mut rt.text.atlas, &rt.instances, (80, 40));
     assert!(rt.text.atlas.dirty.is_none(), "initial prepare drained the atlas");
 
     rt.set_srgb_blend(true);
     rt.frame(1.0 / 60.0);
-    let non_srgb = OFFSCREEN_FORMAT.remove_srgb_suffix();
-    renderer.set_format(&gpu.device, non_srgb);
-    renderer.set_srgb_blend(true);
-    assert_eq!(renderer.format(), non_srgb);
+    renderer.set_format(&gpu.device, OFFSCREEN_FORMAT);
+    assert!(renderer.srgb_blend());
+    assert_eq!(renderer.format(), OFFSCREEN_FORMAT);
     assert!(rt.text.atlas.dirty.is_none(), "switching blend format keeps the uploaded glyph atlas");
 
     let layer = Offscreen::with_format(&gpu.device, 80, 40, wgpu::TextureFormat::Rgba16Float);

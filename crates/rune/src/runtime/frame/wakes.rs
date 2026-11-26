@@ -4,8 +4,20 @@ use super::*;
 impl RuntimeCore {
     /// Clock seconds now: the wall clock in a window (input arrives between frames), the
     /// virtual clock headless.
-    pub(in crate::runtime) fn now_clock(&self) -> f64 {
+    pub(crate) fn now_clock(&self) -> f64 {
+        #[cfg(test)]
+        if let Some(now) = self.frame.test_clock_now() { return now; }
         self.wall_start.map_or(self.clock, |t| t.elapsed().as_secs_f64())
+    }
+
+    /// Clock seconds of the live input event currently being dispatched (on macOS, the hardware
+    /// `NSEvent.timestamp()` mapped onto `wall_start` via `crate::input::time::current()`),
+    /// falling back to [`Self::now_clock`] when no native event timestamp or wall clock is active.
+    pub(crate) fn input_clock(&self) -> f64 {
+        if let (Some(start), Some(at)) = (self.wall_start, crate::input::time::current()) {
+            return at.saturating_duration_since(start).as_secs_f64();
+        }
+        self.now_clock()
     }
 
     /// The window's size in its points and its scale. The view lays out in them over its zoom
@@ -15,9 +27,9 @@ impl RuntimeCore {
         let (viewport, scale) = self.host.zoom.view();
         if self.fit_resized(viewport.1) {
             self.commit.relayout = true;
-            self.commit.viewport_stepped = false;
+            self.commit.set_viewport_stepped(false);
         }
-        if self.change_viewport(viewport, scale) { self.commit.viewport_stepped = false; }
+        if self.change_viewport(viewport, scale) { self.commit.set_viewport_stepped(false); }
     }
 
     /// The viewport one frame of the window's own resize animation moved it to. Unlike a
@@ -27,20 +39,26 @@ impl RuntimeCore {
         (self.host.zoom.window, self.host.zoom.window_scale) = (viewport, scale);
         let (viewport, scale) = self.host.zoom.view();
         let fresh = !self.commit.relayout;
-        if self.change_viewport(viewport, scale) && fresh { self.commit.viewport_stepped = true; }
+        if self.change_viewport(viewport, scale) && fresh { self.commit.set_viewport_stepped(true); }
     }
 
     /// Whether the change needs a layout.
     pub(in crate::runtime) fn change_viewport(&mut self, viewport: (f32, f32), scale: f32) -> bool {
-        // A window that fits its content lays out the same at any height: its own resize
-        // mustn't cut short the layout springs it is following.
-        if self.host.fit_height && viewport.0 == self.viewport.0 && scale == self.env.scale {
+        // A window or overlay that fits content on an axis lays out the same when only fitted
+        // axes change: its own resize must not loop relayout or cut short child springs.
+        let fixed_w_same = self.host.content_sizing.fits_width() || viewport.0 == self.viewport.0;
+        let fixed_h_same = self.host.content_sizing.fits_height() || viewport.1 == self.viewport.1;
+        if self.host.content_sizing.fits_any() && fixed_w_same && fixed_h_same && scale == self.env.scale {
             self.viewport = viewport;
             return false;
         }
-        let changed = viewport != self.viewport || scale != self.env.scale;
+        let scale_changed = scale != self.env.scale;
+        let changed = viewport != self.viewport || scale_changed;
         if changed {
-            if scale != self.env.scale { self.motion.flights.clear(); }
+            if scale_changed {
+                self.motion.clear_flights();
+                self.commit.step_feedback(layout_read::FeedbackEvent::Reopened);
+            }
             self.viewport = viewport;
             self.env.scale = scale;
             self.scene.set_pixel_scale(scale);
@@ -63,7 +81,7 @@ impl RuntimeCore {
     /// it is composing when the focus goes.
     fn focus_changed(&mut self, app: &mut dyn AppDriver, focused: bool, ends_composition: bool) {
         // Every focus gain, even one a hide without blur left unreported.
-        if focused { self.kbd.keys_lost = false; }
+        if focused { self.kbd.keys_lost = false; self.kbd.focus_lost_sent = false; }
         if self.host.window_focused != Some(focused) {
             // Refocused, the pointer where it was hovers again; blurred, it waits for a move.
             if focused && self.host.window_focused == Some(false) { self.pointer.hover_paused = false; }
@@ -72,6 +90,11 @@ impl RuntimeCore {
             if self.host.window_focused.is_some()
                 && (self.focused_input().is_some_and(|i| i.selection_style.is_some()) || self.text_selection().is_some_and(|(_, r)| !r.is_empty()))
             {
+                self.commit.dirty = true;
+            }
+            // Back to the front: a field's keyboard-entry ring stays off until the keys move focus.
+            if focused && self.host.window_focused == Some(false) && self.kbd.focus.entered_by_keys() {
+                self.kbd.focus.step(crate::runtime::input::focus_machine::FocusEvent::WindowReturned);
                 self.commit.dirty = true;
             }
             self.host.window_focused = Some(focused);
@@ -83,6 +106,7 @@ impl RuntimeCore {
             // Deliver the cancelled Up before FocusLost can commit a view that removes its
             // grip (or the focus callback clears the app's drag state).
             if !focused {
+                self.dismiss_popup_menu_fallback(app);
                 self.cancel_pointer();
                 self.kbd.held = physical_dispatch::Activation::Up;
             }
@@ -98,8 +122,12 @@ impl RuntimeCore {
                 self.pointer.hover_paused = true;
             }
         }
-        if !focused { self.edit.input_click.clear(); self.wheel_lost(); }
+        if !focused { self.edit.clear_input_click(); self.wheel_lost(); }
     }
+
+    /// The last focus change the window reported was a gain.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn window_has_focus(&self) -> bool { self.host.window_focused == Some(true) }
 
     /// The window gets no more keys: it lost focus or hid, which may never report a blur. The
     /// focused physical handler hears `FocusLost` and held modifier keys are released, once
@@ -110,16 +138,17 @@ impl RuntimeCore {
         self.physical_input(crate::PhysicalInput::FocusLost);
     }
 
-    /// Keyboard input, a focus change, a file drag step or a file dialog answer is queued for the
-    /// next frame.
+    /// Keyboard input, a focus change, a file drag step, a file dialog answer or an
+    /// `open_url_then` result is queued for the next frame. A browser that comes to the front
+    /// can hide the window, and its result still has to reach the app.
     pub(crate) fn keys_queued(&self) -> bool {
-        self.frame.queue.iter().any(|a| matches!(a, Action::Physical(..) | Action::Key { .. } | Action::KeyUp(_) | Action::WindowFocus(_) | Action::Files(_) | Action::FileDialog(..)))
+        self.frame.queue.iter().any(|a| matches!(a, Action::Physical(..) | Action::Key { .. } | Action::KeyUp(_) | Action::WindowFocus(_) | Action::Files(_) | Action::FileDialog(..) | Action::UrlOpened(..)))
     }
 
     /// Host time on the logical clock.
     pub(in crate::runtime) fn wall_clock(&self) -> Option<f64> {
         #[cfg(test)]
-        if let Some(clock) = &self.frame.test_clock { return Some(clock.now()); }
+        if let Some(now) = self.frame.test_clock_now() { return Some(now); }
         self.wall_start.map(|t0| t0.elapsed().as_secs_f64())
     }
 
@@ -145,13 +174,9 @@ impl RuntimeCore {
         self.schedule_wakes_from(due, [std::time::Duration::ZERO]);
     }
 
+    #[inline]
     pub(in crate::runtime) fn schedule_wakes_from(&mut self, now: f64, wakes: impl IntoIterator<Item = std::time::Duration>) {
-        for delay in wakes {
-            let deadline = now + delay.as_secs_f64();
-            if let Err(index) = self.frame.wake_deadlines.binary_search_by(|t| t.total_cmp(&deadline)) {
-                self.frame.wake_deadlines.insert(index, deadline);
-            }
-        }
+        self.frame.schedule_wakes_from(now, wakes);
     }
 
     /// Next requested wake on the unscaled app clock. None lets the shell sleep indefinitely.
@@ -166,21 +191,22 @@ impl RuntimeCore {
 
     /// When `poll` last ran, on `wake_deadline`'s clock.
     pub(crate) fn polled_at(&self) -> f64 {
-        self.frame.timer_wake.polled_at().unwrap_or(self.clock)
+        self.frame.polled_at(self.clock)
     }
 
     pub(in crate::runtime) fn logical_wake_deadline(&self) -> Option<f64> {
-        self.frame.wake_deadlines.first().copied().into_iter().chain(self.motion.loop_wake.map(|w| w.0)).min_by(f64::total_cmp)
+        self.poll_wake_deadline().into_iter().chain(self.motion.loop_wake().map(|w| w.0)).min_by(f64::total_cmp)
     }
 
-    /// The next due timer of `poll`'s, on `wake_deadline`'s clock.
+    /// The next due timer of `poll`'s (or an armed touch hold), on `wake_deadline`'s clock.
     pub(crate) fn poll_wake_deadline(&self) -> Option<f64> {
-        self.frame.wake_deadlines.first().copied()
+        self.frame.next_wake_deadline().into_iter().chain(self.pointer.touch_hold_deadline()).min_by(f64::total_cmp)
     }
 
     /// The next frame motion asks for at its own cadence (a loop's next step, a video's next
     /// picture), on `wake_deadline`'s clock.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn motion_wake_deadline(&self) -> Option<f64> {
-        self.motion.loop_wake.map(|w| w.0)
+        self.motion.loop_wake().map(|w| w.0)
     }
 }

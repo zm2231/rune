@@ -2,11 +2,13 @@
 //! recognizers, a hardware keyboard's presses and their repeat, and the edits the keyboard's
 //! text input makes. Each goes to the runtime through the view's surface and wakes its pacing.
 
+#![allow(unsafe_code)]
+
 use objc2_core_foundation::{CGFloat, CGPoint};
-use objc2_foundation_video::NSString;
-use objc2_video::rc::{Allocated, Retained, Weak};
-use objc2_video::runtime::{AnyClass, AnyObject, Sel};
-use objc2_video::{DefinedClass, class, msg_send, sel};
+use objc2_foundation::NSString;
+use objc2::rc::{Allocated, Retained, Weak};
+use objc2::runtime::{AnyClass, AnyObject, Sel};
+use objc2::{DefinedClass, class, msg_send, sel};
 
 use super::super::keys;
 use super::super::pacing::Event;

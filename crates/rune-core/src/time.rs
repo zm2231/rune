@@ -1,5 +1,5 @@
 //! Clocks. Native clock types remain unchanged; browsers read the page's `performance.now()`
-//! ([`page_clock`]). [`LocalTime`] reads an instant off the user's wall clock.
+//! (`page_clock`). [`LocalTime`] reads an instant off the user's wall clock.
 #[cfg(not(target_arch = "wasm32"))]
 pub use std::time::Instant;
 #[cfg(target_arch = "wasm32")]
@@ -17,6 +17,18 @@ mod local;
 mod page_clock;
 
 pub use local::LocalTime;
+
+/// Current monotonic instant: `std::time::Instant::now()` natively, the page's
+/// `performance.now()` in a browser.
+#[inline]
+#[allow(clippy::disallowed_methods)]
+pub fn now() -> Instant { Instant::now() }
+
+/// Current wall-clock instant: `std::time::SystemTime::now()` natively, the page's `Date.now()`
+/// in a browser.
+#[inline]
+#[allow(clippy::disallowed_methods)]
+pub fn system_now() -> SystemTime { SystemTime::now() }
 
 /// The same moment on winit's clock, for `ControlFlow::WaitUntil`.
 #[doc(hidden)]

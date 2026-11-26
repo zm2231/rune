@@ -3,15 +3,17 @@
 //! runtime. An app that owns the screen puts one in its window (`app`), and a UIKit or SwiftUI
 //! app puts one wherever it wants a Rune surface (`rune::ios::view`).
 
+#![allow(unsafe_code)]
+
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use objc2_foundation_video::NSString;
-use objc2_video::rc::{Retained, Weak};
-use objc2_video::runtime::{AnyClass, AnyObject, NSObject, NSObjectProtocol};
-use objc2_video::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, extern_class, extern_protocol, msg_send, sel};
+use objc2_foundation::NSString;
+use objc2::rc::{Retained, Weak};
+use objc2::runtime::{AnyClass, AnyObject, NSObject, NSObjectProtocol};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, extern_class, extern_protocol, msg_send, sel};
 
 use super::accessibility::Accessibility;
 use super::edit_menu;
@@ -428,7 +430,7 @@ impl RuneView {
             Some((popup, field)) => self.open_menu(popup, field),
             None => self.menu_follow_caret(),
         }
-        if let Some((id, kind, options)) = file { self.pick_file(id, kind, &options); }
+        if let Some((id, kind, multiple, options)) = file { self.pick_file(id, kind, multiple, &options); }
         if let Some((tree, zoom)) = tree {
             let posts = self.ivars().accessibility.borrow_mut().apply(self.mtm(), self, tree, zoom);
             posts.post();

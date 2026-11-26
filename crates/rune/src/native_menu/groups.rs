@@ -6,7 +6,7 @@
 //! Separators split a menu into the sections UIKit draws apart. Dock items have no place.
 //! Plain data, testable on every platform.
 
-use super::{Description, Location};
+use super::{Description, EntryKind, Location};
 
 /// One menu's items: the app menu (`menu` none) or a named one, as sections.
 pub(crate) struct Group<'a> {
@@ -18,7 +18,7 @@ pub(crate) struct Group<'a> {
 pub(crate) fn groups(items: &[Description]) -> Vec<Group<'_>> {
     let mut menus: Vec<Option<&str>> = Vec::new();
     for d in items {
-        let menu = match &d.location {
+        let menu = match &d.meta.location {
             Location::App => None,
             Location::Named(name) => Some(name.as_str()),
             Location::Dock => continue,
@@ -27,7 +27,7 @@ pub(crate) fn groups(items: &[Description]) -> Vec<Group<'_>> {
     }
     menus.sort_by_key(Option::is_some);
     menus.into_iter().map(|menu| {
-        let mine = items.iter().filter(|d| match &d.location {
+        let mine = items.iter().filter(|d| match &d.meta.location {
             Location::App => menu.is_none(),
             Location::Named(name) => menu == Some(name.as_str()),
             Location::Dock => false,
@@ -42,8 +42,8 @@ fn ordered<'a>(items: impl Iterator<Item = &'a Description>) -> Vec<&'a Descript
     // The last item placed after each anchor, so the next one goes after it.
     let mut chained: Vec<(&str, &str)> = Vec::new();
     for d in items {
-        let placed = |id: &str| out.iter().position(|o| !o.separator && o.id == id);
-        let anchor = d.after.as_deref().and_then(|anchor| {
+        let placed = |id: &str| out.iter().position(|o| !is_separator(o) && o.meta.id == id);
+        let anchor = d.meta.after.as_deref().and_then(|anchor| {
             let last = chained.iter().find(|(a, _)| *a == anchor).map(|(_, last)| *last);
             last.and_then(placed).or_else(|| placed(anchor)).map(|at| (anchor, at))
         });
@@ -51,7 +51,7 @@ fn ordered<'a>(items: impl Iterator<Item = &'a Description>) -> Vec<&'a Descript
             Some((anchor, at)) => {
                 out.insert(at + 1, d);
                 chained.retain(|(a, _)| *a != anchor);
-                if !d.separator { chained.push((anchor, &d.id)); }
+                if !is_separator(d) { chained.push((anchor, &d.meta.id)); }
             }
             None => out.push(d),
         }
@@ -61,8 +61,11 @@ fn ordered<'a>(items: impl Iterator<Item = &'a Description>) -> Vec<&'a Descript
 
 /// `items` split at its separators, with no empty section.
 fn sections(items: Vec<&Description>) -> Vec<Vec<&Description>> {
-    items.split(|d| d.separator).filter(|s| !s.is_empty()).map(<[_]>::to_vec).collect()
+    items.split(|d| is_separator(d)).filter(|s| !s.is_empty()).map(<[_]>::to_vec).collect()
 }
+
+/// Whether `d` only splits its menu into sections.
+pub(crate) fn is_separator(d: &Description) -> bool { matches!(d.kind, EntryKind::Separator) }
 
 #[cfg(test)]
 #[path = "groups_tests.rs"]

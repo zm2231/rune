@@ -2,6 +2,8 @@
 //! track, drawn by Rune on a canvas the page already has. Nothing moves until you touch it.
 //! `cargo run -p web-showcase -- --snap poster.png --size 560x320 --scale 2` draws the page's poster.
 
+#![forbid(unsafe_code)]
+
 use rune::tok;
 use rune::{AppSpec, Color, Cx, Drag, El, Phase, Spring, TextStyle, Tx, col, el, oklch, oklcha, row, text};
 
@@ -82,8 +84,10 @@ fn track(s: &State, track_w: f32) -> El {
             .fill(oklcha(1.0, 0.0, 0.0, 0.22)).absolute(x - 2.0, PUCK / 2.0 - 2.0));
     }
     el().key("track").role("slider").label("Puck").range_value(f64::from(s.at), 0.0, 1.0)
+        .a11y_value(format!("{}%", (s.at * 100.0).round()))
         .range_step(1.0 / (STOPS - 1) as f64)
         .on_step(|s: &mut State, steps, _| s.at = snap(s.at + steps as f32 / (STOPS - 1) as f32).clamp(0.0, 1.0))
+        .on_set_value(|s: &mut State, value, _| s.at = snap(value as f32).clamp(0.0, 1.0))
         .size(track_w, PUCK)
         .motion(SPRINGS[s.spring].1)
         .on_drag(move |s: &mut State, d: &mut Drag, tx: &mut Tx| match d.phase {

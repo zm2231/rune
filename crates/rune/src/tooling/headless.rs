@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::app::SharedCore;
-use crate::render::{Gpu, OFFSCREEN_FORMAT, Offscreen, Renderer};
+use crate::render::{Gpu, OFFSCREEN_FORMAT, OFFSCREEN_FORMAT_LINEAR, Offscreen, Renderer};
 use crate::runtime::RuntimeCore;
 use crate::time::Instant;
 
@@ -15,7 +15,7 @@ mod app;
 mod frame;
 use app::{HeadlessApp, TypedHeadlessApp};
 pub(in crate::tooling) use frame::{step_window_frame, take_window_frame};
-use frame::{HeadlessFrame, HeadlessLoop};
+use frame::{FrameShot, HeadlessFrame, HeadlessLoop};
 
 #[cfg(test)]
 pub(crate) use crate::render::surface_alpha::straight_alpha;
@@ -32,6 +32,8 @@ struct HeadlessPrep {
 
 impl HeadlessPrep {
     fn begin(args: &Args, spec_size: (f32, f32)) -> Self {
+        #[cfg(all(windows, feature = "frame-profile"))]
+        let _ = crate::frame::host_clock::cycles_per_ns();
         crate::tooling::interaction::gate::headless();
         let source = read_script(args);
         let script = source.as_ref().map(load_script).unwrap_or_default();
@@ -81,10 +83,10 @@ struct HeadlessConfig {
 fn wait_for_profiler() -> Instant {
     // RUNE_HEADLESS_WAIT=SECS holds the run before it starts, so a sampling profiler can attach.
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(secs) = std::env::var("RUNE_HEADLESS_WAIT").ok().and_then(|s| s.parse::<f64>().ok()) {
+    if let Some(secs) = rune_core::env::var("RUNE_HEADLESS_WAIT").and_then(|s| s.parse::<f64>().ok()) {
         std::thread::sleep(std::time::Duration::from_secs_f64(secs));
     }
-    Instant::now()
+    crate::time::now()
 }
 
 fn single_window_list_only(args: &Args) -> bool {
@@ -95,25 +97,33 @@ fn single_window_list_only(args: &Args) -> bool {
     false
 }
 
-fn try_headless_multi(main: crate::AnyWindowSpec, windows: Vec<crate::AnyWindowSpec>, args: Args, accessory: bool) -> Result<(), String> {
+fn try_headless_multi(main: crate::AnyWindowSpec, windows: Vec<crate::AnyWindowSpec>, args: Args, accessory: bool) -> Result<(), StartError> {
     let displays = desktop(&args, read_script(&args).as_ref()).displays();
+    crate::window::displays::reset();
+    crate::window::displays::remember(&displays);
     headless_window(std::iter::once(main).chain(windows).collect(), &displays, args, crate::RunOptions { accessory })
 }
 
 pub fn headless<S: 'static>(app: crate::app::App<S>, args: Args) {
-    started(try_headless(app, args));
+    #[cfg(test)]
+    if let Err(error) = try_headless(app, args) {
+        panic!("{}", error.message());
+    }
+    #[cfg(not(test))]
+    finish_start(try_headless(app, args));
 }
 
-/// `headless`, returning the error when a window whose own arguments aren't headless can't open.
-pub(crate) fn try_headless<S: 'static>(mut app: crate::app::App<S>, args: Args) -> Result<(), String> {
+/// `headless`, returning the error when GPU/renderer setup fails, when a window whose own
+/// arguments aren't headless can't open, or when `--html` fails to read its template or write.
+pub(crate) fn try_headless<S: 'static>(mut app: crate::app::App<S>, args: Args) -> Result<(), StartError> {
     crate::render::discard_prewarm();
-    if args.html.is_some() { return crate::tooling::html::export(app, &args); }
     if app.windows.is_empty() && args.desktop.is_none() {
         if single_window_list_only(&args) { return Ok(()); }
         let scale = args.scale.unwrap_or(2.0);
         let options = app.window_options.clone();
-        headless_window_spec(app, options, args, scale);
-        return Ok(());
+        crate::window::displays::reset();
+        crate::window::displays::remember(&desktop(&args, read_script(&args).as_ref()).displays());
+        return headless_window_spec(app, options, args, scale);
     }
     let windows = std::mem::take(&mut app.windows);
     let accessory = app.accessory;
@@ -121,33 +131,47 @@ pub(crate) fn try_headless<S: 'static>(mut app: crate::app::App<S>, args: Args) 
     try_headless_multi(main, windows, args, accessory)
 }
 
-pub(crate) fn headless_window_spec<S: 'static>(mut app: crate::app::App<S>, options: crate::WindowOptions, args: Args, scale: f32) {
+pub(crate) fn headless_window_spec<S: 'static>(mut app: crate::app::App<S>, options: crate::WindowOptions, args: Args, scale: f32) -> Result<(), StartError> {
     if let Some((w, h)) = options.physical_size {
         app.spec.size = (w as f32 / scale, h as f32 / scale);
     }
+    if args.html.is_some() {
+        return crate::tooling::html::export(app, &args).map_err(StartError::Window);
+    }
     let transparent = options.transparent;
     app.window_options = options;
-    headless_configured(app, args, transparent);
+    try_headless_configured(app, args, transparent).map_err(StartError::Headless)
 }
 
-pub(crate) fn headless_configured<S: 'static>(mut app: crate::app::App<S>, args: Args, transparent: bool) {
+#[cfg(test)]
+pub(crate) fn headless_configured<S: 'static>(app: crate::app::App<S>, args: Args, transparent: bool) {
+    if let Err(error) = try_headless_configured(app, args, transparent) {
+        panic!("{error}");
+    }
+}
+
+fn try_headless_configured<S: 'static>(mut app: crate::app::App<S>, args: Args, transparent: bool) -> Result<(), String> {
     let launched = wait_for_profiler();
     if args.list_scenes {
         for (n, _) in app.spec.scenes { println!("{n}"); }
-        return;
+        return Ok(());
     }
     #[cfg(feature = "hot")]
     if args.snap_on_patch.is_some() {
-        return crate::hot::snap_window(app, args);
+        crate::hot::snap_window(app, args);
+        return Ok(());
     }
     let prep = HeadlessPrep::begin(&args, app.spec.size);
     let (chrome, titlebar, fit_height) = (app.chrome, app.titlebar, app.fit_content_height);
     let app_options = app.window_options.clone();
     let comp = app.compositor.take();
-    let (on_reopen, on_open_url) = (app.on_reopen, app.on_open_url);
+    let (on_close_request, on_quit_request, on_close, on_quit, on_reopen, on_open_url, on_open_files) = (
+        app.on_close_request, app.on_quit_request, app.on_close, app.on_quit, app.on_reopen, app.on_open_url, app.on_open_files,
+    );
     let on_ready = app.on_ready.take();
     let on_frame_encoded = app.on_frame_encoded.take();
     let (playground, attach_playground) = (app.playground.take(), app.attach_playground);
+    crate::credentials::note_headless_runtime();
     let (spec, state, shared, runtime) = app.into_parts(args.scene.as_deref());
     let shortcuts = crate::shortcuts::Guard::attach(&shared, Arc::new(|| {}), true, false);
     let menus = crate::native_menu::MenuGuard::attach(&shared, true);
@@ -162,11 +186,11 @@ pub(crate) fn headless_configured<S: 'static>(mut app: crate::app::App<S>, args:
         min_size: spec.min_size, on_ready, on_frame_encoded,
         shared_core: shared.core.clone(), shortcuts_core: shared.shortcuts.core.clone(), shortcuts, menus,
     };
-    let mut typed = TypedHeadlessApp { rt, shared, comp, on_reopen, on_open_url };
-    run_headless(prep, config, &mut typed);
+    let mut typed = TypedHeadlessApp { rt, shared, comp, on_close_request, on_quit_request, on_close, on_quit, on_reopen, on_open_url, on_open_files };
+    run_headless(prep, config, &mut typed)
 }
 
-fn run_headless(prep: HeadlessPrep, config: HeadlessConfig, app: &mut dyn HeadlessApp) {
+fn run_headless(prep: HeadlessPrep, config: HeadlessConfig, app: &mut dyn HeadlessApp) -> Result<(), String> {
     let HeadlessPrep { source, script, timeline, scale, size, dark, mut writer } = prep;
     let HeadlessConfig {
         launched, state_ms, args, transparent, chrome, titlebar, fit_height, app_options,
@@ -175,9 +199,9 @@ fn run_headless(prep: HeadlessPrep, config: HeadlessConfig, app: &mut dyn Headle
     // A `--realtime` run stands in for a window, so it starts the app's live work as one does.
     let mut on_ready = on_ready.filter(|_| args.realtime);
     let mut reports = crate::frame::encoded::FrameReports::new(on_frame_encoded, Some("main"));
-    let chrome = app.rt_mut().headless_chrome(chrome, titlebar, app_options.borderless);
+    app.rt_mut().headless_chrome(chrome, titlebar, app_options.borderless);
     app.rt_mut().transparent = transparent;
-    app.rt_mut().host.fit_height = fit_height;
+    app.rt_mut().host.set_fit_height(fit_height);
     if let Some(bars) = args.scroll_bars { app.rt_mut().set_system_scroll_bars(bars); }
     // Only limits the app set: the canvas opens at any size, below the default minimum too.
     let limits = (app_options.min_size.or(min_size).unwrap_or((0.0, 0.0)), app_options.max_size);
@@ -185,7 +209,7 @@ fn run_headless(prep: HeadlessPrep, config: HeadlessConfig, app: &mut dyn Headle
         let height = crate::window::frame::clamp_size((size.0, app.content_height()), limits.0, limits.1).1;
         app.rt_mut().set_viewport((size.0, height), scale);
     }
-    if args.tree.is_some() { app.rt_mut().commit.key_warnings = Some(Vec::new()); }
+    if args.tree.is_some() { app.rt_mut().commit.enable_key_warnings(); }
     let has_comp = app.has_compositor();
     app.rt_mut().track_marks = has_comp;
     let runtime_ms = launched.elapsed().as_secs_f64() * 1000.0 - state_ms;
@@ -196,25 +220,30 @@ fn run_headless(prep: HeadlessPrep, config: HeadlessConfig, app: &mut dyn Headle
     let Timeline { fps, dt, start_frame, frames, snap_frame, last_frame } = timeline;
     reports.set_refresh(Some(fps));
 
-    let t0 = Instant::now();
+    let t0 = crate::time::now();
     let features = app.compositor_features();
-    let gpu = Gpu::try_with_features(Gpu::instance_for(features), None, features).unwrap_or_else(|e| die(&e));
     let srgb_blend = app.rt().srgb_blend();
-    let target_format = if srgb_blend { OFFSCREEN_FORMAT.remove_srgb_suffix() } else { OFFSCREEN_FORMAT };
-    let mut renderer = Renderer::new(&gpu.device, target_format);
+    let target_format = if srgb_blend { OFFSCREEN_FORMAT } else { OFFSCREEN_FORMAT_LINEAR };
+    let (gpu, mut renderer) = Gpu::for_headless_setup(features, |gpu| {
+        Renderer::try_new_classified(&gpu.device, target_format).map_err(crate::render::SurfaceSetupError::from_shader)
+    })
+    .map_err(|e| e.message)?;
+    renderer.attach_gpu(&gpu);
     renderer.set_srgb_blend(srgb_blend);
     renderer.attach_text(&mut app.rt_mut().text.atlas);
     let (wp, hp) = ((size.0 * scale).round() as u32, (size.1 * scale).round() as u32);
     let target = Offscreen::with_format(&gpu.device, wp, hp, target_format);
     let readback = crate::tooling::record::Readback::new(&gpu.device, &target, crate::tooling::record::DEPTH);
     let alpha = transparent.then(|| crate::render::surface_alpha::AlphaSurface::new(&gpu.device, target_format, (wp, hp)));
-    let overlay = (args.keys.is_some() || args.pointer).then(|| {
+    let overlay = if args.keys.is_some() || args.pointer {
         let mut ov = crate::input::keycaps::Overlay::new(size, scale, args.keys, args.keys_theme, args.pointer);
         ov.set_srgb_blend(srgb_blend);
-        let mut ui = Renderer::new(&gpu.device, target_format);
+        let mut ui = Renderer::try_new(&gpu.device, target_format)?;
         ui.set_srgb_blend(srgb_blend);
-        (ov, ui)
-    });
+        Some((ov, ui))
+    } else {
+        None
+    };
     let init_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     let trace = args.trace.as_ref().map(|p| {
@@ -222,14 +251,14 @@ fn run_headless(prep: HeadlessPrep, config: HeadlessConfig, app: &mut dyn Headle
         trace.all = args.trace_all;
         trace
     });
-    app.rt_mut().frame.trace_channels = trace.as_ref().map(|_| Default::default());
+    app.rt_mut().frame.enable_trace_channels(trace.is_some());
     let gate_out = std::env::var_os("RUNE_MOTION_GATE").map(std::path::PathBuf::from);
     let gate = gate_out.as_ref().map(|_| app.new_gate(fps as f64));
     app.rt_mut().scene.store_mut().audit_retargets(trace.is_some());
     let mut strip: Vec<Vec<u8>> = Vec::new();
     let crops_px: Vec<[u32; 4]> = args.crops.iter().map(|c| c.map(|v| (v * scale).round() as u32)).collect();
     let gap = (4.0 * scale) as u32;
-    let wall = Instant::now();
+    let wall = crate::time::now();
     let mut next_ev = 0;
     let mut last_down = (0.0f32, 0.0f32);
     // Events at t = 0 find keys and hit elements in a laid-out first frame, as input reaches a
@@ -249,10 +278,10 @@ fn run_headless(prep: HeadlessPrep, config: HeadlessConfig, app: &mut dyn Headle
     let snap_crop = std::cell::Cell::new(None::<[u32; 4]>);
     let cpu_boot = std::cell::RefCell::new(args.cpu_boot.clone().map(|dir| crate::render::cpu_boot::tool::Tool::new(dir, args.cpu_boot_threads, gpu.adapter.get_info().vendor)));
     // Finished readbacks, in frame order.
-    let mut deliver = |shot: Shot, mut px: Vec<u8>| {
+    let mut deliver = |FrameShot { shot, chrome }: FrameShot, mut px: Vec<u8>| {
         if shot.snap && let Some(tool) = cpu_boot.borrow_mut().as_mut() { tool.gpu(&px, (wp, hp)); }
-        if args.chrome_overlay
-            && let Some(lights) = chrome.traffic_light_rects()
+        if let Some(chrome) = chrome
+            && let Some(lights) = chrome.traffic_light_rects_in(size.0, crate::labels::rtl())
         {
             paint_traffic_lights(&mut px, wp, hp, scale, &lights);
         }
@@ -280,7 +309,6 @@ fn run_headless(prep: HeadlessPrep, config: HeadlessConfig, app: &mut dyn Headle
         runtime_ms,
         init_ms,
         args: &args,
-        chrome,
         dark,
         scale,
         size,
@@ -300,6 +328,7 @@ fn run_headless(prep: HeadlessPrep, config: HeadlessConfig, app: &mut dyn Headle
         renderer,
         target,
         readback,
+        in_flight: crate::tooling::record::InFlight::new(crate::tooling::record::DEPTH),
         alpha,
         overlay,
         reports,
@@ -330,7 +359,7 @@ fn run_headless(prep: HeadlessPrep, config: HeadlessConfig, app: &mut dyn Headle
         #[cfg(feature = "frame-profile")]
         let (alloc0, commits0, cpu0) = {
             crate::frame::profile::take();
-            (procwatch::alloc::thread_allocations(), app.rt().stats.commits, crate::frame::profile::cpu_ms())
+            (procwatch::alloc::thread_allocations(), app.rt().stats.commits, crate::frame::profile::thread_cpu_mark())
         };
         let real_t = k as f64 * dt;
         #[cfg(not(target_arch = "wasm32"))]
@@ -338,7 +367,7 @@ fn run_headless(prep: HeadlessPrep, config: HeadlessConfig, app: &mut dyn Headle
             let ahead = real_t - wall.elapsed().as_secs_f64();
             if ahead > 0.0 { std::thread::sleep(std::time::Duration::from_secs_f64(ahead)); }
         }
-        let frame_start = Instant::now();
+        let frame_start = crate::time::now();
         let script_before = next_ev;
         #[cfg(feature = "frame-profile")]
         let events0 = next_ev;
@@ -346,27 +375,25 @@ fn run_headless(prep: HeadlessPrep, config: HeadlessConfig, app: &mut dyn Headle
             let e = &script[next_ev];
             next_ev += 1;
             if let Some(g) = state.gate.as_mut() && !matches!(e.kind, Kind::Mark(_)) { g.input("script"); }
-            let (x, y) = match &e.pos {
-                // A script's points are the window's; the view's are over its zoom.
-                Pos::Xy(x, y) => (*x / app.rt().zoom(), *y / app.rt().zoom()),
-                Pos::Key(key) => app.rt().find(key).unwrap_or_else(|| die(&format!("script: no element with key {key:?}"))),
-                Pos::Rel(_, _) if e.kind.at_pointer() => app.rt().pointer().unwrap_or((0.0, 0.0)),
-                Pos::Rel(dx, dy) => (last_down.0 + dx, last_down.1 + dy),
-            };
+            let (x, y) = crate::tooling::script_point(app.rt(), e, last_down).unwrap_or_else(|msg| die(&format!("script: {msg}")));
             match &e.kind {
                 Kind::Mark(name) if args.realtime => {
                     use std::io::Write as _;
                     println!("rune-mark {name} {}", e.t);
-                    let _ = std::io::stdout().flush();
+                    std::io::stdout().flush().ok();
                 }
                 Kind::Mark(_) => {}
                 // The one window always shows here.
                 Kind::Reopen => app.run_reopen(),
+                Kind::CloseRequest => { let _ = app.run_close_request(); }
+                Kind::QuitRequest => { let _ = app.run_quit_request(); }
                 Kind::OpenUrl(url) => app.run_open_url(url),
+                Kind::OpenFiles(paths) => app.run_open_files(paths),
                 Kind::Shortcut(shortcut) => shortcuts_core.fire(shortcut).unwrap_or_else(|e| die(&format!("script shortcut: {e}"))),
                 Kind::Menu(item) => menus.fire(item).unwrap_or_else(|e| die(&format!("script menu: {e}"))),
                 Kind::PopupMenu(picked) => app.resolve_popup(picked.as_deref()).unwrap_or_else(|e| die(&format!("script pop-up menu: {e}"))),
                 Kind::FileDialog(path) => app.rt_mut().resolve_file_dialog(path.clone()).unwrap_or_else(|e| die(&format!("script file dialog: {e}"))),
+                Kind::FileDialogFiles(paths) => app.rt_mut().resolve_file_dialog_files(Some(paths.clone())).unwrap_or_else(|e| die(&format!("script file dialog: {e}"))),
                 &Kind::Resize(dw, dh) => eased_input::step_resize(app.rt_mut(), &mut resize_from, (dw, dh), scale),
                 kind => {
                     if kind.is_down() { last_down = (x, y); }
@@ -410,6 +437,9 @@ fn run_headless(prep: HeadlessPrep, config: HeadlessConfig, app: &mut dyn Headle
             fp_events: next_ev - events0,
         };
         crate::frame::host_step::run(&mut host);
+        if app.rt_mut().take_user_close_request() {
+            let _ = app.run_close_request();
+        }
     }
     for (shot, px) in state.readback.finish(&gpu.device) { deliver(shot, px); }
     app.rt_mut().interaction_flush();
@@ -418,7 +448,7 @@ fn run_headless(prep: HeadlessPrep, config: HeadlessConfig, app: &mut dyn Headle
     if let Some(video) = writer.finish().unwrap_or_else(|e| die(&e)) {
         eprintln!("rune: wrote {} ({written} frames at {fps} fps)", video.display());
     }
-    gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+    rune_gpu::health::poll(&gpu.device, wgpu::PollType::wait_indefinitely()).ok();
 
     if let Some(p) = &args.strip { write_strip(p, &strip, (wp, hp), &crops_px, gap, args.cols); }
     if let (Some(g), Some(p)) = (state.gate, &gate_out) {
@@ -450,6 +480,15 @@ fn run_headless(prep: HeadlessPrep, config: HeadlessConfig, app: &mut dyn Headle
         q(&mut sorted, 1.0),
         app.rt().instances.len()
     );
+    // The tail, on a line of its own so that readers of the line above keep working: p99 over every frame, and how many
+    // frames after the first (which holds the first layout and the pipelines) cost more CPU than one frame's time.
+    let budget_ms = 1000.0 / fps as f64;
+    eprintln!(
+        "rune: frame cpu p99 {:.3} ms, over budget {} of {} frames after the first ({budget_ms:.2} ms a frame at {fps} fps)",
+        q(&mut sorted, 0.99),
+        steady.iter().filter(|ms| **ms > budget_ms).count(),
+        steady.len()
+    );
     let (a50, a95) = (q(&mut state.anim_ms, 0.5), q(&mut state.anim_ms, 0.95));
     let (r50, r95) = (q(&mut state.rest_ms, 0.5), q(&mut state.rest_ms, 0.95));
     eprintln!(
@@ -462,11 +501,15 @@ fn run_headless(prep: HeadlessPrep, config: HeadlessConfig, app: &mut dyn Headle
     if let Some(s) = app.compositor_summary(&gpu.device) {
         eprintln!("{s}");
     }
-    // A headless run opens no links (`Tx::open_url`): say which its handlers asked for.
-    for url in app.rt_mut().take_url_requests() {
+    // A headless run opens no links (`Tx::open_url`) or local paths (`Tx::open_path`, `Tx::reveal_path`): say which its handlers asked for.
+    for url in app.rt_mut().host.take_url_requests() {
         eprintln!("rune: open_url {url} (headless: not opened)");
     }
+    for req in app.rt_mut().host.take_path_requests() {
+        eprintln!("rune: {} {} (headless: not opened)", req.action.verb(), req.path.display());
+    }
     if !loop_checked { std::process::exit(3); }
+    Ok(())
 }
 
 /// Which frames a headless run renders and dumps.
@@ -540,9 +583,20 @@ pub(crate) struct Shot {
     pub snap: bool,
 }
 
+/// The 4 pt clearance box `[left, top, right, bottom]` around all three traffic lights,
+/// whether Close sits on the left (LTR) or the right (RTL).
+fn traffic_light_zone(lights: &[[f32; 4]; 3]) -> [f32; 4] {
+    let m = 4.0;
+    let left = lights.iter().map(|r| r[0]).fold(f32::INFINITY, f32::min);
+    let top = lights.iter().map(|r| r[1]).fold(f32::INFINITY, f32::min);
+    let right = lights.iter().map(|r| r[0] + r[2]).fold(f32::NEG_INFINITY, f32::max);
+    let bottom = lights.iter().map(|r| r[1] + r[3]).fold(f32::NEG_INFINITY, f32::max);
+    [left - m, top - m, right + m, bottom + m]
+}
+
 /// Antialiased discs where macOS draws close, minimise and zoom, plus a hairline box 4 pt
 /// around them (the clearance an app should keep).
-fn paint_traffic_lights(px: &mut [u8], w: u32, h: u32, scale: f32, lights: &[[f32; 4]; 3]) {
+pub(super) fn paint_traffic_lights(px: &mut [u8], w: u32, h: u32, scale: f32, lights: &[[f32; 4]; 3]) {
     const COLORS: [[f32; 3]; 3] = [[255.0, 95.0, 87.0], [254.0, 188.0, 46.0], [40.0, 200.0, 64.0]];
     let mut blend = |x: i64, y: i64, c: [f32; 3], a: f32| {
         if x < 0 || y < 0 || x >= i64::from(w) || y >= i64::from(h) || a <= 0.0 {
@@ -562,9 +616,9 @@ fn paint_traffic_lights(px: &mut [u8], w: u32, h: u32, scale: f32, lights: &[[f3
             }
         }
     }
-    let m = 4.0;
-    let (x0, y0) = ((lights[0][0] - m) * scale, (lights[0][1] - m) * scale);
-    let (x1, y1) = ((lights[2][0] + lights[2][2] + m) * scale, (lights[2][1] + lights[2][3] + m) * scale);
+    let zone = traffic_light_zone(lights);
+    let (x0, y0) = (zone[0] * scale, zone[1] * scale);
+    let (x1, y1) = (zone[2] * scale, zone[3] * scale);
     let cyan = [0.0, 200.0, 255.0];
     for x in x0 as i64..=x1 as i64 {
         blend(x, y0 as i64, cyan, 0.8);
@@ -576,19 +630,24 @@ fn paint_traffic_lights(px: &mut [u8], w: u32, h: u32, scale: f32, lights: &[[f3
     }
 }
 
-/// Lists visible text, icons and controls whose drawn rect comes within 4 pt of a traffic light.
-fn report_traffic_light_overlaps(rt: &RuntimeCore, lights: &[[f32; 4]; 3]) {
-    let m = 4.0;
-    let zone = [lights[0][0] - m, lights[0][1] - m, lights[2][0] + lights[2][2] + m, lights[2][1] + lights[2][3] + m];
-    let mut n = 0;
-    for e in rt.elements() {
+/// Visible text, icons and controls whose drawn rect comes within 4 pt of a traffic light.
+pub(super) fn traffic_light_overlaps(rt: &RuntimeCore, lights: &[[f32; 4]; 3]) -> Vec<(String, [f32; 4])> {
+    let zone = traffic_light_zone(lights);
+    rt.elements().into_iter().filter_map(|e| {
         let drawn = e.text.is_some() || matches!(e.role, "icon" | "button" | "textbox");
         let v = e.visible;
         let (x1, y1) = (v[0] + v[2], v[1] + v[3]);
-        if drawn && e.opacity > 0.01 && v[2] > 0.0 && v[3] > 0.0 && v[0] < zone[2] && x1 > zone[0] && v[1] < zone[3] && y1 > zone[1] {
-            eprintln!("rune: chrome: {} overlaps the traffic lights at {:?}", e.path, e.visible.map(r2));
-            n += 1;
-        }
+        (drawn && e.opacity > 0.01 && v[2] > 0.0 && v[3] > 0.0
+            && v[0] < zone[2] && x1 > zone[0] && v[1] < zone[3] && y1 > zone[1])
+            .then_some((e.path, e.visible))
+    }).collect()
+}
+
+/// Lists visible text, icons and controls whose drawn rect comes within 4 pt of a traffic light.
+fn report_traffic_light_overlaps(rt: &RuntimeCore, lights: &[[f32; 4]; 3]) {
+    let overlaps = traffic_light_overlaps(rt, lights);
+    for (path, visible) in &overlaps {
+        eprintln!("rune: chrome: {path} overlaps the traffic lights at {:?}", visible.map(r2));
     }
-    eprintln!("rune: chrome: traffic lights at {:?}, {n} overlapping elements", lights[0].map(r2));
+    eprintln!("rune: chrome: traffic lights at {:?}, {} overlapping elements", lights[0].map(r2), overlaps.len());
 }

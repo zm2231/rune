@@ -3,13 +3,15 @@
 //! draw, and names the time each frame will be on screen. A wake from another thread, and a
 //! timer's answer, come back to the view on the main queue through a weak reference.
 
+#![allow(unsafe_code)]
+
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use objc2_video::rc::{Retained, Weak};
-use objc2_video::runtime::AnyObject;
-use objc2_video::{DefinedClass, Encode, Encoding, class, msg_send, sel};
+use objc2::rc::{Retained, Weak};
+use objc2::runtime::AnyObject;
+use objc2::{DefinedClass, Encode, Encoding, class, msg_send, sel};
 
 use super::super::keys;
 use super::super::pacing::Event;
@@ -135,6 +137,6 @@ impl RuneView {
         })?;
         // SAFETY: a C function that reads a clock.
         let ahead = (shown - unsafe { CACurrentMediaTime() }).max(0.0);
-        Some(Instant::now() + Duration::from_secs_f64(ahead))
+        Some(crate::time::now() + Duration::from_secs_f64(ahead))
     }
 }

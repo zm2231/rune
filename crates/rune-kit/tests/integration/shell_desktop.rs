@@ -122,6 +122,11 @@ fn the_main_pane_is_framed_and_the_toolbar_sits_inside_it() {
     assert_eq!((toolbar[1], toolbar[3]), (8.0, 48.0), "the toolbar is the pane's top 48 points");
     let (x, y) = (500.0, 4.0);
     rt.pointer_down(x, y);
+    #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
+    {
+        assert!(rt.take_titlebar_action().is_none());
+        rt.pointer_move(x + 10.0, y);
+    }
     assert_eq!(rt.take_titlebar_action(), Some(rune::TitlebarAction::Drag), "the strip above the pane drags the window");
     rt.pointer_up(x, y);
 
@@ -440,4 +445,232 @@ fn a_pending_peek_does_not_open_after_blur() {
     rt.window_focus(false);
     rt.frame(0.2);
     assert!(!rt.state.sidebar.is_peeking());
+}
+
+#[test]
+fn resting_on_a_row_or_toggle_in_a_peek_keeps_it_open_until_leaving() {
+    let mut rt = peeked();
+    settle(&mut rt);
+    let (rx, ry) = rt.find("row2").unwrap();
+    rt.pointer_move(rx, ry);
+    rt.frame(0.3);
+    assert!(rt.state.sidebar.is_peeking(), "resting on a row inside the peek past the grace keeps it open");
+    rt.pointer_move(600.0, 300.0);
+    rt.frame(0.09);
+    assert!(rt.state.sidebar.is_peeking(), "within the grace after leaving the row");
+    rt.frame(0.02);
+    assert!(!rt.state.sidebar.is_peeking(), "closes after the grace");
+
+    // Peeking from the toggle and moving straight out past the margin also closes after the grace.
+    let mut rt = runtime(closed());
+    settle(&mut rt);
+    let (tx, ty) = rt.find("sidebar-toggle").unwrap();
+    rt.pointer_move(tx, ty);
+    rt.frame(0.09);
+    assert!(rt.state.sidebar.is_peeking());
+    settle(&mut rt);
+    assert!(rt.state.sidebar.is_peeking(), "resting on the toggle keeps it open");
+    rt.pointer_move(600.0, 300.0);
+    rt.frame(0.09);
+    assert!(rt.state.sidebar.is_peeking(), "within the grace after leaving the toggle");
+    rt.frame(0.02);
+    assert!(!rt.state.sidebar.is_peeking(), "closes after leaving the toggle");
+}
+
+#[test]
+fn sidebar_peek_with_spring_none_adds_no_fade_under_reduced_motion() {
+    struct PeekDoc {
+        sidebar: PaneState,
+        peek: SidebarPeek,
+        reduced: bool,
+    }
+    fn peek_view(s: &PeekDoc, cx: &mut Cx<PeekDoc>) -> El {
+        cx.reduced_motion(s.reduced);
+        let k = Kit::neutral(true);
+        SplitView::new(col().key("body").w_full().h_full())
+            .sidebar(&s.sidebar, |s: &mut PeekDoc| &mut s.sidebar, col().key("side-body").w_full().h_full())
+            .sidebar_peek(s.peek)
+            .reduced_motion(s.reduced)
+            .build(&k)
+    }
+    let run_cycle = |peek: SidebarPeek, reduced: bool| -> (usize, usize, f32, f32) {
+        let mut rt = Runtime::new(
+            PeekDoc { sidebar: PaneState::new(240.0).collapsed(), peek, reduced },
+            peek_view,
+            (900.0, 600.0),
+            Env::new(true, 1.0),
+        );
+        rt.set_system_reduced_motion(reduced);
+        rt.frame(0.0);
+        for _ in 0..30 {
+            if !rt.frame(1.0 / 60.0) { break; }
+        }
+        rt.update(|s, _| s.sidebar.peek());
+        let mut open_frames = 0;
+        let mut open_content_alpha = 0.0;
+        let mut open_surface_alpha = 0.0;
+        for i in 0..60 {
+            let animating = rt.frame(1.0 / 60.0);
+            if i == 0 {
+                open_content_alpha = rt.elements().into_iter().find(|e| e.key.as_deref() == Some("pane-content")).unwrap().opacity;
+                open_surface_alpha = rt.elements().into_iter().find(|e| e.key.as_deref() == Some("pane-surface")).unwrap().opacity;
+            }
+            if !animating { break; }
+            open_frames += 1;
+        }
+        rt.update(|s, _| s.sidebar.end_peek());
+        let mut close_frames = 0;
+        for _ in 0..60 {
+            if !rt.frame(1.0 / 60.0) { break; }
+            close_frames += 1;
+        }
+        (open_frames, close_frames, open_content_alpha, open_surface_alpha)
+    };
+
+    // Spring::NONE without reduced_motion_fade must stay instant under reduced motion.
+    let instant_peek = SidebarPeek::new().spring(Spring::NONE);
+    let (norm_open, norm_close, _, _) = run_cycle(instant_peek, false);
+    let (red_open, red_close, red_c, red_s) = run_cycle(instant_peek, true);
+    assert_eq!(norm_open, 0, "normal Spring::NONE peek opens in zero extra frames");
+    assert_eq!(norm_close, 0, "normal Spring::NONE peek closes in zero extra frames");
+    assert_eq!((red_open, red_close), (0, 0), "reduced motion must not add a fade to Spring::NONE peek (open={red_open}, close={red_close})");
+    assert_eq!((red_c, red_s), (1.0, 1.0), "Spring::NONE peek lands at full opacity immediately under reduced motion");
+
+    // Explicit reduced_motion_fade(0.0) with a real spring snaps both content and surface.
+    let (zero_open, zero_close, zero_c, zero_s) = run_cycle(SidebarPeek::new().reduced_motion_fade(0.0), true);
+    assert_eq!((zero_open, zero_close), (0, 0), "reduced_motion_fade(0.0) must snap both pane-content and pane-surface (open={zero_open}, close={zero_close})");
+    assert_eq!((zero_c, zero_s), (1.0, 1.0));
+
+    // Explicit reduced_motion_fade(0.15) stays an override even with Spring::NONE.
+    let (ovr_open, ovr_close, ovr_c, ovr_s) = run_cycle(SidebarPeek::new().spring(Spring::NONE).reduced_motion_fade(0.15), true);
+    assert!(ovr_open > 0 && ovr_close > 0, "explicit reduced_motion_fade override still fades (open={ovr_open}, close={ovr_close})");
+    assert!(ovr_c < 1.0 && ovr_s < 1.0, "override starts fading on first frame (content={ovr_c}, surface={ovr_s})");
+}
+
+#[test]
+fn pointer_moves_while_sidebar_is_peeking_commit_zero_times() {
+    let mut rt = runtime(closed());
+    rt.check_live_only(false);
+    settle(&mut rt);
+
+    // Reveal the peeking sidebar and settle it on screen.
+    rt.update(|s, _| s.sidebar.peek());
+    settle(&mut rt);
+    assert!(rt.state.sidebar.is_peeking(), "sidebar should be peeking");
+    assert!(!rt.state.sidebar.is_resizing(), "no resize grip held");
+
+    // Sweep the pointer inside the peeking sidebar with no button held.
+    let before = rt.stats.commits;
+    for i in 0..10 {
+        rt.pointer_move(80.0 + i as f32 * 8.0, 120.0 + i as f32 * 16.0);
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(rt.state.sidebar.is_peeking(), "sidebar stays peeking while pointer is over it");
+    assert_eq!(
+        rt.stats.commits - before,
+        0,
+        "pointer moves over a peeking sidebar with no grip held must not commit the view"
+    );
+
+    // Gaining window focus while peeking changes no state and must not commit; losing focus ends the peek.
+    let before_focus = rt.stats.commits;
+    rt.window_focus(true);
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.sidebar.is_peeking());
+    assert_eq!(rt.stats.commits - before_focus, 0, "gaining focus while peeking changes no state");
+
+    rt.window_focus(false);
+    rt.frame(1.0 / 60.0);
+    assert!(!rt.state.sidebar.is_peeking(), "losing window focus still ends a peek");
+}
+
+#[test]
+fn no_change_resize_drag_moves_commit_zero_times() {
+    let mut s = state();
+    let min_w = s.sidebar.min_width();
+    let max_w = s.sidebar.max_width();
+    s.sidebar.set_width(min_w);
+    let mut rt = runtime(s);
+    rt.check_live_only(false);
+    settle(&mut rt);
+
+    let (x0, y0) = rt.find("sidebar-grip").expect("sidebar-grip");
+    rt.pointer_move(x0, y0);
+    rt.frame(1.0 / 60.0);
+    rt.pointer_down(x0, y0);
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.sidebar.is_resizing());
+
+    // 1. Clamped at minimum width (still above collapse threshold min * 0.5).
+    let before_min = rt.stats.commits;
+    for dx in [-5.0_f32, -12.0, -20.0, -35.0, -50.0] {
+        rt.pointer_move(x0 + dx, y0);
+        rt.frame(1.0 / 60.0);
+    }
+    let min_commits = rt.stats.commits - before_min;
+
+    // 2. Vertical travel only (dx == 0).
+    let before_vert = rt.stats.commits;
+    for i in 1..=5 {
+        rt.pointer_move(x0, y0 + i as f32 * 12.0);
+        rt.frame(1.0 / 60.0);
+    }
+    let vert_commits = rt.stats.commits - before_vert;
+
+    // 3. Sub-pixel horizontal travel (< 0.5 pt so rounding leaves width unchanged).
+    let before_sub = rt.stats.commits;
+    for dx in [0.1_f32, 0.2, 0.3, 0.4, -0.2, -0.4] {
+        rt.pointer_move(x0 + dx, y0);
+        rt.frame(1.0 / 60.0);
+    }
+    let sub_commits = rt.stats.commits - before_sub;
+
+    assert_eq!(min_commits, 0, "dragging past min while clamped must not commit");
+    assert_eq!(vert_commits, 0, "vertical-only drag moves must not commit");
+    assert_eq!(sub_commits, 0, "sub-0.5pt drag moves must not commit");
+
+    // Guard: crossing the 0.5 pt rounding boundary commits once and updates width.
+    let before_step = rt.stats.commits;
+    rt.pointer_move(x0 + 0.6, y0);
+    rt.frame(1.0 / 60.0);
+    assert_eq!(rt.stats.commits - before_step, 1, "a real width step must commit once");
+    assert_eq!(rt.state.sidebar.width(), min_w + 1.0);
+
+    // Guard: crossing the collapse threshold commits once; further moves past it do not.
+    let before_collapse = rt.stats.commits;
+    rt.pointer_move(x0 - min_w * 0.6, y0);
+    rt.frame(1.0 / 60.0);
+    assert_eq!(rt.stats.commits - before_collapse, 1, "crossing collapse threshold must commit");
+    assert!(!rt.state.sidebar.is_open());
+
+    let before_past_collapse = rt.stats.commits;
+    for dx in [-10.0_f32, -20.0, -30.0] {
+        rt.pointer_move(x0 - min_w * 0.6 + dx, y0);
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(rt.stats.commits - before_past_collapse, 0, "further drag while collapsed must not commit");
+
+    // Guard: dragging back above threshold reopens and reaches max width; moving past max does not commit.
+    let before_max = rt.stats.commits;
+    rt.pointer_move(x0 + (max_w - min_w), y0);
+    rt.frame(1.0 / 60.0);
+    assert_eq!(rt.stats.commits - before_max, 1, "reopening to max width must commit");
+    assert!(rt.state.sidebar.is_open());
+    assert_eq!(rt.state.sidebar.width(), max_w);
+
+    let before_past_max = rt.stats.commits;
+    for dx in [10.0_f32, 25.0, 40.0, 60.0] {
+        rt.pointer_move(x0 + (max_w - min_w) + dx, y0);
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(rt.stats.commits - before_past_max, 0, "dragging past max while clamped must not commit");
+
+    // Release commits once to clear is_resizing and keeps final width and open state.
+    let before_up = rt.stats.commits;
+    rt.pointer_up(x0 + (max_w - min_w) + 60.0, y0);
+    rt.frame(1.0 / 60.0);
+    assert_eq!(rt.stats.commits - before_up, 1, "release must commit to end resizing");
+    assert!(!rt.state.sidebar.is_resizing());
+    assert!(rt.state.sidebar.is_open());
+    assert_eq!(rt.state.sidebar.width(), max_w);
 }

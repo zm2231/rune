@@ -15,6 +15,7 @@ use crate::{ComboboxOption, Kit};
 pub struct PopupItem {
     id: String,
     label: String,
+    label_el: Option<El>,
     description: Option<String>,
     leading: Option<El>,
     trailing: Option<El>,
@@ -26,11 +27,27 @@ impl PopupItem {
         Self {
             id: id.into(),
             label: label.into(),
+            label_el: None,
             description: None,
             leading: None,
             trailing: None,
             disabled: false,
         }
+    }
+    /// Custom element drawn in place of the plain label text (such as highlighted match spans).
+    /// The plain `label` passed to [`Self::new`] remains the option's accessible name, and the
+    /// custom element is hidden from the accessibility tree so it is not read twice.
+    ///
+    /// ```
+    /// use rune::{row, text};
+    /// use rune_kit::PopupItem;
+    ///
+    /// let _item = PopupItem::new("review", "/review")
+    ///     .label_with(row().child(text("/rev")).child(text("iew")));
+    /// ```
+    pub fn label_with(mut self, el: El) -> Self {
+        self.label_el = Some(el);
+        self
     }
     /// Secondary muted text shown after the label on the same row.
     pub fn description(mut self, text: impl Into<String>) -> Self {
@@ -135,7 +152,7 @@ pub(super) struct PopupListCore {
     pub(super) width: f32,
     pub(super) max_height: f32,
     pub(super) padding: f32,
-    pub(super) row_radius: f32,
+    pub(super) row_radius: Option<f32>,
     pub(super) items: Vec<PopupItem>,
     pub(super) animate_filtering: bool,
     pub(super) active: Option<usize>,
@@ -155,7 +172,7 @@ impl PopupListCore {
             width: 260.0,
             max_height: 240.0,
             padding: 4.0,
-            row_radius: 4.0,
+            row_radius: None,
             items: Vec::new(),
             animate_filtering: false,
             active: None,
@@ -165,8 +182,11 @@ impl PopupListCore {
     }
 
     pub(super) fn build_list(self, k: &Kit, bind: &dyn PopupBind) -> El {
+        let row_m = k.popup_row_metrics();
+        let row_h = row_m.height;
+        let row_r = self.row_radius.map(crate::tokens::metrics::non_neg).unwrap_or(row_m.radius);
         let active = self.active.filter(|&i| self.items.get(i).is_some_and(|item| !item.disabled));
-        let mut rows = col().key("rows").w_full().growth(GrowthSpec::default()).virtualize(28.0).reveal_selected(true);
+        let mut rows = col().key("rows").w_full().growth(GrowthSpec::default()).virtualize(row_h).reveal_selected(true);
         for (i, option) in self.items.iter().enumerate() {
             let id = option.id.clone();
             let is_active = active == Some(i);
@@ -178,22 +198,30 @@ impl PopupListCore {
                 .position_in_set(i + 1, self.items.len())
                 .focus_selected(is_active)
                 .w_full()
-                .h(28.0)
+                .h(row_h)
                 .px(8.0)
                 .gap(8.0)
                 .center_y()
-                .radius(self.row_radius)
+                .radius(row_r)
                 .transition(Transition::opacity())
                 .fill(if is_active { k.c.hover } else { Color::TRANSPARENT });
             if let Some(leading) = &option.leading {
                 item = item.child(leading.clone());
             }
             if let Some(desc) = option.description.as_deref().filter(|d| !d.is_empty()) {
+                let label = match &option.label_el {
+                    Some(el) => el.clone().shrink().a11y_hidden(),
+                    None => text(&option.label).font(k.ty.ui_compact).color(k.c.text_base).shrink().truncate().a11y_hidden(),
+                };
                 item = item
-                    .child(text(&option.label).font(k.ty.ui_compact).color(k.c.text_base).shrink().truncate().a11y_hidden())
+                    .child(label)
                     .child(text(desc).key("description").font(k.ty.ui_compact).color(k.c.text_weak).grow(1.0).shrink().truncate().a11y_hidden());
             } else {
-                item = item.child(text(&option.label).font(k.ty.ui_compact).color(k.c.text_base).grow(1.0).shrink().truncate().a11y_hidden());
+                let label = match &option.label_el {
+                    Some(el) => el.clone().grow(1.0).shrink().a11y_hidden(),
+                    None => text(&option.label).font(k.ty.ui_compact).color(k.c.text_base).grow(1.0).shrink().truncate().a11y_hidden(),
+                };
+                item = item.child(label);
             }
             if let Some(trailing) = &option.trailing {
                 item = item.child(trailing.clone());
@@ -211,9 +239,9 @@ impl PopupListCore {
         let mut viewport = fit_scroll(rows)
             .key("viewport")
             .role("listbox")
-            .h((self.items.len() as f32 * 28.0).min(self.max_height))
+            .h((self.items.len() as f32 * row_h).min(self.max_height))
             // A window too short for the list still shows one row to scroll.
-            .min_h(if empty { 0.0 } else { 28.0 })
+            .min_h(if empty { 0.0 } else { row_h })
             .clip_soft(0.0);
         if let Some(label) = self.label.as_deref() {
             viewport = viewport.label(label);
@@ -227,7 +255,7 @@ impl PopupListCore {
             .child(crate::scroll_bar(k, &scroll_area_key(&self.key), "viewport", viewport).w_full().shrink().min_h(0.0))
             .child(
                 el().key("empty")
-                    .h(if empty { 28.0 } else { 0.0 })
+                    .h(if empty { row_h } else { 0.0 })
                     .px(8.0)
                     .center_y()
                     .clip_soft(0.0)
@@ -304,8 +332,8 @@ impl<S: 'static> PopupList<S> {
     pub fn max_height(mut self, max_height: f32) -> Self { self.core.max_height = max_height; self }
     /// Space between the popover's edge and its rows, in points (default 4).
     pub fn padding(mut self, padding: f32) -> Self { self.core.padding = padding; self }
-    /// Corner radius of each row's highlight, in points (default 4).
-    pub fn row_radius(mut self, radius: f32) -> Self { self.core.row_radius = radius; self }
+    /// Corner radius of each row's highlight, in points (overrides `Kit::metrics.popup_row`).
+    pub fn row_radius(mut self, radius: f32) -> Self { self.core.row_radius = Some(radius); self }
     /// The rows. A change lands at once: the popover takes its new height and rows appear and
     /// go in the same frame, even in a commit that animates the field the list follows (one
     /// with `animate_edit_layout`). [`Self::animate_filtering`] animates it instead.
@@ -325,6 +353,26 @@ impl<S: 'static> PopupList<S> {
     pub fn on_active(mut self, f: impl Fn(&mut S, usize) + 'static) -> Self { self.handlers.on_active = Some(Rc::new(f)); self }
     pub fn on_choose(mut self, f: impl Fn(&mut S, &str, &mut Tx) + 'static) -> Self { self.handlers.on_choose = Some(Rc::new(f)); self }
     pub fn on_close(mut self, f: impl Fn(&mut S) + 'static) -> Self { self.handlers.on_close = Some(Rc::new(f)); self }
+
+    /// Builds the scrollable listbox element without anchoring it into an overlay layer, so an
+    /// app can embed the list inside its own popover or panel (pass `""` for `anchor` when
+    /// unused). Respects [`Self::animate_filtering`] and does not check [`Self::open`].
+    ///
+    /// ```
+    /// use rune_kit::{Kit, PopupItem, PopupList};
+    ///
+    /// struct App;
+    /// let k = Kit::neutral(true);
+    /// let _el = PopupList::<App>::new("completions", "")
+    ///     .label("Completions")
+    ///     .items([PopupItem::new("open", "Open")])
+    ///     .build_list(&k);
+    /// ```
+    pub fn build_list(self, k: &Kit) -> El {
+        let instant = !self.core.animate_filtering;
+        let list = self.core.build_list(k, &self.handlers);
+        if instant { list.instant_changes() } else { list }
+    }
 
     pub fn build(self, k: &Kit, layer: &mut Vec<El>) {
         self.core.build(k, layer, &self.handlers);

@@ -32,7 +32,7 @@ impl Repeat {
     }
 }
 
-pub(in crate::runtime) enum Event<'a> {
+enum Event<'a> {
     /// `path`'s drag handler asked for a repeat due at this clock time.
     Arm { path: &'a str, due: f64 },
     /// The release or a cancel ends the repeat.
@@ -43,14 +43,14 @@ pub(in crate::runtime) enum Event<'a> {
 }
 
 #[derive(Debug, PartialEq)]
-pub(in crate::runtime) enum Effect {
+enum Effect {
     /// `path`'s drag hears the pointer again.
     Fire(String),
     /// Wake at this clock time, when the repeat is due.
     WakeAt(f64),
 }
 
-pub(in crate::runtime) fn step(seq: &mut Seq, state: &mut Repeat, event: Event) -> Effects<Effect> {
+fn step(seq: &mut Seq, state: &mut Repeat, event: Event) -> Effects<Effect> {
     match event {
         Event::Arm { path, due } => {
             let attempt = seq.next();
@@ -84,29 +84,64 @@ impl PressRepeat {
     fn waiting(&self, now: f64) -> bool {
         matches!(self.state, Repeat::Armed { due, .. } if now + 1e-6 < due)
     }
+
+    /// Follows a held press whose path shifted across a sibling change.
+    pub(super) fn rebind(&mut self, old: &str, new: &str) {
+        if let Repeat::Armed { path, .. } = &mut self.state && path == old {
+            *path = new.to_owned();
+        }
+    }
+}
+
+impl capture::PointerState {
+    /// Arms a drag repeat for `path` at `due`, while `path` holds the press; returns the wake time.
+    #[inline]
+    pub(in crate::runtime) fn arm_press_repeat(&mut self, path: &str, due: f64) -> Option<f64> {
+        if self.press.path() != Some(path) { return None; }
+        self.press_repeat.step(Event::Arm { path, due }).into_iter().find_map(|e| match e {
+            Effect::WakeAt(due) => Some(due),
+            Effect::Fire(_) => None,
+        })
+    }
+
+    /// The release or a cancel ends the repeat.
+    #[inline]
+    pub(in crate::runtime) fn end_press_repeat(&mut self) {
+        let _ = self.press_repeat.step(Event::End);
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn press_repeat_waiting(&self, now: f64) -> bool {
+        self.press_repeat.waiting(now)
+    }
+
+    /// Consumes and returns the path of any press repeat due by `now`.
+    pub(super) fn take_due_press_repeat(&mut self, now: f64) -> Option<String> {
+        let attempt = self.press_repeat.attempt()?;
+        self.press_repeat.step(Event::Due { attempt, now }).into_iter().find_map(|e| match e {
+            Effect::Fire(path) => Some(path),
+            Effect::WakeAt(_) => None,
+        })
+    }
 }
 
 impl RuntimeCore {
     /// After `path`'s drag handler asked for a repeat `after` from now: due then, while the
     /// press it heard is still held.
     pub(in crate::runtime) fn arm_press_repeat(&mut self, path: &str, after: std::time::Duration) {
-        if self.pointer.press.path() != Some(path) { return; }
         let due = self.clock + after.as_secs_f64();
-        for effect in self.pointer.press_repeat.step(Event::Arm { path, due }) {
-            if let Effect::WakeAt(due) = effect { self.schedule_wakes_from(due, [std::time::Duration::ZERO]); }
+        if let Some(due) = self.pointer.arm_press_repeat(path, due) {
+            self.schedule_wakes_from(due, [std::time::Duration::ZERO]);
         }
     }
 
-    /// The release or a cancel ends the repeat.
-    pub(in crate::runtime) fn end_press_repeat(&mut self) { let _ = self.pointer.press_repeat.step(Event::End); }
-
-    pub(in crate::runtime) fn press_repeat_waiting(&self) -> bool { self.pointer.press_repeat.waiting(self.clock) }
+    #[inline]
+    pub(in crate::runtime) fn press_repeat_waiting(&self) -> bool { self.pointer.press_repeat_waiting(self.clock) }
 
     /// Sends the repeat due by this frame to the drag still holding its press.
     pub(in crate::runtime) fn fire_press_repeat(&mut self) {
-        let Some(attempt) = self.pointer.press_repeat.attempt() else { return };
-        for effect in self.pointer.press_repeat.step(Event::Due { attempt, now: self.clock }) {
-            if let Effect::Fire(path) = effect { self.send_press_repeat(&path); }
+        if let Some(path) = self.pointer.take_due_press_repeat(self.clock) {
+            self.send_press_repeat(&path);
         }
     }
 

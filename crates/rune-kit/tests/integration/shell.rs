@@ -232,7 +232,7 @@ fn long_lists_build_only_the_rows_near_the_viewport() {
     assert_eq!(rt.state.picked, 2, "the keyboard works in a virtualised list");
 
     // During the sidebar's disclosure spring, rows outside the viewport must not lay out.
-    let t_spring = std::time::Instant::now();
+    let t_spring = rune::time::now();
     rt.key(toggle_shortcut());
     for _ in 0..30 {
         rt.frame(1.0 / 60.0);
@@ -245,7 +245,7 @@ fn long_lists_build_only_the_rows_near_the_viewport() {
 
     // Measure scrolling across 60 frames in the 5,000-row virtual list.
     let (x, y) = rt.find("sidebar-scroll").expect("scroll");
-    let t_scroll = std::time::Instant::now();
+    let t_scroll = rune::time::now();
     for _ in 0..60 {
         rt.wheel(x, y, -40.0);
         rt.frame(1.0 / 60.0);
@@ -261,7 +261,7 @@ fn long_lists_build_only_the_rows_near_the_viewport() {
         s.edit.focused = true;
     });
     rt.frame(1.0 / 60.0);
-    let t_key = std::time::Instant::now();
+    let t_key = rune::time::now();
     for _ in 0..20 {
         press(&mut rt, Key::Text("a".into()));
     }
@@ -318,6 +318,11 @@ fn the_title_bar_clears_the_traffic_lights_and_drags_the_window() {
         let (x, y) = rt.find(key).unwrap();
         rt.pointer_move(x, y);
         rt.pointer_down(x, y);
+        #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
+        {
+            assert!(rt.take_titlebar_action().is_none(), "deferred on press: {key}");
+            rt.pointer_move(x + 10.0, y);
+        }
         assert_eq!(rt.take_titlebar_action() == Some(TitlebarAction::Drag), drags, "{key}");
         rt.pointer_up(x, y);
         rt.frame(1.0 / 60.0);
@@ -661,6 +666,11 @@ fn page_matches_split_views_toolbar_and_frame_pixel_for_pixel() {
     // Titlebar drags the window; leading button keeps its press.
     let (tx, ty) = rt.find("title").unwrap();
     rt.pointer_down(tx, ty);
+    #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
+    {
+        assert!(rt.take_titlebar_action().is_none());
+        rt.pointer_move(tx + 10.0, ty);
+    }
     assert_eq!(rt.take_titlebar_action(), Some(TitlebarAction::Drag));
     rt.pointer_up(tx, ty);
     let (lx, ly) = rt.find("lead").unwrap();

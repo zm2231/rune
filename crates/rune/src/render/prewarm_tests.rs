@@ -9,11 +9,13 @@ fn prewarm_gpu_on_chooses_before_it_starts() {
 
 /// `prewarm_gpu` and how a window picks it up, on a bare Metal layer (no window server needed).
 #[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
 mod macos {
     use super::super::{Gpu, Renderer};
-    use objc2_video::{rc::Retained, runtime::{AnyClass, AnyObject}, msg_send};
+    use objc2::{rc::Retained, runtime::{AnyClass, AnyObject}, msg_send};
 
     fn layer() -> Retained<AnyObject> {
+        // SAFETY: `+[CAMetalLayer new]` allocates and returns a retained `CAMetalLayer`.
         unsafe { msg_send![AnyClass::get(c"CAMetalLayer").expect("QuartzCore"), new] }
     }
 
@@ -73,7 +75,7 @@ mod macos {
     /// the same instance, with the surface made once: a second surface would add a second layer.
     #[test]
     fn a_prewarmed_gpu_missing_wanted_features_is_redone_on_its_instance() {
-        let Ok(early) = Gpu::try_new(Gpu::instance(), None) else { return eprintln!("skipped: no GPU") };
+        let Some(early) = Gpu::test_headless() else { return };
         let plain = wgpu::Features::FLOAT32_FILTERABLE | wgpu::Features::DEPTH32FLOAT_STENCIL8 | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
         let missing = (early.adapter.features() - early.device.features()) & plain;
         let Some(wanted) = missing.iter().next() else { return eprintln!("skipped: the adapter has none of the test's features") };
@@ -86,7 +88,7 @@ mod macos {
         assert!(renderer.is_none(), "the prewarmed renderer belongs to the dropped device");
         assert!(gpu.device.features().contains(wanted));
 
-        let Ok(early) = Gpu::try_new(Gpu::instance(), None) else { return };
+        let Some(early) = Gpu::test_headless() else { return };
         let renderer = Renderer::new(&early.device, wgpu::TextureFormat::Bgra8UnormSrgb);
         let (_, _surface, kept) = Gpu::for_surface_from(Some((early, renderer)), wgpu::Features::empty(), false, |i| surface(i, &layer)).expect("a GPU");
         assert!(kept.is_some(), "a suitable prewarmed device keeps its renderer");
@@ -100,7 +102,7 @@ mod macos {
         if !crate::gpu::metal::enabled() || std::env::var_os("RUNE_GPU_BACKEND").is_some() {
             return eprintln!("skipped: the native backend isn't the default here");
         }
-        let early = Gpu::headless();
+        let Some(early) = Gpu::test_headless() else { return };
         assert!(crate::gpu::metal::raw_device(&early.device).is_some());
         let renderer = Renderer::new(&early.device, wgpu::TextureFormat::Bgra8UnormSrgb);
         let layer = layer();
@@ -127,7 +129,7 @@ mod macos {
         if !crate::gpu::metal::enabled() || std::env::var_os("RUNE_GPU_BACKEND").is_some() {
             return eprintln!("skipped: the native backend isn't the default here");
         }
-        let early = Gpu::headless();
+        let Some(early) = Gpu::test_headless() else { return };
         let renderer = Renderer::new(&early.device, wgpu::TextureFormat::Bgra8UnormSrgb);
         let layer = layer();
         let wanted = wgpu::Features::IMMEDIATES;

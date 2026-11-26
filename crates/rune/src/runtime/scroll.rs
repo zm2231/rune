@@ -12,6 +12,7 @@ pub(super) mod offset;
 pub(super) mod requests;
 pub(super) mod reveal;
 pub(super) mod sticky;
+pub(super) mod top;
 pub(super) mod touch;
 pub(super) mod watch;
 pub(super) mod wheel;

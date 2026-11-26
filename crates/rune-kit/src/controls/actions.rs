@@ -126,7 +126,7 @@ fn paint(k: &Kit, e: El, s: Skin, state: State, interactive: bool) -> El {
     let e = k.focus_ring_state(
         e.focusable(interactive && state != State::Disabled),
         2.0,
-        2.5,
+        2.0,
         state == State::Focus && interactive,
     );
     let mut e = k.elevate(k.surface_state(e, state, s.fill, s.hover, s.pressed, interactive), &s.shadows);
@@ -147,19 +147,6 @@ enum Size {
     Legacy(ButtonSize),
 }
 
-/// A push button's height, horizontal padding, corner radius and icon size, as macOS 27's
-/// `NSButton` push buttons measure. Large and ExtraLarge are capsules there; here they take
-/// the theme's larger radii.
-fn push_metrics(k: &Kit, size: ControlSize) -> (f32, f32, f32, f32) {
-    match size {
-        ControlSize::Mini => (16.0, 8.0, k.radius.sm, 12.0),
-        ControlSize::Small => (20.0, 10.0, k.radius.sm, 14.0),
-        ControlSize::Regular => (24.0, 12.0, k.radius.md, 16.0),
-        ControlSize::Large => (28.0, 14.0, k.radius.lg, 16.0),
-        ControlSize::ExtraLarge => (36.0, 18.0, k.radius.xl, 16.0),
-    }
-}
-
 /// What a [`Button`] draws for its label.
 enum Label {
     Text,
@@ -168,7 +155,7 @@ enum Label {
 }
 
 /// An accelerator as a menu shows it, the same key on every layout; any other text as given.
-fn format_shortcut(s: &str) -> String {
+pub(crate) fn format_shortcut(s: &str) -> String {
     let s = s.trim();
     if let Ok(sc) = s.parse::<rune::Shortcut>() {
         sc.menu_keycaps().join(if cfg!(target_os = "macos") { "" } else { "+" })
@@ -177,7 +164,7 @@ fn format_shortcut(s: &str) -> String {
     }
 }
 
-fn compose_help(help: Option<&str>, label: Option<&str>, shortcut: Option<&str>) -> Option<String> {
+pub(crate) fn compose_help(help: Option<&str>, label: Option<&str>, shortcut: Option<&str>) -> Option<String> {
     let sc = shortcut.map(format_shortcut).filter(|s| !s.is_empty());
     match (help, label, sc) {
         (Some(h), _, Some(s)) if !h.is_empty() => Some(format!("{h}  {s}")),
@@ -199,6 +186,7 @@ pub struct Button {
     expanded: Option<bool>,
     help: Option<String>,
     shortcut: Option<String>,
+    show_shortcut: bool,
     acts: Acts,
 }
 
@@ -227,6 +215,7 @@ impl Button {
             expanded: None,
             help: None,
             shortcut: None,
+            show_shortcut: false,
             acts: Acts::default(),
         }
     }
@@ -261,11 +250,17 @@ impl Button {
     /// in: a label with styled spans, a count, or any element. The text given to
     /// [`Button::new`] stays the accessible label.
     ///
-    /// ```ignore
+    /// ```
+    /// # use rune::{row, text};
+    /// # use rune_kit::{Badge, Button, Kit};
+    /// # let k = Kit::neutral(true);
+    /// let badge = Badge::new("3").build(&k);
+    /// # let _ =
     /// Button::new("Import 3 items")
-    ///     .label_with(|font, ink| row().gap(4.0).child(text("Import").font(font).color(ink))
-    ///         .child(Badge::new("3").build(&k)))
+    ///     .label_with(move |font, ink| row().gap(4.0).child(text("Import").font(font).color(ink))
+    ///         .child(badge))
     ///     .build(&k)
+    /// # ;
     /// ```
     pub fn label_with(mut self, f: impl FnOnce(TextStyle, Color) -> El + 'static) -> Self {
         self.look = Label::Custom(Box::new(f));
@@ -294,9 +289,28 @@ impl Button {
     }
     /// A shortcut hint appended to the button's tooltip (e.g. `"Lock  ⌘L"`), formatted like
     /// [`MenuItem::shortcut`](crate::MenuItem::shortcut), and read by assistive technology.
-    /// Accepts display strings (`"⌘L"`) or accelerator strings (`"cmd+l"`).
+    /// Accepts display strings (`"⌘L"`) or accelerator strings (`"cmd+l"`). Call
+    /// [`Button::show_shortcut`] to also draw it inline beside a plain text label.
     pub fn shortcut(mut self, s: impl Into<String>) -> Self {
         self.shortcut = Some(s.into());
+        self
+    }
+    /// Render the shortcut set with [`Button::shortcut`] inline beside a plain text label,
+    /// formatted like [`MenuItem::shortcut`](crate::MenuItem::shortcut) in the label's font at
+    /// 60% of the label ink's alpha. Off by default. Applies only to plain text labels (not
+    /// [`Button::rolling`] or [`Button::label_with`]) and omits the inline text when no
+    /// non-empty shortcut is set. The inline text is hidden from assistive technology because
+    /// the button already exposes the shortcut through its shortcut hint.
+    ///
+    /// ```
+    /// # use rune_kit::{Button, Kit};
+    /// # let k = Kit::neutral(true);
+    /// # let _ =
+    /// Button::new("Save").shortcut("cmd+s").show_shortcut().build(&k)
+    /// # ;
+    /// ```
+    pub fn show_shortcut(mut self) -> Self {
+        self.show_shortcut = true;
         self
     }
     pub fn on_press<S: 'static>(mut self, f: impl Fn(&mut S) + 'static) -> Self {
@@ -315,8 +329,8 @@ impl Button {
             Size::Legacy(ButtonSize::Normal) => (28.0, 11.0, k.radius.md, 16.0, 6.0, None),
             Size::Legacy(ButtonSize::Large) => (32.0, 15.0, k.radius.md, 16.0, 6.0, None),
             Size::Control(c) => {
-                let (h, px, radius, icon_size) = push_metrics(k, c);
-                (h, px, radius, icon_size, if c == ControlSize::Mini { 4.0 } else { 6.0 }, Some(c))
+                let m = k.button_metrics(c);
+                (m.height, m.padding_x, m.radius, m.icon, if c == ControlSize::Mini { 4.0 } else { 6.0 }, Some(c))
             }
         };
         let mut s = skin(k, self.variant);
@@ -357,7 +371,15 @@ impl Button {
             e = e.child(ic);
         }
         e = match self.look {
-            Label::Text => e.child(text(self.label).key("label").font(font).color(ink).a11y_hidden()),
+            Label::Text => {
+                let mut e = e.child(text(self.label).key("label").font(font).color(ink).a11y_hidden());
+                if self.show_shortcut {
+                    if let Some(sc) = self.shortcut.as_deref().map(format_shortcut).filter(|s| !s.is_empty()) {
+                        e = e.child(text(sc).key("shortcut").font(font).color(ink.alpha(ink.a * 0.6)).a11y_hidden());
+                    }
+                }
+                e
+            }
             // The button's edges spring on the label's own curve, so the padding holds while
             // the label grows or shrinks.
             Label::Rolling(key) => e.motion(RollingText::SPRING).width_leads()

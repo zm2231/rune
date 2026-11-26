@@ -1,12 +1,12 @@
 use super::*;
 use crate::native_menu::MenuItem;
 
-fn d(item: MenuItem<()>) -> Description { item.description }
+fn d(item: MenuItem<()>) -> Description { item.split(&mut Vec::new()) }
 
 fn item(id: &str) -> MenuItem<()> { MenuItem::new(id, |_, _| {}) }
 
 fn ids<'a>(group: &Group<'a>) -> Vec<Vec<&'a str>> {
-    group.sections.iter().map(|s| s.iter().map(|d| d.id.as_str()).collect()).collect()
+    group.sections.iter().map(|s| s.iter().map(|d| d.meta.id.as_str()).collect()).collect()
 }
 
 #[test]
@@ -17,7 +17,7 @@ fn items_go_to_the_app_menu_first_then_each_named_menu_in_the_order_it_first_app
     assert_eq!(menus, [None, Some("File"), Some("View")]);
     assert_eq!(ids(&groups[0]), [["prefs"]]);
     assert_eq!(ids(&groups[1]), [["open", "save"]]);
-    assert!(groups.iter().all(|g| g.sections.iter().flatten().all(|d| d.id != "dock")), "the Dock has no place");
+    assert!(groups.iter().all(|g| g.sections.iter().flatten().all(|d| d.meta.id != "dock")), "the Dock has no place");
 }
 
 #[test]

@@ -4,35 +4,22 @@
 //! free one on the GPU, the copy signals a fence, and Rune's D3D12 device samples the texture in
 //! place (`native_surface::windows::DecodedPlanes`). Pictures never pass through the CPU.
 
+#![allow(unsafe_code)]
+
 use super::mf::{self, Picture};
 use crate::native_surface::windows::{DecodedPlanes, VideoFences, device_generation, presenting_device};
 use std::sync::{Arc, Mutex};
-use windows::Win32::Foundation::{CloseHandle, GENERIC_ALL, HMODULE, LUID};
-use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1};
+use windows::Win32::Foundation::{CloseHandle, GENERIC_ALL, LUID};
 use windows::Win32::Graphics::Direct3D11::*;
-use windows::Win32::Graphics::Direct3D12::{D3D12_FENCE_FLAG_NONE, D3D12_FENCE_FLAG_SHARED, ID3D12Device, ID3D12Fence, ID3D12Resource};
+use windows::Win32::Graphics::Direct3D12::{D3D12_FENCE_FLAG_NONE, ID3D12Device, ID3D12Fence, ID3D12Resource};
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_NV12, DXGI_SAMPLE_DESC};
-use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIFactory4, IDXGIResource1};
+use windows::Win32::Graphics::Dxgi::IDXGIResource1;
 use windows::Win32::Media::MediaFoundation::IMFDXGIDeviceManager;
-use windows::core::{GUID, HRESULT, Interface};
+use windows::core::Interface;
 
 /// Pictures a player's ring holds: the few the decoder runs ahead, the one on screen, one the GPU
 /// may still be reading and a spare.
 pub(super) const RING: usize = 6;
-
-type CreateDevice = unsafe extern "system" fn(
-    *mut core::ffi::c_void,
-    D3D_DRIVER_TYPE,
-    HMODULE,
-    u32,
-    *const D3D_FEATURE_LEVEL,
-    u32,
-    u32,
-    *mut *mut core::ffi::c_void,
-    *mut D3D_FEATURE_LEVEL,
-    *mut *mut core::ffi::c_void,
-) -> HRESULT;
-type CreateFactory = unsafe extern "system" fn(*const GUID, *mut *mut core::ffi::c_void) -> HRESULT;
 
 /// The D3D11 device decoders share, on the adapter of Rune's D3D12 device.
 pub(super) struct Device {
@@ -76,6 +63,16 @@ pub(super) fn device() -> Result<Arc<Device>, String> {
     Ok(device)
 }
 
+/// Drops the kept decoder device once Rune's device under it is removed: it holds that device.
+/// Decoders still holding their own reference let go as they see the loss (`lost_since`).
+pub(crate) fn release_removed_device() {
+    let mut slot = DEVICE.lock().unwrap();
+    // SAFETY: a plain query on a device this slot holds.
+    if slot.as_ref().is_some_and(|d| unsafe { d.d3d12.GetDeviceRemovedReason() }.is_err()) {
+        *slot = None;
+    }
+}
+
 /// Rune's device was replaced since `generation`, or the one it presents with is removed.
 pub(super) fn lost_since(generation: u64) -> bool {
     // SAFETY: a plain query on a live device.
@@ -83,33 +80,8 @@ pub(super) fn lost_since(generation: u64) -> bool {
 }
 
 fn make(d3d12: ID3D12Device, luid: LUID, generation: u64) -> Result<Device, String> {
-    let d3d11 = mf::system_library("d3d11.dll").ok_or("d3d11.dll is missing")?;
-    let dxgi = mf::system_library("dxgi.dll").ok_or("dxgi.dll is missing")?;
-    // SAFETY: documented entry points cast to their documented signatures; the out pointers are
-    // owned references on success.
-    unsafe {
-        let create: CreateDevice = mf::symbol(d3d11, c"D3D11CreateDevice").ok_or("no D3D11CreateDevice")?;
-        let factory: CreateFactory = mf::symbol(dxgi, c"CreateDXGIFactory1").ok_or("no CreateDXGIFactory1")?;
-        let mut raw = std::ptr::null_mut();
-        factory(&IDXGIFactory4::IID, &mut raw).ok().map_err(|e| format!("DXGI: {}", e.message()))?;
-        let factory = IDXGIFactory4::from_raw(raw);
-        let adapter: IDXGIAdapter = factory.EnumAdapterByLuid(luid).map_err(|e| format!("Rune's GPU: {}", e.message()))?;
-        let levels = [D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0];
-        let (mut device, mut context) = (std::ptr::null_mut(), std::ptr::null_mut());
-        let flags = (D3D11_CREATE_DEVICE_VIDEO_SUPPORT.0 | D3D11_CREATE_DEVICE_BGRA_SUPPORT.0) as u32;
-        create(adapter.as_raw(), D3D_DRIVER_TYPE_UNKNOWN, HMODULE::default(), flags, levels.as_ptr(), levels.len() as u32, D3D11_SDK_VERSION, &mut device, std::ptr::null_mut(), &mut context)
-            .ok()
-            .map_err(|e| format!("no D3D11 video device: {}", e.message()))?;
-        let device = ID3D11Device::from_raw(device);
-        let context = ID3D11DeviceContext::from_raw(context);
-        // Decoders and players' threads share the device.
-        if let Ok(mt) = device.cast::<ID3D11Multithread>() {
-            let _ = mt.SetMultithreadProtected(true);
-        }
-        let device5 = device.cast::<ID3D11Device5>().map_err(|_| "D3D11 fences need Windows 10 1703")?;
-        let context = context.cast::<ID3D11DeviceContext4>().map_err(|_| "D3D11 fences need Windows 10 1703")?;
-        Ok(Device { device, context, device5, d3d12, luid, generation })
-    }
+    let d3d11 = rune_gpu::d3d11_interop::create_d3d11_device_for_luid(luid, true, true)?;
+    Ok(Device { device: d3d11.device, context: d3d11.context, device5: d3d11.device5, d3d12, luid, generation })
 }
 
 impl Device {
@@ -120,6 +92,16 @@ impl Device {
         unsafe { manager.ResetDevice(&self.device, token) }.map_err(|e| e.message())?;
         Ok(manager)
     }
+}
+
+/// A slot's `value` once its picture is known never to reach Rune (`Ring::unread`), or before
+/// it has held one.
+pub(super) const UNREAD: u64 = 0;
+
+/// Whether a slot can take a new picture: only the ring holds its last one (`holders`), and
+/// Rune's draw of that one or of a later one is done (`released`), or none will ever come.
+pub(super) fn writable(holders: usize, value: u64, released: u64) -> bool {
+    holders == 1 && (value == UNREAD || released >= value)
 }
 
 /// One texture of the ring.
@@ -162,19 +144,12 @@ impl Ring {
     }
 
     pub(super) fn new(device: Arc<Device>, picture: &Picture) -> Result<Self, String> {
-        // SAFETY: fences made on Rune's device and opened on the D3D11 one through a shared
-        // handle, closed once both hold the object.
-        let (fences, ready) = unsafe {
-            let ready12: ID3D12Fence = device.d3d12.CreateFence(0, D3D12_FENCE_FLAG_SHARED).map_err(|e| format!("fence: {}", e.message()))?;
-            let release: ID3D12Fence = device.d3d12.CreateFence(0, D3D12_FENCE_FLAG_NONE).map_err(|e| format!("fence: {}", e.message()))?;
-            let handle = device.d3d12.CreateSharedHandle(&ready12, None, GENERIC_ALL.0, None).map_err(|e| format!("share fence: {}", e.message()))?;
-            let mut ready: Option<ID3D11Fence> = None;
-            let opened = device.device5.OpenSharedFence(handle, &mut ready);
-            let _ = CloseHandle(handle);
-            opened.map_err(|e| format!("open fence: {}", e.message()))?;
-            (Arc::new(VideoFences { ready: ready12, release }), ready.ok_or("open fence")?)
-        };
-        Ok(Self { device, slots: Vec::with_capacity(RING), fences, ready, value: 0, crop: picture.crop })
+        let shared = rune_gpu::d3d11_interop::create_shared_fence(&device.d3d12, &device.device5)?;
+        // SAFETY: plain non-shared D3D12 fence on Rune's live device.
+        let release: ID3D12Fence = unsafe { device.d3d12.CreateFence(0, D3D12_FENCE_FLAG_NONE) }
+            .map_err(|e| format!("fence: {}", e.message()))?;
+        let fences = Arc::new(VideoFences { ready: shared.d3d12, release });
+        Ok(Self { device, slots: Vec::with_capacity(RING), fences, ready: shared.d3d11, value: 0, crop: picture.crop })
     }
 
     /// Whether a picture could be written now: a slot is free, or there's room for another.
@@ -186,7 +161,7 @@ impl Ring {
     fn reusable(&self) -> Option<usize> {
         // SAFETY: a plain read of the fence's value.
         let released = unsafe { self.fences.release.GetCompletedValue() };
-        self.slots.iter().position(|s| Arc::strong_count(&s.planes) == 1 && (s.value == 0 || released >= s.value))
+        self.slots.iter().position(|s| writable(Arc::strong_count(&s.planes), s.value, released))
     }
 
     /// A free slot, made when every made one is busy and the ring isn't full: a clip that shows
@@ -203,11 +178,12 @@ impl Ring {
         Ok(Some(self.slots.len() - 1))
     }
 
-    /// A picture that never reached Rune (its layer showed it instead): its slot is free once the
-    /// last reference goes, with no read of Rune's to wait for.
-    pub(super) fn unread(&mut self, planes: &Arc<DecodedPlanes>) {
-        if let Some(slot) = self.slots.iter_mut().find(|s| Arc::ptr_eq(&s.planes, planes)) {
-            slot.value = 0;
+    /// The picture written as `value` never reached Rune (dropped as an earlier seek's or as
+    /// late, or its layer showed it instead): its slot is free once the last reference goes, with
+    /// no read of Rune's to wait for.
+    pub(super) fn unread(&mut self, planes: &Arc<DecodedPlanes>, value: u64) {
+        if let Some(slot) = self.slots.iter_mut().find(|s| Arc::ptr_eq(&s.planes, planes) && s.value == value) {
+            slot.value = UNREAD;
         }
     }
 
@@ -237,7 +213,7 @@ impl Ring {
         self.slots[i].value = self.value;
         // SAFETY: a signal after the copy on the immediate context; the flush sends both to the GPU.
         unsafe {
-            let _ = self.device.context.Signal(&self.ready, self.value);
+            self.device.context.Signal(&self.ready, self.value).ok();
             self.device.context.Flush();
         }
         (self.slots[i].planes.clone(), self.value)
@@ -266,7 +242,7 @@ fn slot(device: &Device, fences: &Arc<VideoFences>, w: u32, h: u32) -> Result<Sl
         let handle = texture.cast::<IDXGIResource1>().and_then(|r| r.CreateSharedHandle(None, GENERIC_ALL.0, None)).map_err(|e| format!("share video texture: {}", e.message()))?;
         let mut resource: Option<ID3D12Resource> = None;
         let opened = device.d3d12.OpenSharedHandle(handle, &mut resource);
-        let _ = CloseHandle(handle);
+        CloseHandle(handle).ok();
         opened.map_err(|e| format!("open video texture: {}", e.message()))?;
         let planes = Arc::new(DecodedPlanes {
             resource: resource.ok_or("open video texture")?,
@@ -274,6 +250,9 @@ fn slot(device: &Device, fences: &Arc<VideoFences>, w: u32, h: u32) -> Result<Sl
             fences: fences.clone(),
             device: device.d3d12.as_raw() as usize,
         });
-        Ok(Slot { texture, planes, value: 0 })
+        Ok(Slot { texture, planes, value: UNREAD })
     }
 }
+
+#[cfg(test)]
+mod tests;

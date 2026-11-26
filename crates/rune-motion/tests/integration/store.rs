@@ -270,7 +270,7 @@ fn keyframes_hit_values_and_keep_velocity_through_cubics() {
         .cubic(20.0, 0.2)
         .cubic(40.0, 0.2)
         .spring(0.0, motion::SETTLE);
-    s.play_keyframes(N, X, &kf);
+    assert!(s.play_keyframes(N, X, &kf).is_some());
     let at = |s: &mut AnimationStore, t: f64| {
         s.tick_at(t);
         (s.get(N, X).unwrap(), s.velocity(N, X).unwrap())
@@ -285,6 +285,45 @@ fn keyframes_hit_values_and_keep_velocity_through_cubics() {
     assert!((at(&mut s, 0.7).0 - 40.0).abs() < 1e-3);
     at(&mut s, 3.0);
     assert_eq!(at(&mut s, 3.1).0, 0.0);
+}
+
+#[test]
+fn empty_keyframes_are_a_no_op() {
+    let empty = Keyframes::<f32>::new();
+    assert!(empty.is_empty());
+    assert!(Keyframes::<f32>::default().is_empty());
+
+    // First call on a fresh property: returns None, does not panic or create a track.
+    let mut s = AnimationStore::new();
+    assert_eq!(s.play_keyframes(N, X, &empty), None);
+    assert!(!s.has(N, X));
+    assert_eq!(s.track_len(), 0);
+    assert_eq!(s.active_len(), 0);
+
+    // Non-empty keyframes create/play a track and return its TrackId.
+    s.set(N, X, 0.0);
+    let kf = Keyframes::new().linear(10.0, 0.2).linear(20.0, 0.2);
+    assert!(!kf.is_empty());
+    let id = s.play_keyframes(N, X, &kf).expect("non-empty keyframes return a track");
+    assert_eq!(s.track_id(N, X), Some(id));
+    s.tick_at(0.1);
+    let epoch_before = s.epoch(id);
+    assert!((s.get(N, X).unwrap() - 5.0).abs() < 1e-3);
+
+    // Later call on an existing animating property: returns None and leaves the track untouched.
+    assert_eq!(s.play_keyframes(N, X, &empty), None);
+    assert_eq!(s.track_id(N, X), Some(id));
+    assert_eq!(s.epoch(id), epoch_before);
+    assert!(s.is_animating(N, X));
+    s.tick_at(0.4);
+    assert!((s.get(N, X).unwrap() - 20.0).abs() < 1e-3);
+
+    // Reduced motion behaves the same: empty returns None, non-empty returns Some.
+    let mut r = AnimationStore::new();
+    r.set_reduced_motion(true);
+    assert_eq!(r.play_keyframes(N, X, &empty), None);
+    assert!(!r.has(N, X));
+    assert!(r.play_keyframes(N, X, &kf).is_some());
 }
 
 #[test]
@@ -406,4 +445,86 @@ fn node_time_scale_holds_slows_and_resumes_in_place() {
     assert!((s.get(M, X).unwrap() - motion::SETTLE.sample(0.0, 0.0, 100.0, 0.25).0).abs() < 1e-3);
     assert_eq!(s.node_time_scale(N), 0.0);
     assert_eq!(s.node_time_scale(M), 1.0);
+}
+
+#[test]
+fn is_lane_animating_tracks_individual_lanes_and_delays() {
+    let mut s = AnimationStore::new();
+    // Rect lanes are [left, top, right, bottom].
+    s.set(N, prop::FRAME, Rect::new(10.0, 20.0, 100.0, 50.0));
+    s.animate(N, prop::FRAME, Rect::new(10.0, 20.0, 200.0, 50.0), motion::SETTLE);
+    assert!(s.is_animating(N, prop::FRAME));
+    assert!(!s.is_lane_animating(N, prop::FRAME, 0), "unchanged left lane");
+    assert!(!s.is_lane_animating(N, prop::FRAME, 1), "unchanged top lane");
+    assert!(s.is_lane_animating(N, prop::FRAME, 2), "moving right lane");
+    assert!(!s.is_lane_animating(N, prop::FRAME, 3), "unchanged bottom lane");
+    assert!(!s.is_lane_animating(N, prop::FRAME, 4), "out-of-range lane");
+
+    // Delayed lane reports animating while waiting, then clears once settled.
+    s.animate(N, prop::FRAME, Rect::new(10.0, 20.0, 200.0, 120.0), motion::SETTLE.delay(0.2));
+    assert!(s.is_lane_animating(N, prop::FRAME, 3), "delayed bottom lane");
+    s.tick_at(5.0);
+    assert!(!s.is_animating(N, prop::FRAME));
+    for lane in 0..4 {
+        assert!(!s.is_lane_animating(N, prop::FRAME, lane), "lane {lane} settled");
+    }
+}
+
+#[test]
+fn reduced_motion_leaves_zero_duration_curves_and_keyframes_instant() {
+    for class in [PropClass::Opacity, PropClass::Color, PropClass::Presence] {
+        assert_eq!(class.reduce(Curve::linear(0.0)), Curve::Instant);
+        assert_eq!(class.reduce(Curve::tween(0.0, Easing::EASE_OUT)), Curve::Instant);
+        assert_eq!(class.reduce(Curve::ease_in_out(0.0)), Curve::Instant);
+        assert_eq!(class.reduce(Curve::Spring(Spring::NONE)), Curve::Instant);
+        assert_eq!(class.reduce(Curve::Hermite { duration: 0.0, end_velocity: 0.0 }), Curve::Instant);
+    }
+
+    let mut s = AnimationStore::new();
+    s.set_reduced_motion(true);
+    s.set(N, prop::OPACITY, 0.0);
+    s.animate(N, prop::OPACITY, 1.0, Curve::linear(0.0));
+    s.tick_at(0.0);
+    assert_eq!(s.get(N, prop::OPACITY), Some(1.0), "0 s opacity tween must stay instant under reduced motion");
+    assert!(!s.is_animating(N, prop::OPACITY));
+
+    s.set(N, prop::FILL, Color::hex(0xff0000));
+    s.animate(N, prop::FILL, Color::hex(0x0000ff), Curve::tween(0.0, Easing::EASE_IN_OUT));
+    s.tick_at(0.0);
+    let fill = s.get(N, prop::FILL).unwrap();
+    assert!((fill.b - 1.0).abs() < 1e-3 && fill.r < 1e-3, "0 s colour tween must stay instant under reduced motion: {fill:?}");
+    assert!(!s.is_animating(N, prop::FILL));
+
+    // Instant keyframes (Move / 0 s segments) must not gain a reduced-motion fade.
+    s.set(N, prop::OPACITY, 0.0);
+    let move_kf = Keyframes::new().move_to(1.0);
+    s.play_keyframes(N, prop::OPACITY, &move_kf);
+    s.tick_at(0.0);
+    assert_eq!(s.get(N, prop::OPACITY), Some(1.0), "move_to keyframe must stay instant under reduced motion");
+    assert!(!s.is_animating(N, prop::OPACITY));
+
+    s.set(N, prop::OPACITY, 0.0);
+    let zero_kf = Keyframes::new().linear(0.5, 0.0).linear(1.0, 0.0);
+    s.play_keyframes(N, prop::OPACITY, &zero_kf);
+    s.tick_at(0.0);
+    assert_eq!(s.get(N, prop::OPACITY), Some(1.0), "0 s linear keyframes must stay instant under reduced motion");
+    assert!(!s.is_animating(N, prop::OPACITY));
+
+    // A short positive tween keeps its shorter duration instead of stretching to 0.18 s.
+    assert_eq!(PropClass::Opacity.reduce(Curve::linear(0.05)), Curve::ease_in_out(0.05));
+    s.set(N, prop::OPACITY, 0.0);
+    s.play_keyframes(N, prop::OPACITY, &Keyframes::new().spring(1.0, Spring::NONE));
+    s.tick_at(0.0);
+    assert_eq!(s.get(N, prop::OPACITY), Some(1.0), "Spring::NONE keyframe stays instant under reduced motion");
+    assert!(!s.is_animating(N, prop::OPACITY));
+
+    // Positive-duration opacity keyframes still collapse to the short reduced fade.
+    s.set(N, prop::OPACITY, 0.0);
+    let fade_kf = Keyframes::new().linear(0.5, 0.2).linear(1.0, 0.2);
+    s.play_keyframes(N, prop::OPACITY, &fade_kf);
+    s.tick_at(0.09);
+    let mid = s.get(N, prop::OPACITY).unwrap();
+    assert!(mid > 0.3 && mid < 0.7, "animated opacity keyframes still take REDUCED_FADE: {mid}");
+    s.tick_at(0.18);
+    assert_eq!(s.get(N, prop::OPACITY), Some(1.0));
 }

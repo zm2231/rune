@@ -15,32 +15,106 @@ impl Scene {
     /// scene rect, measured in `to`'s root space: a scroll offset the renderer applies outside the
     /// scene, which differs between the two places.
     pub fn match_geometry_offset(&mut self, from: NodeId, to: NodeId, offset: Vec2, anim: impl Into<LayoutAnim>) {
+        self.match_geometry_scaled(from, to, 1.0, Vec2::ZERO, Vec2::ZERO, offset, anim);
+    }
+
+    /// [`match_geometry`](Self::match_geometry) for a `from` drawn with `offset` added to its
+    /// scene rect and scaled by `scale` about `anchor` (mapping `anchor` to `anchor_to`): a
+    /// scroll offset and ancestor zoom the renderer applies outside the scene.
+    #[allow(clippy::too_many_arguments)]
+    pub fn match_geometry_scaled(
+        &mut self,
+        from: NodeId,
+        to: NodeId,
+        scale: f32,
+        anchor: Vec2,
+        anchor_to: Vec2,
+        offset: Vec2,
+        anim: impl Into<LayoutAnim>,
+    ) {
+        let Some(a) = self.slot(from) else { return };
+        let (mut start, mut vel) = self.exact_shown(a);
+        for k in 0..4 {
+            let (off, anc, anc_to) = if k % 2 == 0 {
+                (offset.x, anchor.x, anchor_to.x)
+            } else {
+                (offset.y, anchor.y, anchor_to.y)
+            };
+            start[k] = anc_to + (start[k] + off - anc) * scale;
+            vel[k] *= scale;
+        }
+        self.finish_match(from, to, start, vel, scale, anim.into());
+    }
+
+    /// [`match_geometry`](Self::match_geometry) for a `from` that was mid-flight with renderer
+    /// edge delta `delta` blended by `travel` (moving at `travel_vel`) and drawn radius scale
+    /// `radius_scale`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn match_geometry_from_flight(
+        &mut self,
+        from: NodeId,
+        to: NodeId,
+        delta: [f32; 4],
+        travel: Vec2,
+        travel_vel: Vec2,
+        radius_scale: f32,
+        anim: impl Into<LayoutAnim>,
+    ) {
+        let Some(a) = self.slot(from) else { return };
+        let (mut start, mut vel) = self.exact_shown(a);
+        let t = [travel.x, travel.y];
+        let tv = [travel_vel.x, travel_vel.y];
+        for k in 0..4 {
+            start[k] += delta[k] * t[k % 2];
+            vel[k] += delta[k] * tv[k % 2];
+        }
+        self.finish_match(from, to, start, vel, radius_scale, anim.into());
+    }
+
+    fn finish_match(&mut self, from: NodeId, to: NodeId, start: [f32; 4], vel: [f32; 4], radius_scale: f32, anim: LayoutAnim) {
         let (Some(a), Some(b)) = (self.slot(from), self.slot(to)) else { return };
-        let anim = anim.into();
-        if self.store.reduced_motion() {
+        if self.store.reduced_motion() && !anim.is_instant() {
             self.remove(from);
-            let entrance = Anim::from(self.nodes[b].transition.springs.enter);
-            let acts = self.nodes[b].phase_step(PhaseEvent::FadeIn { entrance });
+            let entrance = self.enter_anim(b);
+            let acts = self.nodes[b].phase_step(&mut self.exiting, PhaseEvent::FadeIn { entrance });
             self.apply(b, acts);
             return;
         }
-        let (mut start, vel) = self.exact_world(a);
-        for (k, edge) in start.iter_mut().enumerate() {
-            *edge += if k % 2 == 0 { offset.x } else { offset.y };
-        }
         let radius = self.current::<Corners>(a, prop::RADIUS).unwrap_or(self.nodes[a].radius);
+        let radius = if (radius_scale - 1.0).abs() > 1e-5 { Corners(radius.0.map(|r| r * radius_scale)) } else { radius };
         let fill = self.current::<Color>(a, prop::FILL).unwrap_or(self.nodes[a].fill);
+        let from_rot = self.shown_rotation(a);
         let (to_radius, to_fill) = (self.nodes[b].radius, self.nodes[b].fill);
         // `to` is the one surface from now on: fully present, no presence effect.
-        let acts = self.nodes[b].phase_step(PhaseEvent::Appear);
+        let acts = self.nodes[b].phase_step(&mut self.exiting, PhaseEvent::Appear);
         self.apply(b, acts);
         self.start_path(b, start, vel, anim);
+        if let Some(path) = &mut self.nodes[b].path {
+            path.start_rotation = Some(from_rot);
+        }
         self.track_set(b, prop::RADIUS, radius);
         self.track_animate(b, prop::RADIUS, to_radius, anim.x);
         self.track_set(b, prop::FILL, fill);
         self.track_animate(b, prop::FILL, to_fill, anim.y);
         self.intent(to, Intent::POSITION | Intent::SIZE | Intent::SHAPE, anim.y.curve.logical_duration());
+        let start_rect = Rect::from_edges(start[0], start[1], start[2], start[3]);
+        let own = self.current::<Vec2>(b, prop::OFFSET).unwrap_or(Vec2::ZERO);
+        let end_rect = self.nodes[b].frame.translated(self.parent_target_origin(b)).translated(own);
+        self.handovers.push(Handover { from, to, start: start_rect, end: end_rect });
         self.remove_now(a);
+    }
+
+    /// Drains the matched-geometry handovers completed since the last call.
+    pub fn take_handovers(&mut self) -> Vec<Handover> {
+        std::mem::take(&mut self.handovers)
+    }
+
+    /// Where node `id`'s screen path ends in scene root space (`end_local + parent_target_origin`),
+    /// or `None` when `id` is not on a screen path.
+    pub fn path_end(&self, id: NodeId) -> Option<Rect> {
+        let i = self.slot(id)?;
+        let path = self.nodes[i].path?;
+        Some(path.end_local.translated(self.parent_target_origin(i)))
     }
 
     /// Starts `id`, fully present, at `start` (root space) on one straight root-space path to
@@ -50,7 +124,7 @@ impl Scene {
         let Some(i) = self.slot(id) else { return };
         if self.store.reduced_motion() { return; }
         let anim = anim.into();
-        let acts = self.nodes[i].phase_step(PhaseEvent::Appear);
+        let acts = self.nodes[i].phase_step(&mut self.exiting, PhaseEvent::Appear);
         self.apply(i, acts);
         self.start_path(i, start.edges(), [0.0; 4], anim);
         self.intent(id, Intent::POSITION, anim.y.curve.logical_duration());
@@ -70,12 +144,27 @@ impl Scene {
     pub fn path_lead(&self, id: NodeId) -> Option<[Vec2; 2]> {
         let i = self.slot(id)?;
         let path = self.nodes[i].path?;
-        let (on, laid) = (self.path_dual(i, path, path.origin), self.laid_dual(i));
+        let (on, mut laid) = (self.path_dual(i, path, path.origin), self.laid_dual(i));
+        let mut off = [D::c(0.0); 2];
+        self.lanes_dual(i, prop::OFFSET.id, &mut off);
+        for k in 0..4 {
+            laid[k] = laid[k].add(off[k % 2]);
+        }
         // The presented snap step: 1/64 of a device pixel.
         let q = 1.0 / (64.0 * self.store.pixel_scale());
         let size = |e: [D; 4], k: usize| e[k + 2].x - e[k].x;
         if (0..2).any(|k| (size(on, k) - size(laid, k)).abs() > q) {
             return None;
+        }
+        if let Some(sr) = path.start_rotation {
+            let own_rot = self.values(i, prop::ROTATION.id).map_or(0.0, |v| v[0]);
+            let p = self.values(i, prop::TRAVEL.id).map_or([1.0, 1.0], |v| [v[0], v[1]]);
+            let cur_rot = blend_rotation(sr, own_rot, 0.5 * (p[0] + p[1]));
+            let rem = shortest_angle_delta(cur_rot, own_rot).abs();
+            let radius = 0.5 * (laid[2].x - laid[0].x).hypot(laid[3].x - laid[1].x);
+            if rem * radius.max(1.0) > q {
+                return None;
+            }
         }
         Some([Vec2::new(on[0].x - laid[0].x, on[1].x - laid[1].x), Vec2::new(on[0].v - laid[0].v, on[1].v - laid[1].v)])
     }
@@ -107,18 +196,18 @@ impl Scene {
     pub(super) fn start_path(&mut self, i: usize, start: [f32; 4], vel: [f32; 4], anim: LayoutAnim) {
         let end_local = self.nodes[i].frame;
         let po = self.parent_target_origin(i);
-        let end = end_local.translated(po).edges();
+        let own = self.current::<Vec2>(i, prop::OFFSET).unwrap_or(Vec2::ZERO);
+        let end = end_local.translated(po).translated(own).edges();
         // Project the current edge velocity onto each axis' path to keep it moving the same way.
         let px = axis_progress_velocity(start[0], start[2], end[0], end[2], vel[0], vel[2]);
         let py = axis_progress_velocity(start[1], start[3], end[1], end[3], vel[1], vel[3]);
-        self.nodes[i].path = Some(Path { start: Rect::from_edges(start[0], start[1], start[2], start[3]), end_local, origin: po });
+        self.nodes[i].path = Some(Path { start: Rect::from_edges(start[0], start[1], start[2], start[3]), end_local, origin: po, start_rotation: None });
         if !self.travelling.contains(&(i as u32)) {
             self.travelling.push(i as u32);
         }
         self.track_set(i, prop::TRAVEL, Vec2::ZERO);
         let t = self.nodes[i].tracks[prop::TRAVEL.id.0 as usize].unwrap().index_usize();
-        self.store.animate_raw(t, &[1.0, 0.0], anim.x, Some(&[px, 0.0]));
-        self.store.animate_raw(t, &[1.0, 1.0], anim.y, Some(&[px, py]));
+        self.store.animate_axes_2(t, [1.0, 1.0], [anim.x, anim.y], [px, py]);
         if self.nodes[i].tracks[prop::FRAME.id.0 as usize].is_some() {
             self.track_set(i, prop::FRAME, end_local);
         }
@@ -132,6 +221,41 @@ impl Scene {
         self.store.remove(id, prop::TRAVEL);
         self.nodes[i].tracks[prop::TRAVEL.id.0 as usize] = None;
     }
+}
+
+impl Scene {
+    /// Node `i`'s presented rotation (radians) at `now()`, including any active matched-flight blend.
+    pub(super) fn shown_rotation(&self, i: usize) -> f32 {
+        let own = self.current::<f32>(i, prop::ROTATION).unwrap_or(0.0);
+        match self.nodes[i].path {
+            Some(Path { start_rotation: Some(sr), .. }) => {
+                let p = self.current::<Vec2>(i, prop::TRAVEL).unwrap_or(Vec2::new(1.0, 1.0));
+                blend_rotation(sr, own, 0.5 * (p.x + p.y))
+            }
+            _ => own,
+        }
+    }
+}
+
+/// Signed shortest angular difference `to - from` in `(-PI, PI]`.
+#[inline]
+pub(super) fn shortest_angle_delta(from: f32, to: f32) -> f32 {
+    let mut d = (to - from).rem_euclid(core::f32::consts::TAU);
+    if d > core::f32::consts::PI {
+        d -= core::f32::consts::TAU;
+    }
+    d
+}
+
+/// Interpolates from `from` to `to` along the shortest angular arc, returning `from` at `t = 0`
+/// and `to` at `t = 1`.
+#[inline]
+pub(super) fn blend_rotation(from: f32, to: f32, t: f32) -> f32 {
+    if from == to {
+        return to;
+    }
+    let delta = shortest_angle_delta(from, to);
+    (to - delta) + delta * t
 }
 
 /// The progress velocity that best continues edge velocities `(v0, v1)` along the path from

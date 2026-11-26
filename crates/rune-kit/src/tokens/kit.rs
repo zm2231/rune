@@ -186,6 +186,7 @@ pub struct Type {
     /// The older text-12 (descriptions).
     pub text_xsmall: TextStyle,
     pub text_xsmall_medium: TextStyle,
+    /// Monospace copy (code, ids, hashes): 12 / 18 in the mono slot (`ui-monospace` by default on native, `IBM Plex Mono` on web).
     pub mono: TextStyle,
 }
 
@@ -222,7 +223,7 @@ pub struct Motion {
     pub control: Spring,
     /// Overlays opening and closing (popover, menu, tooltip): ~120–150 ms.
     pub overlay: Spring,
-    /// Disclosure height changes (accordion, collapsible).
+    /// Disclosure transitions (shell `SplitView` panes via `PaneMotion`, and `SidebarSection` collapse/expand).
     pub disclosure: Spring,
 }
 
@@ -246,6 +247,15 @@ pub struct Kit {
     /// Invalid inputs also paint their text, placeholder and caret in `c.danger.fg`
     /// (`@opencode/ui`'s look). Otherwise only the outline turns `danger`.
     pub invalid_text: bool,
+    /// The system contrast theme's highlight while one paints the window (CSS
+    /// `forced-colors: active`). Fields then draw their edge as a border in `c.text_base` (2
+    /// points and dashed when invalid) and focus as a 2 point ring in this colour, 2 out, so
+    /// rest, focus and invalid stay apart in the theme's few colours (`text-input.css`,
+    /// opencode#65100).
+    pub forced: Option<Color>,
+    /// Component metrics a theme sets in place of the built-in ones (button and switch sizes,
+    /// field box, text area type, checkbox colours). `Metrics::default()` keeps them all.
+    pub metrics: crate::Metrics,
 }
 
 impl Kit {
@@ -365,10 +375,11 @@ impl Kit {
         rune::theme::for_blend(c, backdrop)
     }
 
-    /// `layers` as painted: rings recoloured by [`Kit::ring`] when the theme sets it.
+    /// `layers` as painted (back-to-front, reversing CSS `box-shadow` front-to-back order so the
+    /// first CSS shadow paints on top): rings recoloured by [`Kit::ring`] when the theme sets it.
     pub fn shadow_layers<'a>(&'a self, layers: &'a [Shadow]) -> impl Iterator<Item = Shadow> + 'a {
         let ring = self.ring.map(|f| f(&self.c));
-        layers.iter().map(move |s| match ring {
+        layers.iter().rev().map(move |s| match ring {
             Some(color) if s.blur == 0.0 => Shadow { color, ..*s },
             _ => *s,
         })

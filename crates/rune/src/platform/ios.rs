@@ -32,13 +32,13 @@ pub(crate) use app::run;
 /// in Swift). Null off the main thread.
 #[cfg(target_os = "ios")]
 pub fn view<S: 'static>(app: crate::App<S>) -> *mut std::ffi::c_void {
-    let Some(mtm) = objc2_video::MainThreadMarker::new() else { return std::ptr::null_mut() };
+    let Some(mtm) = objc2::MainThreadMarker::new() else { return std::ptr::null_mut() };
     let mount = surface::mount(app);
     // No event loop of Rune's says when the host has made its views, so each one settles the
     // links: one handed over before the first view was made has reached its hook by now, and
     // from here a link goes to a view that listens or is dropped, never kept.
     crate::open_url::incoming::settle();
-    objc2_video::rc::Retained::into_raw(view::RuneView::new(mtm, mount)).cast()
+    objc2::rc::Retained::into_raw(view::RuneView::new(mtm, mount)).cast()
 }
 
 /// Hands `url` to [`App::on_open_url`](crate::App::on_open_url) of the app in a [`view`], for a

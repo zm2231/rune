@@ -11,10 +11,12 @@
 //! would put that offset at its top. Which of these UIKit needs is not established; this set
 //! is asked. It stays out of the way of fingers by answering every hit test with no view.
 
+#![allow(unsafe_code)]
+
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use objc2_video::rc::Retained;
-use objc2_video::runtime::{AnyObject, NSObject};
-use objc2_video::{MainThreadMarker, MainThreadOnly, define_class, extern_class, msg_send};
+use objc2::rc::Retained;
+use objc2::runtime::{AnyObject, NSObject};
+use objc2::{MainThreadMarker, MainThreadOnly, define_class, extern_class, msg_send};
 
 use super::super::pacing::Event;
 use super::{RuneView, UIResponder, UIView};

@@ -129,42 +129,43 @@ pub(crate) const ROLES: &[RoleSpec] = &[
     RoleSpec::new("icon", AkRole::Icon),
     RoleSpec::role("image", Role::Image),
     RoleSpec::new("textbox", AkRole::TextBoxWrapper).pointer(),
-    RoleSpec::role("slider", Role::Slider).warn_nameless().pointer(),
+    RoleSpec::role("slider", Role::Slider).warn_nameless().web_control().pointer(),
     RoleSpec::role("option", Role::ListBoxOption).warn_nameless().web_control().pointer(),
     RoleSpec::role("list", Role::List).container("ul"),
     RoleSpec::role("listbox", Role::ListBox).aria_container(),
     RoleSpec::role("dialog", Role::Dialog).aria_container(),
     RoleSpec::role("listitem", Role::ListItem).container("li"),
+    RoleSpec::role("list-marker", Role::ListMarker),
     RoleSpec::role("heading", Role::Heading),
     RoleSpec::role("tab", Role::Tab).warn_nameless().web_control().pointer(),
     RoleSpec::role("region", Role::Region).container("section"),
-    RoleSpec::role("alert", Role::Alert).live(LiveRegion::Assertive),
+    RoleSpec::role("alert", Role::Alert).live(LiveRegion::Assertive).aria_container(),
     RoleSpec::role("mark", Role::Label),
     RoleSpec::role("switch", Role::Switch).warn_nameless().web_control().pointer(),
     RoleSpec::role("link", Role::Link).warn_nameless().pointer(),
     RoleSpec::role("menuitem", Role::MenuItem).warn_nameless().web_control().pointer(),
     RoleSpec::role("radio", Role::RadioButton).warn_nameless().web_control().pointer(),
-    RoleSpec::role("menu", Role::Menu),
-    RoleSpec::role("status", Role::Status).live(LiveRegion::Polite),
-    RoleSpec::role("tree", Role::Tree),
+    RoleSpec::role("menu", Role::Menu).aria_container(),
+    RoleSpec::role("status", Role::Status).live(LiveRegion::Polite).aria_container(),
+    RoleSpec::role("tree", Role::Tree).aria_container(),
     RoleSpec::role("main", Role::Main).container("main"),
     RoleSpec::role("row", Role::Row).aria_container(),
     RoleSpec::role("treeitem", Role::TreeItem).warn_nameless().web_control(),
     RoleSpec::role("checkbox", Role::CheckBox).warn_nameless().web_control().pointer(),
-    RoleSpec::role("toolbar", Role::Toolbar),
-    RoleSpec::role("radiogroup", Role::RadioGroup),
+    RoleSpec::role("toolbar", Role::Toolbar).aria_container(),
+    RoleSpec::role("radiogroup", Role::RadioGroup).aria_container(),
     RoleSpec::role("progressbar", Role::ProgressIndicator),
     RoleSpec::role("note", Role::Note),
-    RoleSpec::role("combobox", Role::ComboBox).warn_nameless().pointer(),
-    RoleSpec::role("gridcell", Role::GridCell),
+    RoleSpec::role("combobox", Role::ComboBox).warn_nameless().web_control().pointer(),
+    RoleSpec::role("gridcell", Role::GridCell).aria_container(),
     RoleSpec::role("code", Role::Code),
     RoleSpec::role("columnheader", Role::ColumnHeader).aria_container(),
     RoleSpec::new("separator", AkRole::Separator),
-    RoleSpec::role("tablist", Role::TabList),
+    RoleSpec::role("tablist", Role::TabList).aria_container(),
     RoleSpec::role("segment", Role::RadioButton).warn_nameless(),
     RoleSpec::role("window", Role::Window),
     RoleSpec::role("navigation", Role::Navigation).container("nav"),
-    RoleSpec::role("grid", Role::Grid),
+    RoleSpec::role("grid", Role::Grid).aria_container(),
     RoleSpec::new("none", AkRole::Omit),
     RoleSpec::role("img", Role::Image),
     RoleSpec::role("tooltip", Role::Tooltip),
@@ -172,22 +173,22 @@ pub(crate) const ROLES: &[RoleSpec] = &[
     RoleSpec::role("document", Role::Document),
     RoleSpec::role("figure", Role::Figure).container("figure"),
     RoleSpec::role("table", Role::Table).aria_container(),
-    RoleSpec::role("search", Role::Search),
+    RoleSpec::role("search", Role::Search).aria_container(),
     RoleSpec::new("searchbox", AkRole::TextBoxWrapper).pointer(),
     RoleSpec::role("complementary", Role::Complementary).container("aside"),
     RoleSpec::role("blockquote", Role::Blockquote),
     RoleSpec::role("menuitemcheckbox", Role::MenuItemCheckBox).warn_nameless().web_control().pointer(),
     RoleSpec::role("menuitemradio", Role::MenuItemRadio).warn_nameless().web_control().pointer(),
     RoleSpec::new("scrollbar", AkRole::Fallback).pointer(),
-    RoleSpec::role("spinbutton", Role::SpinButton).warn_nameless().pointer(),
-    RoleSpec::role("tabpanel", Role::TabPanel),
+    RoleSpec::role("spinbutton", Role::SpinButton).warn_nameless().web_control().pointer(),
+    RoleSpec::role("tabpanel", Role::TabPanel).aria_container(),
     RoleSpec::role("article", Role::Article).container("article"),
     RoleSpec::role("terminal", Role::Terminal),
     RoleSpec::role("banner", Role::Banner).container("header"),
-    RoleSpec::role("form", Role::Form),
+    RoleSpec::role("form", Role::Form).aria_container(),
     RoleSpec::role("contentinfo", Role::ContentInfo).container("footer"),
     RoleSpec::role("alertdialog", Role::AlertDialog).aria_container(),
-    RoleSpec::role("log", Role::Log).live(LiveRegion::Polite),
+    RoleSpec::role("log", Role::Log).live(LiveRegion::Polite).aria_container(),
     // Rune component aliases and less frequent ARIA roles.
     RoleSpec::new("toggle", AkRole::Button).warn_nameless(),
     RoleSpec::new("swatch", AkRole::Button).warn_nameless(),
@@ -197,11 +198,11 @@ pub(crate) const ROLES: &[RoleSpec] = &[
     RoleSpec::role("label", Role::Label),
     RoleSpec::role("paragraph", Role::Paragraph),
     RoleSpec::role("sidebar-list", Role::List),
-    RoleSpec::role("treegrid", Role::TreeGrid),
-    RoleSpec::role("rowgroup", Role::RowGroup),
+    RoleSpec::role("treegrid", Role::TreeGrid).aria_container(),
+    RoleSpec::role("rowgroup", Role::RowGroup).aria_container(),
     RoleSpec::role("cell", Role::Cell).aria_container(),
     RoleSpec::role("rowheader", Role::RowHeader).aria_container(),
-    RoleSpec::role("menubar", Role::MenuBar),
+    RoleSpec::role("menubar", Role::MenuBar).aria_container(),
     RoleSpec::role("timer", Role::Timer),
     RoleSpec::role("meter", Role::Meter),
     RoleSpec::new("sidebar-grip", AkRole::Separator),
@@ -244,6 +245,8 @@ pub(crate) fn map(role: &str, cx: &RoleCtx) -> Option<Role> {
     if cx.input {
         return Some(if cx.secure { Role::PasswordInput }
             else if role == "searchbox" { Role::SearchInput }
+            else if role == "combobox" { Role::EditableComboBox }
+            else if role == "spinbutton" { Role::SpinButton }
             else if cx.multiline { Role::MultilineTextInput } else { Role::TextInput });
     }
     match spec(role).map_or(AkRole::Fallback, |s| s.ak) {
@@ -356,6 +359,7 @@ const fn ak_meta(role: Role) -> AkRoleMeta {
         Role::Heading => D.focus("heading").content_name(),
         Role::TextInput | Role::MultilineTextInput | Role::SearchInput | Role::PasswordInput | Role::Terminal => D.focus("textbox"),
         Role::Slider => D.focus("slider"),
+        Role::SpinButton => D.focus("spinbutton"),
         Role::ComboBox | Role::EditableComboBox => D.focus("combobox"),
         Role::Dialog => D.focus("dialog"),
         Role::AlertDialog => D.focus("alertdialog"),
@@ -388,6 +392,79 @@ pub(crate) fn leaf_control(role: Role) -> bool {
 /// Roles that take their name from the text inside them through AccessKit itself.
 pub(crate) fn named_by_accesskit(role: Role) -> bool {
     ak_meta(role).named_by_accesskit
+}
+
+/// Container roles that own an ordered set of items (`size_of_set` / ARIA `aria-setsize`),
+/// matching Chromium's `ui::IsSetLike` plus `RowGroup` for treegrid row groups. Plain tables,
+/// grids and rows are excluded so cell properties never overwrite a row's set size.
+pub(crate) fn ordered_set(role: Role) -> bool {
+    matches!(
+        role,
+        Role::Group
+            | Role::List
+            | Role::ListBox
+            | Role::Menu
+            | Role::MenuBar
+            | Role::RadioGroup
+            | Role::RowGroup
+            | Role::TabList
+            | Role::Tree
+            | Role::TreeGrid
+    )
+}
+
+/// Whether `role` is an ordered-set item inside `container` (`position_in_set` / ARIA
+/// `aria-posinset`), matching WAI-ARIA 1.2 and Chromium's `AXNode::IsOrderedSetItem`.
+/// Non-item roles such as `Heading`, `Group`, `Splitter`, `GridCell` and `Cell` return
+/// `false`; `Row` is an item only inside an ordered-set container, not inside a plain `Grid`
+/// or `Table`.
+pub(crate) fn ordered_set_item_in(role: Role, container: Role) -> bool {
+    match role {
+        Role::Article
+        | Role::ListItem
+        | Role::ListBoxOption
+        | Role::MenuListOption
+        | Role::MenuItem
+        | Role::MenuItemCheckBox
+        | Role::MenuItemRadio
+        | Role::RadioButton
+        | Role::Tab
+        | Role::TreeItem => true,
+        Role::Row => ordered_set(container),
+        _ => false,
+    }
+}
+
+/// Composite-widget and table item roles that advertise `Action::Click` when an enabled
+/// ancestor installs [`El::on_a11y_action`](crate::El::on_a11y_action) and the item has no
+/// `on_press` of its own.
+pub(crate) fn composite_item(role: Role) -> bool {
+    matches!(
+        role,
+        Role::ListBoxOption
+            | Role::MenuListOption
+            | Role::TreeItem
+            | Role::Row
+            | Role::Cell
+            | Role::GridCell
+            | Role::Tab
+            | Role::MenuItem
+            | Role::MenuItemCheckBox
+            | Role::MenuItemRadio
+    )
+}
+
+/// Tabular containers (`row_count` / `column_count`, ARIA `aria-rowcount` / `aria-colcount`),
+/// matching WAI-ARIA 1.2 and Chromium's `ui::IsTableLike`.
+pub(crate) fn table_container(role: Role) -> bool {
+    matches!(role, Role::Grid | Role::Table | Role::TreeGrid)
+}
+
+/// Non-dialog WAI-ARIA popup roles (`menu`, `listbox`, `tree`, `grid`, `treegrid`): not
+/// exposed as `aria-modal`, and when opened as an anchored [`El::modal`](crate::El::modal)
+/// keep their trigger and enclosing modal readable (inert to actions) in the accessibility tree.
+pub(crate) fn popup_modal(role: Role) -> bool {
+    matches!(role, Role::Menu | Role::ListBox | Role::Tree | Role::Grid | Role::TreeGrid)
 }
 
 /// The ARIA role a browser's reader knows for an AccessKit role, for the web focus proxy.
@@ -438,8 +515,15 @@ mod tests {
         let field = RoleCtx { input: true, ..cx() };
         assert_eq!(map("textbox", &field), Some(Role::TextInput));
         assert_eq!(map("searchbox", &field), Some(Role::SearchInput));
+        assert_eq!(map("combobox", &field), Some(Role::EditableComboBox));
+        assert_eq!(map("spinbutton", &field), Some(Role::SpinButton));
+        assert_eq!(map("combobox", &cx()), Some(Role::ComboBox));
         assert_eq!(map("textbox", &RoleCtx { multiline: true, ..field }), Some(Role::MultilineTextInput));
         assert_eq!(map("textbox", &RoleCtx { secure: true, ..field }), Some(Role::PasswordInput));
+        assert_eq!(map("combobox", &RoleCtx { secure: true, ..field }), Some(Role::PasswordInput));
+        assert_eq!(map("spinbutton", &RoleCtx { secure: true, ..field }), Some(Role::PasswordInput));
+        assert_eq!(focus_role(Role::EditableComboBox), "combobox");
+        assert_eq!(focus_role(Role::SpinButton), "spinbutton");
     }
 
     #[test]
@@ -513,9 +597,28 @@ mod tests {
         assert_eq!(container_tag("listitem"), Some("li"));
         assert_eq!(container_tag("dialog"), Some("div"));
         assert_eq!(container_aria("dialog"), Some("dialog"));
+        assert_eq!(container_tag("menu"), Some("div"));
+        assert_eq!(container_aria("menu"), Some("menu"));
+        assert_eq!(container_tag("tablist"), Some("div"));
+        assert_eq!(container_aria("tablist"), Some("tablist"));
+        assert_eq!(container_tag("radiogroup"), Some("div"));
+        assert_eq!(container_aria("radiogroup"), Some("radiogroup"));
+        assert_eq!(container_tag("status"), Some("div"));
+        assert_eq!(container_aria("status"), Some("status"));
+        assert_eq!(container_tag("alert"), Some("div"));
+        assert_eq!(container_aria("alert"), Some("alert"));
+        assert_eq!(container_tag("log"), Some("div"));
+        assert_eq!(container_aria("log"), Some("log"));
         assert_eq!(container_aria("table"), Some("table"));
+        for role in ["menu", "menubar", "tree", "treegrid", "tabpanel", "toolbar", "grid", "gridcell", "rowgroup", "form", "search"] {
+            assert_eq!(container_tag(role), Some("div"), "expected div container_tag({role})");
+            assert_eq!(container_aria(role), Some(role), "expected container_aria({role})");
+        }
         assert_eq!(container_aria("main"), None);
         assert_eq!(web_control_role("option"), Some("option"));
+        assert_eq!(web_control_role("combobox"), Some("combobox"));
+        assert_eq!(web_control_role("slider"), Some("slider"));
+        assert_eq!(web_control_role("spinbutton"), Some("spinbutton"));
         assert_eq!(web_control_role("button"), None);
         assert_eq!(default_live("status"), Some(LiveRegion::Polite));
         assert_eq!(default_live("log"), Some(LiveRegion::Polite));

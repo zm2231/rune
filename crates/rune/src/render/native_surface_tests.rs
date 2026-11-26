@@ -12,12 +12,14 @@ macro_rules! on_each_backend {
     ($wgpu:ident, $metal:ident, $body:ident) => {
         #[test]
         fn $wgpu() {
-            $body(Gpu::headless_wgpu());
+            let Some(gpu) = Gpu::test_headless_wgpu() else { return };
+            $body(gpu);
         }
         #[cfg(all(target_vendor = "apple", feature = "metal-backend"))]
         #[test]
         fn $metal() {
-            $body(Gpu::new(crate::gpu::metal::instance(), None));
+            let Some(gpu) = Gpu::test_on(crate::gpu::metal::instance()) else { return };
+            $body(gpu);
         }
     };
 }
@@ -72,7 +74,9 @@ fn video_interleaves_with_renderer_springs_and_external_timing_on(gpu: Gpu) {
             .fill(crate::Color::BLACK)
             .native_surface(s, SurfaceFit::Fit)
             .border(1.0, crate::Color::BLACK)
-            .child(el().w(2.0).h(2.0).fill(crate::Color::BLACK))
+            // 3x3 pt (6x6 px at 2x) puts the probed pixel (3, 3) clear of both the 2 px border
+            // and the child's outer anti-aliasing boundary.
+            .child(el().w(3.0).h(3.0).fill(crate::Color::BLACK))
     }
     let mut rt = Runtime::new(surface.clone(), view, (8.0, 4.0), Env::new(true, 2.0));
     rt.frame(0.0);
@@ -120,7 +124,7 @@ fn video_interleaves_with_renderer_springs_and_external_timing_on(gpu: Gpu) {
         let (done, completion) = std::sync::mpsc::channel();
         surface.set_observer(Arc::new(move |t| {
             if t.completed_at.is_some() {
-                let _ = done.send(t);
+                done.send(t).ok();
             }
         }));
         renderer.prepare_surfaces(&gpu.device, &gpu.queue, &rt.surfaces, (16, 8));
@@ -154,7 +158,7 @@ fn video_interleaves_with_renderer_springs_and_external_timing_on(gpu: Gpu) {
 fn video_continuous_corners_match_uber_shader() {
     use crate::render::{Instance, KIND_RECT, NO_CLIP, pack_clip_radii};
 
-    let gpu = Gpu::headless();
+    let Some(gpu) = Gpu::test_headless() else { return };
     let (w, h) = (96u32, 80u32);
     let surface = NativeSurface::new();
     surface

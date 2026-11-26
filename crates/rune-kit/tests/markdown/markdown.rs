@@ -43,19 +43,20 @@ fn parses_each_block_type() {
     assert!(matches!(&b[7], Block::Code(c) if c == "fn main() {}"));
 }
 
-/// Code that ends a line drops all of its closing padding, its isolate's end too, so the line
-/// is the start of the same line with more after the code (as a stream needs) and copies clean.
+/// Closed inline code that ends a block keeps its balanced closing pad and isolate end
+/// (`\u{2069}\u{202f}\u{202f}`) so blocks count the chip's inline-end padding as Chrome does,
+/// while trailing whitespace after the code span is still trimmed.
 #[test]
-fn code_ending_a_line_leaves_no_isolate_end() {
-    let b = parse("Run `cargo test`\n\n- item `two`\n\n| `c` |\n|---|\n| `d ` |\n");
+fn code_ending_a_line_keeps_its_closing_pad() {
+    let b = parse("Run `cargo test`   \n\n- item `two`\n\n| `c` |\n|---|\n| `d ` |\n");
     let Block::Para(p) = &b[0] else { panic!("{b:?}") };
-    assert_eq!(p.text, "Run \u{202f}\u{202f}\u{2066}cargo test");
-    assert_eq!(p.spans.iter().map(|s| s.2).collect::<Vec<_>>(), [Style::CodePad, Style::Code]);
+    assert_eq!(p.text, "Run \u{202f}\u{202f}\u{2066}cargo test\u{2069}\u{202f}\u{202f}");
+    assert_eq!(p.spans.iter().map(|s| s.2).collect::<Vec<_>>(), [Style::CodePad, Style::Code, Style::CodePad]);
     let Block::List { items, .. } = &b[1] else { panic!("{b:?}") };
-    assert!(matches!(&items[0][0], Block::Para(i) if i.text == "item \u{202f}\u{202f}\u{2066}two"), "{items:?}");
+    assert!(matches!(&items[0][0], Block::Para(i) if i.text == "item \u{202f}\u{202f}\u{2066}two\u{2069}\u{202f}\u{202f}"), "{items:?}");
     let Block::Table(t) = &b[2] else { panic!("{b:?}") };
-    assert_eq!(t.head[0].text, "\u{202f}\u{202f}\u{2066}c");
-    assert_eq!(t.rows[0][0].text, "\u{202f}\u{202f}\u{2066}d", "the code's own trailing space goes too, as before");
+    assert_eq!(t.head[0].text, "\u{202f}\u{202f}\u{2066}c\u{2069}\u{202f}\u{202f}");
+    assert_eq!(t.rows[0][0].text, "\u{202f}\u{202f}\u{2066}d \u{2069}\u{202f}\u{202f}");
 }
 
 #[test]
@@ -136,7 +137,7 @@ fn every_streaming_prefix_parses_like_before() {
             h = h.wrapping_mul(0x100_0000_01b3);
         }
     }
-    assert_eq!(h, 16_905_672_743_507_968_518, "golden hash");
+    assert_eq!(h, 18_288_571_286_417_985_968, "golden hash");
 }
 
 #[test]
@@ -404,6 +405,27 @@ fn table_header_takes_its_own_rule_fill_and_weight() {
     let mut empty = Runtime::new("| Name |\n|---|\n".to_owned(), styled, (480.0, 400.0), Env::new(true, 1.0));
     empty.frame(0.0);
     assert_eq!(by_key(&empty, "s-end").fill, head, "with no rows the closing rule is the header's");
+}
+
+#[test]
+fn streaming_markdown_under_reduced_motion_adds_no_reveal_frames() {
+    let mut rt = Runtime::new("hello".to_owned(), streaming, (480.0, 400.0), Env::new(true, 1.0));
+    rt.set_system_reduced_motion(true);
+    rt.frame(0.0);
+    rt.update(|s, _| s.push_str(" world streaming words"));
+    assert!(!rt.frame(1.0 / 60.0), "growing a streaming Markdown with no reveal fade under reduced motion must settle without extra frames");
+
+    // When the app explicitly sets a positive reveal fade on streaming Markdown, reduced motion
+    // keeps the fade without stretching it (capping at 0.15 s).
+    let streaming_revealed = |src: &String, _: &mut Cx<String>| {
+        col().w_full().child(Markdown::new(src.clone()).streaming(true).reveal(0.25).build(&Kit::neutral(true)))
+    };
+    let mut faded = Runtime::new("hello".to_owned(), streaming_revealed, (480.0, 400.0), Env::new(true, 1.0));
+    faded.set_system_reduced_motion(true);
+    faded.frame(0.0);
+    faded.update(|s, _| s.push_str(" world streaming words"));
+    assert!(faded.frame(1.0 / 60.0), "explicit positive reveal still fades under reduced motion");
+    assert!(!faded.frame(0.16), "explicit positive reveal caps at 0.15 s under reduced motion");
 }
 
 /// A web table's look: cells a step smaller than the body, padded 10 by 4, the first column
@@ -713,6 +735,7 @@ fn chips(s: &Chips, _: &mut Cx<Chips>) -> El {
 fn chip_rt(tx_mode: bool) -> Runtime<Chips> {
     let src = "Open [Title](session:abc) or [web](https://a.dev).".to_owned();
     let mut rt = Runtime::new(Chips { src, tx_mode, opened: Vec::new() }, chips, (480.0, 200.0), Env::new(true, 1.0));
+    rt.set_srgb_blend(false);
     rt.frame(0.0);
     rt
 }
@@ -839,6 +862,7 @@ fn styled_links_keep_inner_styles_select_copy_and_stream_across_chunks() {
 
     // 1. Streaming a link split across chunks: once `)` arrives, the link gets its chip style.
     let mut rt = Runtime::new("Start [First **bold** `code`](ses".to_owned(), view, (160.0, 200.0), Env::new(true, 1.0));
+    rt.set_srgb_blend(false);
     rt.frame(0.0);
     assert!(fill_rects(&rt, CHIP_BG).is_empty(), "unclosed link syntax is still plain text");
 
@@ -902,6 +926,7 @@ fn link_ring_frames_chosen_links_merges_inner_runs_and_stays_on_hover() {
     }
 
     let mut rt = Runtime::new((), view, (320.0, 100.0), Env::new(true, 1.0));
+    rt.set_srgb_blend(false);
     rt.frame(0.0);
     let want_ring = rune::color::hex(CHIP_RING).unwrap().premul(1.0);
     let ringed: Vec<_> = rt

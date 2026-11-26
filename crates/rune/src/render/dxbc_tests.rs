@@ -2,6 +2,8 @@
 //! `cargo run -p rune --example regen_dxbc` on Windows to rewrite all bytecode and hashes after
 //! the WGSL, the uber layout or wgpu changes.
 
+#![allow(unsafe_code)]
+
 use std::sync::{Mutex, OnceLock};
 
 /// HLSL wgpu-hal logged at debug level, with the thread that logged it.
@@ -99,7 +101,7 @@ const STALE: &str = "precompiled DX12 shaders are stale: run `cargo run -p rune 
 #[test]
 fn uber_dxbc_is_fresh() {
     capture();
-    let gpu = crate::render::Gpu::headless();
+    let Some(gpu) = crate::render::Gpu::test_headless() else { return };
     let start = logged_here().len();
     let mut renderer = super::with_dxbc_enabled(false, || crate::render::Renderer::new(&gpu.device, wgpu::TextureFormat::Bgra8Unorm));
     let uber_end = logged_here().len();
@@ -137,7 +139,7 @@ fn uber_dxbc_is_fresh() {
 #[test]
 fn pass_dxbc_is_fresh() {
     capture();
-    let gpu = crate::render::Gpu::headless();
+    let Some(gpu) = crate::render::Gpu::test_headless() else { return };
 
     assert_eq!(wgsl_hash(crate::render::surface_alpha::WGSL), super::ALPHA_DXBC_WGSL_BLAKE3, "surface_alpha: {STALE}");
     let start = logged_here().len();
@@ -173,11 +175,29 @@ fn pass_dxbc_is_fresh() {
     assert!(fxc(&fragments[0], "fs", "ps_5_1") == super::BACKDROP_COMPOSITE[1], "backdrop_composite.fs.dxbc: {STALE}");
 }
 
+/// rune-media's video pass (native surfaces): its two stages and the hash of the WGSL they came
+/// from, which `native_surface::dxbc` checks before it uses them.
+#[test]
+fn video_dxbc_is_fresh() {
+    capture();
+    let Some(gpu) = crate::render::Gpu::test_headless() else { return };
+    let media = concat!(env!("CARGO_MANIFEST_DIR"), "/../rune-media");
+    let wgsl = std::fs::read_to_string(format!("{media}/src/native_surface/video.wgsl")).unwrap();
+    let recorded = std::fs::read_to_string(format!("{media}/src/native_surface/dxbc_hash.rs")).unwrap();
+    assert!(recorded.contains(&format!("\"{}\"", wgsl_hash(&wgsl))), "video.wgsl: {STALE}");
+    let start = logged_here().len();
+    crate::native_surface::SurfaceRenderer::compile_wgsl_now(&gpu.device, wgpu::TextureFormat::Bgra8Unorm);
+    let logged = logged_here();
+    let (vs, fs) = (fxc(&stage(&logged[start..], "vs"), "vs", "vs_5_1"), fxc(&stage(&logged[start..], "fs"), "fs", "ps_5_1"));
+    assert!(vs == std::fs::read(format!("{media}/shaders/dxbc/video.vs.dxbc")).unwrap(), "video.vs.dxbc: {STALE}");
+    assert!(fs == std::fs::read(format!("{media}/shaders/dxbc/video.fs.dxbc")).unwrap(), "video.fs.dxbc: {STALE}");
+}
+
 /// A DX12 device loads every precompiled shader (general uber, pinned kinds and built-in passes),
 /// and without the passthrough path compiles the WGSL.
 #[test]
 fn renderers_load_the_precompiled_uber_shader() {
-    let gpu = crate::render::Gpu::headless();
+    let Some(gpu) = crate::render::Gpu::test_headless() else { return };
     assert!(super::uber(&gpu.device, |_| ()).is_some(), "a DX12 device takes the uber bytecode");
     for &kind in &crate::render::PINNED_KINDS {
         assert!(super::uber_pinned(&gpu.device, kind, |_| ()).is_some(), "pinned kind {kind} loads");

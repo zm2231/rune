@@ -16,6 +16,7 @@
 use crate::native_surface::{SurfaceDraw, place};
 use crate::platform::win32::dcomp_handover::Handover;
 use crate::time::Instant;
+use crate::video::LayerSurface;
 use std::sync::Arc;
 use std::time::Duration;
 use windows::Win32::Graphics::DirectComposition::IDCompositionVisual;
@@ -101,9 +102,8 @@ struct Entry {
     last: Option<Place>,
     /// The last frame drew it inside an isolated layer, where a punch can't reach the window.
     isolated: bool,
-    /// Its layer's visual, and the decoder's surface handle it shows: a decoder opened again (a
-    /// replaced GPU device) makes a new layer with a new handle.
-    visual: Option<(IDCompositionVisual, usize)>,
+    /// Its layer's visual, and the id of the decoder's layer it shows (`visual_for`).
+    visual: Option<(IDCompositionVisual, u64)>,
     /// What `RUNE_VIDEO_LOG` last printed about it.
     logged: Option<(bool, bool, bool, bool, bool, bool, bool, bool)>,
 }
@@ -191,7 +191,7 @@ impl VideoLayers {
                     }
                     out.again |= next.is_some();
                 }
-                Effect::Show { at } => match show(handover, entry, status.handle, at) {
+                Effect::Show { at } => match show(handover, entry, status.surface, at) {
                     Ok(()) => out.punched.push(key),
                     Err(e) => {
                         eprintln!("rune: a clip's layer couldn't show, the window draws it: {e}");
@@ -214,7 +214,7 @@ impl VideoLayers {
         if self.entries.len() != before
             && let Some(h) = handover
         {
-            let _ = h.commit();
+            h.commit().ok();
         }
         self.follow_alpha(wanted || self.hold, premultiplied, handover.is_some());
         out
@@ -234,12 +234,28 @@ impl VideoLayers {
             release(handover, &e);
         }
         if let Some(h) = handover {
-            let _ = h.commit();
+            h.commit().ok();
         }
     }
 
     /// Keeps the swap chain premultiplied (`hold`).
     pub(in crate::window) fn hold_premultiplied(&mut self, on: bool) { self.hold = on; }
+
+    /// Whether the window must draw and run [`Self::frame`] even when the UI and surface stamps
+    /// match what was last presented: a clip is still moving onto its layer, a swap-chain alpha
+    /// switch is queued, or a layered clip stopped running or showing and needs `unlayer`.
+    pub(in crate::window) fn needs_frame(&self) -> bool {
+        self.needs_frame_with(crate::video::layer_showing)
+    }
+
+    fn needs_frame_with(&self, showing: impl Fn(&Arc<crate::video::Shared>, (u32, u32)) -> bool) -> bool {
+        self.pending_alpha.is_some()
+            || self.entries.iter().any(|e| match e.phase {
+                Phase::Drawn => false,
+                Phase::Placing { .. } => true,
+                Phase::Layered { size, .. } => !showing(&e.video, size),
+            })
+    }
 
     /// The alpha the UI's swap chain should switch to before the next frame, once.
     pub(in crate::window) fn take_alpha(&mut self) -> Option<bool> {
@@ -250,7 +266,7 @@ impl VideoLayers {
         if !handed {
             return;
         }
-        let now = Instant::now();
+        let now = crate::time::now();
         if wanted {
             self.unused_since = None;
             if !premultiplied {
@@ -265,18 +281,29 @@ impl VideoLayers {
     }
 }
 
-/// Puts the clip's visual at `at`, made from the layer's surface handle the first time, and waits
-/// for DWM to take it, so the frame that punches lands over it.
-fn show(handover: Option<&Handover>, entry: &mut Entry, handle: Option<usize>, at: (i32, i32)) -> Result<(), String> {
-    let handover = handover.ok_or("the window isn't on DirectComposition")?;
-    let handle = handle.ok_or("the layer has no surface yet")?;
-    if entry.visual.as_ref().is_none_or(|(_, shown)| *shown != handle) {
-        if let Some((old, _)) = entry.visual.take() {
-            handover.remove(&old);
+/// The visual that shows `surface`: the one `kept` when it was made for that layer, else a new
+/// one from `make`, after `remove` takes the old one out. Which layer a visual shows is told by
+/// the layer's id, never by its surface handle's value: the decoder closes a clip's layer and
+/// makes a new one at every pause, seek and move, and Windows often gives the new handle the
+/// closed one's value. A visual kept for that value shows the closed surface, and the pictures
+/// the decoder presents on the new one never reach the screen.
+fn visual_for<V>(kept: &mut Option<(V, u64)>, surface: LayerSurface, make: impl FnOnce(usize) -> Result<V, String>, remove: impl FnOnce(&V)) -> Result<&V, String> {
+    if kept.as_ref().is_none_or(|(_, shown)| *shown != surface.id) {
+        if let Some((old, _)) = kept.take() {
+            remove(&old);
         }
-        entry.visual = Some((handover.add_under(handle)?, handle));
+        *kept = Some((make(surface.handle)?, surface.id));
     }
-    let (visual, _) = entry.visual.as_ref().unwrap();
+    kept.as_ref().map(|(visual, _)| visual).ok_or_else(|| "the layer has no visual".to_string())
+}
+
+/// Puts the clip's visual at `at`, made from the layer's surface handle the first time it shows
+/// that layer, and waits for DWM to take it, so the frame that punches lands over it.
+#[allow(unsafe_code)]
+fn show(handover: Option<&Handover>, entry: &mut Entry, surface: Option<LayerSurface>, at: (i32, i32)) -> Result<(), String> {
+    let handover = handover.ok_or("the window isn't on DirectComposition")?;
+    let surface = surface.ok_or("the layer has no surface yet")?;
+    let visual = visual_for(&mut entry.visual, surface, |handle| handover.add_under(handle), |old| handover.remove(old))?;
     // SAFETY: COM calls on a visual of the window's DirectComposition device.
     unsafe {
         visual.SetOffsetX2(at.0 as f32).map_err(|e| format!("SetOffsetX: {e}"))?;
@@ -303,3 +330,7 @@ fn release(handover: Option<&Handover>, e: &Entry) {
         h.remove(v);
     }
 }
+
+#[cfg(test)]
+#[path = "video_layer_tests.rs"]
+mod tests;

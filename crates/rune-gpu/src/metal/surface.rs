@@ -2,6 +2,8 @@
 //! raw-window-metal as wgpu-hal's does: a sublayer of the view's layer that follows the view's
 //! bounds and the screen's scale as they change.
 
+#![allow(unsafe_code)]
+
 use std::sync::Arc;
 
 use objc2_core_foundation::CGSize;
@@ -101,15 +103,18 @@ impl SurfaceInterface for MetalSurface {
         *self.configured.lock() = Some((device.shared.clone(), config.format));
         let layer = &self.layer;
         layer.setDevice(Some(&device.shared.device));
+        // Preserve the colour space the window gave the layer (`pin_contents_top_left`):
+        // `setPixelFormat` resets `colorspace` to the format's default (sRGB for 8-bit formats),
+        // which would otherwise silently re-tag an `Unmanaged` layer on resize.
+        let colorspace = layer.colorspace();
         layer.setPixelFormat(pixel_format(config.format));
+        layer.setColorspace(colorspace.as_deref());
         layer.setFramebufferOnly(config.usage == wgpu::TextureUsages::RENDER_ATTACHMENT);
         match config.alpha_mode {
             wgpu::CompositeAlphaMode::Opaque => layer.setOpaque(true),
             wgpu::CompositeAlphaMode::PostMultiplied => layer.setOpaque(false),
             _ => {}
         }
-        // The layer keeps the colour space its window gave it (sRGB, `pin_contents_top_left`): a
-        // reconfigure, as on every resize, must not untag it.
         layer.setMaximumDrawableCount(config.desired_maximum_frame_latency.clamp(1, 2) as usize + 1);
         layer.setDrawableSize(CGSize::new(f64::from(config.width), f64::from(config.height)));
         // iOS layers are always display-synced, and keep the drawable timeout as wgpu-hal does: with
@@ -131,7 +136,7 @@ impl SurfaceInterface for MetalSurface {
         if occluded(&self.layer) { return none(wgpu::SurfaceStatus::Occluded, shared) }
         if let Some(shared) = &shared { shared.pace(); }
         let Some(drawable) = autoreleasepool(|_| self.layer.nextDrawable()) else { return none(wgpu::SurfaceStatus::Timeout, shared) };
-        let texture = MetalTexture { raw: Arc::new(TextureRaw::drawable(drawable.texture(), format)) };
+        let texture = MetalTexture { raw: Arc::new(TextureRaw::drawable(drawable.texture(), format)), shared: None };
         let output = MetalOutput { drawable: Some(drawable), transaction: self.layer.presentsWithTransaction(), shared };
         (Some(DispatchTexture::custom(texture)), wgpu::SurfaceStatus::Good, DispatchSurfaceOutputDetail::custom(output))
     }

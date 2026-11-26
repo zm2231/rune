@@ -19,6 +19,9 @@ pub(in crate::runtime) const P_OUTLINE: Prop<Color> = Prop::custom(77, PropClass
 pub(in crate::runtime) const P_BORDER_BOTTOM: Prop<Color> = Prop::custom(78, PropClass::Color);
 /// `El::press_scale`'s presented factor, multiplied into the element's own scale.
 pub(in crate::runtime) const P_PRESS_SCALE: Prop<f32> = Prop::custom(79, PropClass::Scale);
+/// `El::press_offset`'s presented horizontal and vertical shift in points.
+pub(in crate::runtime) const P_PRESS_OX: Prop<f32> = Prop::custom(96, PropClass::Spatial);
+pub(in crate::runtime) const P_PRESS_OY: Prop<f32> = Prop::custom(97, PropClass::Spatial);
 pub(in crate::runtime) const P_RADIAL: [Prop<Color>; 8] = [
     Prop::custom(80, PropClass::Color),
     Prop::custom(81, PropClass::Color),
@@ -52,6 +55,8 @@ pub(in crate::runtime) fn prop_name(id: u16) -> &'static str {
         90..=93 => "shadow",
         94 => "group-rest",
         95 => "trim",
+        96 => "press-offset-x",
+        97 => "press-offset-y",
         _ => "custom",
     }
 }
@@ -62,6 +67,9 @@ pub(in crate::runtime) const P_ICON_TURN: Prop<f32> = Prop::custom(88, PropClass
 pub(in crate::runtime) const P_SCALE: Prop<f32> = Prop::custom(89, PropClass::Scale);
 /// `El::group_opacity`'s presented rest level, so a new rest fades in rather than cutting.
 pub(in crate::runtime) const P_GROUP_REST: Prop<f32> = Prop::custom(94, PropClass::Opacity);
+/// How lit (0 to 1) the group styles of an element with curves of its own are
+/// (`El::group_motion`): its own track, in place of its hover group's `P_HOVER`.
+pub(in crate::runtime) const P_GROUP_LIT: Prop<f32> = Prop::custom(98, PropClass::Opacity);
 /// `El::live_trim`'s presented span of a shape's strokes, start and end as 0…1 fractions.
 pub(in crate::runtime) const P_TRIM: Prop<rune_motion::Vec2> = Prop::custom(95, PropClass::Other);
 /// The first four shadows' geometry: x, y, blur and spread in a rect's lanes.
@@ -80,63 +88,107 @@ pub(in crate::runtime) fn paint_pose_springing(store: &rune_motion::AnimationSto
 /// Seconds a changed `El::scale` holds still before its text rasterizes at that size.
 pub(in crate::runtime) const STATIC_SCALE_SETTLE: f64 = 0.1;
 
-impl RuntimeCore {
-    /// Moves node `id`'s group-opacity rest to `group`'s on its opacity motion (the
-    /// transaction's spring without one), or lands it when `quiet`: an instant change or motion,
-    /// a mount, reduced motion. No group opacity draws at full, so an element that takes one on
-    /// or drops it fades from or to 1. Returns whether a dropped one is still fading to full.
-    pub(in crate::runtime) fn set_group_rest(&mut self, id: NodeId, group: Option<[f32; 2]>, motion: Option<Anim>, spring: Spring, quiet: bool) -> bool {
-        let store = self.scene.store();
-        let had = store.has(id, P_GROUP_REST);
-        let motion = motion.unwrap_or(spring.into());
-        let quiet = quiet || matches!(motion.curve, rune_motion::Curve::Instant);
-        let settled = !store.is_animating(id, P_GROUP_REST) && store.get(id, P_GROUP_REST) == Some(1.0);
-        let to = group.map_or(1.0, |g| g[0]);
-        if group.is_none() && (!had || quiet || settled) {
-            if had { self.scene.store_mut().remove(id, P_GROUP_REST); }
-            return false;
-        }
-        if quiet {
-            self.scene.set(id, P_GROUP_REST, to);
-        } else if !had {
-            self.scene.set(id, P_GROUP_REST, 1.0);
-            self.scene.animate(id, P_GROUP_REST, to, motion);
-        } else if store.target(id, P_GROUP_REST) != Some(to) {
-            self.scene.animate(id, P_GROUP_REST, to, motion);
-        }
-        group.is_none()
+/// Moves node `id`'s group-opacity rest to `group`'s on its opacity motion (the
+/// transaction's spring without one), or lands it when `quiet`: an instant change or motion,
+/// a mount, reduced motion. No group opacity draws at full, so an element that takes one on
+/// or drops it fades from or to 1. Returns whether a dropped one is still fading to full.
+pub(in crate::runtime) fn set_group_rest(
+    scene: &mut Scene,
+    id: NodeId,
+    group: Option<[f32; 2]>,
+    motion: Option<Anim>,
+    spring: Spring,
+    quiet: bool,
+) -> bool {
+    let store = scene.store();
+    let had = store.has(id, P_GROUP_REST);
+    let motion = motion.unwrap_or(spring.into());
+    let quiet = quiet || matches!(motion.curve, rune_motion::Curve::Instant);
+    let settled = !store.is_animating(id, P_GROUP_REST) && store.get(id, P_GROUP_REST) == Some(1.0);
+    let to = group.map_or(1.0, |g| g[0]);
+    if group.is_none() && (!had || quiet || settled) {
+        if had { scene.store_mut().remove(id, P_GROUP_REST); }
+        return false;
     }
-
-    /// Drops the rest track of each dropped group opacity whose fade to full landed this frame.
-    pub(in crate::runtime) fn land_group_fades(&mut self) {
-        let landed: Vec<usize> = self.scene.store().events().iter()
-            .filter_map(|e| match *e {
-                rune_motion::MotionEvent::Settled { node, prop, .. } if prop == P_GROUP_REST.id => self.tree.node_index.get(&node).copied(),
-                _ => None,
-            })
-            .filter(|&i| self.tree.nodes[i].group_fade && !self.scene.store().is_animating(self.tree.nodes[i].id, P_GROUP_REST))
-            .collect();
-        for i in landed {
-            self.tree.nodes[i].group_fade = false;
-            self.scene.store_mut().remove(self.tree.nodes[i].id, P_GROUP_REST);
-        }
+    if quiet {
+        scene.set(id, P_GROUP_REST, to);
+    } else if !had {
+        scene.set(id, P_GROUP_REST, 1.0);
+        scene.animate(id, P_GROUP_REST, to, motion);
+    } else if store.target(id, P_GROUP_REST) != Some(to) {
+        scene.animate(id, P_GROUP_REST, to, motion);
     }
+    group.is_none()
+}
 
-    /// The opacity factor `El::group_opacity` gives node `n` under a hover group at `group`.
-    /// A dropped one fading to full shows at full under the hover.
-    pub(in crate::runtime) fn group_factor(&self, n: &Node, group: f32) -> f32 {
-        let [rest, hovered] = match n.vis.group_opacity {
-            Some(g) => g,
-            None if n.group_fade => [1.0, 1.0],
-            None => return 1.0,
-        };
-        let rest = self.scene.get(n.id, P_GROUP_REST).unwrap_or(rest);
-        // A control the keyboard reached shows as if hovered, as CSS reveals a hover-only button
-        // on `:focus-visible` (or `:focus-within` around it): focus is never on something unseen.
-        let focused = self.kbd.focus.keyboard() && self.kbd.focus.path().is_some_and(|f| {
-            f.strip_prefix(n.path.as_str()).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
-        });
-        let group = if focused { 1.0 } else { group };
-        rest + (hovered - rest) * group
+/// Drops the rest track of each dropped group opacity whose fade to full landed this frame.
+pub(in crate::runtime) fn land_group_fades(scene: &mut Scene, nodes: &mut [Node], node_index: &NodeIndex) {
+    let landed: Vec<usize> = scene.store().events().iter()
+        .filter_map(|e| match *e {
+            rune_motion::MotionEvent::Settled { node, prop, .. } if prop == P_GROUP_REST.id => node_index.get(&node).copied(),
+            _ => None,
+        })
+        .filter(|&i| nodes[i].group_fade && !scene.store().is_animating(nodes[i].id, P_GROUP_REST))
+        .collect();
+    for i in landed {
+        nodes[i].group_fade = false;
+        scene.store_mut().remove(nodes[i].id, P_GROUP_REST);
+    }
+}
+
+/// The opacity factor `El::group_opacity` gives node `n` under a hover group at `group`.
+/// A dropped one fading to full shows at full under the hover.
+#[inline]
+pub(in crate::runtime) fn group_factor(
+    scene: &Scene,
+    focus_keyboard: bool,
+    focus_path: Option<&str>,
+    n: &Node,
+    group: f32,
+) -> f32 {
+    let [rest, hovered] = match n.vis.group_opacity {
+        Some(g) => g,
+        None if n.group_fade => [1.0, 1.0],
+        None => return 1.0,
+    };
+    let rest = scene.get(n.id, P_GROUP_REST).unwrap_or(rest);
+    // A control the keyboard reached shows as if hovered, as CSS reveals a hover-only button
+    // on `:focus-visible` (or `:focus-within` around it): focus is never on something unseen.
+    // An element with curves of its own has the focus in its track already (`group_lit`).
+    let focused = n.vis.group_motion.is_none() && group_focused(focus_keyboard, focus_path, n);
+    let group = if focused { 1.0 } else { group };
+    rest + (hovered - rest) * group
+}
+
+/// How lit node `n`'s group styles are, 0 to 1: its own track when it has curves of its own
+/// (`El::group_motion`), else its hover group's `group`.
+#[inline]
+pub(in crate::runtime) fn group_lit(scene: &Scene, n: &Node, group: f32) -> f32 {
+    if n.vis.group_motion.is_some() { scene.get(n.id, P_GROUP_LIT).unwrap_or(0.0).clamp(0.0, 1.0) } else { group }
+}
+
+/// Whether keyboard focus shows node `n`'s group styles: focus on it or inside it, or on or
+/// inside the ancestor `El::group_focus_within` names.
+pub(in crate::runtime) fn group_focused(focus_keyboard: bool, focus_path: Option<&str>, n: &Node) -> bool {
+    let within = |f: &str, p: &str| f.strip_prefix(p).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
+    focus_keyboard && focus_path.is_some_and(|f| within(f, n.path.as_str()) || group_focus_path(n).is_some_and(|p| within(f, p)))
+}
+
+/// The path of the ancestor `El::group_focus_within` names: `n`'s path up to its nearest
+/// ancestor's segment that is that key.
+fn group_focus_path(n: &Node) -> Option<&str> {
+    let key = n.vis.group_focus.as_deref()?;
+    let path = n.path.as_str();
+    // Its own segment is not an ancestor's.
+    let mut end = path.rfind('/')?;
+    loop {
+        let start = path[..end].rfind('/').map_or(0, |i| i + 1);
+        if &path[start..end] == key {
+            return Some(&path[..end]);
+        }
+        if start == 0 {
+            return None;
+        }
+        end = start - 1;
     }
 }

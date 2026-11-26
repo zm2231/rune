@@ -8,7 +8,7 @@ use super::*;
 const MARK: u32 = 3;
 
 impl El {
-    /// Lays bytes `range` of a [`text`](crate::text) or [`rich`](crate::rich) element out as an
+    /// Lays bytes `range` of a [`text`](crate::text()) or [`rich`] element out as an
     /// isolate (UAX #9 LRI, RLI or FSI .. PDI): it reads in `dir` (`Auto` from its own first
     /// strong character) and the text around it reads as if it were one neutral character, so
     /// `src/app.ts`, `-v` or `npm install` in an Arabic sentence keeps its own order, and an
@@ -20,8 +20,14 @@ impl El {
     /// ([`El::pill`]) is an `Auto` isolate unless one is set over it. On a field this does
     /// nothing: a field isolates its own pills.
     ///
-    /// ```ignore
+    /// ```
+    /// # use rune::{Direction, Span, rich};
+    /// # let text = "run npm install now";
+    /// # let spans: Vec<Span> = Vec::new();
+    /// # let code = 4..15;
+    /// # let _ =
     /// rich(text, spans).isolate(code.clone(), Direction::Ltr)
+    /// # ;
     /// ```
     pub fn isolate(mut self, range: Range<usize>, dir: Direction) -> Self {
         if self.cold.input.is_some() {
@@ -93,8 +99,20 @@ impl TextSpec {
         for r in &mut cold.strikes {
             (r.0, r.1) = marked.range(r.0, r.1);
         }
+        for r in &mut cold.overlines {
+            (r.0, r.1) = marked.range(r.0, r.1);
+        }
+        for b in &mut cold.span_boxes {
+            (b.start, b.end) = marked.range(b.start, b.end);
+        }
+        for b in &mut cold.inline_boxes {
+            b.at = marked.range(b.at, b.at).0;
+        }
         for h in &mut cold.highlights {
             (h.start, h.end) = marked.range(h.start, h.end);
+        }
+        for f in &mut cold.line_fills {
+            (f.start, f.end) = marked.range(f.start, f.end);
         }
         for p in &mut cold.pills {
             (p.start, p.end) = marked.range(p.start, p.end);

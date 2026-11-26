@@ -22,8 +22,6 @@
 //!
 //! Nothing here runs or allocates until it's called: no statics to initialise, no tables.
 
-use crate::time::Instant;
-
 use super::{Instance, Kind};
 use crate::pixels::ImageAtlas;
 use crate::text::{Atlas, FontSmoothing};
@@ -48,15 +46,68 @@ mod tests;
 
 pub use drift::{Drift, Pixels, drift, drift_wanted, last_drift};
 pub use fill::{FillReport, attach_text, fill_masks};
+#[cfg(test)]
+pub(crate) use painter::UploadPlan;
 pub use painter::{CpuPainter, Painted};
+
+/// Inline storage for up to `N` atlas pages so steady-frame `Scene::new` performs zero heap
+/// allocations in the common case (0..=4 pages), spilling to `Vec` only when a scene exceeds `N`.
+#[derive(Clone)]
+enum SmallPages<T: Copy + Default, const N: usize> {
+    Inline { items: [T; N], len: usize },
+    Heap(Vec<T>),
+}
+
+impl<T: Copy + Default, const N: usize> std::ops::Deref for SmallPages<T, N> {
+    type Target = [T];
+    #[inline]
+    fn deref(&self) -> &[T] {
+        match self {
+            Self::Inline { items, len } => &items[..*len],
+            Self::Heap(v) => v.as_slice(),
+        }
+    }
+}
+
+impl<'b, T: Copy + Default, const N: usize> IntoIterator for &'b SmallPages<T, N> {
+    type Item = &'b T;
+    type IntoIter = std::slice::Iter<'b, T>;
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<T: Copy + Default, const N: usize> FromIterator<T> for SmallPages<T, N> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        let mut items = [T::default(); N];
+        let mut len = 0usize;
+        let mut iter = iter.into_iter();
+        while len < N {
+            let Some(item) = iter.next() else {
+                return Self::Inline { items, len };
+            };
+            items[len] = item;
+            len += 1;
+        }
+        let Some(extra) = iter.next() else {
+            return Self::Inline { items, len };
+        };
+        let mut v = Vec::with_capacity(N + 1 + iter.size_hint().0);
+        v.extend_from_slice(&items);
+        v.push(extra);
+        v.extend(iter);
+        Self::Heap(v)
+    }
+}
 
 /// One frame's draw data, borrowed from the runtime that built it.
 pub struct Scene<'a> {
     instances: &'a [Instance],
-    glyph_pages: Vec<&'a [u8]>,
+    glyph_pages: SmallPages<&'a [u8], 4>,
     /// The outline store, for glyphs drawn from their outlines (text whose scale moves).
     outlines: Option<&'a crate::text::outline::OutlineStore>,
-    images: Vec<Image<'a>>,
+    images: SmallPages<Image<'a>, 4>,
     size: (u32, u32),
     clear: [f32; 4],
     /// The frame's text draws subpixel masks blended by channel (`Atlas::lcd`).
@@ -70,6 +121,11 @@ pub struct Scene<'a> {
     atlas_resets: u64,
     /// How the GPU that takes over rounds into half floats (layers, blur levels).
     half: HalfRounding,
+    /// Packed explicit scroll-fade stops (`Runtime::fade_stops`), matching `Globals::flags[2..4]`.
+    fade_stops: [f32; 2],
+    /// When true, degradable GPU-only features paint live without their GPU-only modifier while a
+    /// mid-session GPU handover builds off the UI thread (`NeedsGpu::is_degradable`).
+    degraded: bool,
 }
 
 /// How a GPU stores a float into an `Rgba16Float` target. Vendors differ, and a layer's pixels
@@ -110,10 +166,12 @@ struct Flags {
     lcd: bool,
     smoothing: Option<FontSmoothing>,
     half: HalfRounding,
+    fade_stops: [u32; 2],
+    degraded: bool,
 }
 
 /// An image atlas page: RGBA8 texels, `width * 4` bytes a row.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct Image<'a> {
     width: u32,
     data: &'a [u8],
@@ -128,7 +186,13 @@ impl<'a> Scene<'a> {
     pub fn new(instances: &'a [Instance], atlas: &'a Atlas, images: &'a ImageAtlas, size: (u32, u32), clear: [f32; 4]) -> Self {
         let glyph_pages = (0..atlas.page_count()).filter_map(|p| atlas.page_data(p)).collect();
         let images = images.pages.iter().map(|p| Image { width: p.width, data: &p.data, dirty: p.dirty }).collect();
-        Scene { instances, glyph_pages, outlines: Some(&atlas.outlines), images, size, clear, lcd: atlas.lcd, srgb_blend: true, native_surfaces: false, compositor: false, smoothing: None, atlas_resets: atlas.resets(), half: HalfRounding::default() }
+        Scene { instances, glyph_pages, outlines: Some(&atlas.outlines), images, size, clear, lcd: atlas.lcd, srgb_blend: true, native_surfaces: false, compositor: false, smoothing: None, atlas_resets: atlas.resets(), half: HalfRounding::default(), fade_stops: [0.0; 2], degraded: false }
+    }
+
+    /// Packed explicit scroll-fade stops (`Runtime::fade_stops`).
+    pub fn fade_stops(mut self, stops: [f32; 2]) -> Self {
+        self.fade_stops = stops;
+        self
     }
 
     /// Whether the frame blends in sRGB encoding (`Runtime::srgb_blend`). Linear blending needs
@@ -158,9 +222,60 @@ impl<'a> Scene<'a> {
         self
     }
 
+    /// Allows painting degradable GPU-only features live without their GPU-only modifier
+    /// (`LayerBlur` unblurred, `TurnedLayer` unrotated, nested `BackdropBlur` unblurred, `Effect`
+    /// and `NativeSurface` blank, `LinearBlend` in sRGB) instead of refusing the frame.
+    ///
+    /// Non-degradable reasons (`NeedsGpu::SlugText`, `NeedsGpu::OutlineGlyph`,
+    /// `NeedsGpu::UnknownKind`, `NeedsGpu::Target`) still fail so the caller keeps the previous
+    /// frame until the GPU takes over.
+    ///
+    /// ```
+    /// use rune::render::cpu_boot::{CpuPainter, NeedsGpu, Scene, Target};
+    /// use rune::{Color, Env, Runtime, el};
+    ///
+    /// let mut rt = Runtime::new((), |_, _| el().size(32.0, 32.0).fill(Color::WHITE).blur(8.0), (32.0, 32.0), Env::new(true, 1.0));
+    /// rt.frame(0.0);
+    /// let mut buf = vec![0u8; 32 * 32 * 4];
+    /// let mut painter = CpuPainter::new(1);
+    /// let scene = Scene::new(&rt.instances, &rt.text.atlas, &rt.images, (32, 32), rt.clear_color());
+    /// assert_eq!(scene.needs_gpu(), Some(NeedsGpu::LayerBlur));
+    /// assert!(painter.paint(&scene.degraded(true), &mut Target::new(&mut buf, 32, 32)).is_ok());
+    /// ```
+    #[doc(hidden)]
+    pub fn degraded(mut self, allow: bool) -> Self {
+        self.degraded = allow;
+        self
+    }
+
+    /// The same frame's `instances` in a `size` target cleared to nothing, with no subpixel text
+    /// (it blends by channel only over the window): a turned layer's contents (`raster::turn`).
+    fn part<'b>(&self, instances: &'b [Instance], size: (u32, u32)) -> Scene<'b>
+    where
+        'a: 'b,
+    {
+        Scene {
+            instances,
+            glyph_pages: self.glyph_pages.clone(),
+            outlines: self.outlines,
+            images: self.images.clone(),
+            size,
+            clear: [0.0; 4],
+            lcd: false,
+            srgb_blend: self.srgb_blend,
+            native_surfaces: false,
+            compositor: self.compositor,
+            smoothing: self.smoothing,
+            atlas_resets: self.atlas_resets,
+            half: self.half,
+            fade_stops: self.fade_stops,
+            degraded: self.degraded,
+        }
+    }
+
     /// The scene-wide switches, which a frame that only recolours keeps.
     fn flags(&self) -> Flags {
-        Flags { srgb_blend: self.srgb_blend, native_surfaces: self.native_surfaces, compositor: self.compositor, lcd: self.lcd, smoothing: self.smoothing, half: self.half }
+        Flags { srgb_blend: self.srgb_blend, native_surfaces: self.native_surfaces, compositor: self.compositor, lcd: self.lcd, smoothing: self.smoothing, half: self.half, fade_stops: [self.fade_stops[0].to_bits(), self.fade_stops[1].to_bits()], degraded: self.degraded }
     }
 
     /// How the GPU that will take over rounds half floats (`HalfRounding::of_vendor`).
@@ -184,18 +299,42 @@ impl<'a> Scene<'a> {
         let mut depth = 0u32;
         self.instances.iter().find_map(|i| match i.kind() {
             Some(Kind::Layer) if i.params[2] != 0.0 => Some(NeedsGpu::LayerBlur),
-            Some(Kind::Layer) if i.border[1] != 0.0 => Some(NeedsGpu::TurnedLayer),
+            // A quarter turn paints (`bin::quarter`); any other needs the GPU's resampling.
+            Some(Kind::Layer) if i.border[1] != 0.0 && bin::quarter(i).is_none() => Some(NeedsGpu::TurnedLayer),
             Some(Kind::Layer) => { depth += 1; None }
             Some(Kind::LayerEnd) => { depth = depth.saturating_sub(1); None }
             Some(Kind::BackdropBlur) if depth > 0 => Some(NeedsGpu::BackdropBlur),
             Some(Kind::Effect) if self.compositor => Some(NeedsGpu::Effect),
             // Slug's rays (coverage 1) have no CPU form; Windfoil's box does (outline::coverage).
-            Some(Kind::Glyph) if i.radii[3] > 0.0 && (self.outlines.is_none() || i.border[3] == 1.0) => Some(NeedsGpu::OutlineGlyph),
+            Some(Kind::Glyph) if i.radii[3] > 0.0 && (self.outlines.is_none() || i.border[3] == super::instance::shader_consts::OUTLINE_MODE_SLUG as f32) => Some(NeedsGpu::OutlineGlyph),
             Some(
                 Kind::Rect | Kind::Shadow | Kind::Glyph | Kind::Inset | Kind::Gradient
                 | Kind::Segment | Kind::Triangle | Kind::Image | Kind::Dashed | Kind::Radial
                 | Kind::Effect | Kind::BackdropBlur,
             ) => None,
+            None => Some(NeedsGpu::UnknownKind),
+        })
+    }
+
+    /// The first reason this scene cannot paint in its current mode: identical to
+    /// [`Scene::needs_gpu`] when `degraded` is false, or only non-degradable reasons
+    /// (`SlugText`, `OutlineGlyph`, `UnknownKind`) when `degraded` is true.
+    pub(super) fn blocking_needs_gpu(&self) -> Option<NeedsGpu> {
+        if !self.degraded {
+            return self.needs_gpu();
+        }
+        if self.smoothing == Some(FontSmoothing::Slug) {
+            return Some(NeedsGpu::SlugText);
+        }
+        self.instances.iter().find_map(|i| match i.kind() {
+            Some(Kind::Glyph)
+                if i.radii[3] > 0.0
+                    && (self.outlines.is_none()
+                        || i.border[3] == super::instance::shader_consts::OUTLINE_MODE_SLUG as f32) =>
+            {
+                Some(NeedsGpu::OutlineGlyph)
+            }
+            Some(_) => None,
             None => Some(NeedsGpu::UnknownKind),
         })
     }
@@ -212,7 +351,8 @@ pub enum NeedsGpu {
     SlugText,
     /// A layer blurred as a whole (`El::blur`).
     LayerBlur,
-    /// A layer turned as a whole (`Instance::turned`).
+    /// A layer turned as a whole (`Instance::turned`) by anything but a multiple of 90°, or a
+    /// turned layer that is cached or plus-lighter.
     TurnedLayer,
     /// A backdrop blur inside a layer (it blurs that layer's target).
     BackdropBlur,
@@ -224,6 +364,36 @@ pub enum NeedsGpu {
     UnknownKind,
     /// The target isn't the scene's size, or its buffer is too small.
     Target,
+}
+
+impl NeedsGpu {
+    /// Whether a live CPU fallback frame can paint without this GPU-only feature while a
+    /// mid-session GPU handover builds off the UI thread.
+    ///
+    /// Degradable reasons paint without their GPU-only modifier (`LayerBlur` unblurred,
+    /// `TurnedLayer` unrotated, nested `BackdropBlur` unblurred, `Effect` and `NativeSurface`
+    /// blank, `LinearBlend` in sRGB). Non-degradable reasons (`SlugText`, `OutlineGlyph`,
+    /// `UnknownKind`, `Target`) keep the previous frame until the GPU takes over.
+    ///
+    /// ```
+    /// use rune::render::cpu_boot::NeedsGpu;
+    ///
+    /// assert!(NeedsGpu::LayerBlur.is_degradable());
+    /// assert!(NeedsGpu::TurnedLayer.is_degradable());
+    /// assert!(!NeedsGpu::SlugText.is_degradable());
+    /// ```
+    #[doc(hidden)]
+    pub const fn is_degradable(self) -> bool {
+        matches!(
+            self,
+            Self::LinearBlend
+                | Self::NativeSurface
+                | Self::LayerBlur
+                | Self::TurnedLayer
+                | Self::BackdropBlur
+                | Self::Effect
+        )
+    }
 }
 
 /// Where `paint` writes: `width × height` pixels, four bytes each in memory order B, G, R, A,
@@ -276,14 +446,14 @@ pub struct Report {
 /// Paints `scene` into `target` on `threads` threads (the calling one among them), or says why
 /// only the GPU can.
 pub fn paint(scene: &Scene<'_>, target: &mut Target<'_>, threads: usize) -> Result<Report, NeedsGpu> {
-    if let Some(why) = scene.needs_gpu() { return Err(why); }
+    if let Some(why) = scene.blocking_needs_gpu() { return Err(why); }
     check_target(scene, target)?;
-    let start = Instant::now();
+    let start = crate::time::now();
     let bins = bin::Bins::of(scene);
-    let binned = Instant::now();
+    let binned = crate::time::now();
     let tiles: Vec<u32> = (0..bins.tile_count() as u32).collect();
     let mut report = raster::run(scene, &bins, target, &tiles, &raster::Spawn(threads.max(1)), &raster::Spawn(threads.max(1)));
-    let done = Instant::now();
+    let done = crate::time::now();
     report.bin_ns = ns(binned - start);
     report.raster_ns = ns(done - binned);
     report.total_ns = ns(done - start);

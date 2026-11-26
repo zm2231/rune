@@ -33,7 +33,36 @@ use pool::Pool;
 /// State outlives a closed window (see `App`), so an app that wants a close to stop
 /// its requests calls `cancel` from `App::on_close`.
 ///
-/// ```ignore
+/// ```no_run
+/// # mod rune {
+/// #     pub use rune_core::{Latest, tok::TextStyle};
+/// #     pub struct Cx<S>(std::marker::PhantomData<S>);
+/// #     pub struct Tx;
+/// #     impl Tx { pub fn instant(&mut self) {} }
+/// #     #[derive(Default)] pub struct TextEdit { pub text: String }
+/// #     pub struct El;
+/// #     impl El {
+/// #         pub fn on_edit<S>(self, _: impl Fn(&mut S) -> &mut TextEdit) -> Self { self }
+/// #         pub fn on_input_change<S>(self, _: impl Fn(&mut S, &mut Tx)) -> Self { self }
+/// #         pub fn child(self, _: El) -> Self { self }
+/// #         pub fn children(self, _: impl IntoIterator<Item = El>) -> Self { self }
+/// #     }
+/// #     pub fn col() -> El { El }
+/// #     pub fn text(_: impl Into<String>) -> El { El }
+/// #     pub fn text_input(_: &TextEdit, _: TextStyle) -> El { El }
+/// #     pub struct AppSpec<S> {
+/// #         pub setup: Option<fn(&mut S, rune_core::Waker)>,
+/// #         pub poll: Option<fn(&mut S, f64, &mut Tx) -> bool>,
+/// #         pub init: fn() -> S,
+/// #         pub view: fn(&S, &mut Cx<S>) -> El,
+/// #     }
+/// #     impl<S> AppSpec<S> {
+/// #         pub fn new(_: &str, _: (f32, f32), init: fn() -> S, view: fn(&S, &mut Cx<S>) -> El) -> Self {
+/// #             Self { setup: None, poll: None, init, view }
+/// #         }
+/// #     }
+/// #     pub fn run<S>(_: AppSpec<S>) {}
+/// # }
 /// use std::time::Duration;
 /// use rune::{AppSpec, Cx, El, Latest, TextEdit, TextStyle, Tx, col, text, text_input};
 ///
@@ -100,6 +129,8 @@ struct Slot<T> {
     key: Option<Box<dyn Any + Send>>,
     /// None once the `Latest` drops, so nothing wakes after.
     waker: Option<Waker>,
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    landings: usize,
 }
 
 /// The newest request: an answer lands only while this still holds its attempt.
@@ -131,6 +162,8 @@ impl<T> Slot<T> {
             driven: false,
             key: None,
             waker,
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            landings: 0,
         }
     }
 
@@ -179,6 +212,10 @@ impl<T> Slot<T> {
     /// A request's outcome. Settles it if it's still the newest, and returns the waker to call
     /// when an answer landed; a panic or a `None` settles with nothing to land.
     fn land(&mut self, attempt: Attempt, out: Result<Option<T>, ()>) -> Option<Waker> {
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        {
+            self.landings += 1;
+        }
         if !self.runs(attempt) {
             return None;
         }
@@ -219,11 +256,29 @@ impl<T: Send + 'static> Latest<T> {
     }
 
     /// A `Latest` on its own pool, for tests that count its threads.
-    #[cfg(test)]
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     fn on(pool: Arc<Pool>, waker: Option<Waker>) -> Self {
         let mut latest = Self::with(waker);
         latest.pool = pool;
         latest
+    }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    fn pending_due(&self) -> Option<crate::time::Instant> {
+        match &self.inner.slot.lock().unwrap().request {
+            Request::Waiting(job) => Some(job.due),
+            _ => None,
+        }
+    }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    fn land_probe(&self) -> LandProbe<T> {
+        LandProbe(self.inner.clone())
+    }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    fn wait_landings(&self, target: usize) {
+        self.land_probe().wait(target);
     }
 
     /// Starts each request only after `wait` passes with no newer one. Zero (the default) starts
@@ -271,9 +326,17 @@ impl<T: Send + 'static> Latest<T> {
     /// again after one of them. It is kept when the work panics, returns nothing, or lands:
     /// an unchanged key is never asked twice.
     ///
-    /// ```ignore
+    /// ```
+    /// # use std::sync::Arc;
+    /// # use rune_core::Latest;
+    /// # struct Query { text: String }
+    /// # struct Index;
+    /// # impl Index { fn search(&self, q: &str) -> Vec<String> { vec![q.to_owned()] } }
+    /// # struct State { query: Query, results: Latest<Vec<String>> }
+    /// # let s = State { query: Query { text: "hi".into() }, results: Latest::default() };
+    /// # let index = Arc::new(Index);
     /// // poll: runs every frame the query could have changed.
-    /// s.results.request_if_changed(&s.query.text, |q| index.search(&q));
+    /// s.results.request_if_changed(&s.query.text, move |q| index.search(&q));
     /// ```
     pub fn request_if_changed<K: Clone + PartialEq + Send + 'static>(
         &self,
@@ -297,7 +360,7 @@ impl<T: Send + 'static> Latest<T> {
         slot.key = key;
         #[cfg(not(target_arch = "wasm32"))]
         {
-            slot.wait(crate::time::Instant::now() + self.debounce, work);
+            slot.wait(crate::time::now() + self.debounce, work);
             self.inner.changed.notify_all();
             if !slot.driven {
                 slot.driven = true;
@@ -315,11 +378,11 @@ impl<T: Send + 'static> Latest<T> {
                     sleep(debounce).await;
                 }
                 // On the task fibers, where work that waits on the network doesn't hold the page.
-                let _ = crate::task::spawn("latest", move || {
+                crate::task::spawn("latest", move || {
                     if inner.slot.lock().unwrap().runs(attempt) {
                         inner.land(attempt, Ok(work()));
                     }
-                });
+                }).ok();
             });
         }
     }
@@ -355,11 +418,30 @@ impl<T: Send + 'static> Drop for Latest<T> {
     }
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+struct LandProbe<T>(Arc<Inner<T>>);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl<T> LandProbe<T> {
+    fn wait(&self, target: usize) {
+        let mut slot = self.0.slot.lock().unwrap();
+        while slot.landings < target {
+            slot = self.0.changed.wait(slot).unwrap();
+        }
+    }
+}
+
 impl<T> Inner<T> {
     /// A request's outcome: its answer lands, waking once, if it's still the newest; a panic or
     /// a `None` settles it with nothing to land, and no wake.
     fn land(&self, attempt: Attempt, out: Result<Option<T>, ()>) {
-        let waker = self.slot.lock().unwrap().land(attempt, out);
+        let waker = {
+            let mut slot = self.slot.lock().unwrap();
+            let waker = slot.land(attempt, out);
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            self.changed.notify_all();
+            waker
+        };
         if let Some(wake) = waker {
             wake();
         }
@@ -372,10 +454,10 @@ async fn sleep(wait: Duration) {
     let promise = js_sys::Promise::new(&mut |resolve, _| {
         let set = web_sys::window().map(|w| w.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms));
         if !matches!(set, Some(Ok(_))) {
-            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
+            resolve.call0(&wasm_bindgen::JsValue::NULL).ok();
         }
     });
-    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    wasm_bindgen_futures::JsFuture::from(promise).await.ok();
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

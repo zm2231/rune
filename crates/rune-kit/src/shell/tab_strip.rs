@@ -19,7 +19,7 @@ mod tests;
 pub use drag::{TabDragMode, TabDragPhase, TabDragState, TearOutSpec};
 
 use drag::Release;
-use layout::{TabBind, TabBindCtx, TabItemCore, TabStripCore};
+use layout::{TabBind, TabBindCtx, TabBreakCore, TabItemCore, TabStripCore};
 
 /// Which way a [`TabStrip`] runs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -49,7 +49,9 @@ pub enum TabDensity {
 pub enum TabOverflow {
     /// Horizontal tabs share the strip equally, from `max_width` down to `min_width`, then the
     /// strip scrolls sideways with a `fade_width` linear fade at each edge while anything is
-    /// past it (Desktop's `titlebar-tabs-fade-*`). Pinned tabs keep `pinned_width`.
+    /// past it (Desktop's `titlebar-tabs-fade-*`). Pinned tabs keep `pinned_width`. When
+    /// `min_width` exceeds `max_width` (or `max_width` is NaN), `min_width` wins; a NaN
+    /// `min_width` leaves the lower bound open while still capping at `max_width`.
     ShrinkThenScroll { min_width: f32, max_width: f32, pinned_width: f32, fade_width: f32 },
     /// Full-width rows that scroll, the top and bottom feathering by as much as is left to scroll
     /// past them, up to `fade_width` (Desktop's `--vertical-tabs-fade-*`).
@@ -74,14 +76,17 @@ impl TabOverflow {
 
     /// The width of each unpinned tab when `unpinned` of them and `pinned` pinned ones share
     /// `available` points with `gap` between each: equal shares between the policy's bounds.
-    /// Past the minimum the tabs overflow and the strip scrolls. `max_width` for `Scroll`.
+    /// Past the minimum the tabs overflow and the strip scrolls. When `min_width` exceeds
+    /// `max_width` (or `max_width` is NaN), `min_width` wins; a NaN `min_width` leaves the lower
+    /// bound open. `f32::INFINITY` for `Scroll`.
     pub fn tab_width(&self, available: f32, unpinned: usize, pinned: usize, gap: f32) -> f32 {
         let Self::ShrinkThenScroll { min_width, max_width, pinned_width, .. } = *self else { return f32::INFINITY };
+        let hi = max_width.max(min_width);
         if unpinned == 0 {
-            return max_width;
+            return hi;
         }
         let gaps = (unpinned + pinned).saturating_sub(1) as f32 * gap;
-        ((available - pinned as f32 * pinned_width - gaps) / unpinned as f32).clamp(min_width, max_width)
+        ((available - pinned as f32 * pinned_width - gaps) / unpinned as f32).max(min_width).min(hi)
     }
 
     pub(super) fn fade(&self) -> f32 {
@@ -173,13 +178,29 @@ impl Default for TabWords {
     }
 }
 
+/// Something that stands in a strip before one of its tabs and is not a tab ([`TabStrip::breaks`]):
+/// a group's header down a sidebar, a divider across a titlebar.
+pub struct TabBreak {
+    core: TabBreakCore,
+}
+
+impl TabBreak {
+    /// `el` before the tab at index `before` (the tab count: after the last tab), `length` long
+    /// along the strip: its height in a vertical strip, its width in a horizontal one, with any
+    /// margins of its own. `key` names it among the strip's breaks and stays with it while tabs
+    /// come and go, so it keeps its hover and focus.
+    pub fn new(key: impl Into<String>, before: usize, el: El, length: f32) -> Self {
+        TabBreak { core: TabBreakCore { key: key.into(), before, el, length: length.max(0.0) } }
+    }
+}
+
 /// Past this many tabs a strip builds only those near what it shows ([`TabStrip::lazy_tabs`]).
 pub const BAND_PAST: usize = 40;
 
 type Each<S> = Rc<dyn Fn(&mut S, &str, &mut Tx)>;
 type Hover<S> = Rc<dyn Fn(&mut S, &str, bool, &mut Tx)>;
 type Commit<S, T> = Rc<dyn Fn(&mut S, T, &mut Tx)>;
-type Access<S> = fn(&mut S) -> &mut TabDragState;
+type Access<S> = Rc<dyn for<'a> Fn(&'a mut S) -> &'a mut TabDragState>;
 
 /// One tab: `TabItem::new(id, title).avatar(..).status(..)`.
 pub struct TabItem<'a, S: 'static> {
@@ -232,7 +253,7 @@ impl<S: 'static> TabBind for TabHandlers<S> {
     fn has_access(&self) -> bool { self.access.is_some() }
 
     fn bind_root_hover(&self, root: El) -> El {
-        let Some(access) = self.access else { return root };
+        let Some(access) = self.access.clone() else { return root };
         root.on_hover_change(move |s: &mut S, inside, tx: &mut Tx| {
             // Only letting go of the width lock a close left changes what the strip draws.
             if inside || !access(s).leave() {
@@ -242,7 +263,7 @@ impl<S: 'static> TabBind for TabHandlers<S> {
     }
 
     fn bind_torn_anchor(&self, place: El) -> El {
-        let Some(access) = self.access else { return place };
+        let Some(access) = self.access.clone() else { return place };
         place.on_layout_tx(move |s: &mut S, r, tx: &mut Tx| {
             access(s).report_rect(r);
             tx.live_only();
@@ -250,9 +271,9 @@ impl<S: 'static> TabBind for TabHandlers<S> {
     }
 
     fn bind_close_button(&self, button: IconButton, id: String, lock: f32) -> IconButton {
-        let (access, on_close) = (self.access, self.close.clone());
+        let (access, on_close) = (self.access.clone(), self.close.clone());
         button.on_press_tx(move |s: &mut S, tx: &mut Tx| {
-            if let Some(a) = access.filter(|_| lock > 0.0) {
+            if let Some(a) = access.as_ref().filter(|_| lock > 0.0) {
                 a(s).width_lock = Some(lock);
             }
             if let Some(f) = &on_close {
@@ -262,22 +283,22 @@ impl<S: 'static> TabBind for TabHandlers<S> {
     }
 
     fn bind_tab(&self, mut slot: El, ctx: TabBindCtx<'_>) -> El {
-        let (access, lane, vertical, lock) = (self.access, ctx.lane, ctx.vertical, ctx.lock);
+        let (access, lane, vertical, lock) = (self.access.clone(), ctx.lane, ctx.vertical, ctx.lock);
         let (select_early, active) = (ctx.select_early, ctx.active);
         let reveal = (ctx.scroll_key.to_owned(), format!("t-{}", ctx.id));
         if let Some(close) = self.close.clone().filter(|_| ctx.closable) {
-            let id = ctx.id.to_owned();
+            let (id, access) = (ctx.id.to_owned(), access.clone());
             slot = slot.on_middle_press(move |s: &mut S, tx: &mut Tx| {
-                if let Some(a) = access.filter(|_| lock > 0.0) {
+                if let Some(a) = access.as_ref().filter(|_| lock > 0.0) {
                     a(s).width_lock = Some(lock);
                 }
                 close(s, &id, tx);
             });
         }
         {
-            let (id, select, reveal) = (ctx.id.to_owned(), self.select.clone(), reveal.clone());
+            let (id, select, reveal, access) = (ctx.id.to_owned(), self.select.clone(), reveal.clone(), access.clone());
             slot = slot.on_press_tx(move |s: &mut S, tx: &mut Tx| {
-                if let Some(a) = access && a(s).take_swallowed_click() {
+                if let Some(a) = &access && a(s).take_swallowed_click() {
                     tx.live_only();
                     return;
                 }
@@ -292,9 +313,9 @@ impl<S: 'static> TabBind for TabHandlers<S> {
             slot = slot.on_double_press_tx(move |s: &mut S, tx: &mut Tx| f(s, &id, tx));
         }
         if access.is_some() || self.hover.is_some() {
-            let (id, hover) = (ctx.id.to_owned(), self.hover.clone());
+            let (id, hover, access) = (ctx.id.to_owned(), self.hover.clone(), access.clone());
             slot = slot.on_hover_change(move |s: &mut S, inside, tx: &mut Tx| {
-                if let Some(a) = access {
+                if let Some(a) = &access {
                     a(s).set_hovered(&id, inside);
                 }
                 // The strip draws nothing from it (its hover groups do): only the app's handler can
@@ -351,13 +372,17 @@ impl<S: 'static> TabBind for TabHandlers<S> {
 /// active or hovered. In a `.window_drag()` titlebar the gaps between tabs, the bands above and
 /// below them and the space after the trailing action move the window, as only the tabs and
 /// buttons take presses. Vertical tabs fill the row with 3 points between them, each reaching
-/// across half the gap so no press misses.
+/// across half the gap so no press misses. Each tab is keyed `t-{id}`; a vertical tab's row as
+/// drawn, without that reach, is keyed `t-{id}-pill`, for overlays anchored beside it.
 ///
 /// A press selects a tab as the button goes down, so a drag carries the selected tab and the
 /// release draws nothing ([`Self::select_on_drag_start`]); a press on the selected tab and a
 /// press on a close button select nothing. Dragging 4 points along
 /// the strip reorders, Escape puts the tab back, and with [`Self::tear_out`] dragging it off
 /// the strip tears it out. A middle click closes a tab.
+///
+/// [`Self::breaks`] puts what is not a tab between the tabs (a group's header, a divider), and a
+/// drag stays between two of them.
 pub struct TabStrip<'a, S: 'static> {
     core: TabStripCore<'a>,
     handlers: TabHandlers<S>,
@@ -379,6 +404,15 @@ impl<'a, S: 'static> TabStrip<'a, S> {
     /// hundreds of tabs costs a frame what a screenful does. In place of [`Self::tabs`].
     pub fn lazy_tabs(mut self, slots: Vec<TabSlot<'a>>, mut build: impl FnMut(usize) -> TabItem<'a, S> + 'a) -> Self {
         self.core.lazy = Some((slots, Box::new(move |i| build(i).core)));
+        self
+    }
+    /// What stands between the tabs and is not one ([`TabBreak`]): each break before the tab it
+    /// names, several before one tab in the order given. A break has the strip's gap on each side
+    /// a tab or another break stands on, and takes no part in the tabs' keys or count. The tabs
+    /// between two breaks reorder only among themselves: a drag stops at a break. A horizontal
+    /// tab right after a break has no separator before it.
+    pub fn breaks(mut self, breaks: impl IntoIterator<Item = TabBreak>) -> Self {
+        self.core.breaks.extend(breaks.into_iter().map(|b| b.core));
         self
     }
     /// The selected tab, by id.
@@ -414,9 +448,9 @@ impl<'a, S: 'static> TabStrip<'a, S> {
     pub fn trailing_width(mut self, points: f32) -> Self { self.core.trailing_width = points.max(0.0); self }
     /// The strip's gestures, kept in the app's state; `access` finds them there. Without it the
     /// tabs select and close but don't drag, and closing doesn't lock their width.
-    pub fn drag_state(mut self, state: &TabDragState, access: fn(&mut S) -> &mut TabDragState) -> Self {
+    pub fn drag_state(mut self, state: &TabDragState, access: impl for<'s> Fn(&'s mut S) -> &'s mut TabDragState + 'static) -> Self {
         self.core.drag = Some(state.clone());
-        self.handlers.access = Some(access);
+        self.handlers.access = Some(Rc::new(access));
         self
     }
     /// The colour under the strip (default `bg_deep`), which a dragged tab and the close slot

@@ -32,6 +32,7 @@ pub fn stack_grow_count() -> u64 {
 
 #[cfg(windows)]
 #[inline]
+#[allow(unsafe_code)]
 fn reserve_fiber_stack_guarantee() {
     #[link(name = "kernel32")]
     unsafe extern "system" {
@@ -44,14 +45,14 @@ fn reserve_fiber_stack_guarantee() {
     }
 }
 
-/// Runs `f` on the current stack when at least [`STACK_RED_ZONE`] bytes remain, or continues on
+/// Runs `f` on the current stack when at least `STACK_RED_ZONE` bytes remain, or continues on
 /// a new segment on Windows, macOS, and Linux.
 ///
 /// Every other target (`wasm32`, `android`, `ios`, `tvos`, `watchos`, `visionos`, etc.) runs `f`
 /// directly rather than hitting `stacker`'s fallback path, which cannot query stack bounds and
 /// would allocate a segment on every uncached container layout.
 #[inline(always)]
-pub(crate) fn maybe_grow<R>(f: impl FnOnce() -> R) -> R {
+pub fn maybe_grow<R>(f: impl FnOnce() -> R) -> R {
     #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     {
         if stacker::remaining_stack().is_none_or(|rem| rem >= STACK_RED_ZONE) {

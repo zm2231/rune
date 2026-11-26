@@ -2,7 +2,7 @@
 //! with its outer shadows outside it and its fill and gradient fading as one, and an outer
 //! shadow paints at its authored alpha over a transparent window or an opaque page.
 use rune::color::{srgb_decode, srgb_encode};
-use rune::render::{Gpu, OFFSCREEN_FORMAT, Offscreen, Renderer};
+use rune::render::{Gpu, OFFSCREEN_FORMAT, OFFSCREEN_FORMAT_LINEAR, Offscreen, Renderer};
 use rune::{Color, Cx, El, Env, Runtime, Shadow, el};
 
 const W: u32 = 120;
@@ -13,7 +13,7 @@ fn render(gpu: &Gpu, view: fn(&(), &mut Cx<()>) -> El, srgb: bool, transparent: 
     rt.set_srgb_blend(srgb);
     rt.transparent = transparent;
     rt.frame(0.0);
-    let format = if srgb { OFFSCREEN_FORMAT.remove_srgb_suffix() } else { OFFSCREEN_FORMAT };
+    let format = if srgb { OFFSCREEN_FORMAT } else { OFFSCREEN_FORMAT_LINEAR };
     let mut renderer = Renderer::new(&gpu.device, format);
     renderer.set_srgb_blend(srgb);
     let target = Offscreen::with_format(&gpu.device, W, H, format);
@@ -54,7 +54,7 @@ fn button(page: u8, dim: f32, sheen: bool) -> El {
 
 #[test]
 fn a_dimmed_button_fades_as_css_opacity_does() {
-    let gpu = Gpu::headless();
+    let Some(gpu) = Gpu::test_headless() else { return };
     fn plain_light(_: &(), _: &mut Cx<()>) -> El { button(0xff, 0.4, false) }
     fn plain_dark(_: &(), _: &mut Cx<()>) -> El { button(0x16, 0.4, false) }
     fn sheened(_: &(), _: &mut Cx<()>) -> El { button(0xff, 0.4, true) }
@@ -86,7 +86,7 @@ fn a_shadow_paints_its_authored_alpha() {
             .box_shadow(Shadow { y: 40.0, blur: 4.0, color: Color::BLACK.alpha(31.0 / 255.0), ..Shadow::default() }))
     }
     fn page(_: &(), cx: &mut Cx<()>) -> El { card(&(), cx).fill(Color::WHITE) }
-    let gpu = Gpu::headless();
+    let Some(gpu) = Gpu::test_headless() else { return };
     let over_window = pixel(&render(&gpu, card, true, true), 60, 85);
     assert!(over_window[..3] == [0, 0, 0] && over_window[3].abs_diff(31) <= 1, "over a transparent window, the authored #0000001f: {over_window:?}");
     let over_page = pixel(&render(&gpu, page, true, false), 60, 85)[0] as f32;

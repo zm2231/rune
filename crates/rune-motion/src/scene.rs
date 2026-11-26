@@ -11,6 +11,7 @@ use crate::trace::{Intent, MotionTrace, flags};
 use crate::transition::{Effect, Reveal, Transition};
 use crate::value::{Animatable, Color, Corners, MAX_LANES, Rect, Sides, Transform, Vec2, lanes};
 
+mod compact;
 mod frame;
 mod layout;
 mod phase;
@@ -93,6 +94,12 @@ impl LayoutAnim {
     }
     pub const INSTANT: LayoutAnim =
         LayoutAnim { x: Anim::INSTANT, y: Anim::INSTANT, lead: None, travel: Travel::Parent };
+
+    pub(crate) fn is_instant(&self) -> bool {
+        self.x.is_instant()
+            && self.y.is_instant()
+            && self.lead.is_none_or(|(lead, trail)| lead.is_instant() && trail.is_instant())
+    }
 }
 
 impl From<Spring> for LayoutAnim {
@@ -213,6 +220,16 @@ impl Presented {
     }
 }
 
+/// One matched-geometry handover completed by [`Scene::match_geometry`] and its siblings:
+/// `from` left the scene immediately and `to` took over from `start` toward `end`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Handover {
+    pub from: NodeId,
+    pub to: NodeId,
+    pub start: Rect,
+    pub end: Rect,
+}
+
 /// One frame's output.
 pub struct FrameOutput<'a> {
     /// Nodes whose presented values changed, parents before children.
@@ -230,6 +247,9 @@ struct Path {
     end_local: Rect,
     /// Its parent's root-space target origin as the last frame drew it.
     origin: Vec2,
+    /// Matched source rotation (radians) blended along the shortest arc into the node's own
+    /// `prop::ROTATION` as travel runs from 0 to 1. `None` for non-matched screen paths.
+    start_rotation: Option<f32>,
 }
 
 #[derive(Clone)]
@@ -266,9 +286,20 @@ struct Node {
 }
 
 impl Node {
-    /// Moves this node's presence one event on, and asks for what the scene should do about it.
-    fn phase_step(&mut self, event: PhaseEvent) -> phase::Acts {
-        phase::step(&mut self.presence, &mut self.generation, event)
+    /// Moves this node's presence one event on, updating `exiting`, and asks for what the scene
+    /// should do about it.
+    fn phase_step(&mut self, exiting: &mut Vec<NodeId>, event: PhaseEvent) -> phase::Acts {
+        let was_exiting = self.presence.exiting();
+        let acts = phase::step(&mut self.presence, &mut self.generation, event);
+        let now_exiting = self.presence.exiting();
+        if !was_exiting && now_exiting {
+            exiting.push(self.id);
+        } else if was_exiting && !now_exiting
+            && let Some(k) = exiting.iter().position(|&x| x == self.id)
+        {
+            exiting.swap_remove(k);
+        }
+        acts
     }
 }
 
@@ -299,6 +330,8 @@ pub struct Scene {
     out: Vec<Presented>,
     /// What [`Scene::present`] presented after the motion trace wrote its frame, for the next.
     late: Vec<Presented>,
+    /// Nodes currently in [`Phase::Exiting`], in no fixed order.
+    exiting: Vec<NodeId>,
     exited: Carry<NodeId>,
     to_remove: Vec<u32>,
     /// Who is on a screen path, in the order the paths started. It only says who travels and in
@@ -306,6 +339,10 @@ pub struct Scene {
     travelling: Vec<u32>,
     trace: Option<MotionTrace>,
     intents: Vec<(NodeId, u32, f32)>,
+    /// Matched-geometry handovers completed since the last [`Scene::take_handovers`].
+    handovers: Vec<Handover>,
+    /// Per-node enter/exit curves overriding `Transition::springs` (`set_transition_motion`).
+    transition_motion: FxMap<u64, (Anim, Anim)>,
     /// `keep_flights`: landings leave motion already on its way to the same value.
     keep: bool,
 }
@@ -330,11 +367,14 @@ impl Scene {
             order_dirty: false,
             out: Vec::new(),
             late: Vec::new(),
+            exiting: Vec::new(),
             exited: Carry::new(),
             to_remove: Vec::new(),
             travelling: Vec::new(),
             trace: None,
             intents: Vec::new(),
+            handovers: Vec::new(),
+            transition_motion: FxMap::default(),
             keep: false,
         }
     }
@@ -421,6 +461,10 @@ impl Scene {
         let i = self.slot(id)?;
         Some(self.nodes[i].presence.public(self.nodes[i].generation))
     }
+    /// Nodes currently in [`Phase::Exiting`], in no fixed order.
+    pub fn exiting(&self) -> &[NodeId] {
+        &self.exiting
+    }
     /// The last presented snapshot (hit-test against what the user sees). Not tracked.
     pub fn presented(&self, id: NodeId) -> Option<Presented> {
         self.slot(id).and_then(|i| self.nodes[i].last)
@@ -484,10 +528,19 @@ impl Scene {
         } else {
             self.nodes[next as usize].prev_sibling = prev;
         }
+        if self.nodes[i].presence.exiting()
+            && let Some(k) = self.exiting.iter().position(|&x| x == id)
+        {
+            self.exiting.swap_remove(k);
+        }
         self.travelling.retain(|&x| x as usize != i);
         self.store.remove_node(id);
+        if !self.transition_motion.is_empty() {
+            self.transition_motion.remove(&id.0);
+        }
         self.index.remove(&id.0);
         let n = &mut self.nodes[i];
+        n.presence = Presence::LANDED;
         n.alive = false;
         n.dirty = false;
         n.first_child = NONE;

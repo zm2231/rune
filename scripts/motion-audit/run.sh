@@ -7,9 +7,11 @@ set -e
 O=${1:-target/motion-audit}
 mkdir -p "$O"
 MOTION_GATE_OUT="$O/live-tail.gate.txt" sh scripts/motion-audit/scenarios/live-tail.sh
-cargo build --release -p todo -p settings -p kit-gallery -p odometer
+MOTION_GATE_OUT="$O/matched-offset.gate.txt" sh scripts/motion-audit/scenarios/matched-offset.sh
+MOTION_GATE_OUT="$O/matched-rotation.gate.txt" sh scripts/motion-audit/scenarios/matched-rotation.sh
+cargo build --release -p todo -p settings -p kit-gallery -p odometer -p matched -p playground
 cargo build --release -p rune-kit --features rune/tooling --example shell --example tab_strip
-cargo build --release -p rune --features tooling --example growth_reorder --example keep_stuck --example sticky --example scroll_keys --example scroll_anchor --example text_glide --example one_snap
+cargo build --release -p rune --features tooling --example growth_reorder --example keep_stuck --example sticky --example scroll_keys --example scroll_anchor --example text_glide --example one_snap --example matched_zoom --example hold_layout
 B=${CARGO_TARGET_DIR:-target}/release
 SH=$B/examples/shell
 GR=$B/examples/growth_reorder
@@ -62,4 +64,10 @@ run wheel-distance    1.2 $B/examples/scroll_keys --script $S/wheel-distance.jso
 run scroll-anchor     3.4 $B/examples/scroll_anchor --script $S/scroll-anchor.json
 run text-glide        3.8 $B/examples/text_glide --script $S/text-glide.json
 run one-snap          4.4 $B/examples/one_snap --script $S/one-snap.json
+run matched-zoom      3.0 $B/examples/matched_zoom --script $S/matched-zoom.json
+run matched-timed     3.4 $B/matched --scene timed --script $S/matched-timed.json
+run matched-in-place  4.2 $B/matched --scene in-place --script $S/matched-in-place.json
+run playground-hover-press 3.0 $B/playground --size 960x560 --playground "Controls/Buttons/Hover & press" --script $S/playground-hover-press.json
+run playground-loops-press 4.6 $B/playground --size 960x560 --playground "Controls/Motion/Loops & press offset" --script $S/playground-loops-press.json
+run hold-layout       3.5 $B/examples/hold_layout --script $S/hold-layout.json
 ls "$O"

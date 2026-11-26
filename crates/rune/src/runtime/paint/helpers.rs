@@ -190,6 +190,66 @@ pub(in crate::runtime) fn emit_block_decorations(
     }
 }
 
+/// Full-width line background fills and left bars ([`El::line_fills`]) under glyphs.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::runtime) fn emit_line_fills(
+    instances: &mut Vec<Instance>,
+    fills: &[crate::el::LineFill],
+    spec: &TextSpec,
+    layout: TextFlow<'_>,
+    origin: [f32; 2],
+    (x0, x1): (f32, f32),
+    s: f32,
+    tk: f32,
+    glide: [f32; 2],
+    o: f32,
+    srgb: bool,
+    clip: [f32; 4],
+    fade: [f32; 4],
+) {
+    let box_w = (x1 - x0).max(layout.full_width() * tk);
+    if box_w <= 0.0 || fills.is_empty() {
+        return;
+    }
+    let line_px = spec.style.line_px() * s;
+    for &fill in fills {
+        if !fill.is_visible() {
+            continue;
+        }
+        let Some((t0, b0)) = layout.line_span(fill.start as usize, fill.end as usize, line_px) else {
+            continue;
+        };
+        let top = origin[1] + t0 * tk;
+        let bot = origin[1] + b0 * tk;
+        let height = bot - top;
+        if height <= 0.0 || top + glide[1] >= clip[3] || bot + glide[1] <= clip[1] {
+            continue;
+        }
+        if let Some(bg) = fill.bg {
+            let radius = (fill.radius * s * tk).min(box_w.min(height) * 0.5);
+            instances.push(rect_inst(
+                [x0 + glide[0], top + glide[1], box_w, height],
+                premul(bg, o, srgb),
+                radius,
+                clip,
+                fade,
+            ));
+        }
+        if let Some((width, color)) = fill.left_bar {
+            let bar_w = if tk == 1.0 { (width * s).round().max(1.0) } else { (width * s * tk).max(1.0 * tk) };
+            let inset_y = (if tk == 1.0 { (2.0 * s).round() } else { 2.0 * s * tk }).min(height * 0.25);
+            let bar_h = (height - 2.0 * inset_y).max(1.0).min(height);
+            instances.push(rect_inst(
+                [x0 + glide[0], top + inset_y + glide[1], bar_w, bar_h],
+                premul(color, o, srgb),
+                bar_w * 0.5,
+                clip,
+                fade,
+            ));
+        }
+    }
+}
+
 /// Pixel caret and logical-point IME area use the same shaped cursor geometry.
 pub(in crate::runtime) fn input_caret(n: &Node, r: [f32; 4], scale: f32, s: f32, gliding: bool, scrolls: &mut HashMap<String, f32>) -> Option<([f32; 4], [f32; 4])> {
     let (spec, laid, input) = (n.text.as_ref()?, n.text_layout.as_ref()?, n.input.as_ref()?);
@@ -197,13 +257,15 @@ pub(in crate::runtime) fn input_caret(n: &Node, r: [f32; 4], scale: f32, s: f32,
     let e = &input.edit;
     let ins = n.inset.map(|v| v * scale * s);
     let (x0, x1) = (r[0] + ins[0], r[2] - ins[2]);
+    let (y0, y1) = (r[1] + ins[1], r[3] - ins[3]);
     // The text scales with its box, so the caret does too.
     let mut x = text_x(spec, x0, x1, text_width(layout.full_width() * scale), layout.flow());
+    let y = text_y(spec, y0, y1, text_height(spec, layout, s) * scale);
     if input.single_line && let Some(l) = laid.single() {
         x -= single_line_scroll(scrolls, &n.path, input, &spec.content, l, s, (x1 - x0) / scale.max(1e-4)) * scale;
     }
     let bb = layout.caret(caret_index(e, &spec.content), e.affinity, 1.5 * s);
-    let (cx, cy) = (x + bb.x0 as f32 * scale, r[1] + ins[1] + bb.y0 as f32 * scale);
+    let (cx, cy) = (x + bb.x0 as f32 * scale, y + bb.y0 as f32 * scale);
     let h = (if bb.y1 > bb.y0 { (bb.y1 - bb.y0) as f32 } else { spec.style.line_px() * s }) * scale;
     let (caret_x, caret_w) = if (scale - 1.0).abs() <= 1e-5 {
         let gx = if gliding { pixel_snap::text_glide(r[0]) } else { 0.0 };
@@ -217,7 +279,7 @@ pub(in crate::runtime) fn input_caret(n: &Node, r: [f32; 4], scale: f32, s: f32,
         (Some((ta, tb)), at) => {
             let len = spec.content.len();
             let (a, b) = (layout.caret((at + ta).min(len), e.affinity, 0.0), layout.caret((at + tb).min(len), e.affinity, 0.0));
-            let (ax, ay) = (x + a.x0 as f32 * scale, r[1] + ins[1] + a.y0 as f32 * scale);
+            let (ax, ay) = (x + a.x0 as f32 * scale, y + a.y0 as f32 * scale);
             let w = if (b.y0 - a.y0).abs() < 0.5 && b.x0 > a.x0 { (b.x0 - a.x0) as f32 * scale } else { 2.0 * scale * s };
             [ax / s, ay / s, w / s, h / s]
         }
@@ -236,8 +298,8 @@ pub(in crate::runtime) fn fades(looping: Option<rune_motion::LoopSpec>) -> bool 
 pub(in crate::runtime) fn own_paints(n: &Node) -> usize {
     let v = &n.vis;
     [
-        v.fill.a > 0.0,
-        v.border_width() > 0.0 && (v.border().a > 0.0 || v.border_bottom.is_some()),
+        v.fill.a > 0.0 || v.hover_fill.is_some_and(|c| c.a > 0.0) || v.press_fill.is_some_and(|c| c.a > 0.0),
+        v.border_width() > 0.0 && (v.border().a > 0.0 || v.border_bottom.is_some() || v.hover_border.is_some_and(|c| c.a > 0.0) || v.press_border.is_some_and(|c| c.a > 0.0)),
         v.gradient.is_some() || v.radial.is_some() || v.surface.is_some(),
         v.shape.is_some(),
         v.grid.is_some(),

@@ -33,49 +33,67 @@ fn strip_round_mask(clip: &mut [f32; 4], round: &mut Option<([f32; 4], [f32; 4])
     }
 }
 
-impl RuntimeCore {
+impl paint_state::PaintState {
     // Phases of `build`'s single paint loop; keep them inlined into it.
     #[inline(always)]
-    pub(super) fn prepare_dissolve(&mut self) {
-        let n_nodes = self.tree.nodes.len();
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn prepare_dissolve(
+        &mut self,
+        tree: &types::TreeState,
+        scene: &Scene,
+        motion: &crate::runtime::tracks::MotionState,
+        clock: f64,
+        reduced_motion: bool,
+        focus_keyboard: bool,
+        focus_path: Option<&str>,
+    ) {
+        let n_nodes = tree.nodes.len();
         // One linear pass, including retained exits, Live opacity, presence and loops. Reuse
         // inherited scratch for hover groups so activation samples exactly the paint values.
-        self.paint.dissolve_scratch.clear();
-        if self.tree.has_dissolve { self.paint.dissolve_scratch.resize(n_nodes, false); }
-        for index in 0..if self.tree.has_dissolve { n_nodes } else { 0 } {
-            let i = self.paint.layer_paint_order.get(index).copied().unwrap_or(index);
-            let n = &self.tree.nodes[i];
-            let inherited_group = n.parent.map_or(0.0, |p| self.paint.inh_scratch[p].group);
-            self.paint.inh_scratch[i].group = if n.vis.hover().a > 0.0 || n.vis_flags.hover_group() {
-                self.scene.get(n.id, P_HOVER).unwrap_or(0.0).clamp(0.0, 1.0)
+        self.dissolve_scratch.clear();
+        if tree.has_dissolve { self.dissolve_scratch.resize(n_nodes, false); }
+        for index in 0..if tree.has_dissolve { n_nodes } else { 0 } {
+            let i = self.layer_paint_order.get(index).copied().unwrap_or(index);
+            let n = &tree.nodes[i];
+            let inherited_group = n.parent.map_or(0.0, |p| self.inh_scratch[p].group);
+            self.inh_scratch[i].group = if n.vis.tracks_hover_paint() || n.vis_flags.hover_group() {
+                scene.get(n.id, P_HOVER).unwrap_or(0.0).clamp(0.0, 1.0)
             } else { inherited_group };
-            let Some(parent) = n.parent.filter(|&p| self.tree.nodes[p].vis_flags.blend() == crate::render::Blend::PlusLighter) else { continue };
-            let Some(p) = self.scene.presented(n.id) else { continue };
+            let Some(parent) = n.parent.filter(|&p| tree.nodes[p].vis_flags.blend() == crate::render::Blend::PlusLighter) else { continue };
+            let Some(p) = scene.presented(n.id) else { continue };
             let mut opacity = p.opacity * n.vis.layer_opacity;
-            opacity *= self.group_factor(n, inherited_group);
-            if fades(n.looping.as_deref().copied()) && let Some(track) = self.motion.loops.get(&n.id) {
-                opacity *= track.sample_at(self.scene.store().node_time(n.id), self.clock, self.reduced_motion);
+            opacity *= group_factor(scene, focus_keyboard, focus_path, n, group_lit(scene, n, inherited_group));
+            if fades(n.looping.as_deref().copied()) && let Some(track) = motion.loop_track(n.id) {
+                opacity *= track.sample_at(scene.store().node_time(n.id), clock, reduced_motion);
             }
-            self.paint.dissolve_scratch[parent] |= opacity > 0.001 && opacity < 1.0;
+            self.dissolve_scratch[parent] |= opacity > 0.001 && opacity < 1.0;
         }
     }
 
     #[inline(always)]
-    pub(super) fn needs_tree_order(&self, flying: bool) -> bool {
+    pub(super) fn needs_tree_order(&self, tree: &types::TreeState, scene: &Scene, flying: bool) -> bool {
         // Exiting descendants are appended to storage. Bring them back into their subtree
         // only when isolation requires it; the ordinary painter stream stays byte-identical.
         // Matched flights paint last (see `update_layer_paint_order`).
-        ((flying || self.tree.has_sticky || self.tree.has_raise || self.tree.has_paint_order) && !self.paint.layer_paint_order.is_empty()) || self.paint.layer_paint_order.windows(2).any(|pair| {
-            let n = &self.tree.nodes[pair[0]];
-            self.tree.nodes[pair[1]].parent == Some(pair[0]) && ((self.tree.has_dissolve && self.paint.dissolve_scratch[pair[0]]) || n.vis_flags.cache() || n.vis.clip_radius.is_some() || n.vis.group_opacity.is_some() || n.group_fade
+        ((flying || tree.has_sticky || tree.has_raise || tree.has_paint_order || !self.lifted_anchors.is_empty()) && !self.layer_paint_order.is_empty()) || self.layer_paint_order.windows(2).any(|pair| {
+            let n = &tree.nodes[pair[0]];
+            tree.nodes[pair[1]].parent == Some(pair[0]) && ((tree.has_dissolve && self.dissolve_scratch[pair[0]]) || n.vis_flags.cache() || n.vis.clip_radius.is_some() || n.vis.group_opacity.is_some() || n.group_fade || n.collapsing
                 || n.vis.layer_opacity < 1.0 || fades(n.looping.as_deref().copied())
-                || self.scene.presented(n.id).is_some_and(|p| (p.opacity > 0.0 && p.opacity < 1.0) || p.blur > 0.0 || p.transform.rotate.abs() > 1e-6))
+                || scene.presented(n.id).is_some_and(|p| (p.opacity > 0.0 && p.opacity < 1.0) || p.blur > 0.0 || p.transform.rotate.abs() > 1e-6))
         })
     }
 
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn close_all_layers(
         &mut self,
+        nodes: &[Node],
+        instances: &mut Vec<Instance>,
+        surfaces: &mut [crate::native_surface::SurfaceDraw],
+        marks: &mut Vec<u32>,
+        track_marks: bool,
+        text: &mut TextSystem,
+        commit_gen: u64,
         layers: &mut Vec<(usize, usize, usize)>,
         active_cache: &mut Option<ActiveCache>,
         glyph_count: &mut usize,
@@ -83,16 +101,24 @@ impl RuntimeCore {
         while let Some((_, start, surface_start)) = layers.pop() {
             if active_cache.is_some_and(|ac| ac.instance_start == start) {
                 let ac = active_cache.take().unwrap();
-                self.close_cached_layer(ac, start, surface_start, glyph_count);
+                self.close_cached_layer(nodes, instances, surfaces, marks, track_marks, text, commit_gen, ac, start, surface_start, glyph_count);
             } else {
-                crate::render::end_layer(&mut self.instances, &mut self.surfaces, &mut self.marks, start, surface_start);
+                crate::render::end_layer(instances, surfaces, marks, start, surface_start);
             }
         }
     }
 
     #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn close_layers_to_parent(
         &mut self,
+        nodes: &[Node],
+        instances: &mut Vec<Instance>,
+        surfaces: &mut [crate::native_surface::SurfaceDraw],
+        marks: &mut Vec<u32>,
+        track_marks: bool,
+        text: &mut TextSystem,
+        commit_gen: u64,
         node_parent: Option<usize>,
         layers: &mut Vec<(usize, usize, usize)>,
         active_cache: &mut Option<ActiveCache>,
@@ -100,71 +126,80 @@ impl RuntimeCore {
     ) {
         while let Some(&(ancestor, start, surface_start)) = layers.last() {
             let mut parent = node_parent;
-            while parent.is_some_and(|p| p != ancestor) { parent = self.tree.nodes[parent.unwrap()].parent; }
+            while parent.is_some_and(|p| p != ancestor) { parent = nodes[parent.unwrap()].parent; }
             if parent == Some(ancestor) { break; }
             if active_cache.is_some_and(|ac| ac.instance_start == start) {
                 let ac = active_cache.take().unwrap();
-                self.close_cached_layer(ac, start, surface_start, glyph_count);
+                self.close_cached_layer(nodes, instances, surfaces, marks, track_marks, text, commit_gen, ac, start, surface_start, glyph_count);
             } else {
-                crate::render::end_layer(&mut self.instances, &mut self.surfaces, &mut self.marks, start, surface_start);
+                crate::render::end_layer(instances, surfaces, marks, start, surface_start);
             }
             layers.pop();
         }
     }
 
     #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn reopen_raised_layers(
-        &mut self,
+        &self,
+        nodes: &[Node],
+        scene: &Scene,
+        instances: &mut Vec<Instance>,
+        surfaces_len: usize,
         node_parent: Option<usize>,
         pinh: &mut Inh,
+        pcold: &mut InhCold,
         layers: &mut Vec<(usize, usize, usize)>,
         s: f32,
     ) {
         // Out of its ancestors' layers: their opacity applies directly instead.
         pinh.paint_opacity = pinh.opacity;
         pinh.paint_clip = pinh.clip;
-        pinh.paint_fade = pinh.fade;
-        pinh.paint_fade_origin = pinh.fade_origin;
-        pinh.in_cache = false;
-        pinh.skip_paint = false;
+        pcold.paint_fade = pcold.fade;
+        pcold.paint_fade_origin = pcold.fade_origin;
+        pinh.set_in_cache(false);
+        pinh.set_skip_paint(false);
         // Rounded clips and turns consumed by an ancestor's layer must be reapplied
         // outside that layer too. Reopen only the masks and turns, not opacity or blur.
-        pinh.rounded = None;
+        pcold.rounded = None;
         let mut chain = Vec::new();
         let mut parent = node_parent;
         while let Some(p) = parent {
             chain.push(p);
-            parent = self.tree.nodes[p].parent;
+            parent = nodes[p].parent;
         }
         for &p in chain.iter().rev() {
-            let ancestor = &self.tree.nodes[p];
-            let k = self.paint.inh_scratch[p].turn;
-            if k != 0 && ancestor.parent.map_or(0, |pp| self.paint.inh_scratch[pp].turn) != k {
-                let t = self.paint.turn_scratch[k as usize - 1];
-                let start = self.instances.len();
+            let ancestor = &nodes[p];
+            let k = self.inh_scratch[p].turn;
+            if k != 0 && ancestor.parent.map_or(0, |pp| self.inh_scratch[pp].turn) != k {
+                let t = self.turn_scratch[k as usize - 1];
+                let start = instances.len();
                 let marker = Instance::begin_layer(t.rect, t.outer_clip, Default::default()).turned(t.angle, t.pivot);
-                self.instances.push(marker);
-                layers.push((p, start, self.surfaces.len()));
+                instances.push(marker);
+                layers.push((p, start, surfaces_len));
             }
             if let Some(radius) = ancestor.vis.clip_radius {
-                let [x, y, w, h] = self.paint.unturned_drawn.get(p).filter(|_| k != 0)
-                    .map_or_else(|| self.paint.drawn[p].map(|v| v * s), |&(b, _)| [b[0] * s, b[1] * s, (b[2] - b[0]) * s, (b[3] - b[1]) * s]);
+                let [x, y, w, h] = self.unturned_drawn.get(p).filter(|_| k != 0)
+                    .map_or_else(|| self.drawn[p].map(|v| v * s), |&(b, _)| [b[0] * s, b[1] * s, (b[2] - b[0]) * s, (b[3] - b[1]) * s]);
                 let radii = ancestor.vis.clip_corners.unwrap_or_else(|| {
                     if ancestor.vis.radii() != [0.0; 4] {
-                        self.scene.presented(ancestor.id).map_or(ancestor.vis.radii(), |p| p.radius.0)
+                        scene.presented(ancestor.id).map_or(ancestor.vis.radii(), |p| p.radius.0)
                     } else { [radius; 4] }
                 }).map(|radius| {
-                    let radius = (radius.max(0.0) * self.paint.inh_scratch[p].scale * s).min(w.min(h) * 0.5);
+                    let radius = (radius.max(0.0) * self.inh_scratch[p].scale * s).min(w.min(h) * 0.5);
                     if ancestor.vis_flags.continuous_corners() { -radius } else { radius }
                 });
-                let start = self.instances.len();
+                let start = instances.len();
                 let mut marker = Instance::begin_layer([x, y, w, h], [x, y, x + w, y + h], Default::default());
                 marker.round_clip_corners(radii);
-                self.instances.push(marker);
-                layers.push((p, start, self.surfaces.len()));
+                instances.push(marker);
+                layers.push((p, start, surfaces_len));
             }
         }
     }
+}
+
+impl RuntimeCore {
 
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
@@ -175,12 +210,14 @@ impl RuntimeCore {
         now: f64,
         p: &rune_motion::Presented,
         pinh: &Inh,
+        pcold: &InhCold,
         r: [f32; 4],
         r_exact: [f32; 4],
         radii: [f32; 4],
         w: f32,
         h: f32,
         sc: f32,
+        scale_target: Option<f32>,
         m: f32,
         effective_opacity: f32,
         paint_own: f32,
@@ -199,7 +236,6 @@ impl RuntimeCore {
         fade_origin: &mut [f32; 4],
         rounded: &mut Option<([f32; 4], [f32; 4])>,
         isolate: &mut bool,
-        backdrop_blurs: &mut usize,
         layers: &mut Vec<(usize, usize, usize)>,
         active_cache: &mut Option<ActiveCache>,
     ) -> LayerScope {
@@ -209,19 +245,24 @@ impl RuntimeCore {
                 entry.phase = RasterPhase::Live;
             }
         }
-        let mut skip_paint = pinh.skip_paint;
-        let mut in_cache = pinh.in_cache;
+        let mut skip_paint = pinh.skip_paint();
+        let mut in_cache = pinh.in_cache();
         let mut open_cache = false;
         // A scale changed by view commits may accompany arbitrary content edits. Draw
         // live until it rests instead of trusting a partial content hash or allocating a
         // new raster on each commit. Live-only transforms still composite the old raster.
         let mut committed_scale_moving = false;
         if n.vis_flags.cache() && let Some(entry) = self.paint.node_caches.get_mut(&n.id)
-            && entry.commit_gen != self.commit.commit_gen
-            && let Some(frame) = entry.committed_scale(sc * s, now)
+            && entry.commit_gen != self.commit.commit_gen()
         {
-            committed_scale_moving = true;
-            self.paint.scale_frame = Some(frame);
+            if let Some(target) = scale_target {
+                entry.phase = RasterPhase::Live;
+                entry.scale = ScaleSettle::Still(target * s);
+                committed_scale_moving = true;
+            } else if let Some(frame) = entry.committed_scale(sc * s, now) {
+                committed_scale_moving = true;
+                self.paint.scale_frame = Some(frame);
+            }
         }
         if n.vis_flags.cache() && active_cache.is_none() && !lift && !skip_paint && !self.paint.cache_live_scratch[i]
             && !committed_scale_moving && own_turn.is_none()
@@ -287,7 +328,7 @@ impl RuntimeCore {
         });
         let mut hit_clip = intersect(pinh.clip, *clip);
         if let Some((rect, _)) = own_round { hit_clip = intersect(hit_clip, rect); }
-        let (mut hit_fade, mut hit_origin) = (pinh.fade, pinh.fade_origin);
+        let (mut hit_fade, mut hit_origin) = (pcold.fade, pcold.fade_origin);
         inherit_fade(&mut hit_fade, &mut hit_origin, *fade_origin, *fade);
         // A rectangle wholly in either central strip misses all four corner squares.
         // Its hard edges already exclude everything the rounded mask would remove.
@@ -297,11 +338,10 @@ impl RuntimeCore {
         }
         // A backdrop blur samples what is drawn before it, so it goes ahead of any layer this
         // element opens (a fade still blurs the window) and of its shadows, which skip it.
-        let blur_hole = (n.vis.backdrop_blur > 0.0 && !skip_paint && visible && *backdrop_blurs < crate::MAX_BACKDROP_BLURS
+        let blur_hole = (n.vis.backdrop_blur > 0.0 && !skip_paint && visible
             && effective_opacity > 0.001 && paint_own * pinh.paint_opacity * n.vis.paint_alpha > 0.001)
             .then(|| paint_slots::push_backdrop_blur(&mut self.instances, n.vis.backdrop_blur, ([r[0], r[1], w, h], radii, n.vis_flags.continuous_corners()),
                 (*clip, *fade, *fade_origin), *rounded, sc * s, (paint_own * pinh.paint_opacity * n.vis.paint_alpha).clamp(0.0, 1.0)));
-        *backdrop_blurs += blur_hole.is_some() as usize;
         // The packed ABI carries one clip rectangle. Preserve a rectangular cut through
         // a rounded corner on a separate outer scope, never recenter the rounded mask.
         if !skip_paint && let Some((mask, _)) = rounded.or(own_round)
@@ -327,17 +367,20 @@ impl RuntimeCore {
         if let Some((mask, _)) = *rounded {
             *clip = intersect(*clip, mask);
         }
-        // `El::cutout_circle`: the subtree draws in a layer whose composite cuts the hole,
-        // after the clips from above, which it takes.
-        if !skip_paint && let Some(c) = n.vis.cutout {
+        // `El::cutout_circle` / `El::cutout_circles`: the subtree draws in one layer per hole
+        // whose composite cuts it. The outermost hole takes any clips from above; further holes
+        // nest inside it with `NO_CLIP`, intersecting their alpha masks.
+        if !skip_paint && !n.vis.cutouts.is_empty() {
             let k = sc * s;
-            let mut marker = Instance::begin_layer([r[0], r[1], w, h], *clip, Default::default());
-            marker.fade = crate::render::pack_fade(*fade, *fade_origin, *clip);
-            if let Some((_, radii)) = *rounded { marker.round_clip_corners(radii); }
-            marker.radii = [r[0] + c[0] * k, r[1] + c[1] * k, c[2] * k, c[3] * k];
-            layers.push((i, self.instances.len(), self.surfaces.len()));
-            self.instances.push(marker);
-            *clip = NO_CLIP; *fade = [0.0; 4]; *fade_origin = NO_CLIP; *rounded = None;
+            for &c in &n.vis.cutouts {
+                let mut marker = Instance::begin_layer([r[0], r[1], w, h], *clip, Default::default());
+                marker.fade = crate::render::pack_fade(*fade, *fade_origin, *clip);
+                if let Some((_, radii)) = *rounded { marker.round_clip_corners(radii); }
+                marker.radii = [r[0] + c[0] * k, r[1] + c[1] * k, c[2] * k, c[3] * k];
+                layers.push((i, self.instances.len(), self.surfaces.len()));
+                self.instances.push(marker);
+                *clip = NO_CLIP; *fade = [0.0; 4]; *fade_origin = NO_CLIP; *rounded = None;
+            }
         }
         // Live/truncated text adds a glyph-only rectangle below. Consume the inherited
         // rounded mask first so the text clip cannot move its corner centres, unless that
@@ -346,7 +389,9 @@ impl RuntimeCore {
             self.text_clip(i, (r, r_exact), sc, *clip).is_some_and(|(text, ..)| inside_rounded(text, mask, radii))
         });
         *isolate |= open_cache || (rounded.is_some() && (n.text.as_ref().is_some_and(|t| (t.truncate_fade || t.cold.live.is_some()) && !glyphs_clear)
-            || n.input.as_ref().is_some_and(|i| i.single_line)));
+            || n.input.as_ref().is_some_and(|i| i.single_line)
+            || self.truncate_clip(i, (r, r_exact), sc, *clip).is_some()
+            || (n.collapsing && n.vis.clip.is_none() && n.scroll.is_none())));
         // A soft clip fades each primitive on its own, so where one paints over another (an
         // image over its placeholder fill, a label over its bubble) the one beneath shows
         // through the fade, and the stack brightens or darkens towards the edge. A stack that
@@ -385,7 +430,7 @@ impl RuntimeCore {
                 let (scale, pass, frame) =
                     if let Some(entry) = self.paint.node_caches.get(&n.id) {
                         let is_resident = self.text.atlas.resident_caches.get(&n.id.0) == Some(&entry.signature);
-                        entry.open(eff_scale, s, self.settled, now, self.commit.commit_gen, is_resident,
+                        entry.open(eff_scale, s, self.settled, now, self.commit.commit_gen(), is_resident,
                             scale_motion, paint_hash, || self.paint.cache_check_scratch[i], glyph_count)
                     } else {
                         (ScaleSettle::Still(eff_scale), RasterPass::Paint { glyph_start: glyph_count }, None)
@@ -403,6 +448,9 @@ impl RuntimeCore {
                     cur_scale: eff_scale,
                     scale,
                     env_scale: s,
+                    effective_opacity,
+                    material_start: self.paint.materials.len(),
+                    fallback_start: self.paint.material_fallbacks.len(),
                     paint_hash,
                     pass,
                 });

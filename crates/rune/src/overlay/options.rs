@@ -50,6 +50,10 @@ pub enum DisplayTarget {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum OverlayPlacement {
+    /// Anchored to `edge` (`margin` points inward) and aligned along it (`inset` points from
+    /// start or end). On Windows, all four sides measure from [`crate::Display::work_area`]
+    /// (excluding the taskbar and docked app bars), matching `OverlaySpec`'s default edge
+    /// placement; other platforms measure from the full display bounds.
     Edge { edge: ScreenEdge, margin: f32, align: Align, inset: f32 },
     /// Points from the selected display's top-left, not desktop pixels. The rect isn't kept
     /// on that display, so on [`DisplayTarget::Primary`] it's a global rect that may sit on
@@ -58,6 +62,7 @@ pub enum OverlayPlacement {
     /// scale, and the overlay draws at the backing scale of the display it lands on.
     /// Elsewhere a rect off the primary display is exact only where displays share a scale.
     Rect { x: f32, y: f32, width: f32, height: f32 },
+    /// Covers the entire selected display (including taskbar/menu-bar areas).
     FullScreen,
 }
 
@@ -70,12 +75,35 @@ pub enum OverlayLevel {
     AboveOverlays,
 }
 
+/// Whether an overlay may take keyboard focus. `OverlayCapabilities::nonactivating_keys` says
+/// whether the backend it got can.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum KeyPolicy {
+    /// Never takes keys; a click neither focuses nor activates it.
     #[default]
     None,
-    /// Permit `OverlayHandle::request_keys`; showing alone never requests focus.
+    /// Permit `OverlayHandle::request_keys`, and a click on the overlay takes the keys too;
+    /// showing alone never requests focus. macOS: the panel becomes key without activating the
+    /// app. Wayland: layer-shell v4's on-demand keyboard interactivity; XWayland can't. X11: the
+    /// override-redirect window sets the input focus itself; when it hides, focus reverts to the
+    /// root window for the window manager to hand on. Windows: the window is made without
+    /// `WS_EX_NOACTIVATE`, and `request_keys` takes the foreground only when Windows lets this
+    /// process (it just had the user's input, or was given the right); a click always does.
     OnDemand,
+    /// As `OnDemand`, except on Wayland layer-shell: `request_keys` sets exclusive keyboard
+    /// interactivity, so the overlay keeps the keys wherever the pointer goes until
+    /// `OverlayHandle::release_keys` or a hide. Works on every layer-shell version. While it
+    /// holds them no other surface gets keys, so release them as soon as input ends. There is
+    /// no safety net yet: if the app's event loop hangs while it holds them, the whole desktop
+    /// stays without a keyboard until the process exits or is killed. Other hosts treat it as
+    /// `OnDemand`.
+    Exclusive,
+}
+
+impl KeyPolicy {
+    /// Whether an overlay with this policy may take keyboard focus (`OnDemand` or `Exclusive`).
+    #[inline]
+    pub fn takes_keys(self) -> bool { !matches!(self, KeyPolicy::None) }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -91,6 +119,8 @@ pub enum OverlayInput {
     All,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 impl OverlayInput {
     pub(crate) fn resolved(self, interactive: bool) -> Self {
         match self { Self::Legacy => if interactive { Self::All } else { Self::None }, other => other }
@@ -140,13 +170,23 @@ pub struct ConfiguredOverlay<T: 'static> {
     pub options: OverlayOptions,
     pub on_key: Option<fn(&mut T, &crate::KeyEvent, &mut crate::Tx) -> bool>,
     pub on_created: Option<Box<dyn FnMut(OverlayCreated)>>,
+    pub(crate) on_availability: Option<fn(&mut T, crate::Availability, &mut crate::Tx)>,
     pub(crate) poll: Option<fn(&mut T, f64, &mut crate::Tx) -> bool>,
     pub(crate) compositor: Option<Box<dyn crate::compose::Compositor<T>>>,
     pub(crate) setup: Option<fn(&mut T, crate::Waker)>,
     pub(crate) runtime: crate::app::RuntimeConfig<T>,
+    pub(crate) font_smoothing: Option<crate::FontSmoothing>,
     pub(crate) macos_level: Option<isize>,
+    pub(crate) macos_color_space: crate::MacColorSpace,
+    pub(crate) window_backdrop: crate::WindowBackdrop,
+    pub(crate) frame_latency: Option<u32>,
+    pub(crate) on_materials: Option<crate::system_material::OnMaterials>,
     pub(crate) animate_reveal: bool,
     pub(crate) release_after: Option<std::time::Duration>,
+    pub(crate) renderer: crate::RendererKind,
+    pub(crate) sizing: crate::ContentSizing,
+    pub(crate) min_size: Option<(f32, f32)>,
+    pub(crate) max_size: Option<(f32, f32)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -158,15 +198,88 @@ pub struct OverlayCreated {
 
 impl<T: 'static> ConfiguredOverlay<T> {
     pub fn on_focus(mut self, f: fn(&mut T, bool, &mut crate::Tx)) -> Self { self.runtime.on_focus = Some(f); self }
+    /// Fallback handler for text-field menus when native pop-ups are unavailable, like
+    /// [`App::on_field_menu`](crate::App::on_field_menu).
+    ///
+    /// ```no_run
+    /// use rune::{FieldMenuRequest, OverlayOptions, OverlaySpec, Tx, el};
+    ///
+    /// let _overlay = OverlaySpec::new("quick", (320.0, 200.0), |_: &(), _| el())
+    ///     .options(OverlayOptions::default())
+    ///     .on_field_menu(|_: &mut (), _req: FieldMenuRequest, _tx: &mut Tx| {});
+    /// ```
+    pub fn on_field_menu(mut self, f: fn(&mut T, crate::FieldMenuRequest, &mut crate::Tx)) -> Self {
+        self.runtime.on_field_menu = Some(f);
+        self
+    }
+    /// Fallback handler for pop-up and context menus when native pop-ups are unavailable (such as
+    /// Linux), like [`App::on_popup_menu`](crate::App::on_popup_menu).
+    ///
+    /// ```no_run
+    /// use rune::{OverlayOptions, OverlaySpec, PopupMenuRequest, Tx, el};
+    ///
+    /// let _overlay = OverlaySpec::new("quick", (320.0, 200.0), |_: &(), _| el())
+    ///     .options(OverlayOptions::default())
+    ///     .on_popup_menu(|_: &mut (), _req: PopupMenuRequest, _tx: &mut Tx| {});
+    /// ```
+    pub fn on_popup_menu(mut self, f: fn(&mut T, crate::PopupMenuRequest, &mut crate::Tx)) -> Self {
+        self.runtime.on_popup_menu = Some(f);
+        self
+    }
     /// Composite this overlay's translucent fills, blurs, shadows, images, video and text in
     /// sRGB (gamma) space instead of linear light, matching CSS and Core Animation (on by
     /// default). With a `Compositor`, `Frame::srgb_blend` says which encoding its passes must
     /// match.
     pub fn srgb_blend(mut self, enabled: bool) -> Self { self.runtime.srgb_blend = enabled; self }
-    /// Called before each frame; true means state changed, not that another frame is due.
-    /// Defaults to the app's poll when its state type matches this overlay's. Other state
-    /// types have no inherited poll. Use `Tx::wake_after` for the next timed update;
-    /// deadlines also run while hidden, like the window host, without drawing.
+    /// Maximum number of native `El::system_material` views this overlay may host at once
+    /// (default [`crate::MAX_NATIVE_MATERIALS`], clamped to 64), like
+    /// [`App::max_native_materials`](crate::App::max_native_materials).
+    ///
+    /// ```no_run
+    /// use rune::{OverlayOptions, OverlaySpec, el};
+    ///
+    /// let overlay = OverlaySpec::new("notifications", (360.0, 520.0), |_: &(), _| el())
+    ///     .options(OverlayOptions::default())
+    ///     .max_native_materials(8);
+    /// ```
+    pub fn max_native_materials(mut self, max: usize) -> Self {
+        self.runtime.max_native_materials = crate::system_material::clamp_max_native_materials(max);
+        self
+    }
+    /// Cap the wake rate (Hz) used when `El::reveal` word fades are the only active animation in
+    /// this overlay (`0.0`, default = full display rate; positive finite values clamp to at least
+    /// `1.0` Hz, non-positive or non-finite values normalize to `0.0`), like
+    /// [`App::reveal_fps`](crate::App::reveal_fps).
+    ///
+    /// `30.0` Hz is recommended because it divides both 60 Hz and 120 Hz displays cleanly without
+    /// beat judder (Apple WWDC21 Session 10147), though any positive rate is accepted.
+    ///
+    /// ```no_run
+    /// use rune::{OverlayOptions, OverlaySpec, el};
+    ///
+    /// let _overlay = OverlaySpec::new("stream", (360.0, 220.0), |_: &(), _| el())
+    ///     .options(OverlayOptions::default())
+    ///     .reveal_fps(30.0);
+    /// ```
+    pub fn reveal_fps(mut self, fps: f32) -> Self {
+        self.runtime.reveal_fps = crate::app::RuntimeConfig::<T>::normalize_reveal_fps(fps);
+        self
+    }
+    /// How this overlay rasterises and places glyphs (see [`crate::FontSmoothing`]).
+    /// Defaults to the app's `App::font_smoothing`; `Tx::set_font_smoothing` switches it
+    /// while running.
+    pub fn font_smoothing(mut self, mode: crate::FontSmoothing) -> Self { self.font_smoothing = Some(mode); self }
+    /// Called at the start of every frame (unless a resting timer's poll already stood for it)
+    /// so background data and timers can update the tree before input routes. Queued input and
+    /// event handlers then run; whenever a non-`live_only` handler runs, `poll` runs again at the
+    /// same frame clock before the view commits, alternating with any input `poll` itself queues
+    /// (`Tx::send_key`) up to 4 follow-up rounds so work queued in a turn never waits for the next
+    /// mouse move or wake. Idle frames, animation-only frames, `Tx::live_only` handlers, layout
+    /// observers, and overlays without `poll` run no extra poll; call `Tx::request_poll` from a
+    /// `live_only` handler or outside a frame when one is still needed. True means state changed,
+    /// not that another frame is due. Defaults to the app's poll when its state type matches this
+    /// overlay's. Use `Tx::wake_after` for the next timed update; deadlines also run while hidden,
+    /// like the window host, without drawing.
     pub fn poll(mut self, f: fn(&mut T, f64, &mut crate::Tx) -> bool) -> Self { self.poll = Some(f); self }
     /// Draw every rendered overlay frame, including hidden prewarm frames, through this
     /// compositor. `Frame::draw_ui` keeps the overlay's transparent clear. Runtime-only
@@ -179,6 +292,18 @@ impl<T: 'static> ConfiguredOverlay<T> {
     /// Like `App::modifier_keys`: send modifier keys pressed and released on their own
     /// (`Key::Modifier`) to `on_key` and the focused input. Off by default.
     pub fn modifier_keys(mut self) -> Self { self.runtime.modifier_keys = true; self }
+    /// Like [`App::media_keys`](crate::App::media_keys): opt into hardware media transport
+    /// keys ([`Key::Media`](crate::Key::Media)) for this overlay. Off by default.
+    ///
+    /// ```no_run
+    /// use rune::{OverlayOptions, OverlaySpec, el};
+    ///
+    /// let overlay = OverlaySpec::new("mini-player", (240.0, 64.0), |_: &(), _| el())
+    ///     .options(OverlayOptions::default())
+    ///     .media_keys();
+    /// let _ = overlay;
+    /// ```
+    pub fn media_keys(mut self) -> Self { self.runtime.media_keys = true; self }
     /// Like `AppSpec::setup`: called once with a waker other threads use when new data arrives
     /// (an `ImageCache` decode, a channel). It runs on the event thread when the event loop
     /// starts, before the overlay's first frame and before updates queued through its handle.
@@ -190,10 +315,139 @@ impl<T: 'static> ConfiguredOverlay<T> {
     /// `release_gpu_when_hidden`), so a window number in a capture filter stays current.
     /// Use `prewarm: true` to create at startup rather than waiting for `show()`.
     pub fn on_created(mut self, f: impl FnMut(OverlayCreated) + 'static) -> Self { self.on_created = Some(Box::new(f)); self }
+    /// Called on the event thread whenever this overlay's [`Availability`](crate::Availability)
+    /// changes (for example `Unknown` to `Available` once created, `Available` to `Unavailable`
+    /// when a surface fails or a Wayland compositor closes it, or `Unavailable` to `Available`
+    /// when a later show succeeds).
+    ///
+    /// Repeated transitions to the same [`Availability`](crate::Availability) are ignored, and
+    /// dropping the overlay does not invoke `f`. Inside `f`, [`OverlayHandle::availability`](crate::OverlayHandle::availability)
+    /// and [`OverlayHandle::failure`](crate::OverlayHandle::failure) already report the new state.
+    ///
+    /// ```no_run
+    /// use rune::{Availability, OverlayOptions, OverlaySpec, el};
+    ///
+    /// let overlay = OverlaySpec::new("status", (240.0, 44.0), |_: &(), _| el())
+    ///     .options(OverlayOptions::default())
+    ///     .on_availability(|_, availability, _tx| {
+    ///         if availability == Availability::Unavailable {
+    ///             // React to surface loss without a polling timer.
+    ///         }
+    ///     });
+    /// ```
+    pub fn on_availability(mut self, f: fn(&mut T, crate::Availability, &mut crate::Tx)) -> Self {
+        self.on_availability = Some(f);
+        self
+    }
+    /// Called on the event thread with each frame's
+    /// [`El::system_material`](crate::El::system_material) rects
+    /// ([`MaterialFrame`](crate::MaterialFrame)), after the frame is built and just before it
+    /// presents, hidden prewarm frames included; an idle overlay draws no frames and so calls
+    /// nothing. Where Rune hosts no native material (everywhere but macOS) the element draws only
+    /// its fallback fill, so an app can keep its own backdrop (a companion window or composition
+    /// visual) under these rects in step with the frame. Give the element a translucent
+    /// [`El::fill`](crate::El::fill) of its own to replace the neutral fallback tint. A frame
+    /// lists no rects once the last material element is gone. It only runs for frames that
+    /// present, so hiding the overlay ([`OverlayHandle::hide`](crate::OverlayHandle::hide)),
+    /// releasing its surface (`release_gpu_when_hidden`, `release_gpu_after`) or losing it sends
+    /// no final empty frame: hide the backdrop alongside the app's own `hide` calls and when
+    /// [`on_availability`](Self::on_availability) reports the overlay unavailable.
+    ///
+    /// ```no_run
+    /// use rune::{OverlayOptions, OverlaySpec, SystemMaterial, el};
+    ///
+    /// let _overlay = OverlaySpec::new("island", (720.0, 200.0), |_: &(), _| {
+    ///     el().w(240.0).h(44.0).radius(22.0).system_material(SystemMaterial::Glass)
+    /// })
+    /// .options(OverlayOptions::default())
+    /// .on_materials(|frame| {
+    ///     for draw in frame.draws() {
+    ///         let (_rect, _radius) = draw.points(frame.scale());
+    ///         // Move this app's own backdrop visual to `_rect` with `_radius` corners.
+    ///     }
+    /// });
+    /// ```
+    pub fn on_materials(mut self, f: impl FnMut(crate::MaterialFrame<'_>) + 'static) -> Self {
+        self.on_materials = Some(Box::new(f));
+        self
+    }
     /// Showing doesn't settle motion: what the state started while hidden plays from the
     /// first visible frame, such as a notification stack's first card entering. By default
     /// an unretained overlay shows settled, at its target.
     pub fn animate_reveal(mut self) -> Self { self.animate_reveal = true; self }
+    /// Size the overlay's height to its content: shorthand for
+    /// `.sizing(ContentSizing::FitHeight)`.
+    ///
+    /// Each show and prewarm measures what changed while hidden (at the target monitor's scale
+    /// and active [`RendererKind`](crate::RendererKind), clamped to [`Self::min_size`],
+    /// [`Self::max_size`], and the display's work area) without committing, so the first frame
+    /// presents at the content's height with no flash. While shown, a height change resizes
+    /// and re-places the overlay before painting in the same frame (no spring; on Wayland
+    /// layer-shell, holds the previous frame until the compositor confirms the new size).
+    /// `OverlaySpec::size` and `OverlayHandle::resize` set only the width; `Tx::resize_window`
+    /// stays ignored. Give the root no fixed or `fill` height.
+    ///
+    /// ```no_run
+    /// use rune::{OverlayOptions, OverlaySpec, col, text};
+    ///
+    /// let _candidates = OverlaySpec::new("candidates", (320.0, 0.0), |items: &Vec<String>, _| {
+    ///     col().gap(2.0).padding(8.0).children(items.iter().map(|s| text(s)))
+    /// })
+    /// .options(OverlayOptions::default())
+    /// .fit_content_height();
+    /// ```
+    pub fn fit_content_height(self) -> Self { self.sizing(crate::ContentSizing::FitHeight) }
+    /// Selects how this overlay derives its surface dimensions from its layout content
+    /// (defaults to [`ContentSizing::Fixed`](crate::ContentSizing::Fixed)).
+    ///
+    /// With [`ContentSizing::Fit`](crate::ContentSizing::Fit),
+    /// [`ContentSizing::FitHeight`](crate::ContentSizing::FitHeight), or
+    /// [`ContentSizing::FitWidth`](crate::ContentSizing::FitWidth), Rune measures the view
+    /// before creating or showing the surface so the very first presented frame opens at the
+    /// exact measured size (no flash at a guessed size), and resizes in the same frame when
+    /// content grows or shrinks. Pair with [`Self::min_size`] and [`Self::max_size`] to clamp
+    /// fitted axes and wrap overflowing text at `max_size.0`.
+    ///
+    /// ```no_run
+    /// use rune::{ContentSizing, OverlayOptions, OverlaySpec, col, text};
+    ///
+    /// let _candidates = OverlaySpec::new("candidates", (0.0, 0.0), |items: &Vec<String>, _| {
+    ///     col().gap(2.0).padding(8.0).children(items.iter().map(|s| text(s)))
+    /// })
+    /// .options(OverlayOptions::default())
+    /// .sizing(ContentSizing::Fit)
+    /// .max_size((420.0, 320.0));
+    /// ```
+    pub fn sizing(mut self, sizing: crate::ContentSizing) -> Self { self.sizing = sizing; self }
+    /// Minimum logical size `(width, height)` in points for axes fitted by [`Self::sizing`].
+    /// Clamped to at least `(1.0, 1.0)` and never exceeding [`Self::max_size`] or the target
+    /// display's work area.
+    ///
+    /// ```no_run
+    /// use rune::{ContentSizing, OverlayOptions, OverlaySpec, el};
+    ///
+    /// let _hud = OverlaySpec::new("hud", (0.0, 0.0), |_: &(), _| el())
+    ///     .options(OverlayOptions::default())
+    ///     .sizing(ContentSizing::Fit)
+    ///     .min_size((120.0, 36.0));
+    /// ```
+    pub fn min_size(mut self, size: (f32, f32)) -> Self { self.min_size = Some(size); self }
+    /// Maximum logical size `(width, height)` in points for axes fitted by [`Self::sizing`].
+    /// Also applied as the root Taffy `max_size` constraint so wrapping text wraps at `size.0`
+    /// instead of laying out on one unbounded line; further capped by the target display's
+    /// work area and the surface's physical pixel limit.
+    ///
+    /// ```no_run
+    /// use rune::{ContentSizing, OverlayOptions, OverlaySpec, col, text};
+    ///
+    /// let _candidates = OverlaySpec::new("candidates", (0.0, 0.0), |items: &Vec<String>, _| {
+    ///     col().gap(2.0).padding(8.0).children(items.iter().map(|s| text(s)))
+    /// })
+    /// .options(OverlayOptions::default())
+    /// .sizing(ContentSizing::Fit)
+    /// .max_size((420.0, 320.0));
+    /// ```
+    pub fn max_size(mut self, size: (f32, f32)) -> Self { self.max_size = Some(size); self }
     /// While hidden, the overlay holds no GPU surface, swapchain or renderer. Each show makes the
     /// surface, and each hide drops it. Away from macOS, the GPU device and renderer then wait
     /// five minutes for the next surface (a window's or overlay's) before they go, so an overlay
@@ -218,6 +472,118 @@ impl<T: 'static> ConfiguredOverlay<T> {
     /// `OverlayOptions::level`; `OverlayHandle::set_macos_level` changes it later. At any
     /// level a macOS overlay goes exactly where it's placed, over the menu bar too.
     pub fn macos_level(mut self, level: isize) -> Self { self.macos_level = Some(level); self }
+    /// Sets how macOS colour-manages this overlay panel (`NSWindow.colorSpace` and its
+    /// `CAMetalLayer.colorspace`), like [`MacWindowOptions::color_space`](crate::MacWindowOptions::color_space).
+    ///
+    /// Defaults to [`MacColorSpace::Srgb`](crate::MacColorSpace::Srgb) so both the native Metal
+    /// backend and the wgpu backend show sRGB colours as sRGB on wide-gamut displays. Pass
+    /// [`MacColorSpace::Unmanaged`](crate::MacColorSpace::Unmanaged) to leave
+    /// `NSWindow.colorSpace` unset (`nil`) and clear `CAMetalLayer.colorspace` so framebuffer
+    /// values reach the display unmodified. Retained across hide/recreate and ignored on other
+    /// platforms.
+    ///
+    /// ```no_run
+    /// use rune::{MacColorSpace, OverlayOptions, OverlaySpec, el};
+    ///
+    /// let _overlay = OverlaySpec::new("raw", (240.0, 80.0), |_: &(), _| el())
+    ///     .options(OverlayOptions::default())
+    ///     .macos_color_space(MacColorSpace::Unmanaged);
+    /// ```
+    pub fn macos_color_space(mut self, color_space: crate::MacColorSpace) -> Self {
+        self.macos_color_space = color_space;
+        self
+    }
+    /// Opt-in whole-window system backdrop material ([`WindowBackdrop`](crate::WindowBackdrop))
+    /// for this overlay, applied on Windows 11 Build 22621+ (`DWMWA_SYSTEMBACKDROP_TYPE`) and
+    /// retained across hide/show and recreation. Defaults to
+    /// [`WindowBackdrop::None`](crate::WindowBackdrop::None).
+    ///
+    /// Update at runtime with
+    /// [`OverlayHandle::set_window_backdrop`](crate::OverlayHandle::set_window_backdrop) or
+    /// [`Tx::set_window_backdrop`](crate::Tx::set_window_backdrop), and read whether the OS
+    /// accepted the backdrop attribute with [`Cx::window_backdrop`](crate::Cx::window_backdrop).
+    ///
+    /// By Microsoft design, Windows 11 draws Mica, Mica Alt, and Desktop Acrylic only while the
+    /// window is the foreground window and shows its own flat solid fallback otherwise. A
+    /// non-activating overlay ([`KeyPolicy::None`]) never takes focus and therefore never shows
+    /// the live material—even while `cx.window_backdrop().is_active()` is `true`. Pair with
+    /// [`Self::on_focus`] (on a key-taking overlay) to tell "active and focused" from "active".
+    ///
+    /// ```no_run
+    /// use rune::{OverlayOptions, OverlaySpec, WindowBackdrop, el};
+    ///
+    /// let _overlay = OverlaySpec::new("hud", (280.0, 96.0), |_: &(), _| el())
+    ///     .options(OverlayOptions::default())
+    ///     .window_backdrop(WindowBackdrop::Acrylic);
+    /// ```
+    pub fn window_backdrop(mut self, backdrop: crate::WindowBackdrop) -> Self {
+        self.window_backdrop = backdrop;
+        self
+    }
+    /// Cap the swap chain's frame latency on macOS (`1` = 2 drawables, `2` = 3 drawables;
+    /// clamped to `1..=2`, default `2`). Ignored on Windows, Linux, and the web.
+    ///
+    /// With two drawables a frame that runs late waits instead of overlapping the next; at
+    /// 120 Hz that can show as a dropped frame during fast animation, whereas for a rarely
+    /// animating overlay it is the right trade. Applied when the surface is created rather than
+    /// changed live (changing `CAMetalLayer.maximumDrawableCount` while visible forces a
+    /// synchronous reconfigure and can reallocate drawables or drop a frame).
+    ///
+    /// ```no_run
+    /// use rune::{OverlayOptions, OverlaySpec, el};
+    ///
+    /// let _overlay = OverlaySpec::new("panel", (488.0, 873.0), |_: &(), _| el())
+    ///     .options(OverlayOptions::default())
+    ///     .frame_latency(1);
+    /// ```
+    pub fn frame_latency(mut self, latency: u32) -> Self {
+        self.frame_latency = Some(latency.clamp(1, 2));
+        self
+    }
+    /// Selects which rendering backend presents this overlay (defaults to
+    /// [`RendererKind::Gpu`](crate::RendererKind::Gpu)).
+    ///
+    /// On Windows, [`RendererKind::Cpu`](crate::RendererKind::Cpu) keeps a transparent overlay on
+    /// Rune's CPU painter (`CpuPainter`) for its whole lifetime and presents premultiplied BGRA
+    /// frames through a documented Win32 layered window (`UpdateLayeredWindowIndirect` with
+    /// `ULW_ALPHA`), creating no GPU device, swap chain, or `wgpu::Surface`. On macOS, Linux, iOS,
+    /// and web in this step, `RendererKind::Cpu` is ignored cleanly (the overlay stays on GPU and
+    /// [`Cx::renderer_kind`](crate::Cx::renderer_kind) reports `RendererKind::Gpu`); macOS has no
+    /// CPU painter, and Linux transparent CPU overlays (`wl_shm` ARGB8888 / 32-bit ARGB X11) are a
+    /// planned follow-up on this same builder.
+    ///
+    /// Trade-offs and limits on Windows CPU overlays:
+    /// - **Frame pacing**: layered windows have no DXGI swap chain or hardware vsync queue; frames
+    ///   are paced with `DwmGetCompositionTimingInfo` and the monitor refresh rate, which can show
+    ///   minor cadence drift (~4–5% measured at 165 Hz). Keep continuously animating 120–165 Hz
+    ///   overlays on [`RendererKind::Gpu`](crate::RendererKind::Gpu).
+    /// - **GPU-only features**: [`WindowBackdrop`](crate::WindowBackdrop) reports
+    ///   `WindowBackdrop::None` (`Cx::window_backdrop_supported` returns `false`),
+    ///   [`El::system_material`](crate::El::system_material) draws its fallback fill (even with the
+    ///   `windows-system-material` feature enabled, because CPU overlays have no DirectComposition
+    ///   swap chain; query [`Cx::renderer_kind`](crate::Cx::renderer_kind) to detect CPU mode),
+    ///   [`Self::compositor`] overrides `RendererKind::Cpu` back to GPU, and `NativeSurface`,
+    ///   `El::blur`, non-90° `El::rotate`, nested `El::backdrop_blur`, and `FontSmoothing::Slug`
+    ///   require the GPU (degradable modifiers paint without the GPU-only effect; non-degradable
+    ///   features hold the previous frame or fail frame 1 cleanly). Query
+    ///   [`Cx::renderer_kind`](crate::Cx::renderer_kind) inside the view to adapt.
+    /// - **Hit-testing**: under `ULW_ALPHA`, Win32 treats pixels with `alpha == 0` as click-through
+    ///   before `WM_NCHITTEST`; an invisible hit target needs `alpha >= 1/255`.
+    /// - **Verification status**: live Windows desktop presentation has not yet been watched by the
+    ///   team.
+    ///
+    /// ```no_run
+    /// use rune::{OverlayOptions, OverlaySpec, RendererKind, el};
+    ///
+    /// let _candidates = OverlaySpec::new("candidates", (320.0, 220.0), |_: &(), cx| {
+    ///     let card = if cx.renderer_kind().is_cpu() { el().w_full().h_full() } else { el().w_full().h_full().blur(8.0) };
+    ///     card
+    /// }).options(OverlayOptions::default()).renderer(RendererKind::Cpu);
+    /// ```
+    pub fn renderer(mut self, kind: crate::RendererKind) -> Self {
+        self.renderer = kind;
+        self
+    }
 }
 
 impl<T: 'static> OverlaySpec<T> {
@@ -227,9 +593,11 @@ impl<T: 'static> OverlaySpec<T> {
 
     pub fn options(self, options: OverlayOptions) -> ConfiguredOverlay<T> {
         ConfiguredOverlay {
-            spec: self, options, on_key: None, on_created: None, poll: None, compositor: None,
-            setup: None, runtime: crate::app::RuntimeConfig::default(), macos_level: None,
-            animate_reveal: false, release_after: None,
+            spec: self, options, on_key: None, on_created: None, on_availability: None, poll: None, compositor: None,
+            setup: None, runtime: crate::app::RuntimeConfig::default(), font_smoothing: None, macos_level: None,
+            macos_color_space: crate::MacColorSpace::Srgb, window_backdrop: crate::WindowBackdrop::None,
+            frame_latency: None, on_materials: None, animate_reveal: false, release_after: None,
+            renderer: crate::RendererKind::Gpu, sizing: crate::ContentSizing::Fixed, min_size: None, max_size: None,
         }
     }
 }
@@ -250,11 +618,33 @@ pub enum OverlaySupport {
     Failed,
 }
 
+/// What the overlay's backend can do. `Unsupported` in `placement`, `always_on_top` or
+/// `click_through` marks a degraded backing, such as the plain Wayland toplevel an overlay
+/// falls back to without layer-shell or XWayland (GNOME), so an app can adapt.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OverlayCapabilities {
     pub capture_exclusion: OverlaySupport,
     pub nonactivating_keys: OverlaySupport,
     pub global_pointer: OverlaySupport,
+    /// The overlay goes where its edge, rect or display target says. A Wayland toplevel can't
+    /// position itself: the compositor places it.
+    pub placement: OverlaySupport,
+    /// The overlay stays above other windows. A Wayland toplevel stacks like any window.
+    pub always_on_top: OverlaySupport,
+    /// Clicks outside `OverlayInput::Regions` hit regions reach what's under the overlay. A
+    /// Wayland toplevel takes no input at all under `OverlayInput::None`, but under `Regions`
+    /// its whole surface takes clicks.
+    pub click_through: OverlaySupport,
+}
+
+impl OverlayCapabilities {
+    /// A backend that places, stacks and passes clicks through as asked (every one but the
+    /// Wayland toplevel fallback), with what else it reports.
+    #[cfg_attr(any(target_arch = "wasm32", target_os = "ios", target_os = "android"), allow(dead_code))]
+    pub(crate) const fn placed(capture_exclusion: OverlaySupport, nonactivating_keys: OverlaySupport, global_pointer: OverlaySupport) -> Self {
+        let s = OverlaySupport::Supported;
+        OverlayCapabilities { capture_exclusion, nonactivating_keys, global_pointer, placement: s, always_on_top: s, click_through: s }
+    }
 }
 
 /// Bounds in logical points, local to a display. Also shared by native placement tests.

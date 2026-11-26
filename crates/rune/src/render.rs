@@ -9,8 +9,10 @@ mod breaker;
 mod damaged;
 mod device;
 mod dxbc;
+mod effect_warm;
 mod fill;
 mod first_use;
+pub(crate) mod loss_latch;
 mod gpu_loss;
 mod instance;
 mod layers;
@@ -19,8 +21,9 @@ mod offscreen;
 mod outlines;
 mod pass;
 mod pipelines;
+mod renderer_kind;
 // The kept frame it checks exists only where partial frames do (`damaged`).
-#[cfg(any(target_os = "windows", target_arch = "wasm32"))]
+#[cfg(target_os = "windows")]
 mod pixel_check;
 #[cfg(target_os = "macos")]
 mod prewarm;
@@ -30,23 +33,31 @@ mod prewarm;
 #[cfg(target_arch = "wasm32")]
 mod prewarm {
     pub(super) fn start() {}
-    pub(super) fn take() -> Option<(super::Gpu, super::Renderer)> { None }
     pub(super) fn discard() {}
 }
+mod shader_check;
+mod surface_setup;
 mod uber_wgsl;
 mod upload;
 mod variant;
-mod warmup;
+#[cfg(any(target_os = "linux", all(test, not(target_arch = "wasm32"))))]
+mod vulkan_icd;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod warm_machine;
+pub(crate) mod warmup;
 #[cfg(target_os = "macos")]
 mod windfoil_metallib;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod csd_corners;
 pub(crate) mod gpu_events;
 pub(crate) mod layer_blur;
 pub(crate) mod surface_alpha;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod translucency;
 
 pub mod cpu_boot;
+pub use loss_latch::GpuLossPolicy;
 
 #[cfg(test)]
 mod abi_tests;
@@ -58,34 +69,61 @@ mod image_tests;
 #[path = "render/native_surface_tests.rs"]
 mod native_surface;
 #[cfg(test)]
+mod opacity_tests;
+#[cfg(test)]
 mod prewarm_tests;
 #[cfg(test)]
 #[path = "render/warm_tests.rs"]
 mod warm_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod webgl_shader_tests;
 
 use pass::{ActivePass, Backdrop};
 
 #[cfg(target_os = "windows")]
 pub(crate) use damaged::MAX_RECTS;
+pub(crate) use shader_check::ShaderError;
+pub(crate) use surface_setup::SurfaceSetupError;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use surface_setup::format_window_setup_error;
+#[cfg(target_os = "windows")]
+pub(crate) use surface_setup::with_wine_hwnd_hint;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use device::cancel_prewarm;
 pub(crate) use device::choose_gpu_backend;
 pub(crate) use device::discard_prewarm;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use device::reopen_prewarm;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use device::shutdown_prewarm;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use warm_machine::ShutdownOutcome;
 pub(crate) use instance::Globals;
 pub(crate) use instance::INSTANCE_WORDS;
 pub(crate) use instance::effect_mark;
 pub(crate) use instance::end_layer;
 pub(crate) use instance::pack_u64_f32;
+pub(crate) use instance::shader_consts;
 pub(crate) use instance::turned_bounds;
 pub(crate) use instance::unpack_u64_f32;
 pub(crate) use instance::word;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use warmup::park_gpu;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use warmup::surface_gpu;
+#[cfg(target_os = "linux")]
+pub(crate) use warmup::{warm_gpu_made, warm_gpu_then};
 
 pub use backdrop_blur::MAX_BACKDROP_BLURS;
 pub use device::Gpu;
 pub use device::prewarm_gpu;
 pub use device::prewarm_gpu_on;
+pub use device::set_gpu_memory_policy;
+pub use effect_warm::PrewarmEffects;
+pub use renderer_kind::RendererKind;
 #[doc(hidden)]
 pub use fill::FillDrift;
+pub use first_use::builtin_wgsl_hash;
 pub use first_use::make_layer_blur;
 pub use first_use::make_straight_alpha;
 pub use first_use::precompiled_misses;
@@ -106,16 +144,19 @@ pub use instance::KIND_SHADOW;
 pub use instance::KIND_TRIANGLE;
 pub use instance::Kind;
 pub use instance::NO_CLIP;
+pub(crate) use instance::STOP_FADE_BIAS;
 pub use instance::pack_clip_radii;
 pub use instance::pack_fade;
 pub use instance::unpack_clip_radii;
 pub use instance::unpack_fade;
 pub use layers::LayerStats;
 pub use offscreen::OFFSCREEN_FORMAT;
+pub use offscreen::OFFSCREEN_FORMAT_LINEAR;
 pub use offscreen::Offscreen;
 pub use offscreen::write_png;
 pub use rune_core::Blend;
 pub use warmup::warm_gpu;
+pub use warmup::warm_gpu_cache;
 pub use warmup::warm_gpu_with;
 
 /// Rows the first glyph atlas page's texture starts with: a window that shows a few labels holds
@@ -124,10 +165,11 @@ pub(crate) const ATLAS_START_ROWS: u32 = 256;
 
 /// `RUNE_LOOP_CHECK=2` found a picture that differed from the whole frame's (`pixel_check`), so the
 /// process's exit code is 3. Never on macOS and Linux, which have no loop-only frames.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn loop_pixel_check_failed() -> bool {
-    #[cfg(any(target_os = "windows", target_arch = "wasm32"))]
+    #[cfg(target_os = "windows")]
     return pixel_check::failed();
-    #[cfg(not(any(target_os = "windows", target_arch = "wasm32")))]
+    #[cfg(not(target_os = "windows"))]
     false
 }
 
@@ -225,6 +267,9 @@ pub struct EffectSite<'a> {
     /// (`in_layer: true`), holds that layer's offscreen target copied at `origin` in window
     /// coordinates.
     pub backdrop: Option<&'a wgpu::TextureView>,
+    /// Packed explicit scroll-fade stops (`Runtime::fade_stops`) for this frame, matching
+    /// `clip_alpha_stops` in `CLIP_WGSL` (`[0.0, 0.0]` when no scroller uses `ScrollFade::stops`).
+    pub fade_stops: [f32; 2],
 }
 
 /// Called at each effect slot, with the pass open and everything painted before the slot already
@@ -259,6 +304,10 @@ enum BatchBind {
 }
 
 pub struct Renderer {
+    /// Post-first-frame background effect-pipeline warmer: listed first so its Drop drains
+    /// any active worker before GPU resources on this renderer drop.
+    effect_warm: effect_warm::EffectWarm,
+    first_frame_submitted: std::sync::atomic::AtomicBool,
     surfaces: Option<crate::native_surface::SurfaceRenderer>,
     /// The native surface renderer while its pipeline compiles (`build_surfaces`).
     surfaces_building: Option<crate::native_surface::Building>,
@@ -304,6 +353,7 @@ pub struct Renderer {
     spring_instances: usize,
     layers: layers::Layers,
     srgb_blend: bool,
+    fade_stops: [f32; 2],
     /// Effect slots of the uploaded instances, by index.
     effects: Vec<(u32, Instance)>,
     /// Pooled viewport-sized backdrop copies, allocated only when a slot sets `effect_backdrop`
@@ -315,11 +365,19 @@ pub struct Renderer {
     backdrop_blur: Option<backdrop_blur::BackdropBlur>,
     /// Which lazily built pipelines the device took (`breaker`).
     breakers: breaker::Breakers,
+    /// Health of the primary uber shader and pipeline (`shader_check`), tracking async WebGPU
+    /// error scopes on the web.
+    uber_check: shader_check::UberCheck,
+    uber_check_seq: crate::machine::Seq,
+    #[cfg(target_arch = "wasm32")]
+    uber_check_wake: shader_check::WakeSlot,
     uploads: upload::Uploads,
     /// Atlas fills `prepare` staged, recorded into the frame's encoder with the uploads.
     fills: std::sync::Mutex<Option<fill::PendingFills>>,
     /// Unique to this renderer, so to the device it was made on (`Frame::device_key`).
     device_key: crate::compose::DeviceKey,
+    /// Host GPU instance, adapter, and callback state attached once per renderer setup.
+    gpu_host: Option<gpu_loss::GpuHost>,
     /// The device's largest 2D texture, read once: in a browser each `Device::limits` reads every
     /// limit from JavaScript (about 35 µs), which a frame's layers used to pay.
     max_texture_dim: u32,
@@ -337,10 +395,58 @@ impl Renderer {
         self.device_key
     }
 
+    /// Creates a renderer for `device` drawing into `format`, panicking if the GPU rejects
+    /// Rune's last-resort uber shader or pipeline. Windows and headless runs use [`Self::try_new`].
+    ///
+    /// Blending defaults to sRGB-encoded (`srgb_blend() == true`) for 8-bit non-sRGB targets
+    /// (`Rgba8Unorm` / [`OFFSCREEN_FORMAT`] and `Bgra8Unorm`), and to linear light
+    /// (`srgb_blend() == false`) for `*Srgb` (`Rgba8UnormSrgb` / [`OFFSCREEN_FORMAT_LINEAR`],
+    /// `Bgra8UnormSrgb`) and floating-point HDR (`Rgba16Float`) targets. Override with
+    /// [`Self::set_srgb_blend`].
+    ///
+    /// ```no_run
+    /// use rune::render::{Gpu, OFFSCREEN_FORMAT, OFFSCREEN_FORMAT_LINEAR, Renderer};
+    ///
+    /// let gpu = Gpu::headless();
+    /// let srgb = Renderer::new(&gpu.device, OFFSCREEN_FORMAT);
+    /// assert!(srgb.srgb_blend());
+    /// let linear = Renderer::new(&gpu.device, OFFSCREEN_FORMAT_LINEAR);
+    /// assert!(!linear.srgb_blend());
+    /// ```
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Renderer {
-        Self::create(device, format, None, cfg!(target_os = "macos"))
+        Self::try_new(device, format).unwrap_or_else(|error| panic!("{error}"))
     }
 
+    /// Creates a renderer for `device` drawing into `format`, returning an error instead of
+    /// leaving an invalid pipeline if the GPU rejects Rune's last-resort uber shader or pipeline.
+    ///
+    /// Blending follows the same format default as [`Self::new`]: sRGB-encoded for `Rgba8Unorm`
+    /// and `Bgra8Unorm`, linear light for `*Srgb` and floating-point targets.
+    ///
+    /// On native devices and WebGL2 the shader and pipeline are checked synchronously inside
+    /// validation, out-of-memory and internal error scopes. On browser WebGPU, error scopes
+    /// resolve asynchronously and are checked by the web host without blocking startup.
+    pub fn try_new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Result<Renderer, String> {
+        Self::try_new_classified(device, format).map_err(Into::into)
+    }
+
+    pub(crate) fn try_new_classified(device: &wgpu::Device, format: wgpu::TextureFormat) -> Result<Renderer, ShaderError> {
+        Self::try_create(device, format, None, cfg!(target_os = "macos"))
+    }
+
+    /// Overrides whether colours are sRGB-encoded for blending (`true` by default for
+    /// [`OFFSCREEN_FORMAT`] / `Rgba8Unorm` and `Bgra8Unorm`; `false` by default for
+    /// [`OFFSCREEN_FORMAT_LINEAR`] / `*Srgb` and `Rgba16Float`). Also updates the renderer's
+    /// native surface pipeline when present.
+    ///
+    /// ```no_run
+    /// use rune::render::{Gpu, OFFSCREEN_FORMAT_LINEAR, Renderer};
+    ///
+    /// let gpu = Gpu::headless();
+    /// let mut renderer = Renderer::new(&gpu.device, OFFSCREEN_FORMAT_LINEAR);
+    /// renderer.set_srgb_blend(false);
+    /// assert!(!renderer.srgb_blend());
+    /// ```
     pub fn set_srgb_blend(&mut self, enabled: bool) {
         self.srgb_blend = enabled;
         if let Some(s) = &mut self.surfaces {
@@ -348,17 +454,39 @@ impl Renderer {
         }
     }
 
+    pub fn set_fade_stops(&mut self, stops: [f32; 2]) {
+        self.fade_stops = stops;
+    }
+
+    pub fn fade_stops(&self) -> [f32; 2] {
+        self.fade_stops
+    }
+
     /// Opt-in retained geometry. IDs map instances to shared translation/opacity nodes.
     /// Upload geometry once with `prepare`, then use `present_at` without rebuilding instances.
+    /// Panics if the GPU rejects the spring uber shader or pipeline; use [`Self::try_with_springs`]
+    /// to handle that failure.
     pub fn with_springs(device: &wgpu::Device, format: wgpu::TextureFormat, nodes: &[crate::gpu::springs::Node], ids: &[u32]) -> Renderer {
-        Self::create(device, format, Some((nodes, ids)), true)
+        Self::try_with_springs(device, format, nodes, ids).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// Like [`Self::with_springs`], returning an error if the GPU rejects the shader or pipeline.
+    pub fn try_with_springs(device: &wgpu::Device, format: wgpu::TextureFormat, nodes: &[crate::gpu::springs::Node], ids: &[u32]) -> Result<Renderer, String> {
+        Self::try_create(device, format, Some((nodes, ids)), true).map_err(Into::into)
     }
 
     /// A renderer that starts with the Classic uber shader, as on macOS, and builds Windfoil when
     /// text first draws from outlines (render/variant.rs); for checking that path elsewhere.
     #[doc(hidden)]
     pub fn new_classic(device: &wgpu::Device, format: wgpu::TextureFormat) -> Renderer {
-        Self::create(device, format, None, true)
+        Self::try_new_classic(device, format).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// Like [`Self::new_classic`], returning an error if the GPU rejects the Classic shader or
+    /// pipeline.
+    #[doc(hidden)]
+    pub fn try_new_classic(device: &wgpu::Device, format: wgpu::TextureFormat) -> Result<Renderer, String> {
+        Self::try_create(device, format, None, true).map_err(Into::into)
     }
 
     /// Draws uploaded instances `range` into a pass whose target has `format` (the renderer's
@@ -434,7 +562,7 @@ impl Renderer {
         if range.is_empty() && range.end != self.count { return; }
         self.validate_layer_range(&range);
         self.flush_uploads(encoder);
-        let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("frame"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view,
@@ -447,6 +575,7 @@ impl Renderer {
             occlusion_query_set: None,
             multiview_mask: None,
         }).forget_lifetime();
+        pass::apply_subrect_viewport(&mut pass, view, self.target_frame(None).1);
         let mut active = ActivePass::owned(pass, encoder, view);
         self.draw_layer_range(&mut active, format, range, None, hook);
     }
@@ -477,7 +606,7 @@ impl Renderer {
             };
             pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
             hook(EffectPhase::Draw(pass), &EffectSite { index: *at, instance, mark: effect_mark(instance), data: instance.uv, scale: instance.params[3],
-                format, origin, size, in_layer: target.is_some(), srgb_blend: self.srgb_blend, backdrop });
+                format, origin, size, in_layer: target.is_some(), srgb_blend: self.srgb_blend, backdrop, fade_stops: self.fade_stops });
             pass.set_viewport(0.0, 0.0, size[0] as f32, size[1] as f32, 0.0, 1.0);
             pass.set_scissor(pass.scissor(), size);
         }
@@ -556,7 +685,9 @@ impl Renderer {
 
     pub fn submit(&self, queue: &wgpu::Queue, mut encoder: wgpu::CommandEncoder) -> wgpu::SubmissionIndex {
         self.before_submit(&mut encoder);
-        if let Some(s) = &self.surfaces { s.submit(queue, encoder) } else { queue.submit([encoder.finish()]) }
+        let index = if let Some(s) = &self.surfaces { s.submit(queue, encoder) } else { queue.submit([encoder.finish()]) };
+        self.first_frame_submitted.store(true, std::sync::atomic::Ordering::Release);
+        index
     }
 
     /// Whether `submit` is `queue.submit` after `before_submit` and nothing more: no native video
@@ -609,6 +740,7 @@ impl Renderer {
             occlusion_query_set: None,
             multiview_mask: None,
         });
+        pass::apply_subrect_viewport(&mut pass, view, self.target_frame(None).1);
         if !blurs {
             self.draw_range(&mut pass, self.format, 0..self.count);
             return;
@@ -618,23 +750,24 @@ impl Renderer {
         let mut active = ActivePass::owned_timed(pass, encoder, view, timestamps);
         self.draw_layer_range(&mut active, self.format, 0..self.count, None, &mut |_, _| {});
     }
+
 }
 
 /// How far a corner of radius `radius` reaches along each edge. Radii are signed: a negative
-/// radius draws Apple's continuous corner, whose curve starts 1.528 times the radius from the
-/// corner (`CONTINUOUS_K` in shader.wgsl).
+/// radius draws Apple's continuous corner, whose curve starts `CONTINUOUS_K` times the radius from
+/// the corner (`CONTINUOUS_K` in clip.wgsl).
 pub(crate) fn corner_extent(radius: f32) -> f32 {
     if radius < 0.0 { -radius * CONTINUOUS_K } else { radius }
 }
 
-pub(crate) const CONTINUOUS_K: f32 = 1.528_664_8;
+pub(crate) const CONTINUOUS_K: f32 = instance::shader_consts::CONTINUOUS_K;
 
 /// Frame-profile builds: `RUNE_PINNED` forcing the split on (`all`) or off (`off`), and the instances drawn
 /// unsplit and split since the last report (`report_pinned`).
 #[cfg(feature = "frame-profile")]
 pub(super) fn pinned_forced() -> Option<bool> {
     static FORCED: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
-    *FORCED.get_or_init(|| match std::env::var("RUNE_PINNED").as_deref() { Ok("all") => Some(true), Ok("off") => Some(false), _ => None })
+    *FORCED.get_or_init(|| match rune_core::env::var("RUNE_PINNED").as_deref() { Some("all") => Some(true), Some("off") => Some(false), _ => None })
 }
 
 #[cfg(feature = "frame-profile")]

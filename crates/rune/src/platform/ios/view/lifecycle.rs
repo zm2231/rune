@@ -12,12 +12,14 @@
 //! A memory warning reaches the surface in or out of a window. It wakes the pacing only when
 //! the app's `App::on_rest` left a frame work to do.
 
+#![allow(unsafe_code)]
+
 use std::ffi::c_void;
 
 use objc2_core_foundation::{CGFloat, CGRect};
-use objc2_video::rc::Retained;
-use objc2_video::runtime::AnyObject;
-use objc2_video::{DefinedClass, Encode, Encoding, class, msg_send, sel};
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
+use objc2::{DefinedClass, Encode, Encoding, class, msg_send, sel};
 
 use super::super::accessibility::Accessibility;
 use super::super::keys;

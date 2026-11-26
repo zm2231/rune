@@ -36,14 +36,11 @@ use event_log::log_event;
 
 #[inline(always)]
 pub(crate) fn handler_state<S: 'static>(state: &mut S) -> &mut dyn Any {
-    #[cfg(feature = "hot")]
-    if std::any::TypeId::of::<S>() == std::any::TypeId::of::<crate::hot::HostState>() {
-        return (state as &mut dyn Any).downcast_mut::<crate::hot::HostState>().unwrap().value.as_mut();
-    }
     state
 }
 
-/// Calls an app's `poll` or `on_key`. With `rune/hot` it goes through subsecond's jump table,
+/// Calls an app's runtime callback (`poll`, `on_key`, `on_focus`, `on_mods`,
+/// `on_visibility`, `on_ime`, `on_field_menu`). With `rune/hot` it goes through subsecond's jump table,
 /// so a patched body runs instead of the pointer captured at startup, and a panicking patch
 /// falls back to that pointer.
 macro_rules! app_call {
@@ -58,17 +55,13 @@ macro_rules! app_call {
 
 #[inline(always)]
 pub(crate) fn handler_state_ref<S: 'static>(state: &S) -> &dyn Any {
-    #[cfg(feature = "hot")]
-    if std::any::TypeId::of::<S>() == std::any::TypeId::of::<crate::hot::HostState>() {
-        return (state as &dyn Any).downcast_ref::<crate::hot::HostState>().unwrap().value.as_ref();
-    }
     state
 }
 
 pub(crate) mod driver;
 pub(crate) use driver::{AppDriver, AppRef, AppRefMut, RuntimeHooks, ViewDriver};
 
-mod anchor;
+pub(crate) mod anchor;
 mod api;
 mod commit;
 mod cx;
@@ -84,50 +77,35 @@ mod input;
 mod interaction;
 mod key_index;
 pub(crate) mod layout_read;
+mod layout_seed;
+pub use layout_seed::LayoutSeed;
 mod memory;
 mod motion;
+mod node_index;
+use node_index::NodeIndex;
 mod paint;
 mod paint_probe;
+mod pick;
 mod playground;
 mod rest;
+pub use rest::register_thread_rest_hook;
 mod scroll;
-mod selection;
+pub(crate) mod selection;
 mod system_settings;
 mod text_fill;
 mod turn;
 mod types;
+mod virtual_items;
+mod virtual_list;
 mod visible;
 mod web;
 mod window_requests;
 mod zoom;
 
-// `virtual` is a reserved keyword in Rust, so submodules under `runtime/virtual/` keep `#[path]`.
-#[path = "runtime/virtual/window.rs"]
-mod virtual_window;
-#[path = "runtime/virtual/fill.rs"]
-mod virtual_fill;
-#[path = "runtime/virtual/row_reorder.rs"]
-mod row_reorder;
-#[cfg(test)]
-#[path = "runtime/virtual/fill_resume_tests.rs"]
-mod fill_resume_tests;
-
-// `a11y/*` lives outside `runtime/` while sharing private `RuntimeCore` internals.
-#[path = "a11y/tree.rs"]
-pub(crate) mod a11y_tree;
-#[path = "a11y/node.rs"]
-mod a11y_node;
-#[path = "a11y/text.rs"]
-pub(crate) mod a11y_text;
-#[path = "a11y/actions.rs"]
-mod a11y_actions;
-use a11y_actions::A11yAct;
-#[cfg(test)]
-#[path = "a11y/tests.rs"]
-mod a11y_tests;
-
+pub(crate) use commit::inline::is_elided_inline_child;
 pub(crate) use commit::memo_reuse;
-pub(crate) use commit::text_layout::text_width;
+pub(crate) use commit::path as element_path;
+pub(crate) use commit::text_layout::{caret_index, text_width};
 pub(crate) use commit::why::CommitWhy;
 #[cfg(all(test, debug_assertions))]
 use commit::layout_diagnostics;
@@ -143,14 +121,23 @@ pub(crate) use input::field_menu;
 pub use input::help_look::HelpLook;
 #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(unused_imports))]
 pub(crate) use input::physical::Unhandled;
+pub(crate) use input::pointer_lock::LockEffect;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use input::pointer_lock::LockPolicy;
 pub(crate) use input::titlebar::WindowMenu;
+#[cfg(any(not(target_arch = "wasm32"), test))]
+pub(crate) use input::titlebar::WindowMenuTrigger;
+#[cfg(target_os = "windows")]
+pub(crate) use input::titlebar::{DragHit, drag_hit_at};
 pub use input::touch::TouchPhase;
-#[cfg(target_os = "linux")]
+#[cfg_attr(not(target_arch = "wasm32"), allow(unused_imports))]
+pub(crate) use input::touch::{TouchHoldCommand, TouchHoldPolicy};
+#[cfg(any(target_os = "linux", test))]
 use input::primary_selection;
 use input::{
     app_ime, autoscroll, capture, drop as drop_dispatch, focus, focus_machine,
     gesture as gesture_dispatch, help, hit, hover, hover_delay, key_releases, modal_focus,
-    modifier_keys, physical as physical_dispatch, popup as popup_dispatch, press_repeat, press_run,
+    modifier_keys, physical as physical_dispatch, popup as popup_dispatch, popup_fallback, press_repeat, press_run,
     titlebar, touch as touch_input,
 };
 use input::action::*;
@@ -176,8 +163,10 @@ use paint::helpers::*;
 use paint::shape::push_shape;
 use paint::soft_edges::{in_fade, inherit_fade};
 
-pub(crate) use scroll::offset::ScrollRequest;
+pub(crate) use scroll::offset::{ScrollAnchor, ScrollRequest};
 pub(crate) use scroll::reveal::ScrollReveal;
+#[doc(hidden)]
+pub use commit::path::{child_path, path_segment};
 #[doc(hidden)]
 pub use scroll::watch::scroll_watch_state;
 #[cfg(not(target_os = "windows"))]
@@ -191,10 +180,17 @@ use scroll::{
 use scroll::drawn::PixelHold;
 use scroll::mode::ScrollMode;
 
+#[cfg(test)]
+pub(crate) use selection::links::count_span_box_queries;
+pub(crate) use selection::links::origin as text_origin;
 pub(crate) use selection::selectable;
 pub use selection::selectable::{SelectedText, SelectionChange, TextSelection};
+pub use selection::field_lines::TextLine;
+pub use selection::image_menu::ImageMenu;
 pub use selection::text_marks::TextMark;
 use selection::{caret, click as input_click, links, select_all, text_marks};
+
+use virtual_list::{fill as virtual_fill, row_reorder};
 
 pub(crate) use web::{a11y as web_a11y, export as web_export, page as web_page};
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -203,19 +199,26 @@ pub(crate) use web::runtime as web_runtime;
 pub(crate) use web::traits as web_traits;
 
 pub(crate) use anchor::anchor_position;
-use anchor::{anchor_index, step_up};
+use anchor::{anchor_ancestors, anchor_index, anchor_index_live, step_up};
 pub use cx::{Cx, Env, Waker, commit_generation};
 pub(crate) use cx::caret_of;
 use cx::COMMITS;
-pub use elements::{ElementInfo, Pick, Picked, Pose};
+pub use elements::{ElementInfo, MatchedHandover, Pose, ResolvedTextStyle};
+pub use pick::{Pick, Picked};
 #[cfg(debug_assertions)]
-pub(crate) use layout_read::window_read_key;
+pub(crate) use layout_read::{anchor_read_key, window_read_key};
 pub(crate) use turn::intersect;
 use turn::{Turn, compose_turn, open_turned_layer, screen_clip_of};
 pub(crate) use types::{AnimSource, Node};
 pub use types::{FrameStats, TitlebarAction};
-use types::{AxisScroll, GlideTo, Inh, NodeCold, RowLayout, ScaleMotion, ScrollState, Stack, WidthHold, XMotion};
+use paint::inh::{Inh, InhCold, ScaleMotion};
+use types::{AxisScroll, GlideTo, NodeCold, RowLayout, ScrollState, Stack, WidthHold, XMotion};
+pub(crate) use window_requests::HostState;
 
+#[cfg(test)]
+mod hidden_wake_tests;
+#[cfg(test)]
+mod poll_after_handlers_tests;
 #[cfg(test)]
 mod timer_wake_tests;
 #[cfg(test)]
@@ -235,9 +238,17 @@ mod window_focus_tests;
 #[cfg(test)]
 mod aspect_fit_tests;
 #[cfg(test)]
+mod aspect_ratio_tests;
+#[cfg(test)]
 mod anchor_fit_tests;
 #[cfg(test)]
 mod drop_tests;
+#[cfg(test)]
+mod elements_tests;
+#[cfg(test)]
+mod data_tests;
+#[cfg(test)]
+mod any_handlers_tests;
 #[cfg(test)]
 mod on_key_tests;
 #[cfg(test)]
@@ -251,7 +262,13 @@ mod select_all_tests;
 #[cfg(test)]
 mod selection_api_tests;
 #[cfg(test)]
+mod selection_enabled_tests;
+#[cfg(test)]
 mod anchored_grow_tests;
+#[cfg(test)]
+mod languages_tests;
+#[cfg(test)]
+mod layout_seed_tests;
 #[cfg(test)]
 mod pixel_snap_tests;
 #[cfg(test)]
@@ -296,7 +313,15 @@ macro_rules! runtime_core_fields {
             )*
             pub(crate) _core_end: CoreEnd,
             pub state: S,
-            /// Called at the start of every frame with the clock; return true when state changed (new data).
+            /// Called at the start of every frame with the clock (unless a resting timer's poll
+            /// already stood for it) so background data and timers can update the tree before
+            /// input routes. Queued input and event handlers then run; whenever a non-`live_only`
+            /// handler runs, `poll` runs again at the same frame clock before the view commits,
+            /// alternating with any input `poll` itself queues (`Tx::send_key`) up to 4 follow-up
+            /// rounds so work queued in a turn never waits for the next mouse move or wake. Idle
+            /// frames, animation-only frames, `Tx::live_only` handlers, layout observers, and apps
+            /// without `poll` run no extra poll; call `Tx::request_poll` from a `live_only` handler
+            /// or outside a frame when one is still needed. Return true when state changed.
             pub poll: Option<fn(&mut S, f64, &mut Tx) -> bool>,
             /// Called for keys unhandled by the focused control; return true to consume it.
             pub on_key: Option<fn(&mut S, &KeyEvent, &mut Tx) -> bool>,
@@ -379,8 +404,10 @@ runtime_core_fields! {
 
     /// Per-frame hit-test lists built in paint order.
     hit: hit::HitState,
-    /// Two presses closer than this (seconds) are a double press: the system setting on macOS
-    /// and Windows, 0.5 elsewhere and headless.
+    /// Two presses closer than this (seconds) are a double press: the system setting on macOS,
+    /// Windows and Linux (XDG Settings portal `org.gnome.desktop.peripherals.mouse`
+    /// `double-click`, falling back to GSettings or `kdeglobals` `DoubleClickInterval`), 0.5
+    /// elsewhere and headless.
     pub double_click_interval: f64,
 
     /// Paint scratch buffers, reuse record, layer caches, text quads and paint outputs.
@@ -388,7 +415,7 @@ runtime_core_fields! {
     /// Render-side growth stacks, reveals, flights, loops and rewind capture.
     pub(crate) motion: tracks::MotionState,
     /// Scroll viewports, wheel axis locking, scroll requests and sticky headers.
-    scroll: requests::ScrollTables,
+    pub(crate) scroll: requests::ScrollTables,
     pub scene: Scene,
     /// Action queue, pending `Tx`, wake deadlines, live latch, tracing and hot reload.
     pub(crate) frame: timer_wake::FrameState,
@@ -397,7 +424,7 @@ runtime_core_fields! {
     /// Pointer position, capture, hover/tooltip tracking, touch, autoscroll and file/OS drags.
     pointer: capture::PointerState,
     /// Keyboard focus, modal focus/scope, type-select, held keys and modifier tracking.
-    kbd: focus_machine::KeyboardState,
+    pub(crate) kbd: focus_machine::KeyboardState,
 
     pub surfaces: Vec<crate::native_surface::SurfaceDraw>,
     /// RGBA images elements show (`El::pixels`), uploaded by the renderer.
@@ -435,15 +462,34 @@ const _: () = {
 };
 
 impl<S: 'static> Runtime<S> {
+    /// Creates a standalone runtime using Rune's default embedded fonts.
+    ///
+    /// Blends in sRGB-encoded space by default (`srgb_blend() == true`), matching `App` windows
+    /// and [`crate::render::OFFSCREEN_FORMAT`]. Call [`Self::set_srgb_blend`] with `false` to
+    /// blend in linear light.
+    ///
+    /// ```
+    /// use rune::{Env, Runtime, el};
+    ///
+    /// let mut rt = Runtime::new((), |_: &(), _| el(), (200.0, 120.0), Env::new(true, 1.0));
+    /// assert!(rt.srgb_blend());
+    /// rt.frame(0.0);
+    /// ```
     pub fn new(state: S, view: fn(&S, &mut Cx<S>) -> El, viewport: (f32, f32), env: Env) -> Self {
         Self::with_text(state, view, viewport, env, TextSystem::default())
     }
 
+    /// Creates a standalone runtime with a caller-supplied [`TextSystem`].
+    ///
+    /// Blends in sRGB-encoded space by default (`srgb_blend() == true`), matching `App` windows
+    /// and [`crate::render::OFFSCREEN_FORMAT`]. Call [`Self::set_srgb_blend`] with `false` to
+    /// blend in linear light.
     pub fn with_text(state: S, view: fn(&S, &mut Cx<S>) -> El, viewport: (f32, f32), env: Env, text: TextSystem) -> Self {
         Self::from_core(RuntimeCore::new(viewport, env, text), state, view)
     }
 
     #[inline(always)]
+    #[allow(unsafe_code)]
     pub(crate) fn core(&self) -> &RuntimeCore {
         assert_prefix_layout::<S>();
         // SAFETY: `Runtime<S>` and `RuntimeCore` are `#[repr(C)]` with an identical field prefix
@@ -460,6 +506,7 @@ impl<S: 'static> Runtime<S> {
     /// (`std::mem::swap`, `std::mem::replace`, `*core = ...`), which would pair this
     /// `Runtime<S>`'s tail fields with another runtime's core.
     #[inline(always)]
+    #[allow(unsafe_code)]
     pub(crate) fn core_mut(&mut self) -> &mut RuntimeCore {
         assert_prefix_layout::<S>();
         // SAFETY: `Runtime<S>` and `RuntimeCore` are `#[repr(C)]` with an identical field prefix
@@ -471,6 +518,7 @@ impl<S: 'static> Runtime<S> {
     }
 
     #[inline(always)]
+    #[allow(unsafe_code)]
     pub(crate) fn split(&self) -> (&RuntimeCore, AppRef<'_, S>) {
         assert_prefix_layout::<S>();
         let ptr = std::ptr::from_ref(self);
@@ -494,6 +542,7 @@ impl<S: 'static> Runtime<S> {
     /// As with [`Self::core_mut`], mutate fields on the returned `&mut RuntimeCore` rather than
     /// replacing the whole value.
     #[inline(always)]
+    #[allow(unsafe_code)]
     pub(crate) fn split_mut(&mut self) -> (&mut RuntimeCore, AppRefMut<'_, S>) {
         assert_prefix_layout::<S>();
         let ptr = std::ptr::from_mut(self);
@@ -519,7 +568,7 @@ impl<S: 'static> Runtime<S> {
     /// Attaches a live playground to this runtime and keeps `has_playground` in sync.
     pub(crate) fn attach_playground(&mut self, live: crate::playground::Live<S>) {
         self.hooks.playground = Some(Box::new(live));
-        self.tree.has_playground = true;
+        self.tree.attach_playground();
     }
 }
 
@@ -601,7 +650,7 @@ mod prefix_layout_tests {
             let (core, app) = rt.split();
             assert_eq!(core.viewport, (640.0, 480.0));
             assert!(core.motion.motion_scratch.try_borrow().is_err());
-            let _ = std::ptr::from_ref(app.state);
+            let _ptr = std::ptr::from_ref(app.state);
         }
         assert_eq!(rt.core().motion.motion_scratch.borrow().as_slice(), &[(7, 3, true)]);
     }

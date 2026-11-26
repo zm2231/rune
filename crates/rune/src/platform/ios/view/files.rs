@@ -9,16 +9,18 @@
 //!   and the answer is the dialog's file name inside it. The folder is the app's for as long
 //!   as it runs, exactly as a Folder pick's is.
 
+#![allow(unsafe_code)]
+
 use std::path::PathBuf;
 
-use objc2_foundation_video::{NSString, NSURL};
-use objc2_video::rc::{Allocated, Retained};
-use objc2_video::runtime::AnyObject;
-use objc2_video::{DefinedClass, class, msg_send};
+use objc2_foundation::{NSString, NSURL};
+use objc2::rc::{Allocated, Retained};
+use objc2::runtime::AnyObject;
+use objc2::{DefinedClass, class, msg_send};
 
 use super::super::pacing::Event;
 use super::RuneView;
-use crate::file_dialog::{FileDialogKind, FileDialogOptions};
+use crate::file_dialog::{DialogAnswer, FileDialogKind, FileDialogOptions};
 
 /// The name a saved file gets when the dialog gives none.
 const UNTITLED: &str = "Untitled";
@@ -27,6 +29,8 @@ const UNTITLED: &str = "Untitled";
 pub(super) struct Picking {
     id: u64,
     kind: FileDialogKind,
+    /// An Open that takes several files: its answer is all of them.
+    multiple: bool,
     /// A save's file name, which goes inside the folder picked.
     file_name: String,
 }
@@ -37,14 +41,16 @@ pub(super) struct Picking {
 unsafe extern "C" {}
 
 impl RuneView {
-    /// Shows the picker for dialog `id`. A view on no screen answers with an error.
-    pub(super) fn pick_file(&self, id: u64, kind: FileDialogKind, options: &FileDialogOptions) {
+    /// Shows the picker for dialog `id`, one that picks several files for an Open with
+    /// `multiple`. A view on no screen answers with an error.
+    pub(super) fn pick_file(&self, id: u64, kind: FileDialogKind, multiple: bool, options: &FileDialogOptions) {
         let Some(screen) = self.view_controller() else {
             self.with_surface(|surface| surface.file_dialog_answer(id, Err("the view is on no screen".into())));
             return;
         };
         let file_name = options.file_name.clone().filter(|name| !name.is_empty()).unwrap_or_else(|| UNTITLED.into());
-        *self.ivars().file_dialog.borrow_mut() = Some(Picking { id, kind, file_name });
+        let multiple = multiple && kind == FileDialogKind::Open;
+        *self.ivars().file_dialog.borrow_mut() = Some(Picking { id, kind, multiple, file_name });
         let folder = kind != FileDialogKind::Open;
         // SAFETY: a picker that opens copies of files of these types, whose delegate the view
         // is and whose `directoryURL` is a file URL; a view controller presents another with no
@@ -64,6 +70,7 @@ impl RuneView {
             let picker: Allocated<AnyObject> = msg_send![class!(UIDocumentPickerViewController), alloc];
             let picker: Retained<AnyObject> = msg_send![picker, initForOpeningContentTypes: &*types, asCopy: !folder];
             let _: () = msg_send![&*picker, setDelegate: self];
+            if multiple { let _: () = msg_send![&*picker, setAllowsMultipleSelection: true]; }
             // Where the picker opens. The system shows another folder when it can't show this one.
             if let Some(directory) = options.directory.as_deref().and_then(|directory| directory.to_str()).filter(|directory| !directory.is_empty()) {
                 let _: () = msg_send![&*picker, setDirectoryURL: &*NSURL::fileURLWithPath_isDirectory(&NSString::from_str(directory), true)];
@@ -74,7 +81,21 @@ impl RuneView {
 
     /// The picker closed with `urls` (an `NSArray<NSURL *>`), or none when it was cancelled.
     pub(super) fn file_picked(&self, urls: Option<&AnyObject>) {
-        let Some(Picking { id, kind, file_name }) = self.ivars().file_dialog.borrow_mut().take() else { return };
+        let Some(Picking { id, kind, multiple, file_name }) = self.ivars().file_dialog.borrow_mut().take() else { return };
+        if multiple {
+            // SAFETY: every object in the array is an `NSURL`, whose `path` is an `NSString` or nil.
+            let paths = urls.map(|urls| unsafe {
+                let count: usize = msg_send![urls, count];
+                (0..count).filter_map(|i| {
+                    let url: Retained<AnyObject> = msg_send![urls, objectAtIndex: i];
+                    let path: Option<Retained<NSString>> = msg_send![&*url, path];
+                    path.map(|path| PathBuf::from(path.to_string()))
+                }).collect::<Vec<_>>()
+            });
+            self.with_surface(|surface| surface.file_dialog_answer(id, Ok(DialogAnswer::Many(paths))));
+            self.pace(Event::Wake);
+            return;
+        }
         // SAFETY: the array's first object is an `NSURL`, whose `path` is an `NSString` or
         // nil. `startAccessingSecurityScopedResource` takes nothing and answers a `BOOL`.
         let path = urls.and_then(|urls| unsafe {
@@ -92,7 +113,7 @@ impl RuneView {
             path.map(|path| PathBuf::from(path.to_string()))
         });
         let path = path.map(|path| if kind == FileDialogKind::Save { path.join(file_name) } else { path });
-        self.with_surface(|surface| surface.file_dialog_answer(id, Ok(path)));
+        self.with_surface(|surface| surface.file_dialog_answer(id, Ok(DialogAnswer::Single(path))));
         self.pace(Event::Wake);
     }
 

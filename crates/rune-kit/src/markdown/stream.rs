@@ -20,20 +20,26 @@ use super::*;
 use super::parser::{ParsedDoc, Scope, Tail, parse_doc_tail};
 
 /// [`parse_doc`] of `src` as a stream's current text.
+#[cfg(test)]
 pub(super) fn parse_streaming(src: &str, autolink: bool) -> ParsedDoc {
-    let (raw, tail) = parse_doc_tail(src, autolink);
+    parse_streaming_with(src, autolink, false)
+}
+
+/// [`parse_doc_with`] of `src` as a stream's current text.
+pub(super) fn parse_streaming_with(src: &str, autolink: bool, hard_breaks: bool) -> ParsedDoc {
+    let (raw, tail) = parse_doc_tail(src, autolink, hard_breaks);
     let end = held_table(src, tail, raw.0.last()).unwrap_or(src.len());
     let patch = match tail {
         Tail::Inline(start, scope) if start < end => close_tail(&src[start..end], start, scope),
         _ => None,
     };
     let Some(Patch { cut, closers, markers, code }) = patch else {
-        return if end == src.len() { raw } else { parse_doc(&src[..end], autolink) };
+        return if end == src.len() { raw } else { parse_doc_with(&src[..end], autolink, hard_breaks) };
     };
     if !closers.is_empty() {
         let kept = src[..cut].trim_end();
         let view = format!("{kept}{closers}");
-        let mut doc = parse_doc(&view, autolink);
+        let mut doc = parse_doc_with(&view, autolink, hard_breaks);
         let added = kept.len()..view.len();
         if !markers.iter().chain([&added]).any(|r| doc.5.iter().any(|m| shows(m, r))) {
             if code {
@@ -42,13 +48,13 @@ pub(super) fn parse_streaming(src: &str, autolink: bool) -> ParsedDoc {
             return doc;
         }
     }
-    let doc = parse_doc(&src[..cut], autolink);
+    let doc = parse_doc_with(&src[..cut], autolink, hard_breaks);
     if columns(&doc) >= columns(&raw) {
         return doc;
     }
     // Leaving markers out of a header's last cell (`| a | *`) left that cell out too: keep it,
     // empty, so the table keeps its columns.
-    let doc = parse_doc(&format!("{}|", &src[..cut]), autolink);
+    let doc = parse_doc_with(&format!("{}|", &src[..cut]), autolink, hard_breaks);
     if columns(&doc) >= columns(&raw) { doc } else { raw }
 }
 
@@ -321,9 +327,11 @@ fn drop_closing_pad(doc: &mut ParsedDoc) {
     let (Some(b), Some(m)) = (doc.0.last_mut(), doc.5.last_mut()) else { return };
     let Some((inl, map)) = last_inline(b, m) else { return };
     let len = inl.text.len();
-    let Some(k) = inl.spans.iter().position(|s| s.2 == Style::CodePad && s.1 == len && s.0 + CLOSE.len() == len) else { return };
+    let Some(k) = inl.spans.iter().position(|s| {
+        s.2 == Style::CodePad && s.1 == len && (s.0 + CLOSE.len() == len || s.0 + LINK_CLOSE.len() == len)
+    }) else { return };
+    let cut = inl.spans[k].0;
     inl.spans.remove(k);
-    let cut = len - CLOSE.len();
     inl.text.truncate(cut);
     inl.spans.retain_mut(|s| {
         s.1 = s.1.min(cut);
@@ -354,7 +362,7 @@ fn last_inline<'a>(b: &'a mut Block, m: &'a mut BlockMap) -> Option<(&'a mut Inl
 fn shows(map: &BlockMap, r: &Range<usize>) -> bool {
     let hit = |m: &SpanMap| m.0.iter().any(|(s, _)| s.start < r.end && r.start < s.end);
     match map {
-        BlockMap::Inline(m) | BlockMap::Code(m) | BlockMap::DeepTail { map: m, .. } => hit(m),
+        BlockMap::Inline(m) | BlockMap::Code(m) | BlockMap::Diff { map: m, .. } | BlockMap::DeepTail { map: m, .. } => hit(m),
         BlockMap::List(items) => items.iter().flatten().any(|b| shows(b, r)),
         BlockMap::Quote(inner) => inner.iter().any(|b| shows(b, r)),
         BlockMap::Table { head, rows } => head.iter().chain(rows.iter().flatten()).any(hit),

@@ -19,10 +19,10 @@ fn spans_with(src: &str, style: &MarkdownStyle, highlighter: Highlighter) -> Vec
         }
     }
     let (blocks, sources, tasks, _, _) = doc_cached(src);
-    let r = Renderer { s: style.clone(), highlights: Vec::new(), reveal: 0.0, streaming: false, on_link: None, on_link_secondary: None, link_look: None, link_help: None, link_ring: None, code_link: None, on_task: None,
-        tasks_read_only: false, selectable: false, scroll_wide: false, tentative: None, highlighter, sources: sources.clone(),
-        next_source: Cell::new(0), tasks, next_task: Cell::new(0), current_block_key: RefCell::new("b0".into()),
-        #[cfg(feature = "mermaid")] diagram_frame: None, code_frame: None, quote_frame: None, link_favicon: None, images: None, on_image: None, flow: Cell::default() };
+    let r = Renderer { s: style.clone(), highlights: Vec::new(), reveal: 0.0, streaming: false, on_link: None, on_link_secondary: None, on_link_hover: None, link_menu: true, link_look: None, link_help: None, link_ring: None, code_link: None, on_task: None,
+        tasks_read_only: false, selectable: false, scroll_wide: false, wrap_anywhere: false, hard_breaks: false, tentative: None, highlighter, sources: sources.clone(),
+        next_source: Cell::new(0), next_diff: Cell::new(0), tasks, next_task: Cell::new(0), current_block_key: RefCell::new("b0".into()),
+        #[cfg(feature = "mermaid")] diagram_frame: None, code_frame: None, diff_frame: None, quote_frame: None, link_favicon: None, emoji: None, images: None, on_image: None, flow: Cell::default() };
     let mut found = Vec::new();
     codes(&blocks, &mut found);
     assert_eq!(found.len(), sources.len(), "one source per code block");
@@ -213,7 +213,7 @@ fn a_stream_reparses_from_its_last_block_and_matches_a_whole_parse() {
             assert_eq!(&*tasks, &want_tasks[..], "tasks of {src:?}");
             assert_eq!(&*starts, &want_starts[..], "block starts of {src:?}");
             assert_eq!(&*maps, &want_maps[..], "maps of {src:?}");
-            let cuts = CACHE.with_borrow(|c| c.docs.peek(src).unwrap().cuts.clone());
+            let cuts = CACHE.with_borrow(|c| c.peek(src, false).unwrap().cuts.clone());
             assert_eq!(&*cuts, &want_cuts[..], "cuts of {src:?}");
         }
         let (whole, tail) = (parses().0 - before.0, parses().1 - before.1);
@@ -245,11 +245,11 @@ fn a_stream_drops_the_strings_it_grew_from() {
         doc_cached(&stream[..end]);
     }
     CACHE.with_borrow(|c| {
-        let last = c.docs.peek(stream.as_str()).expect("the whole stream is cached");
+        let last = c.peek(stream.as_str(), false).expect("the whole stream is cached");
         let bytes = 2 * stream.len() + 64 * last.cuts.len() + 128;
         assert_eq!(c.docs.bytes(), held + bytes, "only the newest string of the stream is held");
         for doc in &docs {
-            assert!(c.docs.peek(doc.as_str()).is_some(), "{doc:?} was evicted");
+            assert!(c.peek(doc.as_str(), false).is_some(), "{doc:?} was evicted");
         }
     });
 }
@@ -272,10 +272,10 @@ fn link_spans_come_before_inner_inline_styles_so_bold_em_and_code_keep_theirs() 
     });
     let (blocks, sources, tasks, _, _) = doc_cached("[**bold** *em* `code` plain](session:1)");
     let Block::Para(inl) = &blocks[0] else { panic!() };
-    let r = Renderer { s: style.clone(), highlights: Vec::new(), reveal: 0.0, streaming: false, on_link: None, on_link_secondary: None, link_look: Some(look), link_help: None, link_ring: None, code_link: None, on_task: None,
-        tasks_read_only: false, selectable: false, scroll_wide: false, tentative: None, highlighter: Highlighter::builtin(), sources,
-        next_source: Cell::new(0), tasks, next_task: Cell::new(0), current_block_key: RefCell::new("b0".into()),
-        #[cfg(feature = "mermaid")] diagram_frame: None, code_frame: None, quote_frame: None, link_favicon: None, images: None, on_image: None, flow: Cell::default() };
+    let r = Renderer { s: style.clone(), highlights: Vec::new(), reveal: 0.0, streaming: false, on_link: None, on_link_secondary: None, on_link_hover: None, link_menu: true, link_look: Some(look), link_help: None, link_ring: None, code_link: None, on_task: None,
+        tasks_read_only: false, selectable: false, scroll_wide: false, wrap_anywhere: false, hard_breaks: false, tentative: None, highlighter: Highlighter::builtin(), sources,
+        next_source: Cell::new(0), next_diff: Cell::new(0), tasks, next_task: Cell::new(0), current_block_key: RefCell::new("b0".into()),
+        #[cfg(feature = "mermaid")] diagram_frame: None, code_frame: None, diff_frame: None, quote_frame: None, link_favicon: None, emoji: None, images: None, on_image: None, flow: Cell::default() };
     let spans = r.spans(inl, style.body);
     // The link span is first so `flatten_spans` applies inner Strong/Em/Code over it.
     assert_eq!((spans[0].start, spans[0].end, spans[0].color, spans[0].weight, spans[0].bg, spans[0].bg_pad), (0, inl.text.len() as u32, Some(Color::WHITE), Some(500.0), Some(bg), 3.0));
@@ -380,6 +380,38 @@ fn link_help_gives_each_link_its_own_tooltip() {
     ]);
 }
 
+#[test]
+fn markdown_link_help_shows_on_keyboard_focus_and_in_web_a11y_mirror() {
+    use rune::{Cx, Env, HelpLook, Key, KeyEvent, Mods, Runtime};
+
+    fn view(_: &(), cx: &mut Cx<()>) -> El {
+        cx.help_look(HelpLook::system(false).on_focus(true));
+        Markdown::new("[Local app](http://localhost:8123/)")
+            .on_link_tx(|_: &mut (), _, _| {})
+            .link_help(|_| Some("This address opens on your device.".into()))
+            .build(&crate::Kit::neutral(false))
+    }
+
+    let mut rt = Runtime::new((), view, (400.0, 200.0), Env::new(false, 2.0));
+    rt.frame(0.0);
+
+    // Tabbing to the Markdown link shows its help immediately.
+    rt.key(KeyEvent { key: Key::Tab, mods: Mods::default() });
+    rt.frame(1.0 / 60.0);
+    assert_eq!(rt.help_tooltip().map(|(t, _)| t), Some("This address opens on your device."));
+
+    // The web accessibility mirror exposes the link's text, href, and help description.
+    let items: Vec<serde_json::Value> = serde_json::from_str(&rt.a11y_json()).unwrap();
+    let run = items.iter()
+        .filter_map(|it| it["u"].as_array())
+        .flatten()
+        .find(|r| r.get("h").is_some())
+        .expect("mirrored inline link run");
+    assert_eq!(run["t"], "Local app");
+    assert_eq!(run["h"], "http://localhost:8123/");
+    assert_eq!(run["d"], "This address opens on your device.");
+}
+
 /// A wheel over a wide table's scroll bar scrolls the pane around that table, though every wide
 /// table keys its viewport `scroll` (`table::Renderer::wide_frame`): the wheel names the viewport
 /// in the pane that holds the bar, not the first element keyed alike in the window, and a
@@ -438,9 +470,378 @@ Quis autem vel eum iure reprehenderit qui in ea voluptate velit esse quam.";
     // reaches its track at all.
     rt.pointer_move(bar[0] + bar[2] / 2.0, bar[1] + bar[3] / 2.0);
     for _ in 0..30 { rt.frame(1.0 / 60.0); }
-    assert!(bars(&rt).iter().all(|(_, o)| *o > 0.9), "the bars are up under the pointer: {:?}", bars(&rt));
+    let shown = bars(&rt);
+    assert!(shown.iter().any(|(r, o)| r[0] > 200.0 && *o > 0.9), "the right table's bar is up under the pointer: {shown:?}");
+    assert!(shown.iter().any(|(r, o)| r[0] < 200.0 && *o == 0.0), "the left table's bar stays hidden: {shown:?}");
     rt.wheel(bar[0] + bar[2] / 2.0, bar[1] + bar[3] / 2.0, -30.0);
     rt.frame(1.0 / 60.0);
     assert_eq!(right(), 30.0, "the wheel over the right pane's table bar scrolled its own pane");
     assert_eq!(left(), 0.0, "the left pane, keyed alike, stayed where it was");
+}
+
+#[test]
+fn lists_and_quotes_in_fit_content_containers_keep_their_natural_width_and_wrap_when_bounded() {
+    use rune::{Cx, Env, Runtime};
+
+    struct FitCase {
+        src: &'static str,
+        max_w: f32,
+        streaming: bool,
+    }
+    fn fit_view(c: &FitCase, _: &mut Cx<FitCase>) -> El {
+        let style = MarkdownStyle::neutral(true);
+        col().w_full().items_end().child(
+            col().key("bubble").max_w(c.max_w).min_w(0.0).px(12.0).child(
+                Markdown::new(c.src).streaming(c.streaming).render(&style).key("md").min_w(0.0),
+            ),
+        )
+    }
+
+    let line = MarkdownStyle::neutral(true).body.line_px();
+
+    // 1. Ordered list in a fit-content container aligned to the end: both items fit on one line
+    // each instead of collapsing to one word wide (both memoised and streaming/unmemoised paths).
+    let ordered = "1. Yes, they were all through me. Choose option a\n2. Option a";
+    for streaming in [false, true] {
+        let mut rt = Runtime::new(FitCase { src: ordered, max_w: 680.0, streaming }, fit_view, (800.0, 600.0), Env::new(true, 1.0));
+        rt.frame(0.0);
+        let els = rt.elements();
+        let bubble = els.iter().find(|e| e.key.as_deref() == Some("bubble")).unwrap();
+        let first = els.iter().find(|e| e.text.as_deref() == Some("Yes, they were all through me. Choose option a")).unwrap();
+        let second = els.iter().find(|e| e.text.as_deref() == Some("Option a")).unwrap();
+        assert!(
+            first.rect[3] <= line * 1.5,
+            "streaming={streaming}: first item should fit on one line (line={line}), got rect={:?}, bubble={:?}",
+            first.rect, bubble.rect
+        );
+        assert!(
+            second.rect[3] <= line * 1.5,
+            "streaming={streaming}: second item should fit on one line (line={line}), got rect={:?}, bubble={:?}",
+            second.rect, bubble.rect
+        );
+        assert!(
+            bubble.rect[2] > 200.0 && bubble.rect[2] < 680.0,
+            "streaming={streaming}: bubble should size to content width, got {:?}",
+            bubble.rect
+        );
+        assert!(
+            first.rect[0] + first.rect[2] <= bubble.rect[0] + bubble.rect[2] + 0.5,
+            "streaming={streaming}: item text must not spill past bubble: first={:?}, bubble={:?}",
+            first.rect, bubble.rect
+        );
+    }
+
+    // 2. Unordered, task, nested lists, and blockquotes also size to their natural width.
+    let mixed = "- Unordered item with several words here\n  - Nested child item with several words\n- [ ] Task item with several words here\n\n> Blockquote text with several words here";
+    {
+        let mut rt = Runtime::new(FitCase { src: mixed, max_w: 680.0, streaming: false }, fit_view, (800.0, 600.0), Env::new(true, 1.0));
+        rt.frame(0.0);
+        let els = rt.elements();
+        let bubble = els.iter().find(|e| e.key.as_deref() == Some("bubble")).unwrap();
+        for needle in [
+            "Unordered item with several words here",
+            "Nested child item with several words",
+            "Task item with several words here",
+            "Blockquote text with several words here",
+        ] {
+            let item = els.iter().find(|e| e.text.as_deref() == Some(needle)).unwrap();
+            assert!(
+                item.rect[3] <= line * 1.5,
+                "{needle:?} should fit on one line (line={line}), got rect={:?}, bubble={:?}",
+                item.rect, bubble.rect
+            );
+            assert!(
+                item.rect[0] + item.rect[2] <= bubble.rect[0] + bubble.rect[2] + 0.5,
+                "{needle:?} must not spill past bubble: item={:?}, bubble={:?}",
+                item.rect, bubble.rect
+            );
+        }
+        assert!(bubble.rect[2] < 680.0, "bubble should fit content, got {:?}", bubble.rect);
+    }
+
+    // 3. Narrow fit-content container wraps long list items and stays within max_w.
+    {
+        let mut rt = Runtime::new(FitCase { src: ordered, max_w: 180.0, streaming: false }, fit_view, (800.0, 600.0), Env::new(true, 1.0));
+        rt.frame(0.0);
+        let els = rt.elements();
+        let bubble = els.iter().find(|e| e.key.as_deref() == Some("bubble")).unwrap();
+        let first = els.iter().find(|e| e.text.as_deref() == Some("Yes, they were all through me. Choose option a")).unwrap();
+        let second = els.iter().find(|e| e.text.as_deref() == Some("Option a")).unwrap();
+        assert!(
+            bubble.rect[2] <= 180.5,
+            "bubble must respect max_w(180.0), got {:?}",
+            bubble.rect
+        );
+        assert!(
+            first.rect[3] >= line * 1.9,
+            "first item should wrap in narrow container (line={line}), got {:?}",
+            first.rect
+        );
+        assert!(
+            second.rect[3] <= line * 1.5,
+            "short second item should still fit on one line, got {:?}",
+            second.rect
+        );
+        assert!(
+            first.rect[0] + first.rect[2] <= bubble.rect[0] + bubble.rect[2] + 0.5,
+            "wrapped text must stay inside bubble: first={:?}, bubble={:?}",
+            first.rect, bubble.rect
+        );
+    }
+}
+
+#[test]
+fn lists_and_quotes_in_fixed_and_stretched_containers_fill_their_parent_width() {
+    use rune::{Cx, Env, Runtime};
+
+    struct HostCase {
+        doc: &'static str,
+        fixed_w: Option<f32>,
+    }
+    fn host_view(c: &HostCase, _: &mut Cx<HostCase>) -> El {
+        let style = MarkdownStyle::neutral(true);
+        let box_el = match c.fixed_w {
+            Some(w) => col().key("host").w(w),
+            None => col().key("host").w_full(),
+        };
+        col().w_full().h_full().child(box_el.child(Markdown::new(c.doc).render(&style).key("md")))
+    }
+
+    let style = MarkdownStyle::neutral(true);
+    let indent = style.list_indent;
+    let quote_inset = style.quote.width + style.quote.pad;
+    let doc = "1. Short item\n2. A much longer list item that wraps cleanly when the container is narrow enough to force wrapping\n\n- [x] Checked task\n\n> Quoted line";
+
+    // Fixed-width container (320 pt) and stretched container (500 pt window).
+    for (label, fixed_w, win_w) in [("fixed", Some(320.0), 600.0), ("stretched", None, 500.0)] {
+        let expected_w = fixed_w.unwrap_or(win_w);
+        let mut rt = Runtime::new(HostCase { doc, fixed_w }, host_view, (win_w, 600.0), Env::new(true, 1.0));
+        rt.frame(0.0);
+        let els = rt.elements();
+
+        let short_item = els.iter().find(|e| e.text.as_deref() == Some("Short item")).unwrap();
+        let long_item = els.iter().find(|e| e.text.as_deref() == Some("A much longer list item that wraps cleanly when the container is narrow enough to force wrapping")).unwrap();
+        let task_item = els.iter().find(|e| e.text.as_deref() == Some("Checked task")).unwrap();
+        let quote_item = els.iter().find(|e| e.text.as_deref() == Some("Quoted line")).unwrap();
+
+        let expected_item_w = expected_w - indent;
+        assert!(
+            (short_item.rect[2] - expected_item_w).abs() < 0.5,
+            "{label}: short list item body should span remaining width {expected_item_w}, got {:?}",
+            short_item.rect
+        );
+        assert!(
+            (short_item.rect[0] - indent).abs() < 0.5,
+            "{label}: short list item text should start after indent {indent}, got {:?}",
+            short_item.rect
+        );
+        assert!(
+            (long_item.rect[2] - expected_item_w).abs() < 0.5,
+            "{label}: long list item body should span remaining width {expected_item_w}, got {:?}",
+            long_item.rect
+        );
+        assert!(
+            (long_item.rect[0] - indent).abs() < 0.5,
+            "{label}: long list item text should start after indent {indent}, got {:?}",
+            long_item.rect
+        );
+        let task_inset = indent.max(style.task.left + style.task.size);
+        assert!(
+            (task_item.rect[2] - (expected_w - task_inset)).abs() < 0.5,
+            "{label}: task item body should span remaining width {}, got {:?}",
+            expected_w - task_inset, task_item.rect
+        );
+        assert!(
+            (quote_item.rect[2] - (expected_w - quote_inset)).abs() < 0.5,
+            "{label}: quote body should span remaining width {}, got {:?}",
+            expected_w - quote_inset, quote_item.rect
+        );
+        assert!(
+            (quote_item.rect[0] - quote_inset).abs() < 0.5,
+            "{label}: quote text should start after rule+pad {quote_inset}, got {:?}",
+            quote_item.rect
+        );
+    }
+}
+
+#[test]
+fn wide_gfm_tables_cap_columns_and_hostile_nesting_stays_bounded() {
+    use std::fmt::Write;
+    let cols = 500usize;
+    let (mut head, mut delim, mut row) = (String::from("|"), String::from("|"), String::from("|"));
+    for i in 0..cols {
+        write!(head, " h{i} |").unwrap();
+        delim.push_str("---|");
+        write!(row, " v{i} |").unwrap();
+    }
+    let table_src = format!("{head}\n{delim}\n{row}\n");
+    let blocks = parse(&table_src);
+    let [Block::Table(t)] = blocks.as_slice() else {
+        panic!("expected a single table block, got {blocks:?}");
+    };
+    assert_eq!(t.align.len(), 128, "table alignments capped at 128 columns");
+    assert_eq!(t.head.len(), 128, "table header capped at 128 columns");
+    assert_eq!(t.rows.len(), 1);
+    assert_eq!(t.rows[0].len(), 128, "table row capped at 128 columns");
+    assert_eq!(t.head[0].text, "h0");
+    assert_eq!(t.head[127].text, "h127");
+    assert_eq!(t.rows[0][0].text, "v0");
+    assert_eq!(t.rows[0][127].text, "v127");
+
+    // Streaming pending table header (before delimiter row arrives) obeys the same column cap.
+    let pending_blocks = parse(&head);
+    let [Block::Table(pt)] = pending_blocks.as_slice() else {
+        panic!("expected a pending table block, got {pending_blocks:?}");
+    };
+    assert_eq!(pt.align.len(), 128, "pending table alignments capped at 128 columns");
+    assert_eq!(pt.head.len(), 128, "pending table header capped at 128 columns");
+    assert_eq!(pt.head[127].text, "h127");
+
+    // Deeply nested quotes, lists, and nine-digit numbered lists parse and render without overflowing.
+    let deep_quotes = format!("{}leaf", "> ".repeat(2_000));
+    let deep_lists: String = (0..2_000).map(|i| format!("{}- item {i}\n", "  ".repeat(i.min(600)))).collect();
+    let nine_digit: String = (0..30).map(|i| format!("{}123456789. item {i}\n", " ".repeat(i * 11))).collect();
+    for src in [table_src, deep_quotes, deep_lists, nine_digit] {
+        let mut rt = rune::Runtime::new(
+            src,
+            |s: &String, _: &mut rune::Cx<String>| {
+                let style = MarkdownStyle::neutral(true);
+                Markdown::new(s).render(&style)
+            },
+            (400.0, 400.0),
+            rune::Env::new(true, 1.0),
+        );
+        rt.frame(0.0);
+    }
+}
+
+#[test]
+fn inline_code_at_block_end_keeps_its_closing_pad_in_width_wrap_and_alignment() {
+    use rune::{Cx, Env, Runtime};
+
+    const CODE_BG: Color = Color { r: 0.2, g: 0.4, b: 0.8, a: 1.0 };
+
+    struct Case {
+        src: &'static str,
+        pad: f32,
+        max_w: f32,
+        fixed_w: Option<f32>,
+    }
+    fn view(c: &Case, _: &mut Cx<Case>) -> El {
+        let style = MarkdownStyle::neutral(true)
+            .inline_code_bg(CODE_BG)
+            .inline_code_pad(c.pad);
+        let box_el = match c.fixed_w {
+            Some(w) => col().key("box").w(w),
+            None => col().key("box").max_w(c.max_w).min_w(0.0),
+        };
+        col().w_full().items_start().child(box_el.child(Markdown::new(c.src).render(&style).key("md").min_w(0.0)))
+    }
+    let chip_rects = |rt: &Runtime<Case>| -> Vec<[f32; 4]> {
+        let want = CODE_BG.premul(1.0);
+        rt.instances
+            .iter()
+            .filter(|i| i.params[1] == rune::render::KIND_RECT && i.fill.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-3))
+            .map(|i| i.rect)
+            .collect()
+    };
+    let run = |src: &'static str, pad: f32, max_w: f32, fixed_w: Option<f32>| -> Runtime<Case> {
+        let mut rt = Runtime::new(Case { src, pad, max_w, fixed_w }, view, (600.0, 400.0), Env::new(true, 1.0));
+        rt.set_srgb_blend(false);
+        rt.frame(0.0);
+        rt
+    };
+
+    // 1. Fit-content paragraph, heading, list item and blockquote ending in inline code count
+    // both start and end pads: increasing `inline_code_pad` by +4 pt grows the box by +8 pt
+    // (both sides), and the painted chip sits flush with the box's right edge without overhang.
+    for (label, src) in [
+        ("para", "Run `cargo test`"),
+        ("heading", "## Run `cargo test`"),
+        ("list", "- item `two`"),
+        ("quote", "> quote `two`"),
+    ] {
+        let rt_a = run(src, 3.5, 500.0, None);
+        let rt_b = run(src, 7.5, 500.0, None);
+        let box_a = rt_a.elements().into_iter().find(|e| e.key.as_deref() == Some("box")).unwrap();
+        let box_b = rt_b.elements().into_iter().find(|e| e.key.as_deref() == Some("box")).unwrap();
+        let growth = box_b.rect[2] - box_a.rect[2];
+        assert!(
+            (growth - 8.0).abs() < 1.0,
+            "{label}: +4 pt inline_code_pad should grow fit-content box by ~8 pt (both sides), got {growth:.2} ({} -> {})",
+            box_a.rect[2], box_b.rect[2]
+        );
+        let chips = chip_rects(&rt_a);
+        assert_eq!(chips.len(), 1, "{label}: one code chip rect");
+        let chip_right = chips[0][0] + chips[0][2];
+        let box_right = box_a.rect[0] + box_a.rect[2];
+        assert!(
+            (chip_right - box_right).abs() <= 1.2,
+            "{label}: chip right ({chip_right:.2}) should sit flush with box right ({box_right:.2})"
+        );
+    }
+
+    // 2. Wrapping at a tight width counts the closing pad (as Blink HandleCloseTag does):
+    // wide enough for text + start pad + half end pad wraps; full both pads stays on one line.
+    let fit_rt = run("Run `test`", 6.0, 500.0, None);
+    let fit_w = fit_rt.elements().into_iter().find(|e| e.key.as_deref() == Some("box")).unwrap().rect[2];
+    let line_h = MarkdownStyle::neutral(true).body.line_px();
+    let tight_rt = run("Run `test`", 6.0, 500.0, Some(fit_w - 3.0));
+    let tight_h = tight_rt.elements().into_iter().find(|e| e.key.as_deref() == Some("b0")).unwrap().rect[3];
+    assert!(
+        tight_h >= line_h * 1.9,
+        "tight container ({:.2}, 3 pt shy of closing pad) must wrap: height={tight_h:.2}, line={line_h:.2}",
+        fit_w - 3.0
+    );
+    let exact_rt = run("Run `test`", 6.0, 500.0, Some(fit_w + 0.5));
+    let exact_h = exact_rt.elements().into_iter().find(|e| e.key.as_deref() == Some("b0")).unwrap().rect[3];
+    assert!(
+        exact_h <= line_h * 1.5,
+        "container with full closing pad ({:.2}) fits on one line: height={exact_h:.2}",
+        fit_w + 0.5
+    );
+
+    // 3. Right-aligned table cell ending in inline code counts both pads once (not double-counted)
+    // and keeps its chip flush inside the cell's right content edge.
+    let table_src = "| h |\n|---:|\n| `cargo test` |\n";
+    let rt_t1 = run(table_src, 3.5, 500.0, Some(300.0));
+    let rt_t2 = run(table_src, 7.5, 500.0, Some(300.0));
+    let cell1 = rt_t1.elements().into_iter().find(|e| e.path.ends_with("/r0/c0")).unwrap();
+    let cell2 = rt_t2.elements().into_iter().find(|e| e.path.ends_with("/r0/c0")).unwrap();
+    let table_growth = cell2.rect[2] - cell1.rect[2];
+    assert!(
+        (table_growth - 8.0).abs() < 1.0,
+        "table cell +4 pt inline_code_pad should grow by ~8 pt (both sides once, not double-counted), got {table_growth:.2}"
+    );
+    let pad_x = MarkdownStyle::neutral(true).table_pad[0];
+    let t_chips = chip_rects(&rt_t1);
+    assert_eq!(t_chips.len(), 1, "one code chip in table cell");
+    let cell_content_right = cell1.rect[0] + cell1.rect[2] - pad_x;
+    let t_chip_right = t_chips[0][0] + t_chips[0][2];
+    assert!(
+        (t_chip_right - cell_content_right).abs() <= 1.5,
+        "right-aligned table chip right ({t_chip_right:.2}) should sit flush with cell content right ({cell_content_right:.2})"
+    );
+
+    // 4. Inline code inside a link at the end of a block keeps zero pill padding.
+    let link_a = run("See [run `test`](https://x.dev)", 3.5, 500.0, None);
+    let link_b = run("See [run `test`](https://x.dev)", 7.5, 500.0, None);
+    let lw_a = link_a.elements().into_iter().find(|e| e.key.as_deref() == Some("box")).unwrap().rect[2];
+    let lw_b = link_b.elements().into_iter().find(|e| e.key.as_deref() == Some("box")).unwrap().rect[2];
+    assert!((lw_b - lw_a).abs() < 0.01, "code inside a link adds no pill padding: {lw_a} vs {lw_b}");
+
+    // 5. Selecting and copying a block ending in inline code omits the closing pad and isolates.
+    let mut sel_rt = Runtime::new(
+        (),
+        |_: &(), _: &mut Cx<()>| {
+            let style = MarkdownStyle::neutral(true);
+            col().w(400.0).child(Markdown::new("Run `cargo test`").selectable(true).render(&style).key("md"))
+        },
+        (400.0, 200.0),
+        Env::new(true, 1.0),
+    );
+    sel_rt.frame(0.0);
+    sel_rt.update(|_, tx| tx.select_all_text("md"));
+    sel_rt.frame(1.0 / 60.0);
+    assert_eq!(sel_rt.selected_text().as_deref(), Some("Run cargo test"));
 }

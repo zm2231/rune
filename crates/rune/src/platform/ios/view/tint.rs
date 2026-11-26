@@ -6,10 +6,12 @@
 //! colour is resolved for the view's own traits, so one that differs with increased contrast
 //! follows that setting when the traits change.
 
+#![allow(unsafe_code)]
+
 use objc2_core_foundation::CGFloat;
-use objc2_video::rc::Retained;
-use objc2_video::runtime::AnyObject;
-use objc2_video::{class, msg_send};
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send};
 
 use super::super::pacing::Event;
 use super::super::tint::{self, Components};

@@ -28,6 +28,7 @@ fn cut_at(content: &'static str, elide: Elide, marked: Option<(usize, usize)>, w
         col().w_full().child(match s.1 { Elide::End => t.truncate(), Elide::Middle => t.truncate_middle(), Elide::Head => t.truncate_head() })
     }
     let mut rt = Runtime::new((content, elide, marked), view, (width, 40.0), Env::new(true, 2.0));
+    rt.set_srgb_blend(false);
     rt.frame(0.0);
     rt
 }
@@ -239,4 +240,180 @@ fn elision_cache_reuses_cut_evicts_superseded_and_bypasses_secure() {
     sec.frame(0.0);
     assert!(sec.tree.nodes.iter().find(|n| n.key.as_deref() == Some("t")).unwrap().elided.is_some());
     assert_eq!(sec.text.cached_elision_count(), 0, "redacted text bypasses elision cache");
+}
+
+#[test]
+fn narrow_truncated_text_clips_to_box_and_draws_nothing_at_zero_width() {
+    use crate::render::KIND_GLYPH;
+    use crate::row;
+
+    type RowState = (&'static str, Elide, f32, bool);
+    fn row_view(s: &RowState, _: &mut Cx<RowState>) -> El {
+        let spans = if s.3 { vec![Span { bg: Some(pill()), underline: Some(pill()), ..Span::new(0, s.0.len()) }] } else { Vec::new() };
+        let t = rich(s.0, spans).key("t").font(style()).w(s.2);
+        let t = match s.1 { Elide::End => t.truncate(), Elide::Middle => t.truncate_middle(), Elide::Head => t.truncate_head() };
+        row().w(200.0).child(crate::el().w(10.0).h(16.0)).child(t)
+    }
+
+    let scale = 2.0;
+    for elide in [Elide::End, Elide::Middle, Elide::Head] {
+        // Zero-width box: draws no glyphs or decorations, keeps full a11y text.
+        let mut zero = Runtime::new(("Hello world", elide, 0.0, true), row_view, (200.0, 40.0), Env::new(true, scale));
+        zero.frame(0.0);
+        let glyphs = zero.instances.iter().filter(|i| i.params[1] == KIND_GLYPH).count();
+        assert_eq!(glyphs, 0, "{elide:?}: zero-width truncated text must draw no glyphs");
+        let want_pill = pill().premul(1.0);
+        let deco = zero.instances.iter().filter(|i| i.fill.iter().zip(want_pill).all(|(a, b)| (a - b).abs() < 1e-3)).count();
+        assert_eq!(deco, 0, "{elide:?}: zero-width truncated text must draw no span decorations");
+        let el = zero.elements().into_iter().find(|e| e.key.as_deref() == Some("t")).unwrap();
+        assert_eq!(el.text.as_deref(), Some("Hello world"));
+
+        // Box narrower than the ellipsis (5 pt < ~11 pt): every glyph and decoration clips to the box.
+        let mut narrow = Runtime::new(("Hello world", elide, 5.0, true), row_view, (200.0, 40.0), Env::new(true, scale));
+        narrow.frame(0.0);
+        let n = narrow.tree.nodes.iter().find(|n| n.key.as_deref() == Some("t")).unwrap();
+        let (x0, x1) = (n.target[0] * scale, n.target[2] * scale);
+        let glyph_list: Vec<_> = narrow.instances.iter().filter(|i| i.params[1] == KIND_GLYPH).collect();
+        assert!(!glyph_list.is_empty(), "{elide:?}: 5 pt box should paint clipped content");
+        for g in &glyph_list {
+            assert!(g.clip[0] >= x0 - 0.5 && g.clip[2] <= x1 + 0.5,
+                "{elide:?}: glyph clip {:?} overflows box [{x0}, {x1}]", g.clip);
+        }
+        for d in narrow.instances.iter().filter(|i| i.fill.iter().zip(want_pill).all(|(a, b)| (a - b).abs() < 1e-3)) {
+            assert!(d.clip[0] >= x0 - 0.5 && d.clip[2] <= x1 + 0.5,
+                "{elide:?}: decoration clip {:?} overflows box [{x0}, {x1}]", d.clip);
+        }
+    }
+
+    // End truncation keeps the first grapheme clipped rather than replacing it with "…" (CSS Overflow 3 / Blink).
+    let mut end_narrow = Runtime::new(("Hello world", Elide::End, 5.0, false), row_view, (200.0, 40.0), Env::new(true, scale));
+    end_narrow.frame(0.0);
+    let n = end_narrow.tree.nodes.iter().find(|n| n.key.as_deref() == Some("t")).unwrap();
+    let e = n.elided.expect("overflowing multi-grapheme text is elided");
+    assert_eq!(e.head, 1, "first grapheme 'H' is kept before the ellipsis");
+    assert_eq!(e.tail, "Hello world".len());
+
+    // Single grapheme narrower than its own width stays un-ellipsized and clipped to the box.
+    let mut single = Runtime::new(("W", Elide::End, 4.0, false), row_view, (200.0, 40.0), Env::new(true, scale));
+    single.frame(0.0);
+    let n = single.tree.nodes.iter().find(|n| n.key.as_deref() == Some("t")).unwrap();
+    assert!(n.elided.is_none(), "single grapheme is clipped rather than replaced by an ellipsis");
+    assert!(n.text_cut(scale), "clipped single grapheme still counts as truncated for tooltips");
+    let (x0, x1) = (n.target[0] * scale, n.target[2] * scale);
+    let glyphs: Vec<_> = single.instances.iter().filter(|i| i.params[1] == KIND_GLYPH).collect();
+    assert!(!glyphs.is_empty());
+    for g in glyphs {
+        assert!(g.clip[0] >= x0 - 0.5 && g.clip[2] <= x1 + 0.5, "single glyph clip {:?} overflows [{x0}, {x1}]", g.clip);
+    }
+}
+
+#[test]
+fn shrink_preserves_explicit_min_w_in_either_order_and_leaves_min_h_alone() {
+    use crate::{el, row};
+
+    assert_eq!(std::mem::size_of::<rune_taffy::CompactStyle>(), 64, "CompactStyle keeps its 64-byte size");
+
+    fn row_widths(row_w: f32) -> [f32; 5] {
+        let mut rt = Runtime::new(
+            row_w,
+            |&w: &f32, _: &mut Cx<f32>| {
+                col().size(400.0, 400.0)
+                    .child(row().w(w).child(el().key("min_then_shrink").w(300.0).h(20.0).min_w(160.0).shrink()))
+                    .child(row().w(w).child(el().key("shrink_then_min").w(300.0).h(20.0).shrink().min_w(160.0)))
+                    .child(row().w(w).child(el().key("shrink_auto").h(20.0).shrink().child(el().w(300.0).h(20.0))))
+                    .child(row().w(w).child(el().key("override_zero").w(300.0).h(20.0).min_w(160.0).shrink().min_w(0.0)))
+                    .child(row().w(w).child({
+                        let mut e = el().key("in_place").w(300.0).h(20.0);
+                        e.set_min_w(160.0);
+                        e.set_shrink();
+                        e
+                    }))
+            },
+            (400.0, 400.0),
+            Env::new(true, 1.0),
+        );
+        rt.frame(0.0);
+        let w_of = |k: &str| rt.presented(k).expect(k).0[2];
+        [
+            w_of("min_then_shrink"),
+            w_of("shrink_then_min"),
+            w_of("shrink_auto"),
+            w_of("override_zero"),
+            w_of("in_place"),
+        ]
+    }
+
+    // In a 100 pt row: both orders stop at 160 pt; auto min_w and explicit min_w(0.0) shrink to 100 pt.
+    let tight = row_widths(100.0);
+    assert_eq!(tight, [160.0, 160.0, 100.0, 100.0, 160.0], "100 pt row: {tight:?}");
+
+    // In a 200 pt row: 300 pt items with min_w(160) shrink to 200 pt in both orders.
+    let medium = row_widths(200.0);
+    assert_eq!(medium, [200.0, 200.0, 200.0, 200.0, 200.0], "200 pt row: {medium:?}");
+
+    // min_h is untouched by shrink: vertical columns still need explicit .min_h(0.0), and explicit min_h stays.
+    let mut rt_h = Runtime::new(
+        (),
+        |_: &(), _: &mut Cx<()>| {
+            row().size(400.0, 200.0)
+                .child(col().w(100.0).h(100.0).child(col().key("no_min_h").shrink().child(el().w(40.0).h(300.0))))
+                .child(col().w(100.0).h(100.0).child(col().key("zero_min_h").shrink().min_h(0.0).child(el().w(40.0).h(300.0))))
+                .child(col().w(100.0).h(100.0).child(col().key("kept_min_h").min_h(160.0).shrink().child(el().w(40.0).h(300.0))))
+        },
+        (400.0, 200.0),
+        Env::new(true, 1.0),
+    );
+    rt_h.frame(0.0);
+    assert_eq!(rt_h.presented("no_min_h").unwrap().0[3], 300.0, "shrink leaves auto min_h alone");
+    assert_eq!(rt_h.presented("zero_min_h").unwrap().0[3], 100.0, "explicit min_h(0.0) allows vertical shrink");
+    assert_eq!(rt_h.presented("kept_min_h").unwrap().0[3], 160.0, "explicit min_h is preserved");
+}
+
+#[test]
+fn single_line_truncation_preserves_explicit_min_w_in_either_order() {
+    use crate::row;
+
+    const LONG: &str = "A very long single-line label that exceeds three hundred points when laid out at fourteen points";
+
+    #[derive(Clone, Copy)]
+    enum Kind { End, SetEnd, Middle, Head, Fade, FadeWidth }
+
+    fn apply(t: El, kind: Kind) -> El {
+        match kind {
+            Kind::End => t.truncate(),
+            Kind::SetEnd => {
+                let mut t = t;
+                t.set_truncate();
+                t
+            }
+            Kind::Middle => t.truncate_middle(),
+            Kind::Head => t.truncate_head(),
+            Kind::Fade => t.truncate_fade(),
+            Kind::FadeWidth => t.truncate_fade_width(2.0),
+        }
+    }
+
+    for kind in [Kind::End, Kind::SetEnd, Kind::Middle, Kind::Head, Kind::Fade, Kind::FadeWidth] {
+        for (row_w, want_min) in [(100.0_f32, 160.0_f32), (200.0_f32, 200.0_f32)] {
+            let mut rt = Runtime::new(
+                (row_w, kind),
+                |&(w, k): &(f32, Kind), _: &mut Cx<(f32, Kind)>| {
+                    let mk = |key: &'static str| crate::text(LONG).key(key).font(style());
+                    col().size(500.0, 200.0)
+                        .child(row().w(w).child(apply(mk("min_first").min_w(160.0), k)))
+                        .child(row().w(w).child(apply(mk("trunc_first"), k).min_w(160.0)))
+                        .child(row().w(w).child(apply(mk("auto_min"), k)))
+                        .child(row().w(w).child(apply(mk("override_zero").min_w(160.0), k).min_w(0.0)))
+                },
+                (500.0, 200.0),
+                Env::new(true, 1.0),
+            );
+            rt.frame(0.0);
+            let w_of = |key: &str| rt.presented(key).expect(key).0[2];
+            assert_eq!(w_of("min_first"), want_min, "row_w={row_w}: min_w then truncate");
+            assert_eq!(w_of("trunc_first"), want_min, "row_w={row_w}: truncate then min_w");
+            assert_eq!(w_of("auto_min"), row_w, "row_w={row_w}: auto min_w still shrinks to row");
+            assert_eq!(w_of("override_zero"), row_w, "row_w={row_w}: trailing min_w(0.0) overrides earlier min_w");
+        }
+    }
 }

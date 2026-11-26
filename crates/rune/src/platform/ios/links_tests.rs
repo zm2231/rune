@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+
 use super::{Activity, BROWSING_WEB, incoming};
 
 fn activity(kind: &str, page: Option<&str>) -> Activity {

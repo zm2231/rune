@@ -2,6 +2,8 @@
 //! groups set before their pipeline land at the right slots; a pipeline with another layout
 //! rebinds every group. The sizes buffer and immediates travel as inline bytes.
 
+#![allow(unsafe_code)]
+
 use std::ops::Range;
 use std::ptr::NonNull;
 use std::sync::Arc;
@@ -17,6 +19,7 @@ use objc2::rc::autoreleasepool;
 use parking_lot::Mutex;
 use wgpu::custom::*;
 
+use crate::lazy_init::{Effect, Event, LoadKind, StoreKind, Subresource};
 use super::encode::Rec;
 use super::layout::{Counts, GroupRaw};
 use super::pipeline::{PipelineRaw, RenderPipeline, vertex_slot};
@@ -77,7 +80,25 @@ impl MetalPass {
             let color = unsafe { d.colorAttachments().objectAtIndexedSubscript(i) };
             color.setTexture(Some(&target.raw));
             if let Some(slice) = attachment.depth_slice { color.setDepthPlane(slice as usize); }
-            match attachment.ops.load {
+            let mut load_op = attachment.ops.load;
+            if let Some(tex) = &target.texture && let Some(lazy) = &tex.lazy_init && lazy.has_uninit() {
+                let load = match load_op {
+                    wgpu::LoadOp::Clear(_) => LoadKind::Clear,
+                    wgpu::LoadOp::Load => LoadKind::Load,
+                    wgpu::LoadOp::DontCare(_) => LoadKind::DontCare,
+                };
+                let store = match attachment.ops.store {
+                    wgpu::StoreOp::Store => StoreKind::Store,
+                    wgpu::StoreOp::Discard => StoreKind::Discard,
+                };
+                let sub = Subresource { mip: target.range.base_mip, layer: target.range.base_layer };
+                for effect in lazy.step(Event::Attach { sub, load, store }) {
+                    if let Effect::PromoteLoadToClear = effect {
+                        load_op = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
+                    }
+                }
+            }
+            match load_op {
                 wgpu::LoadOp::Clear(c) => {
                     color.setLoadAction(MTLLoadAction::Clear);
                     color.setClearColor(MTLClearColor { red: c.r, green: c.g, blue: c.b, alpha: c.a });
@@ -90,6 +111,7 @@ impl MetalPass {
                 wgpu::StoreOp::Discard => MTLStoreAction::DontCare,
             });
             drawable |= target.drawable;
+            if let Some(uses) = &target.uses { keep.use_texture(uses); }
             keep.push(target);
         }
         let raw = {
@@ -206,8 +228,9 @@ impl RenderPassInterface for MetalPass {
     fn set_pipeline(&mut self, pipeline: &DispatchRenderPipeline) {
         let next = &pipeline.as_custom::<RenderPipeline>().expect("a Metal render pipeline").raw;
         if self.pipeline.as_ref().is_some_and(|p| Arc::ptr_eq(p, next)) { return }
+        let Some(state) = &next.state else { return };
         let relayout = self.pipeline.as_ref().is_none_or(|p| !Arc::ptr_eq(&p.layout, &next.layout));
-        self.raw.setRenderPipelineState(&next.state);
+        self.raw.setRenderPipelineState(state);
         self.raw.setCullMode(next.cull);
         self.raw.setFrontFacingWinding(next.winding);
         self.raw.setTriangleFillMode(next.fill);
@@ -229,7 +252,17 @@ impl RenderPassInterface for MetalPass {
         let group = &group.as_custom::<super::layout::BindGroup>().expect("a Metal bind group").raw;
         if let Some((bound, bound_offsets)) = &self.groups[index]
             && Arc::ptr_eq(bound, group) && bound_offsets[..] == *offsets { return }
+        for (tex, range) in &group.lazy_views {
+            if let Some(lazy) = &tex.lazy_init && lazy.has_uninit() {
+                let effects = lazy.step(Event::Read(*range));
+                if !effects.is_empty() {
+                    let shared = self.rec.lock().shared_arc();
+                    shared.clear_effects(tex, effects);
+                }
+            }
+        }
         self.keep.push(group.clone());
+        for uses in &group.texture_uses { self.keep.use_texture(uses); }
         self.groups[index] = Some((group.clone(), offsets.to_vec()));
         self.dirty |= 1 << index;
     }

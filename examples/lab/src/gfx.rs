@@ -8,12 +8,13 @@
 
 mod gpu;
 mod scenes;
+#[cfg(test)]
+mod tests;
 
 use std::collections::HashMap;
-use std::time::Instant;
 
 use rune::compose::{Compositor, Frame, is_glyph};
-use rune::render::{Instance, KIND_GRADIENT, KIND_LAYER, KIND_LAYER_END, KIND_RECT};
+use rune::render::{Instance, KIND_LAYER, KIND_LAYER_END, KIND_RECT};
 use rune_fx::{BlurMode, Fx, FxFrame, FxLayer, MotionBlurParams, MotionSamples, Pose, Rect, Shape};
 use rune_light::{Light, LightRenderer, Prim, Scene as LightScene, Settings};
 use rune_motion::Vec2;
@@ -93,6 +94,15 @@ impl Cv<'_> {
     }
 }
 
+/// Applies flattened `KIND_LAYER` opacity to `ins` without corrupting non-colour `border` payloads
+/// (Windfoil outline glyphs store their GPU outline record metadata in `border`, wrapped images
+/// store their placed rect in `border`, and layer headers store rotation/pivot in `border`).
+pub(self) fn apply_opacity(ins: &Instance, opacity: f32) -> Instance {
+    let mut out = *ins;
+    out.scale_opacity(opacity);
+    out
+}
+
 #[derive(Default)]
 pub struct LabGfx {
     res: Option<Res>,
@@ -116,6 +126,10 @@ impl Compositor<Lab> for LabGfx {
         self.animating || self.view_pending
     }
 
+    fn release_gpu(&mut self) {
+        self.res = None;
+    }
+
     fn summary(&mut self, _device: &wgpu::Device) -> Option<String> {
         let (sum, n) = self.total_gpu;
         Some(if n > 0 {
@@ -126,13 +140,15 @@ impl Compositor<Lab> for LabGfx {
     }
 
     fn render(&mut self, f: &mut Frame<'_, Lab>) {
-        let started = Instant::now();
-        let rebuilt = self.res.as_ref().is_none_or(|r| r.size != f.size || r.format != f.format);
+        let started = rune::time::now();
+        let device_key = f.device_key();
+        let rebuilt = self.res.as_ref().is_none_or(|r| r.device_key != device_key || r.size != f.size || r.format != f.format);
         if rebuilt {
-            self.res = Some(Res::new(f.device, f.queue, f.size, f.format, f.ui));
+            self.res = None;
+            self.res = Some(Res::new(f.device, f.queue, device_key, f.size, f.format, f.ui));
         }
         self.view_pending = false;
-        let _ = f.device.poll(wgpu::PollType::Poll);
+        f.device.poll(wgpu::PollType::Poll).ok();
         let res = self.res.as_mut().unwrap();
         let gpu_ms = res.timer.as_mut().and_then(|t| t.begin(f.encoder));
         let rt = &mut *f.rt;
@@ -250,10 +266,7 @@ impl Compositor<Lab> for LabGfx {
                 opacity = opacity_stack.pop().expect("balanced Rune layer scopes");
                 continue;
             }
-            let mut flattened = *ins;
-            flattened.fill = flattened.fill.map(|v| v * opacity);
-            flattened.border = flattened.border.map(|v| v * opacity);
-            if flattened.params[1] == KIND_GRADIENT { flattened.uv = flattened.uv.map(|v| v * opacity); }
+            let flattened = apply_opacity(ins, opacity);
             let ins = &flattened;
             let m = marks.get(i).copied().unwrap_or(0);
             if m == stage::STAGE_MARK && ins.params[1] == KIND_RECT {

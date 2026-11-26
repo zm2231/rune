@@ -88,7 +88,7 @@ pub fn start() {
 
 From your app's workspace, run `path/to/rune/scripts/web-build.sh your-package`. The script
 selects one cdylib, or one binary if there is no cdylib. `--example NAME` selects a Cargo
-example. Disable Rune's `dev`, `hot` and `native-file-dialog` features on wasm. Move native
+example. Disable Rune's `hot` and `native-file-dialog` features on wasm. Move native
 filesystem, process and thread dependencies behind target conditions in your app too.
 Use `rune::time::Instant` for deadlines passed to Rune; it is `std::time::Instant` on native.
 
@@ -145,14 +145,29 @@ momentum, the scroll bar, Page Down, Space, find-in-page, anchors and back/forwa
 browser's own. The canvas stays fixed to the viewport and draws the band the page is scrolled to;
 a scroll moves only that band and rebuilds nothing.
 
-Above the canvas Rune keeps a DOM mirror of the scene: landmarks (`role("main")`,
-`role("region")`, `role("navigation")`, `role("contentinfo")`), headings with their level,
-paragraphs, links and images, each at its element's place. Keys become element ids, so
+Above the canvas Rune keeps a DOM mirror of the scene: landmarks and semantic containers
+(`main`, `region`, `navigation`, `banner`, `contentinfo`, `complementary`, `article`,
+`figure`, `list`, `listitem`, `listbox`, `dialog`, `alertdialog`, `tablist`, `tabpanel`,
+`radiogroup`, `menu`, `menubar`, `tree`, `treegrid`, `toolbar`, `table`, `grid`,
+`rowgroup`, `row`, `cell`, `gridcell`, `columnheader`, `rowheader`, `form`, `search`,
+`status`, `alert`, `log`), headings with their level, paragraphs, links, images, and controls
+(buttons, `checkbox`, `switch`, `radio`, `tab`, `option`, `menuitem`, `menuitemcheckbox`,
+`menuitemradio`, `treeitem`, `combobox`, `progressbar`, `slider`, `spinbutton`), each at
+its element's place. States and values project to WAI-ARIA attributes (`aria-disabled` without
+HTML `disabled` so disabled controls stay discoverable, `aria-busy`, `aria-expanded`,
+`aria-selected`, `aria-checked`, `aria-pressed`, `aria-level`, `aria-posinset`/`aria-setsize`,
+`aria-live`, `aria-description`, and `aria-valuemin`/`aria-valuemax`/`aria-valuenow`/`aria-valuetext`),
+The `[data-rune-a11y]` mirror root carries `dir="rtl"` or `dir="ltr"` from the scene root's
+resolved direction (with `dir` on mirrored descendants only where their resolved direction
+flips from their mirror parent), carries `lang` from the active `rune::text::set_language`
+tag when set, and projects text alignment as logical CSS `text-align: start`/`end`.
+In app mode keyboard focus mirrors onto the canvas's `aria-activedescendant` focus proxy
+with the same role, name, range, and states. Keys become element ids, so
 `#views` scrolls to the element keyed `views`. Its text is transparent but real, so the browser
 selects and copies it, and screen readers, crawlers and link previews read it. An element with
 `El::href(url)` is an `<a href>`: middle-click, Cmd-click and Copy Link work, and a plain click
-opens it in the same tab. Tab moves through the mirror's links and buttons; a press on one runs
-the element's handler. The page tints selections and focus rings with `--rune-selection` and
+opens it in the same tab. Tab moves through the mirror's links and buttons; a press on an enabled
+one runs the element's handler. The page tints selections and focus rings with `--rune-selection` and
 `--rune-focus`, and sets the mirror's fonts with `--rune-sans` and `--rune-mono`, so match them
 to the fonts the app draws with.
 
@@ -192,15 +207,25 @@ let avatar = cache.url(&user.avatar_url, 32.0, env.scale);  // size and scale ma
 ```
 
 SVG (by `Content-Type` or a `.svg`/`.svgz` path) rasterizes with Rune's renderer at the size
-asked for. Images over 8192 pixels a side are refused before their pixels are read, and a
-failed request or a cross-origin image without CORS headers resolves to `Image::error`.
+asked for while preserving the document's CSS-pixel dimensions on `Image::intrinsic_size`.
+PNG, APNG, and PNG-backed ICNS bytes decoded in Rust convert embedded RGB ICC profiles to sRGB
+before downsampling and mip generation, matching the browser's colour management for formats
+decoded via `createImageBitmap`.
+`ImageCache::load_scaled(bytes, size_pt, scale)` downsamples decoded rasters to fit `size_pt × scale`
+pixels (without upscaling, first frame only) before building mips in main-thread slices, and
+rasterizes SVGs directly at that size. Images over 8192 pixels a side are refused before their
+pixels are read, and a failed request or a cross-origin image without CORS headers resolves to
+`Image::error`.
 
-`Cursor::Image` sets the canvas's CSS `cursor` to the PNG at 2x (`image-set(url(blob:…) 2x)`),
-so the browser decodes it and draws it at its size in points on any display.
+System `Cursor` variants map to their CSS `cursor` keywords (including `ew-resize`,
+`ns-resize`, `nwse-resize`, `nesw-resize`, `n-resize`, `e-resize`, `s-resize`,
+`w-resize`, `alias`, and `copy`). `Cursor::Image` sets the canvas's CSS
+`cursor` to the PNG at 2x (`image-set(url(blob:…) 2x)`), so the browser decodes it and draws
+it at its size in points on any display.
 
 ## Fonts and browser input
 
-Web includes Inter Regular and IBM Plex Mono Regular (the `embedded-fonts` feature). There is
+Web includes subsetted Inter Regular, Medium and SemiBold plus IBM Plex Mono Regular (the `embedded-fonts` feature). There is
 no system-font discovery. `App::font_url("fonts/brand.ttf")` fetches a TrueType or OpenType
 font (not WOFF2) alongside GPU setup, before the first frame, and adds it to `AppSpec::fonts`;
 on native it reads the same path from disk. Point the page's `@font-face` at the same file so the
@@ -231,7 +256,13 @@ context and converts window-relative UTF-16 positions to UTF-8 boundaries before
 Composition holds the mirror stable until commit and replaces the composing word's range.
 Mobile `beforeinput` line breaks use Rune's Enter rules: submit, or Shift/Alt+Enter newline
 in a multiline field. A completed touch tap focuses the editor synchronously;
-a pan scrolls instead, with momentum and a damped edge return.
+a pan scrolls instead, with momentum and a damped edge return. On iOS Safari the hidden input
+stays transparent (`opacity: 0`) so WebKit suppresses its native selection handles, callout bar
+and zoom-to-focus (WebKit r238146); by design, long-pressing a field shows Rune's own
+Cut/Copy/Paste/Select All menu rather than the native iOS callout bar. If iOS hides the
+software keyboard while leaving the hidden input as `document.activeElement` (for example with a
+hardware keyboard or iPad's keyboard-hide key), the field remains focused and keeps drawing its
+caret like a native iOS text field, and tapping it again re-presents the keyboard.
 
 The hidden field carries the focused field's keyboard traits as attributes: `inputmode`
 (`El::input_mode`), `autocomplete` (`El::autocomplete`), `autocapitalize`, `autocorrect`,
@@ -243,21 +274,54 @@ autofill popups away from a field nobody sees. Autofill is best effort where a f
 name a kind: the textarea is outside any form, which browsers and password managers seldom
 fill, so a saved address or a one-time code may not be offered.
 
-Secure fields use an `<input type="password">` with autocorrect and spellcheck disabled and
-`autocomplete="current-password"`, or `new-password` for `Autocomplete::NewPassword`. It
-receives only new keystrokes and is emptied after every input; the model's
-secret is never mirrored into the DOM. So what a password manager fills arrives as typed
-text: in a field that already holds something it is inserted at the caret, not put in its
-place. Leaving a field returns focus to the canvas so
-shortcuts and Tab keep working. Continuous pointer movement and wheel events wait for rAF.
+Secure fields use an `<input type="password">` with `autocomplete="current-password"`, or
+`new-password` for `Autocomplete::NewPassword`, and autocorrect, autocapitalize and
+spellcheck disabled. It is emptied after every input; the
+model's secret is never mirrored into the DOM. Single-grapheme `insertText` events append at
+the caret, while events with no `inputType`, `insertReplacementText`, multi-grapheme
+`insertText`, or any input while the element matches `:autofill`/`:-webkit-autofill`
+replace the field's whole value (including clearing it when empty). Leaving a field returns
+focus to the canvas so
+shortcuts and Tab keep working. Continuous pointer movement, pointer-lock motion (`El::pointer_lock`) and wheel events wait for rAF.
+
+`El::pointer_lock` uses the W3C Pointer Lock API: a primary press on the element requests
+plain `canvas.requestPointerLock()` synchronously inside the `pointerdown` user gesture so the
+first click never depends on an asynchronous retry; once `pointerlockchange` confirms the lock,
+it upgrades in place to `{ unadjustedMovement: true }` where supported (caching
+`NotSupportedError` so the plain lock stays intact and later locks skip the upgrade). `Cx::pointer_locked()` stays `false` until
+`pointerlockchange` confirms `document.pointerLockElement === canvas`. While locked, relative
+deltas arrive from `PointerEvent.movementX`/`movementY` in CSS pixels (logical points, independent
+of `Cx::zoom`) and coalesce into one handler call per animation frame. Browser-driven exits
+(Escape, tab switch, or `document.exitPointerLock()`) and refusals (missing gesture, Chrome's
+post-Escape cooldown, unfocused document, or `pointerlockerror`) return cleanly to unlocked state
+(`Cx::pointer_locked() == false`) so a subsequent click can capture again. Open
+`web-hello?pointer-lock-proof` to try it in a browser.
 
 `Tx::copy` and `Tx::request_paste` use the browser clipboard. Call them from a user input
 handler: permission and transient-activation rules still apply. Native Paste events work
 without an asynchronous clipboard read. Secret-copy requests report failure because the
 browser cannot promise native clipboard-history exclusion or conditional timed clearing.
+`rune::clipboard::revision()` returns `None` on the web because browsers expose no clipboard
+change counter.
 
-`rune::web::open_url` accepts HTTP(S) and mail links and opens a tab with `noopener,noreferrer`.
-Call it from a user input handler. `Tx::open_url_same_tab` (or `rune::web::open_url_same_tab`)
+Files pasted into, or dropped on the canvas while, a Rune text field has the keyboard reach that
+field's `on_input_paste` (or a root `on_paste_content`) as `ClipboardContent::web_files`: up to
+`rune::clipboard::MAX_WEB_FILES` browser `File` handles with a name, type and size, no path,
+and no bytes read. `WebFile::read(max)` reads the ones the app takes, and `WebFile::js_file`
+hands the `File` itself to page JavaScript (an upload, say). The page keeps a handle while any
+clone of its `WebFile` lives and lets go of it when the last one drops; handles Rust doesn't
+take from an event are let go of when it returns. Some files come twice: a pasted or dropped
+PNG is also `content.image()`, and the first dropped file's contents are also `content.text()`
+when it is a text (or untyped) file of at most 1 MiB; a bigger one arrives as a handle alone.
+Password fields take no files, and fields without a hook keep taking only text, so a paste or
+drop that carried only files or an image changes nothing there.
+
+`rune::web::open_url` accepts HTTP(S) and mail links and opens a tab with `noopener,noreferrer`. (`Tx::open_path` and `Tx::reveal_path` are desktop-only and return `OpenPathError::Unsupported` on web.)
+Call it from a user input handler: it returns an error when no click or key press is active,
+as browsers block the tab then. A tab blocked otherwise (a site's pop-up setting) can't be
+seen, since the browser hands back no window for a `noopener` tab, so `Tx::open_url_then`
+reports `Ok(())` for it; show the link to copy beside the button when that matters.
+`Tx::open_url_same_tab` (or `rune::web::open_url_same_tab`)
 replaces the page instead, and takes links relative to the page (`/notes/42`). A single-page
 app routes those itself with `App::same_tab_router`: it gets the absolute URL of each link on
 the page's origin and returns true when it handled it; otherwise, and for other origins, the
@@ -268,18 +332,86 @@ App::new(spec).same_tab_router(|href| router.push(href)) // true: routed with pu
 tx.open_url_same_tab("/notes/42")?;                       // from a handler
 ```
  `Cx::safe_area()` returns top/right/bottom/left insets in
-points (zero on native). Apply them inside a full-canvas background. The canvas follows
-`visualViewport` when a software keyboard reduces the visible height. Keep the generated
+points (zero on native). Apply them inside a full-canvas background. Full-window canvases keep their layout-viewport size when `visualViewport` shrinks for an
+on-screen keyboard; Rune scrolls enclosing vertical scroll viewports (`follow_caret`) and shifts
+still-covered focused fields into the visible band with `translate3d`. Keep the generated
 page's `viewport-fit=cover` meta tag and the textarea's 16 px font size.
+
+## HTTP requests (fetch)
+
+Rune ships no HTTP client of its own. On the web an app calls the browser's `fetch` API (through
+`web_sys` or a wasm HTTP crate) and delivers parsed results back onto the UI thread. Two patterns
+work today:
+
+### All browsers: `spawn_local` and `AppHandle::update`
+
+Works in every browser that runs WebGPU (no JSPI required). Take `App::handle()` before calling
+`app.run()`, pass clones into `App::init` (for user-triggered requests) and `App::on_ready` (to
+start an initial fetch after the first frame presents), run `fetch` in
+`wasm_bindgen_futures::spawn_local`, and write the parsed answer on the UI thread with
+`AppHandle::update` or `AppHandle::update_if`:
+
+```rust,ignore
+let app = App::new(spec);
+let handle = app.handle();
+let init_handle = handle.clone();
+let ready_handle = handle.clone();
+app.init(move || State::new(init_handle))
+    .on_ready(move |_| {
+        ready_handle.update(|s, tx| {
+            tx.instant();
+            start_fetch(s, true);
+        });
+    })
+    .run();
+```
+
+Track a request sequence number in state and return `false` from `AppHandle::update_if` when an
+older response finishes after a newer request, so stale answers are dropped without redrawing.
+Call `tx.instant()` when landing an answer that arrives right after launch so the first second
+stays still. On native, pair the same state and view with `rune::task::spawn` + `AppHandle::update`
+or with `rune::Latest` calling any blocking Rust HTTP crate. See `examples/fetch` for a complete
+cross-target example (`scripts/web-build.sh fetch --out target/web-fetch`).
+
+### JSPI fibers: `rune::task` and `Latest`
+
+To share synchronous `Latest` or `rune::task::spawn` request code between native and
+Chromium-family browsers with WebAssembly JS Promise Integration (137+, `wasm-bindgen` 0.2.129),
+export a `#[wasm_bindgen(jspi)]` entry point and call `rune::task::start_runners()` before
+`app.run()`:
+
+```rust,ignore
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen(jspi)]
+pub fn start() {
+    rune::task::start_runners();
+    run_app();
+}
+```
+
+`start_runners()` spawns four JSPI fibers that run queued `rune::task::spawn` and `Latest` work
+in 8 ms slices. Inside task work, check `rune::task::can_wait()` before starting a request and
+suspend the current fiber on a `js_sys::Promise` with `rune::task::wait(&promise)`; frames, input
+and the other fibers continue while that fiber waits. Without calling `start_runners()` (when task
+work runs on main-thread 8 ms timer slices instead of fibers) or outside task work (such as in
+`view`, handlers or `poll`), `can_wait()` returns `false` and `wait` returns `None`. Because
+`#[wasm_bindgen(jspi)]` and `wait` require WebAssembly JSPI support in the browser, apps targeting
+all browsers should skip `#[wasm_bindgen(jspi)]` and `start_runners()` and use the `spawn_local` +
+`AppHandle::update` pattern above instead.
 
 ## Scope and verification
 
-This target needs WebGPU. It has no WebGL fallback (a page made with `--html` stays readable
-without it), overlays,
-extra windows, native menus, drag-out, native audio/video, networking layer or hot patching.
+By default this target needs WebGPU; enable the opt-in `webgl` feature to fall back to WebGL2
+when WebGPU is unavailable (a page made with `--html` stays readable without either). It has no
+overlays,
+extra windows, native menus, drag-out, native audio/video, built-in HTTP client (see
+[HTTP requests (fetch)](#http-requests-fetch)) or hot patching.
 Native configuration types remain source-compatible, but their desktop host paths are not
 used on wasm. Unsupported window requests warn in the console; Show/Open are ignored.
-The document title follows `AppSpec::title`, and hidden tabs report `is_visible() == false`.
+Full-window apps start on the CPU 2D canvas and hand over to WebGPU/WebGL2 by default (`CpuFirst::Auto`); `App::cpu_first(CpuFirst::Only)` keeps a full-window page on the CPU canvas without requesting WebGPU or WebGL2, `App::cpu_first(CpuFirst::Off)` starts directly on the GPU, and `globalThis.RUNE_CPU_FIRST` (`"0"`/`"off"`, `"only"`, `"auto"`) overrides `App::cpu_first` without a rebuild (`App::web_document` and inline `App::canvas_id` pages always start on the GPU).
+The document title follows `AppSpec::title`, hidden tabs report `is_visible() == false`,
+and `App::on_frame_drawn` runs on the browser's main thread after each drawn CPU or GPU frame
+(never on unchanged or skipped frames), matching desktop windows.
 
 The functional proof uses headless Chromium and Playwright:
 
@@ -305,5 +437,4 @@ dictation, autocorrect or Safari WebGPU test; those still need device verificati
 The shell follows PLAN's winit-first approach, retaining winit 0.30's rAF and ResizeObserver
 implementation. Unlike research/11's proposed custom shell, it adds a document-aware
 textarea beside winit rather than replacing winit. This also defers PLAN's proposed switch
-to an owned shell when text input lands. WebGL fallback and EditContext from that research
-remain later work.
+to an owned shell when text input lands. EditContext from that research remains later work.

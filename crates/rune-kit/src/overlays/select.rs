@@ -8,13 +8,15 @@
 
 use rune::{El, Icon, TextStyle, Tx, col, el, icon, row, text};
 
-use super::overlay::{Modal, Placement, content_key, dismissal, push_anchored_modal, scrim_key, trigger_key};
+use super::overlay::{Modal, Placement, content_key, dismissal, dismissal_tx, push_anchored_modal, scrim_key, trigger_key};
 use super::popover::fit_scroll_bar;
 use crate::{Kit, State, over};
 
-/// The listbox's tallest: its 4-point padding, six 30-point rows (28 tall, 2 apart), and most
-/// of the seventh, whose label shows fading under the edge.
-const LISTBOX_MAX_HEIGHT: f32 = 4.0 + 6.0 * 30.0 + 22.0;
+/// The listbox's tallest: its 4-point padding, six rows (2 points apart), and most of the
+/// seventh, whose label shows fading under the edge (206 points at the default 28-point row).
+fn listbox_max_height(row_height: f32) -> f32 {
+    4.0 + 6.0 * (row_height + 2.0) + (row_height - 6.0).max(0.0)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum SelectAppearance {
@@ -26,6 +28,22 @@ pub enum SelectAppearance {
 }
 
 type Choose = Box<dyn Fn(&str) -> Box<dyn FnOnce(El) -> El>>;
+type StepClosed = Box<dyn FnOnce(El, Vec<String>, Option<String>) -> El>;
+
+/// Previous or next option in `options` while a select is closed, clamping at both ends.
+/// When `current` is absent (or no longer in `options`), Down picks the first and Up the last.
+fn step_option<'a>(options: &'a [String], current: Option<&str>, down: bool) -> Option<&'a str> {
+    if options.is_empty() {
+        return None;
+    }
+    let next = match current.and_then(|c| options.iter().position(|o| o == c)) {
+        Some(i) if down => (i + 1).min(options.len() - 1),
+        Some(i) => i.saturating_sub(1),
+        None if down => 0,
+        None => options.len() - 1,
+    };
+    Some(options[next].as_str())
+}
 
 /// `Select::new("fruit", &FRUITS).current(s.fruit.as_deref()).open(..).on_choose(|s, v| ..)`.
 pub struct Select {
@@ -33,16 +51,20 @@ pub struct Select {
     options: Vec<(Option<String>, String)>,
     details: Vec<Option<String>>,
     width: f32,
+    fill: bool,
+    menu_width: Option<f32>,
     current: Option<String>,
     placeholder: String,
     name: Option<String>,
     open: bool,
+    step_closed: bool,
     invalid: bool,
     state: State,
     appearance: SelectAppearance,
     highlighted: Option<String>,
     placement: Placement,
     choose: Option<Choose>,
+    step_key: Option<StepClosed>,
     toggle: Option<Box<dyn FnOnce(El) -> El>>,
     dismiss: Option<(El, Modal)>,
 }
@@ -54,16 +76,20 @@ impl Select {
             options: options.iter().map(|o| (None, o.as_ref().to_owned())).collect(),
             details: Vec::new(),
             width: 280.0,
+            fill: false,
+            menu_width: None,
             current: None,
             placeholder: String::new(),
             name: None,
             open: false,
+            step_closed: false,
             invalid: false,
             state: State::Rest,
             appearance: SelectAppearance::Inline,
             highlighted: None,
             placement: Placement::BottomEnd,
             choose: None,
+            step_key: None,
             toggle: None,
             dismiss: None,
         }
@@ -79,9 +105,41 @@ impl Select {
         self.details = d.iter().map(|x| x.as_ref().map(|s| s.as_ref().to_owned())).collect();
         self
     }
-    /// The field trigger's width in points (default 280).
+    /// The field trigger's width in points (default 280). Ignored when [`Self::fill`] is set
+    /// or when the appearance is [`SelectAppearance::Inline`].
     pub fn width(mut self, w: f32) -> Self {
         self.width = w;
+        self
+    }
+    /// The [`SelectAppearance::Field`] trigger fills its parent's width instead of using
+    /// [`Self::width`] (taking precedence regardless of call order), shrinking inside a
+    /// horizontal row beside a label. Has no effect on [`SelectAppearance::Inline`].
+    ///
+    /// ```
+    /// use rune_kit::{Select, SelectAppearance};
+    ///
+    /// let _select = Select::new("theme", &["System", "Light", "Dark"])
+    ///     .appearance(SelectAppearance::Field)
+    ///     .fill();
+    /// ```
+    pub fn fill(mut self) -> Self {
+        self.fill = true;
+        self
+    }
+    /// The open listbox's width in points for any [`SelectAppearance`], such as the trigger's
+    /// measured width (clamped to the window bounds when wider than the viewport). Without it
+    /// the listbox sizes itself to its labels, between 160 and 368 points.
+    ///
+    /// ```
+    /// use rune_kit::{Select, SelectAppearance};
+    ///
+    /// let _select = Select::new("theme", &["System", "Light", "Dark"])
+    ///     .appearance(SelectAppearance::Field)
+    ///     .fill()
+    ///     .menu_width(320.0);
+    /// ```
+    pub fn menu_width(mut self, w: f32) -> Self {
+        self.menu_width = w.is_finite().then_some(w.max(0.0));
         self
     }
     pub fn current(mut self, c: Option<&str>) -> Self {
@@ -100,6 +158,28 @@ impl Select {
     }
     pub fn open(mut self, o: bool) -> Self {
         self.open = o;
+        self
+    }
+    /// Step through options with Up and Down while the select is closed, calling
+    /// [`Self::on_choose`] without opening the popup (matching Chromium and Windows native
+    /// `<select>` behaviour).
+    ///
+    /// Defaults to `false`, where Up and Down open the popup (AppKit `NSPopUpButton`). When
+    /// enabled, Up and Down clamp at the first and last option, start from the first option on
+    /// Down or last option on Up when [`Self::current`] is `None`, and leave `Alt+Down`, Space,
+    /// and pointer press opening the popup as usual.
+    ///
+    /// ```
+    /// use rune_kit::Select;
+    ///
+    /// struct App { theme: String, open: bool }
+    /// let _select = Select::new("theme", &["System", "Light", "Dark"])
+    ///     .current(Some("Light"))
+    ///     .step_closed(true)
+    ///     .on_choose(|s: &mut App, v: &str, _| s.theme = v.to_owned());
+    /// ```
+    pub fn step_closed(mut self, enabled: bool) -> Self {
+        self.step_closed = enabled;
         self
     }
     pub fn invalid(mut self, i: bool) -> Self {
@@ -134,16 +214,65 @@ impl Select {
         self.toggle = Some(Box::new(move |e: El| e.on_press(f)));
         self
     }
+    /// [`Self::on_toggle`] whose callback receives the change's [`Tx`], so opening or closing
+    /// can focus, scroll, or announce in the same commit.
+    ///
+    /// ```
+    /// use rune::Tx;
+    /// use rune_kit::Select;
+    ///
+    /// struct App { open: bool }
+    /// let _select = Select::new("fruit", &["Apple", "Pear"]).on_toggle_tx(|s: &mut App, tx: &mut Tx| {
+    ///     s.open = !s.open;
+    ///     tx.instant();
+    /// });
+    /// ```
+    pub fn on_toggle_tx<S: 'static>(mut self, f: impl Fn(&mut S, &mut Tx) + 'static) -> Self {
+        self.toggle = Some(Box::new(move |e: El| e.on_press_tx(f)));
+        self
+    }
     /// Presses outside and Escape close the listbox. While open it holds keyboard focus.
     pub fn on_close<S: 'static>(mut self, f: impl Fn(&mut S) + 'static) -> Self {
         self.dismiss = Some(dismissal(scrim_key(&self.key), f));
         self
     }
-    /// Choosing an option: `f(state, option)`.
+    /// [`Self::on_close`] whose callback receives the change's [`Tx`], so closing on an outside
+    /// press or Escape can focus, scroll, or announce in the same commit.
+    ///
+    /// ```
+    /// use rune::Tx;
+    /// use rune_kit::Select;
+    ///
+    /// struct App { open: bool }
+    /// let _select = Select::new("fruit", &["Apple", "Pear"]).on_close_tx(|s: &mut App, tx: &mut Tx| {
+    ///     s.open = false;
+    ///     tx.focus("after", true);
+    /// });
+    /// ```
+    pub fn on_close_tx<S: 'static>(mut self, f: impl Fn(&mut S, &mut Tx) + 'static) -> Self {
+        self.dismiss = Some(dismissal_tx(scrim_key(&self.key), f));
+        self
+    }
+    /// Choosing an option: `f(state, option, tx)`.
     pub fn on_choose<S: 'static>(mut self, f: impl Fn(&mut S, &str, &mut Tx) + Clone + 'static) -> Self {
+        let step = f.clone();
         self.choose = Some(Box::new(move |v: &str| {
             let (f, v) = (f.clone(), v.to_owned());
             Box::new(move |e: El| e.on_press_tx(move |s: &mut S, tx: &mut Tx| f(s, &v, tx)))
+        }));
+        self.step_key = Some(Box::new(move |e: El, options: Vec<String>, current: Option<String>| {
+            e.on_key(move |s: &mut S, ev: &rune::KeyEvent, tx: &mut Tx| {
+                if ev.mods != rune::Mods::default() || !matches!(ev.key, rune::Key::Up | rune::Key::Down) {
+                    return false;
+                }
+                let Some(next) = step_option(&options, current.as_deref(), ev.key == rune::Key::Down) else {
+                    return true;
+                };
+                if current.as_deref() != Some(next) {
+                    step(s, next, tx);
+                }
+                true
+            })
         }));
         self
     }
@@ -155,11 +284,14 @@ impl Select {
     }
 
     pub fn build(mut self, k: &Kit, layer: &mut Vec<El>) -> El {
-        let trigger = self.field(k);
+        let trigger = self.field(k)
+            .has_popup(rune::HasPopup::Listbox)
+            .controls(content_key(&self.key));
         if self.state == State::Disabled || !self.open {
             return trigger;
         }
         let c = &k.c;
+        let row_m = k.popup_row_metrics();
         let anchor_key = trigger_key(&self.key);
         // About six and three-quarter rows tall at most, so a longer list shows its next row's label
         // fading under the edge and reads as one that scrolls (hex#840); consecutive options
@@ -175,7 +307,7 @@ impl Select {
                     list = list.child(
                         row()
                             .key(format!("group{i}"))
-                            .h(28.0)
+                            .h(row_m.height)
                             .px(12.0)
                             .center_y()
                             .child(text(g).font(k.ty.small_medium).color(c.text_faint)),
@@ -190,12 +322,12 @@ impl Select {
                 .focusable(true).focus_selected(selected)
                 .label(o.clone())
                 .position_in_set(i + 1, count)
-                .h(28.0)
+                .h(row_m.height)
                 .pl(12.0)
                 .pr(6.0)
                 .gap(8.0)
                 .center_y()
-                .radius(4.0)
+                .radius(row_m.radius)
                 .mt(if after_item { 2.0 } else { 0.0 })
                 .child(
                     text(o.clone()).key("label").font(k.ty.ui_compact).color(c.text_base).grow(1.0).shrink().truncate().a11y_hidden(),
@@ -217,18 +349,25 @@ impl Select {
             list = list.child(item);
             after_item = true;
         }
+        let name = self.name.clone().unwrap_or_else(|| self.placeholder.clone());
+        let listbox = col()
+            .key(content_key(&self.key))
+            .role("listbox")
+            .label(name)
+            .focus_group()
+            .focus_return(&anchor_key)
+            .max_h(listbox_max_height(row_m.height))
+            .min_h(0.0)
+            .shrink();
+        let listbox = match self.menu_width {
+            Some(w) => listbox.w(w),
+            None => listbox.min_w(160.0).max_w(368.0),
+        };
         let content = k.elevate(
-            col()
-                .key(content_key(&self.key))
-                // Modal, so a reader hears a dialog: it's named as the select is.
-                .label(self.name.clone().unwrap_or_else(|| self.placeholder.clone()))
-                .focus_return(&anchor_key)
-                .min_w(160.0)
-                .max_w(368.0)
-                .radius(6.0)
+            listbox
+                .radius(k.radius_md())
                 .fill(c.layer_01)
-                .child(col().key("listbox").role("listbox").label(self.name.clone().unwrap_or_else(|| self.placeholder.clone()))
-                    .focus_group().max_h(LISTBOX_MAX_HEIGHT).min_h(0.0).shrink().child(fit_scroll_bar(k, &self.key, list))),
+                .child(fit_scroll_bar(k, &self.key, list)),
             &k.elevation.floating,
         );
         push_anchored_modal(k, layer, self.dismiss, content, &anchor_key, self.placement, 2.0);
@@ -245,6 +384,7 @@ impl Select {
             Some(v) => (v.clone(), if red { c.danger.fg } else { c.text_base }),
             None => (self.placeholder.clone(), if red { c.danger.fg } else { c.text_faint }),
         };
+        let sm = k.select_metrics();
         let chevron: &'static Icon = if self.open { k.glyph.chevron_up } else { k.glyph.chevron_down };
         // Named for what it chooses, its value the chosen option; the text and chevron inside
         // show the same.
@@ -259,9 +399,10 @@ impl Select {
             SelectAppearance::Inline => {
                 let font = TextStyle { line_height: 16.0, ..k.ty.ui_medium };
                 let hover = self.state == State::Hover || self.open;
-                // `outline: none` (select.css:193-205): the inline trigger shows no ring.
-                let t = trigger
-                    .no_focus_ring()
+                // select.css: the inline trigger takes the default ring, 2 out, while closed
+                // (opencode#64909).
+                let t = if self.open { trigger.no_focus_ring() } else { k.focus_ring_state(trigger, 2.0, 2.0, self.state == State::Focus) };
+                let t = t
                     .h(24.0)
                     .pl(8.0)
                     .pr(4.0)
@@ -269,12 +410,12 @@ impl Select {
                     .gap(4.0)
                     .radius(k.radius.sm)
                     .child(text(label).key("value").font(font).color(ink).truncate().a11y_hidden())
-                    .child(icon(chevron, 16.0).key("chevron").color(c.icon_muted).a11y_hidden());
+                    .child(icon(chevron, sm.chevron).key("chevron").color(c.icon_muted).a11y_hidden());
                 k.overlay_state(t, self.state, hover, !disabled)
             }
             SelectAppearance::Field => {
-                let mut t = trigger
-                    .w(self.width)
+                let t = if self.fill { trigger.w_full().shrink() } else { trigger.w(self.width) };
+                let mut t = t
                     .h(28.0)
                     .pr(6.0)
                     .gap(8.0)
@@ -290,7 +431,7 @@ impl Select {
                             .a11y_hidden(),
                     )
                     .child(
-                        el().size(20.0, 20.0).center().child(icon(chevron, 16.0).key("chevron").color(c.icon_muted)).a11y_hidden(),
+                        el().size(sm.chevron_box, sm.chevron_box).center().child(icon(chevron, sm.chevron).key("chevron").color(c.icon_muted)).a11y_hidden(),
                     );
                 // select.css:34-35, 100-108: a 1 point ring just inside the box, in place of the
                 // shadow, while focus is in the closed field (`:focus-within`) or it's invalid.
@@ -314,6 +455,10 @@ impl Select {
         }
         if let Some(f) = self.toggle.take() {
             trigger = f(trigger);
+        }
+        if self.step_closed && !self.open && let Some(step) = self.step_key.take() {
+            let options: Vec<String> = self.options.iter().map(|(_, o)| o.clone()).collect();
+            trigger = step(trigger, options, self.current.clone());
         }
         trigger
     }

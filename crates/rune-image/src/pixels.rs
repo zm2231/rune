@@ -3,28 +3,116 @@
 //! like the glyph atlas, allocated only once an element shows pixels.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::place::{SurfaceFit, SurfacePlace};
+use crate::place::{ImageFilter, SurfaceFit, SurfacePlace};
 
 pub const IMAGE_ATLAS_SIZE: u32 = 1024;
+/// Maximum retained atlas pages when evicting unshown slots across frames.
+pub const IMAGE_ATLAS_MAX_PAGES: usize = 16;
+/// Maximum retained decoded CPU pixel bytes across atlas pages (64 MiB: 16 full 1024×1024 pages).
+pub const IMAGE_ATLAS_MAX_BYTES: usize = 64 * 1024 * 1024;
+/// Maximum retained slot entries in the atlas.
+pub const IMAGE_ATLAS_MAX_SLOTS: usize = 4096;
+
+/// The largest texture side of any GPU that draws images in this process (`limit_side`).
+static LIMIT: AtomicU32 = AtomicU32::new(crate::MAX_SIDE);
+
+/// Says a GPU draws images here whose textures are at most `side` texels a side. The atlas then
+/// places nothing larger: a decoded image draws from its largest mip that fits.
+pub fn limit_side(side: u32) {
+    LIMIT.fetch_min(side.max(1), Ordering::Relaxed);
+}
+
+/// The largest side the atlas places.
+pub fn max_side() -> u32 {
+    LIMIT.load(Ordering::Relaxed)
+}
 /// Rows a shelf page starts with (`ImagePage::new`).
-const IMAGE_PAGE_START_ROWS: u32 = 128;
+pub(crate) const IMAGE_PAGE_START_ROWS: u32 = 128;
+
+/// Backing bytes for one frame. Shared through `Arc` so `ImageAtlas::place_at` copies outside
+/// the frame lock without blocking `Pixels::set`. Peak memory for a streaming `Pixels` is at
+/// most two RGBA buffers: the current frame in `Frame` plus one in-flight snapshot held on
+/// `place_at`'s stack when `set` runs concurrently (any further `set` drops the uncopied
+/// intermediate frame immediately, and the snapshot drops before `place_at` returns).
+#[derive(Clone)]
+enum FrameData {
+    Empty,
+    Rgba(Arc<Vec<u8>>),
+    Mips(Arc<crate::Decoded>),
+}
 
 struct Frame {
     width: u32,
     height: u32,
-    rgba: Vec<u8>,
     generation: u64,
-    mips: Option<Arc<crate::Decoded>>,
+    data: FrameData,
+}
+
+struct FrameInner {
+    frame: Mutex<Frame>,
+    /// Monotonic latest-wins ticket advanced by `Pixels::replace`/`set`, `store_mips`, and
+    /// `ImageCache::rgba_into`, so an older off-thread mip build never overwrites a newer frame.
+    ticket: AtomicU64,
+}
+
+/// Weak reference to a `Pixels`' frame storage and live source, used by off-thread
+/// [`crate::ImageCache::rgba_into`] jobs so abandoned handles skip mip work.
+pub(crate) struct WeakPixels {
+    inner: std::sync::Weak<FrameInner>,
+    source: std::sync::Weak<rune_core::live::Source>,
+}
+
+impl WeakPixels {
+    pub(crate) fn is_current(&self, ticket: u64) -> bool {
+        self.inner.upgrade().is_some_and(|inner| inner.ticket.load(Ordering::Acquire) == ticket)
+    }
+
+    pub(crate) fn store_mips_if_current(&self, ticket: u64, mips: Arc<crate::Decoded>) -> bool {
+        let (Some(inner), Some(source)) = (self.inner.upgrade(), self.source.upgrade()) else {
+            return false;
+        };
+        store_mips_if_current_inner(&inner, &source, ticket, mips)
+    }
+}
+
+fn reclaim_rgba(replaced: FrameData) -> Vec<u8> {
+    match replaced {
+        FrameData::Rgba(arc) => Arc::into_inner(arc).unwrap_or_default(),
+        FrameData::Empty | FrameData::Mips(_) => Vec::new(),
+    }
+}
+
+fn store_mips_if_current_inner(
+    inner: &FrameInner,
+    source: &rune_core::live::Source,
+    ticket: u64,
+    mips: Arc<crate::Decoded>,
+) -> bool {
+    let (width, height) = (mips.mips[0].width, mips.mips[0].height);
+    let replaced = {
+        let mut frame = inner.frame.lock().unwrap();
+        if inner.ticket.load(Ordering::Acquire) != ticket {
+            drop(frame);
+            return false;
+        }
+        frame.width = width;
+        frame.height = height;
+        frame.generation += 1;
+        std::mem::replace(&mut frame.data, FrameData::Mips(mips))
+    };
+    drop(replaced);
+    source.notify();
+    true
 }
 
 /// A replaceable RGBA image, shared between the producer and the view. Clone it freely.
 #[derive(Clone)]
 pub struct Pixels {
     id: u64,
-    frame: Arc<Mutex<Frame>>,
+    inner: Arc<FrameInner>,
     /// Wakes the windows and overlays whose scene shows this image.
     #[doc(hidden)]
     pub source: Arc<rune_core::live::Source>,
@@ -40,8 +128,11 @@ pub struct Pixels {
 
 impl std::fmt::Debug for Pixels {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let frame = self.frame.lock().unwrap();
-        write!(f, "Pixels({}, {}x{}, gen {})", self.id, frame.width, frame.height, frame.generation)
+        let (width, height, generation) = {
+            let frame = self.inner.frame.lock().unwrap();
+            (frame.width, frame.height, frame.generation)
+        };
+        write!(f, "Pixels({}, {}x{}, gen {})", self.id, width, height, generation)
     }
 }
 
@@ -56,7 +147,10 @@ impl Pixels {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         Pixels {
             id: NEXT.fetch_add(1, Ordering::Relaxed),
-            frame: Arc::new(Mutex::new(Frame { width: 0, height: 0, rgba: Vec::new(), generation: 0, mips: None })),
+            inner: Arc::new(FrameInner {
+                frame: Mutex::new(Frame { width: 0, height: 0, generation: 0, data: FrameData::Empty }),
+                ticket: AtomicU64::new(0),
+            }),
             source: rune_core::live::Source::new(0),
             url: None,
             srcset: None,
@@ -92,46 +186,241 @@ impl Pixels {
     /// and one upload of the latest image; a hidden or covered window catches up when it shows
     /// again. This is the streaming path: no decoding or mip generation, and a same-size
     /// frame reuses its atlas slot.
+    ///
+    /// To recycle the previous frame's buffer instead of dropping it, use [`Pixels::replace`].
+    /// To build downscaling mipmaps off the main thread into this handle, use
+    /// [`crate::ImageCache::rgba_into`].
     pub fn set(&self, width: u32, height: u32, rgba: Vec<u8>) {
-        assert_eq!(Some(rgba.len()), (width as usize).checked_mul(height as usize).and_then(|n| n.checked_mul(4)), "rgba must hold width * height pixels");
-        {
-            let mut frame = self.frame.lock().unwrap();
-            frame.width = width;
-            frame.height = height;
-            frame.rgba = rgba;
-            frame.generation += 1;
-            frame.mips = None;
-        }
-        self.source.notify();
+        let _ = self.replace(width, height, rgba);
     }
 
-    pub(crate) fn set_mips(&self, mips: Arc<crate::Decoded>) {
-        {
-            let mut frame = self.frame.lock().unwrap();
-            frame.width = mips.mips[0].width;
-            frame.height = mips.mips[0].height;
-            frame.rgba.clear();
-            frame.mips = Some(mips);
-            frame.generation += 1;
+    /// Replaces the image like [`Pixels::set`] and returns the buffer the previous frame held,
+    /// so a streaming producer can refill and reuse it without allocating a new buffer every
+    /// frame.
+    ///
+    /// Returns an empty `Vec` on the first frame, when replacing decoded mipmaps, or while an
+    /// in-flight render copy or [`Pixels::with_rgba`] borrow still holds the previous buffer
+    /// (that buffer is freed once the reader finishes). No spare buffer is retained inside
+    /// `Pixels` when idle.
+    ///
+    /// # Example
+    /// ```
+    /// use rune_image::Pixels;
+    ///
+    /// let pixels = Pixels::new();
+    /// let mut spare = pixels.replace(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 255]);
+    /// assert!(spare.is_empty());
+    /// spare.resize(8, 0);
+    /// let recycled = pixels.replace(2, 1, spare);
+    /// assert_eq!(recycled.len(), 8);
+    /// ```
+    pub fn replace(&self, width: u32, height: u32, rgba: Vec<u8>) -> Vec<u8> {
+        assert_eq!(Some(rgba.len()), (width as usize).checked_mul(height as usize).and_then(|n| n.checked_mul(4)), "rgba must hold width * height pixels");
+        if rgba.is_empty() {
+            let replaced = {
+                let mut frame = self.inner.frame.lock().unwrap();
+                self.advance_ticket();
+                frame.width = width;
+                frame.height = height;
+                frame.generation += 1;
+                std::mem::replace(&mut frame.data, FrameData::Empty)
+            };
+            let old = reclaim_rgba(replaced);
+            self.source.notify();
+            return old;
         }
+        // Fast path: when no reader holds a clone of the current Arc, swap the Vec in place so
+        // steady-state streaming allocates nothing per update.
+        let (rgba, old_vec) = {
+            let mut frame = self.inner.frame.lock().unwrap();
+            if let FrameData::Rgba(arc) = &mut frame.data
+                && let Some(slot) = Arc::get_mut(arc)
+            {
+                self.advance_ticket();
+                let old = std::mem::replace(slot, rgba);
+                frame.width = width;
+                frame.height = height;
+                frame.generation += 1;
+                (None, Some(old))
+            } else {
+                (Some(rgba), None)
+            }
+        };
+        if let Some(old) = old_vec {
+            self.source.notify();
+            return old;
+        }
+        // Slow path: first frame, replacing mips, or an in-flight copy/borrow holds the old Arc.
+        // Allocate the new Arc outside the lock, then swap it in and reclaim or drop the replaced
+        // holder outside the lock.
+        let data = FrameData::Rgba(Arc::new(rgba.unwrap()));
+        let replaced = {
+            let mut frame = self.inner.frame.lock().unwrap();
+            self.advance_ticket();
+            frame.width = width;
+            frame.height = height;
+            frame.generation += 1;
+            std::mem::replace(&mut frame.data, data)
+        };
+        let old = reclaim_rgba(replaced);
         self.source.notify();
+        old
+    }
+
+    /// Runs `f` with the current straight-alpha sRGB RGBA frame: `(width, height, bytes)`, rows
+    /// top first, without copying the pixel buffer. Returns `None` when empty or when the handle
+    /// holds decoded mipmaps (from [`crate::ImageCache`]).
+    ///
+    /// The frame lock is released before `f` runs, so calling [`Pixels::size`], [`Pixels::set`],
+    /// or [`Pixels::replace`] inside `f` does not deadlock and does not block rendering. While
+    /// `f` runs, the borrowed slice keeps showing the snapshotted frame even if another call
+    /// replaces it.
+    ///
+    /// # Example
+    /// ```
+    /// use rune_image::Pixels;
+    ///
+    /// let pixels = Pixels::new();
+    /// pixels.set(2, 1, vec![10, 20, 30, 255, 40, 50, 60, 255]);
+    /// let first_red = pixels.with_rgba(|w, h, bytes| {
+    ///     assert_eq!((w, h), (2, 1));
+    ///     bytes[0]
+    /// });
+    /// assert_eq!(first_red, Some(10));
+    /// ```
+    pub fn with_rgba<R>(&self, f: impl FnOnce(u32, u32, &[u8]) -> R) -> Option<R> {
+        let (width, height, rgba) = {
+            let frame = self.inner.frame.lock().unwrap();
+            match &frame.data {
+                FrameData::Rgba(rgba) => (frame.width, frame.height, Arc::clone(rgba)),
+                FrameData::Empty | FrameData::Mips(_) => return None,
+            }
+        };
+        Some(f(width, height, &rgba))
+    }
+
+    /// Reads the current pixels back as straight-alpha sRGB RGBA8 (`width * height * 4` bytes,
+    /// rows top first), whether this handle holds raw RGBA from [`Pixels::set`] /
+    /// [`Pixels::replace`] or decoded mipmaps from [`crate::ImageCache`]. Returns `None` when
+    /// empty or not yet decoded.
+    ///
+    /// Releases the frame lock before copying or converting pixels, so it does not block
+    /// rendering. For mip-backed images, follows [`crate::Image::to_rgba`]'s rounding and
+    /// SVG intrinsic-size rules.
+    ///
+    /// ```
+    /// use rune_image::Pixels;
+    ///
+    /// let pixels = Pixels::new();
+    /// assert_eq!(pixels.to_rgba(), None);
+    /// pixels.set(2, 1, vec![255, 0, 0, 255, 0, 0, 255, 128]);
+    /// assert_eq!(pixels.to_rgba(), Some((2, 1, vec![255, 0, 0, 255, 0, 0, 255, 128])));
+    /// ```
+    pub fn to_rgba(&self) -> Option<(u32, u32, Vec<u8>)> {
+        let (width, height, data) = {
+            let frame = self.inner.frame.lock().unwrap();
+            (frame.width, frame.height, frame.data.clone())
+        };
+        match data {
+            FrameData::Empty => None,
+            FrameData::Rgba(rgba) => (width > 0 && height > 0).then(|| (width, height, (*rgba).clone())),
+            FrameData::Mips(decoded) => crate::readback::decoded_to_rgba(&decoded),
+        }
+    }
+
+    /// Borrows the current frame's pixels (straight RGBA or mip-0 linear-premultiplied) for
+    /// off-thread un-premultiplication and PNG encoding on web.
+    #[doc(hidden)]
+    pub fn with_copy_pixels<R>(&self, f: impl FnOnce(crate::CopyPixels<'_>) -> R) -> Option<R> {
+        let (width, height, data) = {
+            let frame = self.inner.frame.lock().unwrap();
+            (frame.width, frame.height, frame.data.clone())
+        };
+        match data {
+            FrameData::Empty => None,
+            FrameData::Rgba(rgba) => (width > 0 && height > 0).then(|| {
+                f(crate::CopyPixels::Straight { width, height, bytes: std::borrow::Cow::Borrowed(&rgba) })
+            }),
+            FrameData::Mips(decoded) => crate::readback::with_decoded_copy_pixels(&decoded, f),
+        }
+    }
+
+    pub(crate) fn advance_ticket(&self) -> u64 {
+        self.inner.ticket.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    pub(crate) fn downgrade(&self) -> WeakPixels {
+        WeakPixels {
+            inner: Arc::downgrade(&self.inner),
+            source: Arc::downgrade(&self.source),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn store_mips_if_current(&self, ticket: u64, mips: Arc<crate::Decoded>) -> bool {
+        store_mips_if_current_inner(&self.inner, &self.source, ticket, mips)
+    }
+
+    /// Stores `mips` without notifying subscribers, so [`crate::Image::finish`] can publish
+    /// `decoded` before waking windows (`Image::wait` and `is_ready` see the pixels, and woken
+    /// windows see `is_ready` and `size`).
+    pub(crate) fn store_mips(&self, mips: Arc<crate::Decoded>) {
+        let (width, height) = (mips.mips[0].width, mips.mips[0].height);
+        let replaced = {
+            let mut frame = self.inner.frame.lock().unwrap();
+            self.advance_ticket();
+            frame.width = width;
+            frame.height = height;
+            frame.generation += 1;
+            std::mem::replace(&mut frame.data, FrameData::Mips(mips))
+        };
+        drop(replaced);
     }
 
     pub fn size(&self) -> (u32, u32) {
-        let frame = self.frame.lock().unwrap();
+        let frame = self.inner.frame.lock().unwrap();
         (frame.width, frame.height)
     }
 
     #[doc(hidden)]
     pub fn signature(&self) -> (u64, u64) {
-        let frame = self.frame.lock().unwrap();
+        let frame = self.inner.frame.lock().unwrap();
         (self.id, frame.generation)
     }
 
     /// The image's RGBA bytes as [`Pixels::set`] gave them (empty for a decoded image's mips).
     #[doc(hidden)]
     pub fn rgba(&self) -> Vec<u8> {
-        self.frame.lock().unwrap().rgba.clone()
+        let data = self.inner.frame.lock().unwrap().data.clone();
+        match data {
+            FrameData::Rgba(rgba) => (*rgba).clone(),
+            FrameData::Empty | FrameData::Mips(_) => Vec::new(),
+        }
+    }
+
+    /// Holds the frame lock until dropped, so tests can pause a concurrent pixel update.
+    #[cfg(test)]
+    pub(crate) fn hold_frame(&self) -> impl Drop + '_ {
+        self.inner.frame.lock().unwrap()
+    }
+
+    /// Weak handle to the current streaming RGBA buffer, so tests can verify reference counts.
+    #[cfg(test)]
+    fn rgba_weak(&self) -> Option<std::sync::Weak<Vec<u8>>> {
+        match &self.inner.frame.lock().unwrap().data {
+            FrameData::Rgba(rgba) => Some(Arc::downgrade(rgba)),
+            FrameData::Empty | FrameData::Mips(_) => None,
+        }
+    }
+
+    /// Raw pointer to the current streaming `Arc<Vec<u8>>` without taking a `Weak` count, so
+    /// tests can verify in-place `Arc` reuse.
+    #[cfg(test)]
+    fn rgba_arc_ptr(&self) -> Option<*const Vec<u8>> {
+        match &self.inner.frame.lock().unwrap().data {
+            FrameData::Rgba(rgba) => Some(Arc::as_ptr(rgba)),
+            FrameData::Empty | FrameData::Mips(_) => None,
+        }
     }
 }
 
@@ -161,9 +450,11 @@ pub fn fit_in(
     let whole = [0.0, 0.0, 1.0, 1.0];
     let [x, y, w, h] = rect;
     let (iw, ih) = (size.0 as f32, size.1 as f32);
-    if fit.is_none() || iw <= 0.0 || ih <= 0.0 || w <= 0.0 || h <= 0.0 { return (rect, whole); }
+    if fit.is_none() || iw <= 0.0 || ih <= 0.0 || !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 {
+        return (rect, whole);
+    }
     let [kx, ky] = place.share();
-    let u = if (w - w.round()).abs() < 1.0 / 512.0 && (h - h.round()).abs() < 1.0 / 512.0 {
+    let u = if (w - w.round()).abs() < 1.0 / 512.0 && (h - h.round()).abs() < 1.0 / 512.0 && !snap_weight.is_nan() {
         snap_weight.clamp(0.0, 1.0)
     } else {
         0.0
@@ -187,17 +478,19 @@ pub fn fit_in(
     }
     if fit == Some(SurfaceFit::Fit) {
         let k = (w / iw).min(h / ih);
-        let (dw, dh) = ((iw * k).clamp(1.0, w), (ih * k).clamp(1.0, h));
+        let (min_w, min_h) = (w.min(1.0), h.min(1.0));
+        let (dw, dh) = ((iw * k).clamp(min_w, w), (ih * k).clamp(min_h, h));
         let exact = [x + (w - dw) * kx, y + (h - dh) * ky, dw, dh];
         if u <= 0.0 {
             return (exact, whole);
         }
-        let (sw, sh) = ((iw * k).round().clamp(1.0, w), (ih * k).round().clamp(1.0, h));
+        let (sw, sh) = ((iw * k).round().clamp(min_w, w), (ih * k).round().clamp(min_h, h));
         let snapped = [x + ((w - sw) * kx).round(), y + ((h - sh) * ky).round(), sw, sh];
         return (blend(exact, snapped), whole);
     }
     let k = (w / iw).max(h / ih);
-    let (sx, sy) = (w / (iw * k), h / (ih * k));
+    if !(k > 0.0 && k.is_finite()) { return (rect, whole); }
+    let (sx, sy) = ((w / (iw * k)).clamp(0.0, 1.0), (h / (ih * k)).clamp(0.0, 1.0));
     let ((x0, x1), (y0, y1)) = (window(sx, kx), window(sy, ky));
     (rect, [x0, y0, x1, y1])
 }
@@ -218,23 +511,21 @@ struct Slot {
     generation: u64,
     /// The animation frame copied in.
     frame: usize,
+    /// Weak reference to the `Pixels` backing storage; once dropped and not drawn this frame,
+    /// the slot can never be drawn again and is reclaimed immediately.
+    live: std::sync::Weak<FrameInner>,
+    /// Drawn in the last completed frame.
+    shown: bool,
+    /// Drawn in this frame so far.
+    touched: bool,
+    /// `ImageAtlas::frame` when this slot was last drawn, for LRU eviction under bound pressure.
+    last_frame: u64,
+    /// Set on slots left on overflow pages above `IMAGE_ATLAS_MAX_PAGES` so their next draw
+    /// relocates them onto an earlier page.
+    relocate: bool,
 }
 
-/// One stable shelf page, or an exact-size standalone page for a large image.
-pub struct ImagePage {
-    pub width: u32,
-    pub height: u32,
-    pub data: Vec<u8>,
-    /// Rows `[y0, y1)` changed since the last upload.
-    pub dirty: Option<(u32, u32)>,
-    shelf_x: u32,
-    shelf_y: u32,
-    shelf_h: u32,
-    /// Drawn from in the last completed frame.
-    shown: bool,
-    /// Drawn from in this frame so far; only ever set until the frame ends.
-    touched: bool,
-}
+pub use crate::shelf::ImagePage;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Placed {
@@ -251,10 +542,19 @@ pub struct ImageAtlas {
     /// When each animated image drawn here started playing, on the animation clock: its first
     /// draw, kept while the atlas holds it.
     starts: HashMap<u64, f64>,
+    /// Monotonic frame counter advanced by `end_frame`, used for LRU eviction.
+    frame: u64,
+    /// Rects of touched slots replaced by a mid-frame resize, held until the frame finishes drawing.
+    deferred_this_frame: Vec<(usize, u32, u32, u32)>,
+    /// Deferred rects from the previous frame, released on the next `end_frame` or `rest`.
+    deferred_prev_frame: Vec<(usize, u32, u32, u32)>,
     /// Frames copied in so far, so the idle meter sees new pixels in a slot it already drew.
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub copies: u64,
+    /// How long the last `place_at` call held `pixels.frame`.
+    #[cfg(test)]
+    last_lock_hold: std::time::Duration,
 }
 
 impl ImageAtlas {
@@ -270,47 +570,129 @@ impl ImageAtlas {
     /// an animation's first frame.
     #[doc(hidden)]
     pub fn place_at(&mut self, pixels: &Pixels, drawn: [f32; 2], now: Option<f64>) -> Option<(Placed, Option<f64>)> {
-        let frame = pixels.frame.lock().unwrap();
-        let (mut w, mut h) = (frame.width, frame.height);
-        if w == 0 || h == 0 || w > 8192 || h > 8192 {
-            return None;
-        }
+        self.place_at_filtered(pixels, drawn, now, ImageFilter::Linear)
+    }
+
+    /// [`Self::place_at`] with an explicit sampling filter: [`ImageFilter::Nearest`] selects mip
+    /// level 0 (the highest level within `max_side()`) instead of linear-prefiltered downsampled
+    /// mips so crisp pixel edges stay sharp even when scaled down.
+    #[doc(hidden)]
+    pub fn place_at_filtered(
+        &mut self,
+        pixels: &Pixels,
+        drawn: [f32; 2],
+        now: Option<f64>,
+        filter: ImageFilter,
+    ) -> Option<(Placed, Option<f64>)> {
+        self.place_at_inner(pixels, drawn, now, filter, |_| {})
+    }
+
+    #[cfg(test)]
+    fn place_at_with_copy_hook(
+        &mut self,
+        pixels: &Pixels,
+        drawn: [f32; 2],
+        now: Option<f64>,
+        on_copy_row: impl FnMut(usize),
+    ) -> Option<(Placed, Option<f64>)> {
+        self.place_at_inner(pixels, drawn, now, ImageFilter::Linear, on_copy_row)
+    }
+
+    fn place_at_inner(
+        &mut self,
+        pixels: &Pixels,
+        drawn: [f32; 2],
+        now: Option<f64>,
+        filter: ImageFilter,
+        mut on_copy_row: impl FnMut(usize),
+    ) -> Option<(Placed, Option<f64>)> {
+        #[cfg(test)]
+        let lock_start = rune_core::time::now();
+        let (frame_w, frame_h, generation, data) = {
+            let frame = pixels.inner.frame.lock().unwrap();
+            if frame.width == 0 || frame.height == 0 || frame.width > crate::MAX_SIDE || frame.height > crate::MAX_SIDE {
+                #[cfg(test)]
+                { self.last_lock_hold = lock_start.elapsed(); }
+                return None;
+            }
+            (frame.width, frame.height, frame.generation, frame.data.clone())
+        };
+        #[cfg(test)]
+        { self.last_lock_hold = lock_start.elapsed(); }
+        let (mut w, mut h) = (frame_w, frame_h);
         let mut level = 0;
         let mut shown = 0;
         let mut next = None;
-        let bytes = if let Some(decoded) = &frame.mips {
-            let mips = match (&decoded.motion, now) {
-                (Some(motion), Some(now)) => {
-                    let start = *self.starts.entry(pixels.id).or_insert(now);
-                    let (i, change) = motion.at(now - start);
-                    (shown, next) = (i, change.map(|t| start + t));
-                    motion.frame(&decoded.mips, i)
+        let premultiplied = matches!(data, FrameData::Mips(_));
+        let bytes: &[u8] = match &data {
+            FrameData::Mips(decoded) => {
+                let mips = match (&decoded.motion, now) {
+                    (Some(motion), Some(now)) => {
+                        let start = *self.starts.entry(pixels.id).or_insert(now);
+                        let (i, change) = motion.at(now - start);
+                        (shown, next) = (i, change.map(|t| start + t));
+                        motion.frame(&decoded.mips, i)
+                    }
+                    _ => &decoded.mips[..],
+                };
+                // Choose the smallest prefiltered level that still covers both device-pixel axes
+                // when linearly filtered. Nearest-neighbour requests mip 0 so downsampled linear
+                // mips never blur hard pixel edges. No mip construction happens on the render thread.
+                if filter == ImageFilter::Linear {
+                    while let Some(next) = mips.get(level + 1) {
+                        if (next.width as f32) < drawn[0].clamp(1.0, frame_w as f32)
+                            || (next.height as f32) < drawn[1].clamp(1.0, frame_h as f32) { break; }
+                        level += 1;
+                    }
                 }
-                _ => &decoded.mips[..],
-            };
-            // Choose the smallest prefiltered level that still covers both device-pixel axes.
-            // No mip construction or resampling happens on the render thread.
-            while let Some(next) = mips.get(level + 1) {
-                if (next.width as f32) < drawn[0].clamp(1.0, frame.width as f32)
-                    || (next.height as f32) < drawn[1].clamp(1.0, frame.height as f32) { break; }
-                level += 1;
+                // A level past the GPU's largest texture can't go up: draw from the largest that fits.
+                let limit = max_side();
+                while mips[level].width.max(mips[level].height) > limit && level + 1 < mips.len() { level += 1; }
+                let mip = &mips[level];
+                (w, h) = (mip.width, mip.height);
+                &mip.pixels
             }
-            let mip = &mips[level];
-            (w, h) = (mip.width, mip.height);
-            &mip.pixels
-        } else { &frame.rgba };
+            FrameData::Rgba(rgba) => rgba,
+            FrameData::Empty => return None,
+        };
+        if w > max_side() || h > max_side() { return None; }
         let key = (pixels.id, level);
-        if self.slots.get(&key).is_some_and(|s| s.w != w || s.h != h) {
-            self.slots.remove(&key);
+        if self.slots.get(&key).is_some_and(|s| s.w != w || s.h != h)
+            && let Some(old) = self.slots.remove(&key)
+        {
+            if old.touched {
+                self.deferred_this_frame.push((old.page, old.x, old.y, old.w));
+            } else {
+                self.pages[old.page].free_rect(old.x, old.y, old.w);
+            }
+        } else if self.slots.get(&key).is_some_and(|s| s.relocate && !s.touched) {
+            if let Some((page, x, y)) = self.try_allocate_within(w, h, IMAGE_ATLAS_MAX_PAGES, true) {
+                if let Some(old) = self.slots.remove(&key) {
+                    self.pages[old.page].free_rect(old.x, old.y, old.w);
+                }
+                self.slots.insert(key, Slot {
+                    page, x, y, w, h, generation: 0, frame: 0,
+                    live: Arc::downgrade(&pixels.inner),
+                    shown: false, touched: false, last_frame: self.frame, relocate: false,
+                });
+            } else if let Some(slot) = self.slots.get_mut(&key) {
+                slot.relocate = false;
+            }
         }
         if !self.slots.contains_key(&key) {
             let (page, x, y) = self.allocate(w, h);
-            self.slots.insert(key, Slot { page, x, y, w, h, generation: 0, frame: 0 });
+            self.slots.insert(key, Slot {
+                page, x, y, w, h, generation: 0, frame: 0,
+                live: Arc::downgrade(&pixels.inner),
+                shown: false, touched: false, last_frame: self.frame, relocate: false,
+            });
         }
         let slot = self.slots.get_mut(&key).unwrap();
+        slot.touched = true;
+        slot.last_frame = self.frame;
         self.pages[slot.page].touched = true;
-        if slot.generation != frame.generation || slot.frame != shown {
-            slot.generation = frame.generation;
+        if slot.generation != generation || slot.frame != shown {
+            slot.generation = generation;
             slot.frame = shown;
             #[cfg(debug_assertions)]
             { self.copies += 1; }
@@ -320,11 +702,12 @@ impl ImageAtlas {
                 let dst = (slot.y as usize + line) * row + slot.x as usize * 4;
                 let src = line * w as usize * 4;
                 page.data[dst..dst + w as usize * 4].copy_from_slice(&bytes[src..src + w as usize * 4]);
+                on_copy_row(line);
             }
             let (y0, y1) = (slot.y, slot.y + h);
             page.dirty = Some(page.dirty.map_or((y0, y1), |(a, b)| (a.min(y0), b.max(y1))));
         }
-        Some((Placed { rect: [slot.x, slot.y, w, h], page: slot.page, premultiplied: frame.mips.is_some() }, next))
+        Some((Placed { rect: [slot.x, slot.y, w, h], page: slot.page, premultiplied }, next))
     }
 
     /// Whether the atlas currently holds a slot for `pixels` at mip `level`.
@@ -333,286 +716,214 @@ impl ImageAtlas {
         self.slots.contains_key(&(pixels.id, level))
     }
 
-    /// Forgets images no element showed since the last call, except on pages that still show
-    /// one and on the first page: shelves never reuse a slot's space until their page starts
-    /// over, so an image shown again there (a view come back to) needs no copy or upload. A
-    /// page left with nothing starts over so replaced sizes don't fill the atlas; a full atlas
-    /// starts over a page that showed nothing last frame or yet this one before it adds one.
+    /// Forgets dropped images everywhere, images on untouched pages above page 0, and oldest
+    /// unshown slots past `IMAGE_ATLAS_MAX_SLOTS` / `IMAGE_ATLAS_MAX_BYTES` / `IMAGE_ATLAS_MAX_PAGES`,
+    /// freeing their shelf spans and emptying pages left with zero slots.
     pub fn end_frame(&mut self) {
-        let pages = &self.pages;
-        let first_kept = pages.first().is_some_and(|p| p.width <= IMAGE_ATLAS_SIZE && p.height <= IMAGE_ATLAS_SIZE);
-        self.slots.retain(|_, s| pages[s.page].touched || (s.page == 0 && first_kept));
+        self.frame = self.frame.saturating_add(1);
+        if !self.deferred_prev_frame.is_empty() {
+            for (page, x, y, w) in self.deferred_prev_frame.drain(..) {
+                if let Some(p) = self.pages.get_mut(page) { p.free_rect(x, y, w); }
+            }
+        }
+        let first_kept = self.pages.first().is_some_and(ImagePage::is_shelf);
+        {
+            let Self { pages, slots, .. } = self;
+            slots.retain(|_, s| {
+                let keep = s.touched || (s.live.strong_count() > 0 && (pages[s.page].touched || (s.page == 0 && first_kept)));
+                if !keep { pages[s.page].free_rect(s.x, s.y, s.w); }
+                keep
+            });
+        }
+        self.enforce_bounds();
         if !self.starts.is_empty() {
             let slots = &self.slots;
             self.starts.retain(|id, _| slots.keys().any(|(slot, _)| slot == id));
         }
-        for (i, page) in self.pages.iter_mut().enumerate() {
-            page.shown = std::mem::take(&mut page.touched);
-            if !self.slots.values().any(|slot| slot.page == i) {
-                (page.shelf_x, page.shelf_y, page.shelf_h) = (0, 0, 0);
-                page.dirty = None;
-                if page.width > IMAGE_ATLAS_SIZE || page.height > IMAGE_ATLAS_SIZE {
-                    page.data = Vec::new();
-                }
-            }
+        for slot in self.slots.values_mut() {
+            slot.shown = std::mem::take(&mut slot.touched);
         }
-        let keep = self.slots.values().map(|s| s.page + 1).max().unwrap_or(0);
-        self.pages.truncate(keep);
-    }
-
-    /// A window at rest (`window::rest`): forgets the images no element showed in the last
-    /// frame, the first page's included, and frees the CPU copy of every page left empty. An
-    /// image shown again after it is copied in again.
-    pub fn rest(&mut self) {
-        let pages = &self.pages;
-        self.slots.retain(|_, s| pages[s.page].shown);
-        let slots = &self.slots;
-        self.starts.retain(|id, _| slots.keys().any(|(slot, _)| slot == id));
-        for (i, page) in self.pages.iter_mut().enumerate() {
-            if !self.slots.values().any(|slot| slot.page == i) {
-                (page.shelf_x, page.shelf_y, page.shelf_h) = (0, 0, 0);
+        let Self { pages, slots, deferred_this_frame, .. } = self;
+        for (i, page) in pages.iter_mut().enumerate() {
+            page.shown = std::mem::take(&mut page.touched);
+            if !slots.values().any(|slot| slot.page == i) && !deferred_this_frame.iter().any(|&(p, ..)| p == i) {
+                page.shelves.reset();
                 page.dirty = None;
                 page.data = Vec::new();
             }
         }
+        let keep = self.slots.values().map(|s| s.page + 1)
+            .chain(self.deferred_this_frame.iter().map(|&(p, ..)| p + 1))
+            .max().unwrap_or(0);
+        self.pages.truncate(keep);
+        if self.pages.len() > IMAGE_ATLAS_MAX_PAGES
+            && self.pages[..IMAGE_ATLAS_MAX_PAGES].iter().any(ImagePage::has_free_space)
+        {
+            for slot in self.slots.values_mut() {
+                if slot.page >= IMAGE_ATLAS_MAX_PAGES { slot.relocate = true; }
+            }
+        }
+        std::mem::swap(&mut self.deferred_prev_frame, &mut self.deferred_this_frame);
+    }
+
+    /// A window at rest (`window::rest`): forgets the images no element showed in the last
+    /// frame (or whose handles were dropped), the first page's included, shrinks shelf pages to
+    /// their remaining rows, and frees the CPU copy of every page left empty.
+    pub fn rest(&mut self) {
+        for (page, x, y, w) in self.deferred_prev_frame.drain(..).chain(self.deferred_this_frame.drain(..)) {
+            if let Some(p) = self.pages.get_mut(page) { p.free_rect(x, y, w); }
+        }
+        {
+            let Self { pages, slots, .. } = self;
+            slots.retain(|_, s| {
+                let keep = s.shown && s.live.strong_count() > 0;
+                if !keep { pages[s.page].free_rect(s.x, s.y, s.w); }
+                keep
+            });
+        }
+        let slots = &self.slots;
+        self.starts.retain(|id, _| slots.keys().any(|(slot, _)| slot == id));
+        for (i, page) in self.pages.iter_mut().enumerate() {
+            if !self.slots.values().any(|slot| slot.page == i) {
+                page.empty();
+            } else {
+                page.shrink_to_fit_rows();
+            }
+        }
         let keep = self.slots.values().map(|s| s.page + 1).max().unwrap_or(0);
         self.pages.truncate(keep);
     }
 
+    /// Drops every page, slot and animation start, freeing all CPU image buffers. Returns whether
+    /// the atlas held any pages or slots.
+    pub fn clear(&mut self) -> bool {
+        let had = !self.pages.is_empty() || !self.slots.is_empty() || !self.starts.is_empty();
+        self.pages.clear();
+        self.slots.clear();
+        self.starts.clear();
+        self.deferred_this_frame.clear();
+        self.deferred_prev_frame.clear();
+        had
+    }
+
     /// Marks every row for upload (a new texture).
     pub fn invalidate(&mut self) {
-        for page in &mut self.pages { page.dirty = Some((0, page.height)); }
+        for page in &mut self.pages {
+            if !page.data.is_empty() {
+                page.dirty = Some((0, page.height));
+            }
+        }
+    }
+
+    fn try_allocate_within(&mut self, w: u32, h: u32, max_pages: usize, reclaim_stale: bool) -> Option<(usize, u32, u32)> {
+        let limit = max_pages.min(self.pages.len());
+        for (i, page) in self.pages[..limit].iter_mut().enumerate() {
+            if page.data.is_empty() { *page = ImagePage::new(w, h); }
+            if let Some((x, y)) = page.allocate(w, h) { return Some((i, x, y)); }
+        }
+        let is_shelf_req = w <= IMAGE_ATLAS_SIZE && h <= IMAGE_ATLAS_SIZE;
+        // Full: start over an idle shelf page before growing.
+        if is_shelf_req && let Some(i) = self.pages[..limit].iter().enumerate().position(|(i, p)| {
+            !p.shown && !p.touched && p.is_shelf() && !p.shelves.is_empty() && !self.page_pinned(i)
+        }) {
+            self.slots.retain(|_, s| s.page != i);
+            let page = &mut self.pages[i];
+            page.shelves.reset();
+            let (x, y) = page.allocate(w, h).unwrap();
+            return Some((i, x, y));
+        }
+        if !reclaim_stale { return None; }
+        // At or past the atlas bound: reclaim idle pages or stale unshown slots on shelf pages.
+        if let Some(i) = self.pages[..limit].iter().enumerate().position(|(i, p)| !p.shown && !p.touched && !self.page_pinned(i)) {
+            self.slots.retain(|_, s| s.page != i);
+            self.pages[i] = ImagePage::new(w, h);
+            let (x, y) = self.pages[i].allocate(w, h).unwrap();
+            return Some((i, x, y));
+        }
+        if is_shelf_req && self.slots.values().any(|s| s.page < limit && !s.touched && !s.shown && self.pages[s.page].is_shelf()) {
+            let need_area = u64::from(w) * u64::from(h);
+            let max_area = u64::from(IMAGE_ATLAS_SIZE) * u64::from(IMAGE_ATLAS_SIZE);
+            let mut evictable: Vec<((u64, usize), bool, u64)> = self.slots.iter()
+                .filter(|(_, s)| s.page < limit && !s.touched && !s.shown && self.pages[s.page].is_shelf())
+                .filter(|(_, s)| {
+                    let pinned: u64 = self.slots.values()
+                        .filter(|o| o.page == s.page && (o.touched || o.shown))
+                        .map(|o| u64::from(o.w) * u64::from(o.h))
+                        .sum();
+                    pinned.saturating_add(need_area) <= max_area
+                })
+                .map(|(&k, s)| (k, s.live.strong_count() > 0, s.last_frame))
+                .collect();
+            evictable.sort_by_key(|&(_, alive, last)| (alive, last));
+            for (key, _, _) in evictable {
+                if let Some(s) = self.slots.remove(&key) {
+                    self.pages[s.page].free_rect(s.x, s.y, s.w);
+                    if let Some((x, y)) = self.pages[s.page].allocate(w, h) {
+                        return Some((s.page, x, y));
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn allocate(&mut self, w: u32, h: u32) -> (usize, u32, u32) {
-        for (i, page) in self.pages.iter_mut().enumerate() {
-            if page.data.is_empty() { *page = ImagePage::new(w, h); }
-            if let Some((x, y)) = page.allocate(w, h) { return (i, x, y); }
-        }
-        // Full: start over a shelf page that showed nothing last frame or yet this one. A page
-        // not drawn from yet this frame may still be, later in the tree.
-        let idle = |p: &ImagePage| !p.shown && !p.touched && p.width <= IMAGE_ATLAS_SIZE && p.height <= IMAGE_ATLAS_SIZE
-            && p.shelf_y + p.shelf_h > 0;
-        if w <= IMAGE_ATLAS_SIZE && h <= IMAGE_ATLAS_SIZE && let Some(i) = self.pages.iter().position(idle) {
-            self.slots.retain(|_, s| s.page != i);
-            let page = &mut self.pages[i];
-            (page.shelf_x, page.shelf_y, page.shelf_h) = (0, 0, 0);
-            let (x, y) = page.allocate(w, h).unwrap();
-            return (i, x, y);
+        let need_bytes = ImagePage::initial_bytes(w, h);
+        let reclaim = self.pages.len() >= IMAGE_ATLAS_MAX_PAGES
+            || self.total_bytes().saturating_add(need_bytes) > IMAGE_ATLAS_MAX_BYTES;
+        if let Some(placed) = self.try_allocate_within(w, h, self.pages.len(), reclaim) {
+            return placed;
         }
         let mut page = ImagePage::new(w, h);
         let (x, y) = page.allocate(w, h).unwrap();
         self.pages.push(page);
         (self.pages.len() - 1, x, y)
     }
-}
 
-impl ImagePage {
-    /// A shelf page starts with the rows its first image needs (at least
-    /// `IMAGE_PAGE_START_ROWS`) and grows as its shelves fill (`allocate`), up to
-    /// `IMAGE_ATLAS_SIZE`: a window that shows a few icons holds 512 KiB of it, not 4 MiB.
-    fn new(w: u32, h: u32) -> Self {
-        let (width, height) = if w > IMAGE_ATLAS_SIZE || h > IMAGE_ATLAS_SIZE { (w, h) }
-            else { (IMAGE_ATLAS_SIZE, h.next_power_of_two().max(IMAGE_PAGE_START_ROWS)) };
-        Self { width, height, data: vec![0; width as usize * height as usize * 4],
-            dirty: None, shelf_x: 0, shelf_y: 0, shelf_h: 0, shown: false, touched: false }
+    fn page_pinned(&self, page: usize) -> bool {
+        self.deferred_this_frame.iter().any(|&(p, ..)| p == page)
     }
 
-    fn allocate(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
-        let shelf = self.width == IMAGE_ATLAS_SIZE && self.height <= IMAGE_ATLAS_SIZE;
-        if w > self.width || h > if shelf { IMAGE_ATLAS_SIZE } else { self.height } { return None; }
-        if self.shelf_x + w > self.width {
-            self.shelf_y += self.shelf_h;
-            self.shelf_x = 0;
-            self.shelf_h = 0;
+    fn total_bytes(&self) -> usize {
+        self.pages.iter().map(|p| p.data.len()).sum()
+    }
+
+    fn active_pages(&self) -> usize {
+        self.pages.iter().filter(|p| !p.data.is_empty()).count()
+    }
+
+    fn enforce_bounds(&mut self) {
+        let over = |a: &Self| {
+            a.slots.len() > IMAGE_ATLAS_MAX_SLOTS
+                || a.total_bytes() > IMAGE_ATLAS_MAX_BYTES
+                || a.active_pages() > IMAGE_ATLAS_MAX_PAGES
+        };
+        if !over(self) { return; }
+        let mut evictable: Vec<((u64, usize), u64)> = self.slots.iter()
+            .filter(|(_, s)| !s.touched)
+            .map(|(&k, s)| (k, s.last_frame))
+            .collect();
+        evictable.sort_by_key(|&(_, last)| last);
+        for (key, _) in evictable {
+            if !over(self) { break; }
+            if let Some(s) = self.slots.remove(&key) {
+                self.pages[s.page].free_rect(s.x, s.y, s.w);
+                if !self.page_pinned(s.page) && !self.slots.values().any(|o| o.page == s.page) {
+                    self.pages[s.page].empty();
+                }
+            }
         }
-        if self.shelf_y + h > self.height {
-            if !shelf || self.shelf_y + h > IMAGE_ATLAS_SIZE { return None; }
-            // Rows already placed keep their texels; the renderer makes the page's texture again
-            // at its new size and uploads all of it.
-            self.height = (self.shelf_y + h).next_power_of_two().min(IMAGE_ATLAS_SIZE);
-            self.data.resize(self.width as usize * self.height as usize * 4, 0);
-            self.dirty = Some((0, self.height));
+        if self.total_bytes() > IMAGE_ATLAS_MAX_BYTES {
+            for page in &mut self.pages { page.shrink_to_fit_rows(); }
         }
-        let at = (self.shelf_x, self.shelf_y);
-        self.shelf_x += w;
-        self.shelf_h = self.shelf_h.max(h);
-        Some(at)
     }
 }
+
+
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    #[ignore = "manual staging benchmark; reports measurements, not a timing threshold"]
-    fn image_staging_costs() {
-        use std::{hint::black_box, time::Instant};
-        let stream = Pixels::new();
-        stream.set(224, 128, vec![0; 224 * 128 * 4]);
-        let mut atlas = ImageAtlas::default();
-        atlas.place(&stream, [224.0, 128.0]);
-        atlas.end_frame();
-        atlas.pages[0].dirty = None;
-        let buffers: Vec<_> = (0..120).map(|_| vec![128; 224 * 128 * 4]).collect();
-        let start = Instant::now();
-        let mut upload_bytes = 0u64;
-        for bytes in buffers {
-            stream.set(224, 128, bytes);
-            black_box(atlas.place(&stream, [224.0, 128.0]));
-            atlas.end_frame();
-            let page = &mut atlas.pages[0];
-            let (lo, hi) = page.dirty.take().unwrap();
-            upload_bytes += u64::from((hi - lo) * page.width * 4);
-        }
-        eprintln!("stream 224x128: {:.1} us/stage, {} upload bytes/frame, {} page", start.elapsed().as_secs_f64() * 1e6 / 120.0, upload_bytes / 120, atlas.pages.len());
-        let cache = crate::ImageCache::new(Arc::new(|| {}));
-        let icons: Vec<_> = (0..100).map(|i| cache.rgba(128, 128, [i, 50, 100, 255].repeat(128 * 128))).collect();
-        for icon in &icons { icon.wait().unwrap(); }
-        let mut atlas = ImageAtlas::default();
-        for icon in &icons { atlas.place(icon.pixels(), [32.0; 2]); }
-        atlas.end_frame();
-        for page in &mut atlas.pages { page.dirty = None; }
-        let start = Instant::now();
-        for _ in 0..120 {
-            for icon in &icons { black_box(atlas.place(icon.pixels(), [32.0; 2])); }
-            atlas.end_frame();
-        }
-        eprintln!("100 static 128->32 icons: {:.1} us/frame, {} pages, {} dirty pages", start.elapsed().as_secs_f64() * 1e6 / 120.0, atlas.pages.len(), atlas.pages.iter().filter(|p| p.dirty.is_some()).count());
-    }
-
-    #[test]
-    fn fit_letterboxes_on_whole_pixels_and_fill_crops_the_centre() {
-        use SurfaceFit::{Fill, Fit};
-        const C: SurfacePlace = SurfacePlace::CENTRED;
-        let rect = [10.0, 20.0, 40.0, 40.0];
-        assert_eq!(fit(None, C, rect, (80, 20)), (rect, [0.0, 0.0, 1.0, 1.0]));
-        assert_eq!(fit(Some(Fit), C, rect, (80, 20)), ([10.0, 35.0, 40.0, 10.0], [0.0, 0.0, 1.0, 1.0]));
-        assert_eq!(fit(Some(Fit), C, rect, (20, 80)).0, [25.0, 20.0, 10.0, 40.0]);
-        assert_eq!(fit(Some(Fill), C, rect, (80, 20)), (rect, [0.375, 0.0, 0.625, 1.0]));
-        assert_eq!(fit(Some(Fill), C, rect, (40, 40)), (rect, [0.0, 0.0, 1.0, 1.0]));
-        assert_eq!(fit(Some(Fit), C, rect, (0, 0)).0, rect, "an empty image keeps the rect");
-    }
-
-    #[test]
-    fn frames_copy_in_once_per_generation_and_resize_moves_the_slot() {
-        let mut atlas = ImageAtlas::default();
-        let px = Pixels::new();
-        assert_eq!(atlas.place(&px, [2.0, 1.0]), None, "empty images draw nothing");
-        px.set(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 128]);
-        assert_eq!(atlas.place(&px, [2.0, 1.0]).unwrap().rect, [0, 0, 2, 1]);
-        assert_eq!(atlas.pages[0].dirty.take(), Some((0, 1)));
-        assert_eq!(&atlas.pages[0].data[..8], &[255, 0, 0, 255, 0, 255, 0, 128]);
-        atlas.place(&px, [2.0, 1.0]);
-        assert_eq!(atlas.pages[0].dirty, None, "an unchanged frame uploads nothing");
-        px.set(3, 2, vec![7; 24]);
-        let [x, y, w, h] = atlas.place(&px, [3.0, 2.0]).unwrap().rect;
-        assert_eq!((w, h), (3, 2));
-        assert_eq!(atlas.pages[0].data[((y * IMAGE_ATLAS_SIZE + x) * 4) as usize], 7);
-        let other = Pixels::new();
-        other.set(1, 1, vec![1; 4]);
-        atlas.place(&other, [1.0, 1.0]);
-        atlas.end_frame();
-        atlas.place(&px, [3.0, 2.0]);
-        atlas.end_frame();
-        assert!(atlas.slots.contains_key(&(px.id, 0)) && atlas.slots.contains_key(&(other.id, 0)), "the first page keeps unshown images");
-    }
-
-    #[test]
-    fn an_image_shown_again_after_a_while_is_not_copied_again() {
-        let mut atlas = ImageAtlas::default();
-        let (list, grid) = (Pixels::new(), Pixels::new());
-        list.set(32, 32, vec![1; 32 * 32 * 4]);
-        grid.set(48, 48, vec![2; 48 * 48 * 4]);
-        let shown = atlas.place(&list, [32.0; 2]).unwrap();
-        atlas.end_frame();
-        for _ in 0..4 {
-            atlas.place(&grid, [48.0; 2]);
-            atlas.end_frame();
-        }
-        atlas.pages[0].dirty = None;
-        assert_eq!(atlas.place(&list, [32.0; 2]), Some(shown));
-        assert_eq!(atlas.pages[0].dirty, None, "no copy, no upload");
-    }
-
-    #[test]
-    fn a_full_atlas_starts_over_pages_that_show_nothing_before_it_grows() {
-        let mut atlas = ImageAtlas::default();
-        let old: Vec<Pixels> = (0..4).map(|_| { let p = Pixels::new(); p.set(512, 512, vec![1; 512 * 512 * 4]); p }).collect();
-        for p in &old { atlas.place(p, [512.0; 2]); }
-        atlas.end_frame();
-        atlas.end_frame();
-        assert_eq!(atlas.pages.len(), 1);
-        let new = Pixels::new();
-        new.set(512, 512, vec![2; 512 * 512 * 4]);
-        assert_eq!(atlas.place(&new, [512.0; 2]).unwrap().rect, [0, 0, 512, 512]);
-        assert_eq!(atlas.pages.len(), 1);
-        assert!(!atlas.slots.contains_key(&(old[0].id, 0)), "the page's old images are forgotten");
-    }
-
-    /// A new image earlier in the tree than a body that fills the first page: the body isn't
-    /// drawn yet this frame when the new image needs room.
-    #[test]
-    fn a_full_page_shown_last_frame_is_not_started_over_before_its_images_are_drawn() {
-        let mut atlas = ImageAtlas::default();
-        let body: Vec<Pixels> = (0..4).map(|i| { let p = Pixels::new(); p.set(512, 512, vec![i; 512 * 512 * 4]); p }).collect();
-        let placed: Vec<_> = body.iter().map(|p| atlas.place(p, [512.0; 2]).unwrap()).collect();
-        atlas.end_frame();
-        atlas.pages[0].dirty = None;
-        let new = Pixels::new();
-        new.set(64, 64, vec![9; 64 * 64 * 4]);
-        assert_eq!(atlas.place(&new, [64.0; 2]).unwrap().page, 1);
-        assert_eq!(body.iter().map(|p| atlas.place(p, [512.0; 2]).unwrap()).collect::<Vec<_>>(), placed);
-        assert_eq!(atlas.pages[0].dirty, None, "the body copies in nothing");
-    }
-
-    /// An image drawn twice in a frame, resized by its producer in between: the first draw's
-    /// pixels stay put while this frame still samples them.
-    #[test]
-    fn an_image_resized_between_two_draws_keeps_the_first_draws_pixels() {
-        let mut atlas = ImageAtlas::default();
-        let px = Pixels::new();
-        px.set(512, 512, vec![1; 512 * 512 * 4]);
-        let fill: Vec<Pixels> = (0..3).map(|_| { let p = Pixels::new(); p.set(512, 512, vec![2; 512 * 512 * 4]); p }).collect();
-        atlas.place(&px, [512.0; 2]);
-        for p in &fill { atlas.place(p, [512.0; 2]); }
-        atlas.end_frame();
-        let first = atlas.place(&px, [512.0; 2]).unwrap();
-        px.set(600, 600, vec![3; 600 * 600 * 4]);
-        let second = atlas.place(&px, [600.0; 2]).unwrap();
-        assert_ne!(second.page, first.page);
-        let [x, y, ..] = first.rect;
-        assert_eq!(atlas.pages[first.page].data[((y * IMAGE_ATLAS_SIZE + x) * 4) as usize], 1);
-    }
-
-    #[test]
-    fn pages_expand_reclaim_and_keep_streaming_slots_stable() {
-        let mut atlas = ImageAtlas::default();
-        let stream = Pixels::new();
-        stream.set(224, 128, vec![1; 224 * 128 * 4]);
-        let first = atlas.place(&stream, [112.0, 64.0]).unwrap();
-        assert!(!first.premultiplied);
-        let large = Pixels::new();
-        large.set(2048, 1, vec![2; 2048 * 4]);
-        let second = atlas.place(&large, [2048.0, 1.0]).unwrap();
-        assert_ne!(first.page, second.page);
-        assert_eq!((atlas.pages[second.page].width, atlas.pages[second.page].height), (2048, 1));
-        let full = Pixels::new();
-        full.set(1024, 1024, vec![3; 1024 * 1024 * 4]);
-        let third = atlas.place(&full, [1024.0; 2]).unwrap();
-        assert_eq!(third.page, 2);
-        atlas.end_frame();
-        stream.set(224, 128, vec![4; 224 * 128 * 4]);
-        assert_eq!(atlas.place(&stream, [112.0, 64.0]).unwrap(), first);
-        atlas.place(&full, [1024.0; 2]);
-        atlas.end_frame();
-        assert_eq!(atlas.pages.len(), 3);
-        assert!(atlas.pages[second.page].data.is_empty(), "unused middle standalone page releases storage");
-        assert_eq!(atlas.place(&stream, [112.0, 64.0]).unwrap(), first);
-        atlas.end_frame();
-        assert_eq!(atlas.pages.len(), 1, "unused trailing pages release their storage");
-        atlas.end_frame();
-        assert_eq!(atlas.pages.len(), 1, "the first page keeps its images");
-    }
-}
+#[path = "pixels_tests.rs"]
+mod tests;
+#[cfg(test)]
+#[path = "atlas_tests.rs"]
+mod atlas_tests;

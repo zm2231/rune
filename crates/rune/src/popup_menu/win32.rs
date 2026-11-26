@@ -11,6 +11,9 @@
 //! minimum width, so `Show::positioned` and `Show::min_width` don't apply. Keyboard navigation
 //! (arrows, Enter, Esc, first letters, submenus), screen-edge flipping and dismissal by a click
 //! outside are the system's. Menus are light or dark as the window's content is (`scheme`).
+
+#![allow(unsafe_code)]
+
 use std::{cell::{Cell, RefCell}, rc::Rc, sync::{Arc, OnceLock, atomic::{AtomicUsize, Ordering}}};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -18,15 +21,15 @@ use windows_sys::Win32::Graphics::Gdi::{ClientToScreen, ScreenToClient};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, EndMenu, GWL_EXSTYLE, GetClientRect, GetCursorPos, GetForegroundWindow,
-    GetWindowLongPtrW, HMENU, IsWindow, IsWindowVisible, KillTimer, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING,
-    PostMessageW, RegisterWindowMessageW, SetForegroundWindow, SetTimer, TPM_LAYOUTRTL, TPM_LEFTALIGN, TPM_NONOTIFY,
-    TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_RIGHTBUTTON, TPM_TOPALIGN, TPM_VERTICAL, TPMPARAMS, TRACK_POPUP_MENU_FLAGS,
-    TrackPopupMenuEx, WM_NCDESTROY, WM_NULL, WS_EX_NOACTIVATE, WindowFromPoint,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, EndMenu, GetClientRect, GetCursorPos, GetForegroundWindow, HMENU,
+    IsWindow, IsWindowVisible, KillTimer, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, PostMessageW,
+    RegisterWindowMessageW, SetForegroundWindow, SetTimer, TPM_LAYOUTRTL, TPM_LEFTALIGN, TPM_NONOTIFY, TPM_RETURNCMD,
+    TPM_RIGHTALIGN, TPM_RIGHTBUTTON, TPM_TOPALIGN, TPM_VERTICAL, TPMPARAMS, TRACK_POPUP_MENU_FLAGS, TrackPopupMenuEx,
+    WM_NCDESTROY, WM_NULL, WindowFromPoint,
 };
 use winit::window::Window;
 
-use super::{Entry, PopupItem, PopupMenu, Session, Show};
+use super::{PopupEntry, PopupItem, PopupMenu, Session, Show};
 use crate::runtime::Waker;
 
 pub(super) const SUPPORTED: bool = true;
@@ -186,7 +189,7 @@ unsafe extern "system" fn turn(_: HWND, _: u32, _: usize, _: u32) {
     // Clone before invoking so the `RefCell` borrow is released before user code runs.
     let waker = TURN.with(|t| t.borrow().clone());
     if let Some(waker) = waker {
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| waker()));
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| waker())).ok();
     }
 }
 
@@ -207,8 +210,9 @@ pub(crate) fn turns(hwnd: HWND) -> Turns {
 
 impl Drop for Turns {
     fn drop(&mut self) {
-        // SAFETY: only kills the timer if the window is still alive on this thread.
+        // SAFETY: `IsWindow` safely validates `self.hwnd` on this thread before killing the timer.
         if self.armed && unsafe { IsWindow(self.hwnd) != 0 } {
+            // SAFETY: `self.hwnd` was just confirmed live and `self.id` is the timer `turns` armed on it.
             unsafe { KillTimer(self.hwnd, self.id) };
         }
     }
@@ -228,8 +232,8 @@ fn track(hwnd: HWND, pending: &Pending, pointer: &mut Option<(f32, f32)>) -> Opt
         let menu = build(&pending.show.menu, &mut ids)?;
         let (x, y, params) = placement(hwnd, &pending.show);
         // A menu closes on a click elsewhere, and gets the keyboard, only while its owner is
-        // the foreground window. A window that never activates (an overlay) takes the
-        // foreground for its menu, and hands it back after.
+        // the foreground window. An overlay takes the foreground for its menu, and hands it back
+        // after (`hands_back`).
         let previous = GetForegroundWindow();
         if previous != hwnd { SetForegroundWindow(hwnd); }
         let flags = TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON | TPM_TOPALIGN | layout()
@@ -243,8 +247,7 @@ fn track(hwnd: HWND, pending: &Pending, pointer: &mut Option<(f32, f32)>) -> Opt
         if IsWindow(hwnd) != 0 {
             // The menu's loop lets go of the foreground state once the owner gets a message.
             PostMessageW(hwnd, WM_NULL, 0, 0);
-            let overlay = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_NOACTIVATE != 0;
-            if overlay && !previous.is_null() && previous != hwnd && GetForegroundWindow() == hwnd {
+            if hands_back(crate::platform::win32::is_overlay(hwnd), previous, hwnd, GetForegroundWindow()) {
                 SetForegroundWindow(previous);
             }
             // winit sends no pointer move until the pointer leaves the pixel it's on.
@@ -252,6 +255,13 @@ fn track(hwnd: HWND, pending: &Pending, pointer: &mut Option<(f32, f32)>) -> Opt
         }
         usize::try_from(command).ok()?.checked_sub(1).and_then(|i| ids.get(i)).cloned()
     }
+}
+
+/// Whether the menu's `owner` gives the foreground back to `previous` once the menu closes: an
+/// overlay, whatever its `KeyPolicy`, that took the foreground only for the menu and still has
+/// it. One that had the foreground before (an `OnDemand` overlay the user clicked) keeps it.
+fn hands_back(overlay: bool, previous: HWND, owner: HWND, foreground: HWND) -> bool {
+    overlay && !previous.is_null() && previous != owner && foreground == owner
 }
 
 /// Where the pointer is over `hwnd`'s content, in points, unless another window covers it.
@@ -308,15 +318,15 @@ unsafe fn build(menu: &PopupMenu, ids: &mut Vec<String>) -> Option<OwnedMenu> {
         if hmenu.0.is_null() { return None; }
         for entry in &menu.entries {
             match entry {
-                Entry::Item(item) => {
+                PopupEntry::Item(item) => {
                     let Ok(command) = u16::try_from(ids.len() + 1) else { break };
                     let flags = MF_STRING | if item.enabled { 0 } else { MF_GRAYED } | if item.checked { MF_CHECKED } else { 0 };
                     if AppendMenuW(hmenu.0, flags, usize::from(command), wide(&label(item)).as_ptr()) != 0 {
                         ids.push(item.id.clone());
                     }
                 }
-                Entry::Separator => { AppendMenuW(hmenu.0, MF_SEPARATOR, 0, std::ptr::null()); }
-                Entry::Submenu(title, menu, enabled) => {
+                PopupEntry::Separator => { AppendMenuW(hmenu.0, MF_SEPARATOR, 0, std::ptr::null()); }
+                PopupEntry::Submenu { title, menu, enabled } => {
                     let Some(submenu) = build(menu, ids) else { continue };
                     let flags = MF_STRING | MF_POPUP | if *enabled { 0 } else { MF_GRAYED };
                     if AppendMenuW(hmenu.0, flags, submenu.0 as usize, wide(&escape(title)).as_ptr()) != 0 {

@@ -89,6 +89,7 @@ fn list_levels_stop_at_max_list_level() {
 #[test]
 fn paste_html_without_formatting_keeps_the_plain_whitespace() {
     // VS Code's copy: colour spans in a `white-space: pre` div.
+    // Default `.rich()` does not opt into `Mark::Color`, so it falls back to plain whitespace.
     let html = concat!(
         "<meta charset='utf-8'><div style=\"color: #d4d4d4;white-space: pre;\">",
         "<div><span style=\"color: #569cd6;\">fn</span><span>&nbsp;a()&nbsp;{</span></div>",
@@ -97,6 +98,7 @@ fn paste_html_without_formatting_keeps_the_plain_whitespace() {
     let mut e = TextEdit::new("").rich();
     e.paste_html(html, "fn a() {\n    b\n}");
     assert_eq!(e.text, "fn a() {\n    b\n}");
+    assert!(e.marks().is_empty(), "default rich field strips pasted colours");
     let mut e = TextEdit::new("").rich();
     e.paste_html("<p>a  <b>b</b></p>", "a  b");
     assert_eq!((e.text.as_str(), marked(&e, &Mark::Bold)), ("a b", vec!["b"]), "formatted HTML still wins");
@@ -374,7 +376,7 @@ fn html_parsing_is_linear_on_hostile_input() {
         "<a href=\"".to_owned() + &"&#x6a;".repeat(n) + "\">x</a>",
     ];
     for html in &cases {
-        let t = std::time::Instant::now();
+        let t = rune_core::time::now();
         let e = TextEdit::from_html(html);
         assert_invariants(&e, &html[..20]);
         let _ = e.to_html();
@@ -428,6 +430,7 @@ fn html_from_browsers_notes_slack_and_docs_round_trips() {
     ));
     assert_eq!(chrome.text, "Hello world");
     assert_eq!(marked(&chrome, &Mark::Bold), ["Hello"]);
+    assert!(chrome.marks().iter().all(|m| m.mark.color_hex().is_none()), "default from_html drops browser black ink");
     round_trip(&chrome, "browser");
 
     let notes = TextEdit::from_html(concat!(
@@ -454,6 +457,7 @@ fn html_from_browsers_notes_slack_and_docs_round_trips() {
     assert_eq!(slack.soft_breaks(), &[1]);
     assert_eq!(marked(&slack, &Mark::Code), ["x()"]);
     assert_eq!(marked(&slack, &Mark::Link("https://a.b/c?d=1&e=2".into())), ["link"]);
+    assert!(slack.marks().iter().all(|m| m.mark.color_hex().is_none()), "default from_html drops Slack ink colour");
     round_trip(&slack, "slack");
 
     let docs = TextEdit::from_html(concat!(
@@ -479,7 +483,7 @@ fn random_edits_keep_ranges_blocks_and_soft_breaks_consistent() {
     for seed in 0..40u64 {
         let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
         let mut next = |n: u64| { state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); (state >> 33) % n };
-        let mut e = TextEdit::from_html("<p>start <b>bold</b></p><ul><li>item</li></ul>");
+        let mut e = TextEdit::from_html("<p>start <b>bold</b></p><ul><li>item</li></ul>").allow_color(true);
         let (mut clip, mut clip_html) = (String::new(), String::new());
         for step in 0..300 {
             let op = next(22);
@@ -493,7 +497,7 @@ fn random_edits_keep_ranges_blocks_and_soft_breaks_consistent() {
                 8 => { e.key(&KeyEvent { key: if next(2) == 0 { Key::Home } else { Key::End }, mods }, None); }
                 9 => { e.key(&KeyEvent { key: Key::Tab, mods: Mods { shift: mods.shift, ..Mods::default() } }, None); }
                 10 => { e.key(&cmd(['b', 'i', 'u'][next(3) as usize]), None); }
-                11 => e.toggle_mark([Mark::Code, Mark::Strike, Mark::Link(format!("https://e.x/{}", next(3)))][next(3) as usize].clone()),
+                11 => e.toggle_mark([Mark::Code, Mark::Strike, Mark::Link(format!("https://e.x/{}", next(3))), Mark::Color(["#ff0000", "#00ff00", "#0000ff"][next(3) as usize].into())][next(4) as usize].clone()),
                 12 => {
                     let l = next(6) as u8;
                     e.set_block([Block::Paragraph, Block::Bullet(l), Block::Numbered(l), Block::Quote, Block::Code][next(5) as usize]);
@@ -572,7 +576,10 @@ fn the_caret_steps_over_a_pill_in_one_move() {
     assert_eq!(e.range(), (10, 10));
     e.set_caret(2);
     e.key(&KeyEvent { key: Key::Right, mods: Mods { alt: true, ..Mods::default() } }, None);
-    assert_eq!(e.range(), (10, 10), "a word move that stops inside the label steps over it");
+    // On macOS a word forward stops at the pill's end; elsewhere it lands past the trailing
+    // space at the next word's start, still stepping over the label in one move.
+    let after_pill = if cfg!(target_os = "macos") { 10 } else { 11 };
+    assert_eq!(e.range(), (after_pill, after_pill), "a word move that stops inside the label steps over it");
     e.set_caret(2);
     e.key(&KeyEvent { key: Key::Right, mods: Mods { shift: true, ..Mods::default() } }, None);
     assert_eq!((e.anchor, e.focus), (2, 10), "Shift+Right selects the whole pill");
@@ -636,12 +643,12 @@ fn undo_groups_keep_typing_coalescing_and_record_nothing_when_empty() {
 #[test]
 fn undo_group_is_unwind_safe_and_interacts_with_clear_history_paste_and_soft_breaks() {
     let mut e = TextEdit::new("base").rich();
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         e.undo_group(|e| {
             e.insert("!");
             panic!("boom");
         });
-    }));
+    })).ok();
     assert!(!e.group.is_open(), "unwinding clears the active group");
     e.insert("?");
     assert_eq!(e.history.undo.len(), 1, "edits after a caught panic record again");
@@ -652,12 +659,12 @@ fn undo_group_is_unwind_safe_and_interacts_with_clear_history_paste_and_soft_bre
     e.clear_history();
     e.undo_group(|e| {
         e.insert("1");
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             e.undo_group(|e| {
                 e.insert("2");
                 panic!("nested boom");
             });
-        }));
+        })).ok();
         e.insert("3");
     });
     assert_eq!((e.text.as_str(), e.history.undo.len()), ("base!123", 1));
@@ -834,7 +841,16 @@ fn pill_edge_cases_words_lines_bidi_and_direct_text_mutation() {
     e.key(&alt_right, None);
     assert_eq!(e.range(), (5, 5));
     e.key(&alt_right, None);
+    // The comma after a pill is a stop of its own, as Chromium's punctuation is.
     assert_eq!(e.range(), (10, 10));
+    e.key(&alt_right, None);
+    // On macOS a word forward ends at the comma's end; elsewhere it goes on past the space to
+    // the next pill's start.
+    let after_comma = if cfg!(target_os = "macos") { 11 } else { 12 };
+    assert_eq!(e.range(), (after_comma, after_comma));
+    e.key(&alt_right, None);
+    assert_eq!(e.range(), (21, 21), "steps over @Maya Lin as one word");
+    e.set_caret(10);
     e.key(&alt_bs, None);
     assert_eq!((e.text.as_str(), pills_of(&e)), ("@maya, @Maya Lin", vec![(0..5, "u:1".to_owned()), (7..16, "u:3".to_owned())]));
 
@@ -850,7 +866,7 @@ fn pill_edge_cases_words_lines_bidi_and_direct_text_mutation() {
     let chips: Vec<rune_text::PillChip> = w
         .display_pills()
         .into_iter()
-        .map(|(start, end, _)| rune_text::PillChip { start, end, icon: None, bg: None, fg: None, bare: None })
+        .map(|(start, end, _)| rune_text::PillChip { start, end, icon: None, image: None, bg: None, fg: None, ring: None, radius: None, bare: None })
         .collect();
     let layout = ts.layout_blocks(&w.text, &[], w.blocks(), &chips, style, 2.0, Some(220.0), parley::Alignment::Start);
     assert!(layout.len() >= 3, "wrapped into {} lines", layout.len());
@@ -873,7 +889,7 @@ fn pill_edge_cases_words_lines_bidi_and_direct_text_mutation() {
     let p_chips: Vec<rune_text::PillChip> = ime_e
         .display_pills()
         .into_iter()
-        .map(|(start, end, _)| rune_text::PillChip { start, end, icon: None, bg: None, fg: None, bare: None })
+        .map(|(start, end, _)| rune_text::PillChip { start, end, icon: None, image: None, bg: None, fg: None, ring: None, radius: None, bare: None })
         .collect();
     let ime_layout = ts.layout_blocks(&disp, &[], &[Block::Paragraph], &p_chips, style, 2.0, None, parley::Alignment::Start);
     let (mut decos, mut icons) = (Vec::new(), Vec::new());
@@ -884,7 +900,7 @@ fn pill_edge_cases_words_lines_bidi_and_direct_text_mutation() {
 
     // RTL pill and mixed RTL+LTR pill chips have positive width.
     for (txt, start, end) in [("דוד", 0u32, 6u32), ("שלום@maya", 8, 13), ("@e\u{0301}", 0, 4)] {
-        let pc = [rune_text::PillChip { start, end, icon: None, bg: None, fg: None, bare: None }];
+        let pc = [rune_text::PillChip { start, end, icon: None, image: None, bg: None, fg: None, ring: None, radius: None, bare: None }];
         let l = ts.layout_blocks(txt, &[], &[Block::Paragraph], &pc, style, 2.0, None, parley::Alignment::Start);
         let (mut d, mut ic) = (Vec::new(), Vec::new());
         rune_text::pill_chips(&l, &pc, 14.0, 2.0, [0.0, 0.0], Color::BLACK, &mut d, &mut ic);

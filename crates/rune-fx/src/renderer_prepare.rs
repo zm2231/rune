@@ -24,9 +24,9 @@ impl FxRenderer {
         let vw = frame.viewport[0] as f32;
         let vh = frame.viewport[1] as f32;
         self.viewport = frame.viewport;
-        self.blur_slot = 0;
+        self.blur_weights.clear();
         let wants_blur = |l: &FxLayer| match l.fx {
-            Fx::Distort(DistortParams::Lens(p)) => p.frost > 0.0,
+            Fx::Distort(DistortParams::Lens(p)) => p.frost_blur_pt() > 0.0,
             Fx::Fill(FillParams { style: FillStyle::FlutedGlass(p), .. }) => p.frost > 0.0,
             _ => false,
         };
@@ -76,7 +76,7 @@ impl FxRenderer {
             let needs_bd = layer.fx.needs_backdrop() || slot.blend.needs_backdrop();
             stats.needs_backdrop |= needs_bd;
             let blur_px = match layer.fx {
-                Fx::Distort(DistortParams::Lens(p)) => (p.frost.clamp(0.0, 1.0) * LENS_FROST_SIGMA * s).max(0.0),
+                Fx::Distort(DistortParams::Lens(p)) => (p.frost_blur_pt() * s).max(0.0),
                 Fx::Fill(FillParams { style: FillStyle::FlutedGlass(p), .. }) => (p.frost.clamp(0.0, 1.0) * LENS_FROST_SIGMA * s).max(0.0),
                 _ => 0.0,
             };
@@ -122,6 +122,13 @@ impl FxRenderer {
         if *written != g {
             *written = g;
             staging.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));
+        }
+        if self.uploaded_fade_stops != self.fade_stops {
+            let stops = self.fade_stops;
+            for (buf, (encoded, present)) in self.backdrop_encoding.iter().zip([(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]) {
+                staging.write_buffer(buf, 0, bytemuck::cast_slice(&[encoded, present, stops[0], stops[1]]));
+            }
+            self.uploaded_fade_stops = stops;
         }
         // Submitted now, ahead of the frame that draws them, as queue writes would be.
         staging.submit();

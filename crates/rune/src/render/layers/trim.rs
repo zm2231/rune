@@ -18,7 +18,7 @@ impl Renderer {
     /// background. What the runtime's last frame draws with stays: when that frame is the one
     /// this renderer last prepared, [`Renderer::draw`] draws it again as it was.
     pub fn trim_memory(&mut self, atlas: &mut Atlas, images: &ImageAtlas) {
-        self.give_back(false, &mut atlas.resident_caches);
+        self.give_back(false, &mut atlas.resident_caches, images);
         self.trim_pages(atlas, images);
     }
 

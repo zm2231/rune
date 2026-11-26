@@ -2,18 +2,32 @@
 
 use crate::*;
 
+/// First-line `text_indent` in whole device pixels (finite and clamped to keep layout arithmetic
+/// finite even for huge inputs).
+pub(crate) fn indent_px(text_indent: f32, scale: f32) -> f32 {
+    if text_indent == 0.0 || !text_indent.is_finite() {
+        0.0
+    } else {
+        (text_indent * scale).clamp(-1e7, 1e7).round()
+    }
+}
+
 /// Breaks a shaped `layout` at `max_width` again and aligns its lines, as
 /// [`TextSystem::layout_keyed`] breaks the layouts it shapes.
-pub(crate) fn rebreak(layout: &mut Layout<Ink>, blocks: &[crate::Block], font_size: f32, scale: f32, max_width: Option<f32>, align: Alignment) {
-    rebreak_at_y(layout, blocks, font_size, scale, max_width, align, 0.0);
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rebreak(layout: &mut Layout<Ink>, blocks: &[crate::Block], text_indent: f32, font_size: f32, scale: f32, max_width: Option<f32>, align: Alignment) {
+    rebreak_at_y(layout, blocks, text_indent, font_size, scale, max_width, align, 0.0);
 }
 
 /// [`rebreak`] starting at fractional vertical pixel phase `y_frac` (`y - y.floor()`), so a
 /// wrapped paragraph in a [`ParagraphLayout`](super::ParagraphLayout) quantizes each sub-line's
 /// `y` identically to [`Layout`](parley::Layout)'s accumulated `line_y`.
-pub(crate) fn rebreak_at_y(layout: &mut Layout<Ink>, blocks: &[crate::Block], font_size: f32, scale: f32, max_width: Option<f32>, align: Alignment, y_frac: f64) {
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rebreak_at_y(layout: &mut Layout<Ink>, blocks: &[crate::Block], text_indent: f32, font_size: f32, scale: f32, max_width: Option<f32>, align: Alignment, y_frac: f64) {
+    let indent = indent_px(text_indent, scale);
+    layout.set_text_indent(indent, parley::IndentOptions::default());
     if blocks.iter().any(|&b| b != crate::Block::Paragraph) || layout.inline_boxes().next().is_some() {
-        break_lines_with_blocks_at(layout, blocks, font_size, scale, max_width, Vec::new(), y_frac);
+        break_lines_with_blocks_at(layout, blocks, indent, font_size, scale, max_width, Vec::new(), y_frac);
     } else if y_frac == 0.0 {
         layout.break_all_lines(max_width);
     } else {
@@ -28,15 +42,17 @@ pub(crate) fn rebreak_at_y(layout: &mut Layout<Ink>, blocks: &[crate::Block], fo
 /// `indented` (it has either), else at `max_width`; then, when `pretty`, a plain one's paragraphs
 /// that end on a lone short word again, as [`super::pretty`] scores them.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn break_new(layout: &mut Layout<Ink>, text: &str, blocks: &[crate::Block], indented: bool, font_size: f32, scale: f32, max_width: Option<f32>, pretty: bool) {
+pub(crate) fn break_new(layout: &mut Layout<Ink>, text: &str, blocks: &[crate::Block], text_indent: f32, indented: bool, font_size: f32, scale: f32, max_width: Option<f32>, pretty: bool) {
+    let indent = indent_px(text_indent, scale);
+    layout.set_text_indent(indent, parley::IndentOptions::default());
     if indented {
-        break_lines_with_blocks(layout, blocks, font_size, scale, max_width, Vec::new());
+        break_lines_with_blocks(layout, blocks, indent, font_size, scale, max_width, Vec::new());
         // Pills (a link's icon, a mention's chip) wrap prettily too, as their inline boxes do in
         // Chromium; indented blocks (lists, quotes, code) keep the greedy lines.
         if let (true, Some(width)) = (pretty && blocks.iter().all(|&b| b == crate::Block::Paragraph), max_width) {
             let caps = super::pretty::caps(layout, text, font_size, scale, width);
             if !caps.is_empty() {
-                break_lines_with_blocks(layout, blocks, font_size, scale, max_width, caps);
+                break_lines_with_blocks(layout, blocks, indent, font_size, scale, max_width, caps);
             }
         }
         return;
@@ -45,7 +61,7 @@ pub(crate) fn break_new(layout: &mut Layout<Ink>, text: &str, blocks: &[crate::B
     if let (true, Some(width)) = (pretty, max_width) {
         let caps = super::pretty::caps(layout, text, font_size, scale, width);
         if !caps.is_empty() {
-            break_lines_capped(layout, &[], font_size, scale, max_width, &caps, &mut Vec::new(), 0.0);
+            break_lines_capped(layout, &[], indent, font_size, scale, max_width, &caps, &mut Vec::new(), 0.0);
         }
     }
 }
@@ -53,20 +69,24 @@ pub(crate) fn break_new(layout: &mut Layout<Ink>, text: &str, blocks: &[crate::B
 /// Breaks `layout` into lines, each paragraph indented by its block. A pill's chip that would
 /// end a line apart from its label, or run past the line's end, moves to the next line. `caps`
 /// start as the room given lines (pretty wrapping's); a pill's adjustments come after them.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn break_lines_with_blocks(
     layout: &mut Layout<Ink>,
     blocks: &[crate::Block],
+    first_indent: f32,
     font_size: f32,
     scale: f32,
     max_width: Option<f32>,
     caps: Vec<((usize, usize), f32)>,
 ) {
-    break_lines_with_blocks_at(layout, blocks, font_size, scale, max_width, caps, 0.0);
+    break_lines_with_blocks_at(layout, blocks, first_indent, font_size, scale, max_width, caps, 0.0);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn break_lines_with_blocks_at(
     layout: &mut Layout<Ink>,
     blocks: &[crate::Block],
+    first_indent: f32,
     font_size: f32,
     scale: f32,
     max_width: Option<f32>,
@@ -74,24 +94,27 @@ fn break_lines_with_blocks_at(
     y_frac: f64,
 ) {
     let pills = layout.inline_boxes().filter(|b| b.id & PILL_BOX != 0).count() / 2;
+    let span_boxes = layout.inline_boxes().filter(|b| b.id & SPAN_BOX != 0).count();
     // `(para_idx, line_in_para)` and the room it gets instead: less to break before a chip, or
     // more to keep a chip with its label. Paragraphs break independently at `\n`, so one pass
-    // can adjust the first misplaced pill in every paragraph at once.
+    // can adjust the first misplaced pill or span-box spacer in every paragraph at once.
     let mut lines_meta = Vec::new();
-    for _ in 0..=2 * pills {
-        break_lines_capped(layout, blocks, font_size, scale, max_width, &caps, &mut lines_meta, y_frac);
-        if max_width.is_none() || pills == 0 || !collect_misplaced_pills(layout, &lines_meta, &mut caps) {
+    for _ in 0..=2 * (pills + span_boxes) {
+        break_lines_capped(layout, blocks, first_indent, font_size, scale, max_width, &caps, &mut lines_meta, y_frac);
+        if max_width.is_none() || (pills == 0 && span_boxes == 0) || !collect_misplaced_pills(layout, &lines_meta, &mut caps) {
             return;
         }
     }
 }
 
-/// [`break_lines_with_blocks`] once, with `caps` setting the room on given `(para_idx, line_in_para)`
-/// lines (the last for a line wins). Fills `out` with `((para_idx, line_in_para), uncapped_room)`.
+/// [`break_lines_with_blocks`] once, with `caps` setting the content room on given
+/// `(para_idx, line_in_para)` lines (the last for a line wins). Fills `out` with
+/// `((para_idx, line_in_para), uncapped_content_room)`.
 #[allow(clippy::too_many_arguments)]
 fn break_lines_capped(
     layout: &mut Layout<Ink>,
     blocks: &[crate::Block],
+    first_indent: f32,
     font_size: f32,
     scale: f32,
     max_width: Option<f32>,
@@ -109,20 +132,27 @@ fn break_lines_capped(
     let (mut para_idx, mut line_in_para) = (0usize, 0usize);
     while !breaker.is_done() {
         let blk = blocks.get(para_idx).copied().unwrap_or(crate::Block::Paragraph);
-        let indent = (blk.indent_pt(font_size) * scale).round();
-        let right_pad = if blk == crate::Block::Code { indent } else { 0.0 };
+        let [indent, right_pad] = blk.pad_px(font_size, scale);
         let line_max = max_width
             .map_or(f32::MAX, |w| (w - indent - right_pad).max(1.0))
             .min(layout_max);
         let key = (para_idx, line_in_para);
-        out.push((key, line_max));
-        let capped = caps.iter().rfind(|c| c.0 == key).map_or(line_max, |c| c.1);
+        let text_indent = if key == (0, 0) { first_indent } else { 0.0 };
+        let content_room = max_width.map_or(f32::MAX, |_| (line_max - text_indent).max(1.0));
+        out.push((key, content_room));
+        // Caps express content advance; Parley subtracts `text_indent` from `line_max_advance`.
+        let cap = caps.iter().rfind(|c| c.0 == key).map(|c| c.1);
+        let capped = cap.map_or(line_max, |c| c + text_indent);
         breaker.state_mut().set_line_x(indent);
         // Parley wants no line wider than the layout: a widened line widens it while it breaks.
         breaker.state_mut().set_layout_max_advance(layout_max.max(capped));
         breaker.state_mut().set_line_max_advance(capped);
         match breaker.break_next() {
             Some(parley::YieldData::LineBreak(data)) => {
+                // Keep the line's alignment box at `line_max` when a cap tightened/widened breaking.
+                if cap.is_some() && max_width.is_some() {
+                    breaker.set_prior_line_width(line_max);
+                }
                 if data.reason == parley::BreakReason::Explicit {
                     para_idx += 1;
                     line_in_para = 0;
@@ -156,12 +186,10 @@ fn collect_misplaced_pills(
             PositionedLayoutItem::InlineBox(b) if b.id & PILL_BOX != 0 => Some(b),
             _ => None,
         }));
-        if boxes.is_empty() {
-            continue;
-        }
         let m = line.metrics();
         // Device px from the start of the line's content, as the breaker counts.
         let at = |x: f32| x - m.inline_min_coord - m.offset;
+        let mut adjusted = false;
         for (k, lead) in boxes.iter().enumerate().filter(|(_, b)| b.id & 1 == 0) {
             let trail = boxes.iter().find(|b| b.id == lead.id | 1);
             if trail.is_some_and(|t| at(t.x) + t.width <= room + 0.5) {
@@ -196,10 +224,60 @@ fn collect_misplaced_pills(
                 if !caps.contains(&cap) {
                     caps.push(cap);
                     skip_para = Some(key.0);
+                    adjusted = true;
                     break;
+                }
+            }
+        }
+        if adjusted {
+            continue;
+        }
+        // Keep a padded `SpanBox`'s leading spacer with its first word and its trailing spacer
+        // with its last word while still allowing multi-word span boxes to wrap inside.
+        let lr = line.text_range();
+        let orphaned_lead = line.items().find_map(|it| match it {
+            PositionedLayoutItem::InlineBox(b) if b.id & SPAN_BOX != 0 && b.id & 1 == 0 => {
+                let ib = layout.inline_boxes().find(|ib| ib.id == b.id)?;
+                (ib.index >= lr.end && at(b.x) >= 0.5).then(|| at(b.x) + b.width * 0.5)
+            }
+            _ => None,
+        });
+        if let Some(w) = orphaned_lead {
+            let cap = (key, w);
+            if !caps.contains(&cap) {
+                caps.push(cap);
+                skip_para = Some(key.0);
+                continue;
+            }
+        }
+        if let Some(next) = layout.get(li + 1) {
+            let nm = next.metrics();
+            let nr = next.text_range();
+            let orphaned_trail = next.items().find_map(|it| match it {
+                PositionedLayoutItem::InlineBox(b) if b.id & SPAN_BOX != 0 && b.id & 1 == 1 => {
+                    let ib = layout.inline_boxes().find(|ib| ib.id == b.id)?;
+                    let x = b.x - nm.inline_min_coord - nm.offset;
+                    (x < 0.5 && ib.index <= nr.start).then_some((x, b.width))
+                }
+                _ => None,
+            });
+            if let Some((x, tw)) = orphaned_trail {
+                let shrink = (m.advance - 1.0).max(1.0);
+                let cap = if m.advance > 1.5 && !caps.contains(&(key, shrink)) {
+                    (key, shrink)
+                } else {
+                    (key, m.advance + x + tw + 1.0)
+                };
+                if !caps.contains(&cap) {
+                    caps.push(cap);
+                    skip_para = Some(key.0);
                 }
             }
         }
     }
     caps.len() > before
 }
+
+#[cfg(test)]
+#[path = "text_indent_tests.rs"]
+mod tests;

@@ -20,7 +20,7 @@ fn a_physical_chord_releases_its_modifiers_after_the_key() {
     let kinds: Vec<_> = parse_script(json!([{"physical": "alt+super+space"}, {"t": 0.1, "physical": "f5"}]))
         .into_iter().map(|e| match e.kind { Kind::Physical(event) => event, _ => panic!("physical parsed as another event") }).collect();
     let mods = "alt+super+space".parse::<crate::Shortcut>().unwrap().modifiers();
-    let key = |key, mods, pressed| PhysicalInput::Key { key, mods, pressed, repeat: false };
+    let key = |key, mods, pressed| PhysicalInput::Key { key, mods, pressed, repeat: false, text: None, consumed_mods: Default::default() };
     use crate::PhysicalKeyCode::{F5, Space};
     let expected = [key(Space, mods, true), key(Space, mods, false), PhysicalInput::Modifiers(Mods::default()),
         key(F5, Mods::default(), true), key(F5, Mods::default(), false)];
@@ -37,6 +37,75 @@ fn script_events_answer_a_file_dialog() {
             path
         }).collect();
     assert_eq!(kinds, [Some("/exports/a.json".into()), None]);
+}
+
+#[test]
+fn script_events_answer_a_multi_file_dialog() {
+    let script = parse_script(json!([
+        {"t": 0.1, "type": "file-dialog", "paths": ["/exports/a.csv", "/exports/b.csv"]},
+        {"t": 0.2, "type": "file-dialog", "paths": []},
+        {"t": 0.3, "type": "file-dialog-cancel"},
+    ]));
+    let ScriptEvent::FileDialogFiles(ref public_many) = script[0].public().event else { panic!("public event lost paths") };
+    let Kind::FileDialogFiles(ref many) = script[0].kind else { panic!("parsed as another event") };
+    assert_eq!(public_many, many);
+    assert_eq!(many, &[std::path::PathBuf::from("/exports/a.csv"), std::path::PathBuf::from("/exports/b.csv")]);
+
+    let ScriptEvent::FileDialogFiles(ref public_empty) = script[1].public().event else { panic!("public event lost empty paths") };
+    assert!(public_empty.is_empty());
+
+    assert!(matches!(script[2].public().event, ScriptEvent::FileDialog(None)));
+}
+
+#[test]
+fn script_events_open_files_with_the_app() {
+    let script = parse_script(json!([
+        {"t": 0.1, "open_files": ["a.torrent", "dir/b.torrent"]},
+        {"t": 0.25, "open_files": []},
+    ]));
+    assert_eq!(script.len(), 2);
+    assert_eq!(script[0].t, 0.1);
+    let ScriptEvent::OpenFiles(ref public_paths) = script[0].public().event else { panic!("public event lost open_files") };
+    let Kind::OpenFiles(ref paths) = script[0].kind else { panic!("parsed as another event") };
+    assert_eq!(public_paths, paths);
+    assert_eq!(paths, &[std::path::PathBuf::from("a.torrent"), std::path::PathBuf::from("dir/b.torrent")]);
+
+    let ScriptEvent::OpenFiles(ref public_empty) = script[1].public().event else { panic!("public event lost empty open_files") };
+    assert!(public_empty.is_empty());
+
+    let mut rt = Runtime::new((), |_: &(), _: &mut crate::Cx<()>| crate::el(), (100.0, 100.0), Env::default());
+    let (core, mut app) = rt.split_mut();
+    assert!(!script_input(core, &mut app, &script[0].kind, (0.0, 0.0)), "open_files is handled at the headless host, not script_input");
+}
+
+#[test]
+fn script_events_close_request_reaches_headless_host() {
+    let script = parse_script(json!([
+        {"t": 0.15, "close_request": true},
+    ]));
+    assert_eq!(script.len(), 1);
+    assert_eq!(script[0].t, 0.15);
+    assert!(matches!(script[0].public().event, ScriptEvent::CloseRequest));
+    assert!(matches!(script[0].kind, Kind::CloseRequest));
+
+    let mut rt = Runtime::new((), |_: &(), _: &mut crate::Cx<()>| crate::el(), (100.0, 100.0), Env::default());
+    let (core, mut app) = rt.split_mut();
+    assert!(!script_input(core, &mut app, &script[0].kind, (0.0, 0.0)), "close_request is handled at the headless host, not script_input");
+}
+
+#[test]
+fn script_events_quit_request_reaches_headless_host() {
+    let script = parse_script(json!([
+        {"t": 0.25, "quit_request": true},
+    ]));
+    assert_eq!(script.len(), 1);
+    assert_eq!(script[0].t, 0.25);
+    assert!(matches!(script[0].public().event, ScriptEvent::QuitRequest));
+    assert!(matches!(script[0].kind, Kind::QuitRequest));
+
+    let mut rt = Runtime::new((), |_: &(), _: &mut crate::Cx<()>| crate::el(), (100.0, 100.0), Env::default());
+    let (core, mut app) = rt.split_mut();
+    assert!(!script_input(core, &mut app, &script[0].kind, (0.0, 0.0)), "quit_request is handled at the headless host, not script_input");
 }
 
 #[test]
@@ -73,7 +142,7 @@ fn a_script_paste_can_carry_html_rtf_and_an_image() {
         rt.paste_content(content);
     }
     rt.frame(0.0);
-    let _ = std::fs::remove_file(&png);
+    std::fs::remove_file(&png).ok();
     let texts: Vec<_> = rt.state.iter().map(|c| (c.text(), c.html(), c.rtf(), c.image().map(crate::ClipboardImage::size))).collect();
     assert_eq!(texts, [
         ("plain", None, None, None), ("short", None, None, None),

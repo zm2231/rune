@@ -1,6 +1,8 @@
 //! One Luau VM: a script's sandboxed globals (`task`, `Signal`, `require`), its `@rune/ui`
 //! module, the host's own bindings, and the module its `init.luau` returned.
 
+#![allow(unsafe_code)]
+
 use std::cell::RefCell;
 use std::os::raw::c_int;
 use std::rc::Rc;
@@ -185,6 +187,7 @@ impl Base {
             view.raw_set("Handler", lua.create_c_function(view_handler)?)?;
         }
         view.raw_set("dark", false)?;
+        view.raw_set("reducedMotion", false)?;
 
         let signals = Rc::new(RefCell::new(FxHashMap::default()));
         if let Some(host) = setup.host {

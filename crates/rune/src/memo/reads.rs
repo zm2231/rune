@@ -3,7 +3,10 @@
 
 use std::rc::Rc;
 
-use crate::runtime::layout_read::{LayoutRects, SELECTION, Same, boxes_moved, moved, note_read, seen_rect, size, window_key};
+use crate::runtime::layout_read::{
+    LayoutRects, SELECTION, Same, anchor_key, boxes_moved, field_selection_key,
+    field_selection_of, moved, note_read, seen_placement, seen_rect, size, window_key,
+};
 
 use super::SCOPES;
 
@@ -14,8 +17,12 @@ pub(super) enum Read {
     Layout(String, Option<[f32; 4]>),
     /// A `Cx::layout_with` read: its function's check, and the rect it was given.
     LayoutWith(String, Same, Option<[f32; 4]>),
+    /// A `Cx::anchor_placement` read, and the resolved placement it returned.
+    AnchorPlacement(String, Option<(crate::Side, crate::Align)>),
     /// A `Cx::selection_rects` read, and the boxes it returned.
     Selection(Rc<[[f32; 4]]>),
+    /// A `Cx::field_selection_rects` read: the key, and the boxes it returned.
+    FieldSelection(String, Rc<[[f32; 4]]>),
     /// A [`Tracked`](crate::Tracked) cell read, at its version then.
     State(u32, u64),
 }
@@ -25,7 +32,9 @@ impl PartialEq for Read {
         match (self, other) {
             (Read::Caret(a, x), Read::Caret(b, y)) | (Read::Layout(a, x), Read::Layout(b, y)) => a == b && x == y,
             (Read::LayoutWith(a, f, x), Read::LayoutWith(b, g, y)) => a == b && f.is(g) && x == y,
+            (Read::AnchorPlacement(a, x), Read::AnchorPlacement(b, y)) => a == b && x == y,
             (Read::Selection(a), Read::Selection(b)) => a == b,
+            (Read::FieldSelection(a, x), Read::FieldSelection(b, y)) => a == b && x == y,
             (Read::State(a, x), Read::State(b, y)) => a == b && x == y,
             _ => false,
         }
@@ -44,7 +53,9 @@ impl Seen {
             Read::Caret(key, rect) => crate::runtime::caret_of(&self.caret, key) == *rect,
             Read::Layout(key, rect) => !moved(*rect, seen_rect(&self.layout, key)),
             Read::LayoutWith(key, same, rect) => !same.moved(*rect, seen_rect(&self.layout, key)),
+            Read::AnchorPlacement(key, p) => seen_placement(&self.layout, key) == *p,
             Read::Selection(boxes) => !boxes_moved(boxes, &self.layout.selection),
+            Read::FieldSelection(key, boxes) => !boxes_moved(boxes, field_selection_of(&self.layout.field_selection, key)),
             Read::State(id, version) => crate::tracked::version(*id) == *version,
         }
     }
@@ -82,9 +93,19 @@ pub(crate) fn read_selection(boxes: &Rc<[[f32; 4]]>) {
     record(|| Read::Selection(boxes.clone()));
 }
 
+/// Records a `Cx::field_selection_rects` read for the memo building, if any.
+pub(crate) fn read_field_selection(key: &str, boxes: &Rc<[[f32; 4]]>) {
+    record(|| Read::FieldSelection(key.to_owned(), boxes.clone()));
+}
+
 /// Records a `Cx::layout_with` read for the memo building, if any.
 pub(crate) fn read_layout_with(key: &str, same: &Same, rect: Option<[f32; 4]>) {
     record(|| Read::LayoutWith(key.to_owned(), same.clone(), rect));
+}
+
+/// Records a `Cx::anchor_placement` read for the memo building, if any.
+pub(crate) fn read_anchor_placement(key: &str, placement: Option<(crate::Side, crate::Align)>) {
+    record(|| Read::AnchorPlacement(key.to_owned(), placement));
 }
 
 /// [`Cx::layout`](crate::Cx::layout) for a component that builds inside a view without taking
@@ -121,6 +142,25 @@ pub fn window_layout(key: &str) -> Option<[f32; 4]> {
 /// inside a view without taking [`Cx`](crate::Cx); `None` outside a view build.
 pub fn window_layout_with<T: PartialEq + 'static>(key: &str, f: impl Fn([f32; 4]) -> T + 'static) -> Option<T> {
     layout_with(&window_key(key), f)
+}
+
+/// [`Cx::anchor_placement`](crate::Cx::anchor_placement) for a component that builds inside a
+/// view without taking [`Cx`](crate::Cx); `None` outside a view build.
+///
+/// ```no_run
+/// use rune::{Side, memo};
+/// let side = memo::anchor_placement("parent-menu").map_or(Side::Right, |(s, _)| s);
+/// ```
+pub fn anchor_placement(key: &str) -> Option<(crate::Side, crate::Align)> {
+    SCOPES.with_borrow_mut(|scopes| {
+        let s = scopes.last_mut()?;
+        let placement = seen_placement(&s.seen.layout, key);
+        note_read(&mut s.replayed.layout, &anchor_key(key), None);
+        if !s.reads.is_empty() {
+            s.note(&[Read::AnchorPlacement(key.to_owned(), placement)]);
+        }
+        placement
+    })
 }
 
 /// A layout read of `key` made without a `Cx`, counted toward the view and the memo building,
@@ -177,7 +217,9 @@ impl Reads {
                     Read::Caret(..) => s.replayed.caret = true,
                     Read::Layout(k, _) => note_read(&mut s.replayed.layout, k, None),
                     Read::LayoutWith(k, same, _) => note_read(&mut s.replayed.layout, k, Some(same.clone())),
+                    Read::AnchorPlacement(k, _) => note_read(&mut s.replayed.layout, &anchor_key(k), None),
                     Read::Selection(_) => note_read(&mut s.replayed.layout, SELECTION, None),
+                    Read::FieldSelection(k, _) => note_read(&mut s.replayed.layout, &field_selection_key(k), None),
                     Read::State(..) => {}
                 }
             }

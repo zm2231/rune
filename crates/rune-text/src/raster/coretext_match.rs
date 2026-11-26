@@ -2,17 +2,17 @@
 
 use super::macos::smoothing::ApplePipeline;
 
-/// How glyphs are rasterised and placed: CoreGraphics' glyph pipeline, with or without font
-/// smoothing's dilation. Set app-wide with `App::font_smoothing`, or at run time with
-/// `Tx::set_font_smoothing`, which redraws with glyphs rasterised for the new mode.
+/// How glyphs are rasterised and placed: CoreGraphics' glyph pipeline (`On`, `Off`), DirectWrite
+/// (`DirectWrite`, `ClearType`), or GPU outline rendering (`Windfoil`, `WindfoilChromium`, `Slug`,
+/// `HintedGpu`, `Hinted`, `WindfoilRgb`). Set app-wide with `App::font_smoothing`, or at run time
+/// with `Tx::set_font_smoothing`, which redraws with glyphs rasterised for the new mode.
 ///
 /// The default is [`FontSmoothing::On`] on macOS and in a Mac's browser, and
-/// [`FontSmoothing::WindfoilChromium`] everywhere else (Windows, Linux, the web); every mode can be
-/// chosen on every OS. `On` and `Off` work on any OS (they are arithmetic on outlines, not calls
-/// into CoreText). Either way the pipeline
-/// floors pens to CoreGraphics' subpixel steps (`quantisation_steps`), flattens curves and
-/// hints small sizes as CoreGraphics does, and draws coverage as is. Windows blend in
-/// sRGB-encoded space, as CoreGraphics does, unless the app sets `App::srgb_blend`.
+/// [`FontSmoothing::WindfoilChromium`] everywhere else (Windows, Linux, iOS, the web); every mode
+/// can be chosen on every OS. `On` and `Off` work on any OS (they are arithmetic on outlines, not
+/// calls into CoreText): both floor pens to CoreGraphics' subpixel steps (`quantisation_steps`),
+/// flatten curves and hint small sizes as CoreGraphics does. Windows blend in sRGB-encoded space,
+/// as CoreGraphics does, unless the app sets `App::srgb_blend`.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FontSmoothing {
@@ -311,7 +311,7 @@ pub(crate) fn windows_gamma() -> bool {
 /// With smoothing off on Linux, Windows and the web it stands in for the text gamma a browser's
 /// grayscale antialiasing applies there: light text on a dark page draws heavier and dark text on
 /// a light one a little lighter than coverage blended as is, keyed by the text's luminance. On macOS and iOS coverage
-/// is drawn as is in every mode: CoreText with smoothing off, and Safari and Chrome with
+/// is drawn as is for `On` and `Off` (Chromium-weight outline modes keep Chromium's gamma on every OS): CoreText with smoothing off, and Safari and Chrome with
 /// `-webkit-font-smoothing: antialiased`, apply no text gamma (measured on macOS 15.3 with
 /// Chrome 156: the same ink as CoreText, where the gamma drew light-on-dark text up to 24%
 /// heavier). With smoothing on, CoreText's dilation does that job, and with DirectWrite on
@@ -327,8 +327,36 @@ pub(crate) fn coverage_exponent(mode: FontSmoothing, fill: [f32; 4], apple: bool
     // Linux's curve is for `Off` only (a fit, not yet a Linux capture); Chromium-weight outline
     // modes keep the curve they were drawn with everywhere.
     let [black, white] = if windows || apple || mode != FontSmoothing::Off { WINDOWS_GAMMA } else { LINUX_GAMMA };
-    let luma = (0.2126 * fill[0] + 0.7152 * fill[1] + 0.0722 * fill[2]) / fill[3];
-    black + (white - black) * luma.clamp(0.0, 1.0)
+    let luma = ((0.2126 * fill[0] + 0.7152 * fill[1] + 0.0722 * fill[2]) / fill[3]).clamp(0.0, 1.0);
+    let line = black + (white - black) * luma;
+    if windows { line + windows_correction(luma * 255.0) } else { line }
+}
+
+/// What Chromium's grayscale text on Windows adds to `WINDOWS_GAMMA`'s straight line, by the
+/// text's luma (0-255, as the line reads it: the fill reaches here sRGB-encoded). Chromium picks
+/// one of Skia's eight gamma tables by the colour's luma (`windows/skia_gamma.rs`), and those
+/// aren't a line: luma 32-127 keeps nearly black's weight before it falls, so mid-greys on a
+/// light background drew heavier than Chromium's. Each point is the exponent that gives Windfoil's
+/// coverage Chromium's ink for a grey of that luma (Inter and Plex Mono, 1x and 1.875x), less the
+/// line's. Above luma 173.5 the line stays as is: a negative correction on near-white text
+/// regressed dark-theme app text (`#fafafa` / `#ffffff`) against Chromium at both 1x and 1.5x.
+/// The line already draws Chromium's ink to within 1.5% at black, `#161616`, `#808080` and
+/// `#aeaeae`, so the correction is 0 around those and they draw exactly as before.
+const WINDOWS_CORRECTION: [(f32, f32); 9] = [
+    (22.5, 0.0), (48.0, 0.143), (80.0, 0.148), (92.0, 0.177), (112.0, 0.107), (127.5, 0.0), (128.5, 0.0),
+    (144.0, 0.078), (173.5, 0.0),
+];
+
+/// [`WINDOWS_CORRECTION`] at `luma` (0-255), linear between its points and 0 outside them.
+fn windows_correction(luma: f32) -> f32 {
+    let mut prev = (0.0, 0.0);
+    for (at, by) in WINDOWS_CORRECTION {
+        if luma <= at {
+            return prev.1 + (by - prev.1) * (luma - prev.0) / (at - prev.0);
+        }
+        prev = (at, by);
+    }
+    0.0
 }
 
 #[cfg(test)]

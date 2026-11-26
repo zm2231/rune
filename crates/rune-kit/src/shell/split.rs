@@ -11,9 +11,15 @@ use super::toolbar::{TOOLBAR_HEIGHT, Toolbar};
 use crate::{ControlSize, IconButton, IconButtonVariant, Kit};
 
 type Apply = Box<dyn FnOnce(El) -> El>;
-/// Delayed hover on an element: `(e, enter, leave, peek)` peeks the sidebar once the pointer
-/// rests inside when `peek`, and ends the peek once it stays out otherwise.
-type Hover = Rc<dyn Fn(El, Duration, Duration, bool) -> El>;
+/// Delayed hover on an element: opens a peek on rest, or holds a peek open across its surfaces
+/// (the raised pane, the raised toggle, and the margin strip beside them).
+type Hover = Rc<dyn Fn(El, Duration, Duration, PeekHover) -> El>;
+
+#[derive(Clone, Copy)]
+enum PeekHover {
+    Open(u8),
+    Hold(u8),
+}
 
 /// The resize grip's width, straddling nothing: it sits inside the pane's edge.
 const GRIP: f32 = 6.0;
@@ -38,9 +44,14 @@ pub struct SidebarToggle {
     in_header: bool,
     unread: bool,
     shortcut: Option<&'static str>,
+    show_label: Option<&'static str>,
+    hide_label: Option<&'static str>,
 }
 
 const DEFAULT_TOGGLE_SHORTCUT: &str = if cfg!(target_os = "macos") { "⇧⌘B" } else { "Ctrl+Shift+B" };
+const DEFAULT_SHOW_SIDEBAR: &str = "Show sidebar";
+const DEFAULT_HIDE_SIDEBAR: &str = "Hide sidebar";
+const DEFAULT_FRAME_INSET: f32 = 8.0;
 
 impl SidebarToggle {
     /// A 24 point button 8 points past the traffic lights (12 from the window's edge when there
@@ -54,6 +65,8 @@ impl SidebarToggle {
             in_header: false,
             unread: false,
             shortcut: Some(DEFAULT_TOGGLE_SHORTCUT),
+            show_label: None,
+            hide_label: None,
         }
     }
     /// The button's size: 16, 20, 24, 28 or 36 points.
@@ -93,6 +106,21 @@ impl SidebarToggle {
     /// `"Ctrl+Shift+B"` elsewhere by default; pass `""` to omit).
     pub fn shortcut(mut self, shortcut: &'static str) -> Self {
         self.shortcut = (!shortcut.is_empty()).then_some(shortcut);
+        self
+    }
+    /// Accessible name and tooltip text for the toggle button when the sidebar is closed
+    /// (`show`) and open (`hide`), replacing `"Show sidebar"` and `"Hide sidebar"`. Empty or
+    /// blank strings keep the default for that state.
+    ///
+    /// ```
+    /// # use rune_kit::shell::SidebarToggle;
+    /// # let _ =
+    /// SidebarToggle::new().labels("显示侧边栏", "隐藏侧边栏")
+    /// # ;
+    /// ```
+    pub fn labels(mut self, show: &'static str, hide: &'static str) -> Self {
+        self.show_label = (!show.trim().is_empty()).then_some(show);
+        self.hide_label = (!hide.trim().is_empty()).then_some(hide);
         self
     }
 
@@ -139,7 +167,8 @@ pub struct SplitView {
     inset: f32,
     show_toggle: bool,
     toggle: SidebarToggle,
-    frame: f32,
+    frame: Option<f32>,
+    flat: bool,
     in_panel: bool,
     padding: [f32; 2],
     motion: PaneMotion,
@@ -157,7 +186,8 @@ impl SplitView {
             inset: 0.0,
             show_toggle: true,
             toggle: SidebarToggle::new(),
-            frame: 8.0,
+            frame: None,
+            flat: false,
             in_panel: false,
             padding: [0.0; 2],
             motion: PaneMotion::new(),
@@ -167,13 +197,13 @@ impl SplitView {
     }
     /// The leading pane. `access` finds its state in the app's; the grip and the toggle button
     /// write to it. `content` is usually a built `Sidebar`.
-    pub fn sidebar<S: 'static>(mut self, state: &PaneState, access: fn(&mut S) -> &mut PaneState, content: El) -> Self {
-        self.sidebar = Some(pane(*state, access, content, 1.0, true));
+    pub fn sidebar<S: 'static>(mut self, state: &PaneState, access: impl for<'a> Fn(&'a mut S) -> &'a mut PaneState + 'static, content: El) -> Self {
+        self.sidebar = Some(pane(*state, Rc::new(access), content, 1.0, true));
         self
     }
     /// The trailing pane, resized from its leading edge.
-    pub fn inspector<S: 'static>(mut self, state: &PaneState, access: fn(&mut S) -> &mut PaneState, content: El) -> Self {
-        self.inspector = Some(pane(*state, access, content, -1.0, false));
+    pub fn inspector<S: 'static>(mut self, state: &PaneState, access: impl for<'a> Fn(&'a mut S) -> &'a mut PaneState + 'static, content: El) -> Self {
+        self.inspector = Some(pane(*state, Rc::new(access), content, -1.0, false));
         self
     }
     /// The band above the main pane (and the inspector). Without one the band is empty and
@@ -198,9 +228,33 @@ impl SplitView {
         self
     }
     /// The window background showing around the main pane where no pane borders it (default
-    /// 8 points).
+    /// 8 points, or 0 points when [`Self::flat_main`] is enabled).
     pub fn frame_inset(mut self, points: f32) -> Self {
-        self.frame = points.max(0.0);
+        self.frame = Some(points.max(0.0));
+        self
+    }
+    /// Draws the main pane flat instead of as a rounded, bordered card: omits its corner
+    /// radius and rounded clip, defaults [`Self::frame_inset`] to `0.0` unless set explicitly,
+    /// and draws 1-point hairlines only on edges meeting an open pane or an outer toolbar band
+    /// (`left` for an open sidebar, `right` for an open inspector, `top` when a toolbar sits
+    /// above the pane). Default `false`.
+    ///
+    /// ```
+    /// # use rune::el;
+    /// # use rune_kit::{Kit, shell::{PaneState, SplitView}};
+    /// # struct App { sidebar: PaneState }
+    /// # let s = App { sidebar: PaneState::new(240.0) };
+    /// # let (main, sidebar) = (el(), el());
+    /// # let kit = Kit::neutral(true);
+    /// # let _ =
+    /// SplitView::new(main)
+    ///     .sidebar(&s.sidebar, |s: &mut App| &mut s.sidebar, sidebar)
+    ///     .flat_main(true)
+    ///     .build(&kit)
+    /// # ;
+    /// ```
+    pub fn flat_main(mut self, on: bool) -> Self {
+        self.flat = on;
         self
     }
     /// Puts the toolbar inside the main pane, at its top, and insets the pane from the window's
@@ -241,7 +295,8 @@ impl SplitView {
         let c = &k.c;
         let t = self.toggle;
         let side = t.side();
-        let top = if self.in_panel { self.frame } else { 0.0 };
+        let frame = self.frame.unwrap_or(if self.flat { 0.0 } else { DEFAULT_FRAME_INSET });
+        let top = if self.in_panel { frame } else { 0.0 };
         let sidebar_state = self.sidebar.as_ref().map(|p| p.state);
         let sidebar_open = sidebar_state.is_some_and(|s| s.is_open());
         let inspector_state = self.inspector.as_ref().map(|p| p.state);
@@ -266,7 +321,11 @@ impl SplitView {
             }
             let hover = p.hover.take();
             if let Some(tg) = p.toggle.take().filter(|_| toggle) {
-                let label = if open { "Hide sidebar" } else { "Show sidebar" };
+                let label = if open {
+                    t.hide_label.unwrap_or(DEFAULT_HIDE_SIDEBAR)
+                } else {
+                    t.show_label.unwrap_or(DEFAULT_SHOW_SIDEBAR)
+                };
                 let mut button = IconButton::new(&super::SIDEBAR)
                     .variant(IconButtonVariant::GhostMuted)
                     .control_size(t.size)
@@ -287,22 +346,29 @@ impl SplitView {
                 if let (Some(pk), Some(h)) = (peek, &hover)
                     && !open
                 {
-                    b = h(b, pk.toggle_delay, Duration::ZERO, true);
+                    b = if shown {
+                        h(b, Duration::ZERO, pk.grace, PeekHover::Hold(PaneState::PEEK_TOGGLE))
+                    } else {
+                        h(b, pk.toggle_delay, Duration::ZERO, PeekHover::Open(PaneState::PEEK_TOGGLE))
+                    };
                 }
                 if floating {
                     b = b.raise();
                 }
                 overlay = Some(b);
             }
+            let mut pane_hold = None;
             if let (Some(pk), Some(h)) = (peek, &hover) {
                 let instant = Transition::none();
                 if shown {
                     let hold = el().key("sidebar-peek-hold").pin(Some(0.0), Some(0.0), None, Some(0.0)).w(s.width() + pk.margin);
-                    zones.push(h(hold.transition(instant), Duration::ZERO, pk.grace, false));
+                    zones.push(h(hold.transition(instant), Duration::ZERO, pk.grace, PeekHover::Hold(PaneState::PEEK_HOLD)));
+                    let h = h.clone();
+                    pane_hold = Some(Box::new(move |e: El| h(e, Duration::ZERO, pk.grace, PeekHover::Hold(PaneState::PEEK_PANE))) as Apply);
                 } else if !open && !s.is_resizing() {
                     let below = pk.below.unwrap_or(top + TOOLBAR_HEIGHT);
-                    let edge = el().key("sidebar-peek-edge").pin(Some(0.0), Some(below), None, Some(0.0)).w(self.frame + pk.edge);
-                    zones.push(h(edge.transition(instant), pk.edge_delay, Duration::ZERO, true));
+                    let edge = el().key("sidebar-peek-edge").pin(Some(0.0), Some(below), None, Some(0.0)).w(frame + pk.edge);
+                    zones.push(h(edge.transition(instant), pk.edge_delay, Duration::ZERO, PeekHover::Open(0)));
                 }
             }
             // The title bar row clears the traffic lights, and the toggle wherever it floats
@@ -325,41 +391,52 @@ impl SplitView {
             if toggle && t.in_header {
                 band = band.child(el().key("sidebar-spacer").grow(1.0).a11y_hidden()).child(el().key("sidebar-toggle-slot").w(side).ml(8.0).a11y_hidden());
             }
-            let content = Contents { pad: self.padding, slide: peek.is_some(), peek, band: Some(band) };
+            let content = Contents { pad: self.padding, slide: peek.is_some(), peek, band: Some(band), hold: pane_hold };
             dock(&d, "sidebar-pane", p, true, content)
         });
+        let has_toolbar = self.toolbar.is_some();
         let toolbar = self
             .toolbar
             .unwrap_or_default()
-            .padding(if sidebar_open { 12.0 } else if self.in_panel { (past_toggle - self.frame).max(12.0) } else { past_toggle })
+            .padding(if sidebar_open { 12.0 } else if self.in_panel { (past_toggle - frame).max(12.0) } else { past_toggle })
             .build(k)
             .motion(spring);
         let (toolbar, above) = if self.in_panel { (Some(toolbar), None) } else { (None, Some(toolbar)) };
-        let card = col()
+        let mut card = col()
             .key("main-pane")
             .role("main")
             .grow(1.0)
             .min_w(0.0)
             .min_h(0.0)
-            .ml(if sidebar_open { 0.0 } else { self.frame })
-            .mr(if inspector_open { 0.0 } else { self.frame })
-            .mb(self.frame)
+            .ml(if sidebar_open { 0.0 } else { frame })
+            .mr(if inspector_open { 0.0 } else { frame })
+            .mb(frame)
             .fill(c.bg_base)
-            .radius(k.radius.lg)
-            .border(1.0, c.border_muted)
-            .clip_rounded(k.radius.lg)
             .motion(spring)
             .children(toolbar)
             .child(self.main.grow(1.0).min_h(0.0));
+        if self.flat {
+            let sides = [
+                if !self.in_panel && has_toolbar { 1.0 } else { 0.0 },
+                if inspector_open { 1.0 } else { 0.0 },
+                0.0,
+                if sidebar_open { 1.0 } else { 0.0 },
+            ];
+            if sides.iter().any(|&w| w > 0.0) {
+                card = card.border_sides(sides, c.border_muted);
+            }
+        } else {
+            card = card.radius(k.radius.lg).border(1.0, c.border_muted).clip_rounded(k.radius.lg);
+        }
         let mut below = row().key("main-row").w_full().grow(1.0).min_h(0.0).motion(spring).child(card);
         if let Some(mut p) = self.inspector {
             if let Some(c) = p.clear.take() {
                 clears.push(c);
             }
-            let content = Contents { pad: [0.0; 2], slide: false, peek: None, band: None };
+            let content = Contents { pad: [0.0; 2], slide: false, peek: None, band: None, hold: None };
             below = below.child(dock(&d, "inspector-pane", p, false, content));
         }
-        let strip = self.in_panel.then(|| el().key("titlebar-strip").w_full().h(self.frame).window_drag());
+        let strip = self.in_panel.then(|| el().key("titlebar-strip").w_full().h(frame).window_drag());
         let main = col().key("main-column").grow(1.0).min_w(0.0).h_full().motion(spring).children(above).children(strip).child(below);
         let mut split = row().key("split").w_full().h_full().motion(spring);
         if let Some(s) = sidebar {
@@ -385,7 +462,8 @@ pub struct Page {
     toolbar: Toolbar,
     inset: f32,
     toggle: SidebarToggle,
-    frame: f32,
+    frame: Option<f32>,
+    flat: bool,
     in_panel: bool,
 }
 
@@ -396,7 +474,8 @@ impl Page {
             toolbar: Toolbar::new(),
             inset: 0.0,
             toggle: SidebarToggle::new(),
-            frame: 8.0,
+            frame: None,
+            flat: false,
             in_panel: false,
         }
     }
@@ -436,10 +515,26 @@ impl Page {
         self.toggle = self.toggle.past_lights(past_lights).edge(edge);
         self
     }
-    /// The window background showing around the content pane (default 8 points, matching
-    /// [`SplitView::frame_inset`]).
+    /// The window background showing around the content pane (default 8 points, or 0 points
+    /// when [`Self::flat_main`] is enabled, matching [`SplitView::frame_inset`]).
     pub fn frame_inset(mut self, points: f32) -> Self {
-        self.frame = points.max(0.0);
+        self.frame = Some(points.max(0.0));
+        self
+    }
+    /// Draws the content pane flat instead of as a rounded card, matching
+    /// [`SplitView::flat_main`].
+    ///
+    /// ```
+    /// # use rune::el;
+    /// # use rune_kit::{Kit, shell::Page};
+    /// # let body = el();
+    /// # let kit = Kit::neutral(true);
+    /// # let _ =
+    /// Page::new(body).title("Settings").flat_main(true).build(&kit)
+    /// # ;
+    /// ```
+    pub fn flat_main(mut self, on: bool) -> Self {
+        self.flat = on;
         self
     }
     /// Puts the toolbar inside the framed content pane at its top, matching
@@ -454,8 +549,11 @@ impl Page {
             .toolbar(self.toolbar)
             .titlebar_inset(self.inset)
             .sidebar_toggle(self.toggle)
-            .frame_inset(self.frame)
+            .flat_main(self.flat)
             .hide_sidebar_toggle();
+        if let Some(frame) = self.frame {
+            split = split.frame_inset(frame);
+        }
         if self.in_panel {
             split = split.toolbar_in_panel();
         }
@@ -463,47 +561,73 @@ impl Page {
     }
 }
 
+type PaneAccess<S> = Rc<dyn for<'a> Fn(&'a mut S) -> &'a mut PaneState>;
+
 /// Handlers for a pane's grip and toggle, typed by the app's state.
-fn pane<S: 'static>(state: PaneState, access: fn(&mut S) -> &mut PaneState, content: El, sign: f32, toggle: bool) -> Pane {
+fn pane<S: 'static>(state: PaneState, access: PaneAccess<S>, content: El, sign: f32, toggle: bool) -> Pane {
+    let drag_access = access.clone();
     let drag: Apply = Box::new(move |e: El| {
+        let (a1, a2, a3, a4) = (drag_access.clone(), drag_access.clone(), drag_access.clone(), drag_access);
         e.on_drag(move |s: &mut S, d: &mut Drag, tx: &mut Tx| {
-            let p = access(s);
+            let p = a1(s);
             match d.phase {
                 Phase::Down => p.press_grip(d.window_point()),
                 Phase::Move => {
-                    tx.instant();
-                    p.drag_grip(d.window_point(), sign * d.dx);
+                    if p.drag_grip(d.window_point(), sign * d.dx) {
+                        tx.instant();
+                    } else {
+                        tx.live_only();
+                    }
                 }
                 Phase::Up => p.release_grip(d.cancelled()),
             }
         })
-        .on_double_press(move |s: &mut S| access(s).reset_width())
+        .on_double_press(move |s: &mut S| a2(s).reset_width())
         .on_step(move |s: &mut S, steps, _| {
-            let p = access(s);
+            let p = a3(s);
             p.set_width(p.width() + steps as f32 * GRIP_STEP);
         })
+        .on_set_value(move |s: &mut S, value, _| {
+            a4(s).set_width(value as f32);
+        })
     });
-    let toggle: Option<Apply> =
-        toggle.then(|| Box::new(move |e: El| e.on_press(move |s: &mut S| access(s).toggle())) as Apply);
+    let toggle: Option<Apply> = toggle.then(|| {
+        let toggle_access = access.clone();
+        Box::new(move |e: El| e.on_press(move |s: &mut S| toggle_access(s).toggle())) as Apply
+    });
     // A drag whose release is lost (the grip unmounted, a modal took the pointer) ends on blur
     // or once the pointer moves where the drag doesn't hear it. Blur also ends a peek.
-    let clear = (state.is_resizing() || state.is_peeking()).then(|| {
-        Box::new(move |e: El| {
-            e.on_window_focus(move |s: &mut S, focused, _| {
-                if !focused {
-                    access(s).lose_grip();
-                    access(s).end_peek();
+    let resizing = state.is_resizing();
+    let peeking = state.is_peeking();
+    let clear = (resizing || peeking).then(|| {
+        let clear_access = access.clone();
+        Box::new(move |mut e: El| {
+            let blur_access = clear_access.clone();
+            e = e.on_window_focus(move |s: &mut S, focused, tx| {
+                if focused || !blur_access(s).blur_clear() {
+                    tx.live_only();
                 }
-            })
-            .on_pointer_move(move |s: &mut S, p| access(s).pointer_grip([p.x, p.y]))
+            });
+            if resizing {
+                e = e.on_pointer_move_local(move |s: &mut S, p, tx| {
+                    if !clear_access(s).pointer_grip([p.window_x, p.window_y]) {
+                        tx.live_only();
+                    }
+                });
+            }
+            e
         }) as Apply
     });
     let hover = (sign > 0.0).then(|| {
-        Rc::new(move |e: El, enter: Duration, leave: Duration, peek: bool| {
-            e.hover_delays(enter, leave).on_hover_change(move |s: &mut S, inside, _| match (peek, inside) {
-                (true, true) => access(s).peek(),
-                (false, false) => access(s).end_peek(),
-                _ => {}
+        Rc::new(move |e: El, enter: Duration, leave: Duration, mode: PeekHover| {
+            let hover_access = access.clone();
+            e.hover_delays(enter, leave).on_hover_change(move |s: &mut S, inside, tx: &mut Tx| match mode {
+                PeekHover::Open(zone) => {
+                    if inside { hover_access(s).peek_from(zone); } else { tx.live_only(); }
+                }
+                PeekHover::Hold(zone) => {
+                    if !hover_access(s).peek_hover(zone, inside) { tx.live_only(); }
+                }
             })
         }) as Hover
     });
@@ -528,6 +652,7 @@ struct Contents {
     slide: bool,
     peek: Option<SidebarPeek>,
     band: Option<El>,
+    hold: Option<Apply>,
 }
 
 /// The pane's slot: its width springs between 0 and the pane's width while the content keeps
@@ -542,7 +667,8 @@ fn dock(d: &Dock, key: &str, p: Pane, leading: bool, content: Contents) -> El {
     let phase = if content.peek.is_some() { s.peek_phase() } else { Peek::None };
     let floating = phase != Peek::None;
     let fade_peek = |pk: &SidebarPeek| -> Anim {
-        if d.reduced && pk.reduced_fade > 0.0 { Curve::tween(pk.reduced_fade, Easing::EASE_IN_OUT).into() } else { Anim::INSTANT }
+        let sec = pk.reduced_fade_for(pk.spring.unwrap_or(k.motion.control));
+        if d.reduced && sec > 0.0 { Curve::tween(sec, Easing::EASE_IN_OUT).into() } else { Anim::INSTANT }
     };
     let (opacity, fade) = match (open, phase, &content.peek) {
         (false, Peek::Shown, Some(pk)) => (1.0, fade_peek(pk)),
@@ -574,8 +700,8 @@ fn dock(d: &Dock, key: &str, p: Pane, leading: bool, content: Contents) -> El {
             // them, on the same spring, so they hold still.
             _ => (0.0, spring.into()),
         };
-        let surface_motion: Anim = if d.reduced && pk.reduced_fade > 0.0 {
-            Curve::tween(pk.reduced_fade, Easing::EASE_IN_OUT).into()
+        let surface_motion: Anim = if d.reduced {
+            fade_peek(&pk)
         } else if phase == Peek::Docked {
             spring.into()
         } else {
@@ -593,6 +719,9 @@ fn dock(d: &Dock, key: &str, p: Pane, leading: bool, content: Contents) -> El {
     }
     if floating {
         body = body.raise();
+    }
+    if let Some(hold) = content.hold {
+        body = hold(body);
     }
     let body = body
         .children(content.band)

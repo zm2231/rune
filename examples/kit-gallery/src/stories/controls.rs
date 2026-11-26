@@ -37,6 +37,102 @@ pub(super) fn button_icon(_: &G, k: &Kit, _: &mut Vec<El>) -> El {
         .child(Button::new("Large").variant(ButtonVariant::Contrast).control_size(ControlSize::Large).icon(&ic::PLUS).build(k))
 }
 
+pub(super) fn button_shortcuts(_: &G, k: &Kit, _: &mut Vec<El>) -> El {
+    use ButtonVariant::*;
+    col()
+        .gap(12.0)
+        .child(
+            flex(12.0)
+                .child(Button::new("Save").shortcut("cmd+s").show_shortcut().build(k))
+                .child(Button::new("End it now").variant(Contrast).shortcut("⏎").show_shortcut().build(k))
+                .child(Button::new("Submit").variant(Submit).shortcut("cmd+enter").show_shortcut().build(k))
+                .child(Button::new("End run").variant(Danger).shortcut("cmd+d").show_shortcut().build(k))
+                .child(Button::new("Retry").variant(Warning).shortcut("cmd+r").show_shortcut().build(k)),
+        )
+        .child(
+            flex(12.0)
+                .child(Button::new("New").icon(&ic::PLUS).variant(Outline).shortcut("cmd+n").show_shortcut().build(k))
+                .child(Button::new("Stay").variant(Ghost).shortcut("esc").show_shortcut().build(k))
+                .child(Button::new("Edit").variant(GhostMuted).shortcut("E").show_shortcut().build(k))
+                .child(Button::new("More").variant(GhostFaint).shortcut("M").show_shortcut().build(k))
+                .child(Button::new("Disabled").shortcut("cmd+k").show_shortcut().disabled(true).build(k)),
+        )
+}
+
+/// Focus options on buttons: `El::keyboard_focus_only()` (runs `on_press` on click without
+/// taking focus, while Tab still visits it) and `El::focus_ring_radius(f32)` (explicit outer
+/// focus-ring corner radius independent of the control's own radius).
+pub(super) fn button_focus(s: &G, k: &Kit, _: &mut Vec<El>) -> El {
+    let last = s.picked("btn-focus", "None");
+    let kbd_only = col()
+        .gap(8.0)
+        .items_start()
+        .child(text("El::keyboard_focus_only()").font(k.ty.ui_medium).color(k.c.text_base))
+        .child(
+            row()
+                .gap(8.0)
+                .child(
+                    Button::new("Toolbar action")
+                        .variant(ButtonVariant::Contrast)
+                        .on_press(|s: &mut G| { s.pick.insert("btn-focus".into(), "Toolbar action".into()); })
+                        .build(k)
+                        .key("kbd-only-btn")
+                        .keyboard_focus_only(),
+                )
+                .child(
+                    Button::new("Normal button")
+                        .variant(ButtonVariant::Outline)
+                        .on_press(|s: &mut G| { s.pick.insert("btn-focus".into(), "Normal button".into()); })
+                        .build(k)
+                        .key("normal-focus-btn"),
+                ),
+        )
+        .child(
+            text(format!("Last pressed: {last} — click Toolbar action without taking focus; Tab visits both."))
+                .font(k.ty.small)
+                .color(k.c.text_muted),
+        );
+    let ring_radii = col()
+        .gap(8.0)
+        .items_start()
+        .child(text("El::focus_ring_radius(f32)").font(k.ty.ui_medium).color(k.c.text_base))
+        .child(
+            row()
+                .gap(12.0)
+                .child(
+                    Button::new("Pill ring")
+                        .variant(ButtonVariant::Contrast)
+                        .build(k)
+                        .key("pill-ring-btn")
+                        .radius(999.0)
+                        .focus_ring_radius(999.0),
+                )
+                .child(
+                    Button::new("4pt box, 8pt ring")
+                        .variant(ButtonVariant::Outline)
+                        .build(k)
+                        .key("row-ring-btn")
+                        .radius(4.0)
+                        .focus_ring(2.0, 2.0, k.c.border_focus)
+                        .focus_ring_radius(8.0),
+                )
+                .child(
+                    Button::new("Square ring (0pt)")
+                        .variant(ButtonVariant::Outline)
+                        .build(k)
+                        .key("square-ring-btn")
+                        .radius(6.0)
+                        .focus_ring_radius(0.0),
+                ),
+        )
+        .child(
+            text("Tab through these buttons to compare pill, 8pt and square focus rings.")
+                .font(k.ty.small)
+                .color(k.c.text_muted),
+        );
+    col().gap(20.0).items_start().child(kbd_only).child(ring_radii)
+}
+
 pub(super) fn button_all_states(_: &G, k: &Kit, _: &mut Vec<El>) -> El {
     use ButtonVariant::*;
     let variants = [
@@ -131,7 +227,7 @@ pub(super) fn switch_sizes(s: &G, k: &Kit, _: &mut Vec<El>) -> El {
         ("Large", ControlSize::Large), ("Extra large", ControlSize::ExtraLarge)];
     col().gap(12.0).children(sizes.into_iter().map(|(name, size)| {
         let key = format!("size-{name}");
-        let sw = |on: bool, st: State| Switch::new(on).control_size(size).state(st).build(k);
+        let sw = |on: bool, st: State| Switch::new(on).label(name).hide_label().control_size(size).state(st).build(k);
         row().gap(12.0).center_y()
             .child(caption(k, name).w(80.0))
             .child(Switch::new(s.is(&key)).control_size(size).label(name).hide_label().on_toggle(move |s: &mut G| s.flip(&key)).build(k))
@@ -151,8 +247,8 @@ pub(super) fn switch_web(s: &G, k: &Kit, _: &mut Vec<El>) -> El {
         .children(states.into_iter().map(|(name, st)| {
             row().gap(16.0).center_y()
                 .child(caption(k, name).w(80.0))
-                .child(Switch::new(false).web().state(st).build(k))
-                .child(Switch::new(true).web().state(st).build(k))
+                .child(Switch::new(false).web().label(format!("{name} off")).hide_label().state(st).build(k))
+                .child(Switch::new(true).web().label(format!("{name} on")).hide_label().state(st).build(k))
         }))
 }
 
@@ -277,4 +373,116 @@ pub(super) fn radio_states(s: &G, k: &Kit, _: &mut Vec<El>) -> El {
                 .invalid(true)
                 .build(k),
         )
+}
+
+/// `ui-radio--surfaces`: the controls on the base background and on layer 1, each default,
+/// selected and disabled, then invalid.
+pub(super) fn radio_surfaces(_: &G, k: &Kit, _: &mut Vec<El>) -> El {
+    let column = |label: &str, surface: RadioSurface| {
+        col()
+            .gap(20.0)
+            .child(
+                RadioGroup::new()
+                    .label(label)
+                    .surface(surface)
+                    .item(RadioItem::new("Default", false))
+                    .item(RadioItem::new("Selected", true))
+                    .item(RadioItem::new("Disabled", false).disabled(true))
+                    .build(k),
+            )
+            .child(
+                RadioGroup::new()
+                    .label("Invalid")
+                    .surface(surface)
+                    .invalid(true)
+                    .item(RadioItem::new("Invalid", false))
+                    .build(k),
+            )
+    };
+    row().gap(32.0).items_start().child(column("Base", RadioSurface::Base)).child(column("Layer 1", RadioSurface::Layer1))
+}
+
+// Slider
+
+pub(super) fn slider_basic(s: &G, k: &Kit, _: &mut Vec<El>) -> El {
+    let vol = s.value("slider-vol", 50.0);
+    let thumb = s.value("slider-thumb", 240.0);
+    let hidden = s.value("slider-hidden", 0.65);
+    col()
+        .gap(16.0)
+        .child(
+            row().gap(12.0).center_y()
+                .child(
+                    Slider::new("slider-vol", vol)
+                        .range(0.0..=100.0)
+                        .label("Volume")
+                        .value_text(format!("{vol:.0}%"))
+                        .on_change(|s: &mut G, v, _| s.set_value("slider-vol", v))
+                        .build(k),
+                )
+                .child(caption(k, &format!("{vol:.0}%")).w(44.0)),
+        )
+        .child(
+            row().gap(12.0).center_y()
+                .child(
+                    Slider::new("slider-thumb", thumb)
+                        .range(160.0..=420.0)
+                        .step(20.0)
+                        .label("Thumbnail size")
+                        .value_text(format!("{thumb:.0} px"))
+                        .on_change(|s: &mut G, v, _| s.set_value("slider-thumb", v))
+                        .build(k),
+                )
+                .child(caption(k, &format!("{thumb:.0} px")).w(52.0)),
+        )
+        .child(
+            row().gap(12.0).center_y()
+                .child(caption(k, "Hidden label").w(88.0))
+                .child(
+                    Slider::new("slider-hidden", hidden)
+                        .label("Hidden label")
+                        .hide_label()
+                        .on_change(|s: &mut G, v, _| s.set_value("slider-hidden", v))
+                        .build(k),
+                ),
+        )
+}
+
+pub(super) fn slider_sizes(s: &G, k: &Kit, _: &mut Vec<El>) -> El {
+    let sizes = [
+        ("Mini", ControlSize::Mini),
+        ("Small", ControlSize::Small),
+        ("Regular", ControlSize::Regular),
+        ("Large", ControlSize::Large),
+        ("Extra large", ControlSize::ExtraLarge),
+    ];
+    col().gap(12.0).children(sizes.into_iter().map(|(name, size)| {
+        let key = format!("slider-size-{name}");
+        let v = s.value(&key, 0.5);
+        let key_cb = key.clone();
+        row().gap(12.0).center_y()
+            .child(caption(k, name).w(80.0))
+            .child(
+                Slider::new(key, v)
+                    .control_size(size)
+                    .label(name)
+                    .hide_label()
+                    .on_change(move |s: &mut G, v, _| s.set_value(&key_cb, v))
+                    .build(k),
+            )
+    }))
+}
+
+pub(super) fn slider_states(_: &G, k: &Kit, _: &mut Vec<El>) -> El {
+    col().gap(12.0).children(STATES.into_iter().map(|(name, st)| {
+        row().gap(12.0).center_y()
+            .child(caption(k, &cap_first(name)).w(80.0))
+            .child(
+                Slider::new(format!("slider-state-{name}"), 0.55)
+                    .label(cap_first(name))
+                    .hide_label()
+                    .state(st)
+                    .build(k),
+            )
+    }))
 }

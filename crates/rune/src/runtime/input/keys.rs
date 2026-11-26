@@ -9,8 +9,9 @@ impl RuntimeCore {
         one.by_keys = true;
         one.focused = self.focused_key();
         if matches!(ev.key, crate::Key::Modifier { .. }) { return !repeat && self.route_modifier(app, ev, one); }
+        if matches!(ev.key, crate::Key::Media(_)) && !self.kbd.media_keys { return false; }
         // Any other key while Ctrl and Shift are down makes them a shortcut, not a direction.
-        self.disarm_direction_chord();
+        self.kbd.disarm_direction_chord();
         one.key_repeat = repeat;
         let shown = self.kbd.focus.keyboard() || self.kbd.focus.hovered();
         if focus::navigates(ev) { self.kbd.focus.step(focus_machine::FocusEvent::Navigated); }
@@ -20,6 +21,7 @@ impl RuntimeCore {
         // Return and Escape that reach a field mid-composition belong to the input method: they
         // confirm or cancel it, and submit, blur and press nothing.
         if matches!(ev.key, crate::Key::Enter | crate::Key::Escape) && self.composing(app) { return true; }
+        if self.element_key_preview(app, ev, one) { return true; }
         if self.element_key(app, ev, one) { return true; }
         one.physical_key = None;
         if self.default_button_key(app, ev, one) { return true; }
@@ -29,17 +31,17 @@ impl RuntimeCore {
         if self.focused_input().is_some() {
             self.edit.input_click.clear_last();
         }
-        if let Some(f) = self.focused_input().and_then(|input| input.key.clone())
-            && Tx::took(f(app.states(), ev, one), one)
-        {
+        if self.run_input_key(app, ev, one) {
             return true;
         }
         one.physical_key = None;
+        let read_only = self.focused_input_read_only();
         // Inside a list item or code block, Tab (and Shift+Tab in lists) edits the document by default.
         if ev.key == crate::edit::Key::Tab
             && !ev.mods.cmd
             && !ev.mods.alt
             && !ev.mods.ctrl
+            && !read_only
             && self.focused_input().is_some_and(|i| {
                 !i.single_line
                     && !i.edit.is_secure()
@@ -52,13 +54,26 @@ impl RuntimeCore {
             }
         }
         if self.focus_key(app, ev, shown, one) { return true; }
+        if ev.edit_command() == Some('v') && let Some(target) = self.paste_target() {
+            // Capture the target in event order, before another queued click can
+            // change focus. An empty/image clipboard still consumes the command.
+            self.edit.paste_request = Some(Some(target));
+            return true;
+        }
+        if let Some(cmd) = ev.edit_command().filter(|c| matches!(c, 'c' | 'x'))
+            && self.copy_or_cut_focused(app, cmd == 'x', one)
+        {
+            return true;
+        }
         let input_handles = match &ev.key {
             crate::edit::Key::Function(_) | crate::edit::Key::ContextMenu | crate::edit::Key::Tab | crate::edit::Key::PageUp | crate::edit::Key::PageDown
-            | crate::edit::Key::Insert | crate::edit::Key::PrintScreen | crate::edit::Key::ScrollLock | crate::edit::Key::Pause => false,
+            | crate::edit::Key::Insert | crate::edit::Key::PrintScreen | crate::edit::Key::ScrollLock | crate::edit::Key::Pause
+            | crate::edit::Key::Media(_) => false,
             crate::edit::Key::Command(_) => match ev.edit_command() {
-                Some('a' | 'c' | 'x' | 'z') => true,
-                Some('y') => !crate::edit::MAC_KEYS,
-                Some('b' | 'i' | 'u') => self.focused_input().is_some_and(|i| i.edit.format_chord(ev).is_some()),
+                Some('a') => true,
+                Some('z') => !read_only,
+                Some('y') => !read_only && !crate::edit::MAC_KEYS,
+                Some('b' | 'i' | 'u') => !read_only && self.focused_input().is_some_and(|i| i.edit.format_chord(ev).is_some()),
                 _ => false,
             },
             // Alt+Space is the window menu's, so a field leaves it to the shell.
@@ -66,34 +81,147 @@ impl RuntimeCore {
             _ => !ev.is_command_chord() || ev.control_binding().is_some(),
         };
         if input_handles {
-            let layout = self.focused_layout();
-            // A rich field copies its selection's formatting too, read before a cut removes it.
-            let mut html = None;
-            let copies = matches!(ev.edit_command(), Some('c' | 'x'));
-            let handled = self.with_focused(app, |e| {
-                if copies && e.is_rich() && !e.is_secure() {
-                    html = Some(e.selected_html()).filter(|h| !h.is_empty());
+            if read_only {
+                if self.focused_input().is_some_and(|i| i.access.is_some()) {
+                    let allows_ro = match &ev.key {
+                        crate::edit::Key::Left | crate::edit::Key::Right | crate::edit::Key::Up | crate::edit::Key::Down
+                        | crate::edit::Key::Home | crate::edit::Key::End | crate::edit::Key::Escape => true,
+                        crate::edit::Key::Command(_) => ev.edit_command() == Some('a'),
+                        _ => matches!(ev.control_binding(), Some('a' | 'e' | 'b' | 'f' | 'p' | 'n')),
+                    };
+                    if !allows_ro {
+                        one.live_only();
+                        return true;
+                    }
+                    let layout = self.focused_layout();
+                    if self.with_focused(app, |e| e.key_in_read_only(ev, layout.as_ref().map(TextLayout::view)), one) {
+                        return true;
+                    }
                 }
-                e.key_in(ev, layout.as_ref().map(TextLayout::view))
-            }, one);
-            if let Some(html) = html
-                && let Some(text) = one.copy.as_ref().filter(|w| !w.is_secret()).map(|w| w.content().text().to_owned())
-            {
-                one.copy_rich(crate::ClipboardContent::new(text).with_html(html));
+            } else {
+                let layout = self.focused_layout();
+                if self.with_focused(app, |e| e.key_in(ev, layout.as_ref().map(TextLayout::view)), one) {
+                    return true;
+                }
             }
-            if handled { return true; }
+        }
+        if self.focused_input().is_none() && self.caret_browse_key(app, ev, one) {
+            return true;
         }
         one.physical_key = physical_key;
         if !app_first && !app.playground_typing() && app.has_on_key() && Tx::took(app.on_key(ev, one), one) {
-            log_event!(self, "key {:?}", ev.key);
+            if self.has_secure_focus() { log_event!(self, "key [redacted]"); } else { log_event!(self, "key {:?}", ev.key); }
             return true;
         }
         one.physical_key = None;
+        if ev.edit_command() == Some('v') && self.app_paste_handler().is_some() {
+            self.edit.paste_request = Some(None);
+            return true;
+        }
         // Selected text takes the Cmd+A and Cmd+C nothing else took, as AppKit's responder chain
         // gives a key equivalent to the menu bar before the text view: an app's shortcut wins.
         if !repeat && self.selection_key(app, ev, one) { return true; }
         if !repeat && self.context_menu_key(app, ev, one) { return true; }
         self.page_scroll(app, ev) || self.playground_key(app, ev, one)
+    }
+
+    /// Copy or cut the focused text field's selection, shared by keyboard `Cmd/Ctrl+C/X` and
+    /// the field's context menu (`field_menu_pick`).
+    ///
+    /// Runs `El::on_input_copy` first when the field is not secure and has a non-empty selection.
+    /// Returning `Some(content)` writes that `ClipboardContent` via `Tx::copy_rich`; returning
+    /// `None` (or with no hook) builds plain text via `El::pill_copy_text` (when set) or
+    /// `TextEdit::selected`, and attaches `TextEdit::selected_html` for rich fields. Cut deletes
+    /// the selection and records undo after reading what to copy.
+    pub(in crate::runtime) fn copy_or_cut_focused(&mut self, app: &mut dyn AppDriver, cut: bool, one: &mut Tx) -> bool {
+        if cut && self.focused_input_read_only() {
+            return false;
+        }
+        let Some((copy_hook, pill_copy_text)) = self
+            .focused_input()
+            .map(|i| (i.copy.clone(), i.pill_copy_text.clone()))
+        else {
+            return false;
+        };
+        let focused_secure = self.focused_index().is_some_and(|i| {
+            std::iter::successors(Some(i), |&p| self.tree.nodes[p].parent)
+                .any(|k| self.tree.nodes[k].is_secure())
+        });
+        self.with_focused_state(app, |mut state, access, tx| {
+            let (secure, has_selection) = {
+                let edit = access(state.reborrow());
+                edit.sync_invariants();
+                let (a, b) = edit.range();
+                (focused_secure || edit.is_secure(), a != b)
+            };
+            if secure || !has_selection {
+                return EditOutcome::default();
+            }
+            let custom = copy_hook
+                .as_ref()
+                .and_then(|hook| hook(state.reborrow(), cut, tx));
+            if let Some(content) = custom {
+                tx.copy_rich(content);
+            } else {
+                let edit = access(state.reborrow());
+                edit.sync_invariants();
+                if focused_secure || edit.is_secure() {
+                    return EditOutcome::default();
+                }
+                let (a, b) = edit.range();
+                if a != b {
+                    let text = match &pill_copy_text {
+                        Some(f) => edit.selected_with_pills(|id| f(id)),
+                        None => edit.selected().to_owned(),
+                    };
+                    let html = edit
+                        .is_rich()
+                        .then(|| edit.selected_html())
+                        .filter(|h| !h.is_empty());
+                    match html {
+                        Some(html) => tx.copy_rich(crate::ClipboardContent::new(text).with_html(html)),
+                        None => tx.copy(text),
+                    }
+                }
+            }
+            if cut {
+                let edit = access(state);
+                if !focused_secure && !edit.is_secure() {
+                    edit.insert("");
+                }
+            }
+            EditOutcome::default()
+        }, one)
+    }
+
+    /// Offer `ev` to the focused text field's `El::on_input_key` handler. If it consumes the key
+    /// and changes the field's text or caret, keep the caret in view after the commit, as an
+    /// editor-handled edit does.
+    /// Whether the currently focused element (if mounted) is marked disabled (`El::disabled`
+    /// or `El::aria_disabled`) on itself or any ancestor.
+    pub(in crate::runtime) fn focused_input_disabled(&self) -> bool {
+        self.focused_index().is_some_and(|i| self.node_disabled(i))
+    }
+
+    pub(in crate::runtime) fn run_input_key(&mut self, app: &mut dyn AppDriver, ev: &KeyEvent, one: &mut Tx) -> bool {
+        if self.focused_input_disabled() { return false; }
+        let Some((f, access)) = self.focused_input().and_then(|input| Some((input.key.clone()?, input.access.clone()))) else {
+            return false;
+        };
+        let before = (!self.edit.caret_follow && self.edit.caret_follow_check.is_none()).then(|| {
+            let path = self.kbd.focus.owned()?;
+            Some(match access {
+                Some(access) => selection::caret::CaretFollowCheck::new(path, access(app.states())),
+                None => selection::caret::CaretFollowCheck::new(path, &self.focused_input()?.edit),
+            })
+        }).flatten();
+        if !Tx::took(f(app.states(), ev, one), one) {
+            return false;
+        }
+        if !one.live_only && let Some(check) = before {
+            self.edit.caret_follow_check = Some(check);
+        }
+        true
     }
 
     /// Page Up and Page Down scroll by most of a viewport, and Home and End to the top and
@@ -161,17 +289,24 @@ impl RuntimeCore {
     /// lands on its end follows it again.
     #[inline]
     pub(in crate::runtime) fn page_to(&mut self, i: usize, to: impl FnOnce(f64, f64, f64) -> f64) -> bool {
-        let mut to = Some(to);
-        self.page_to_dyn(i, &mut |offset, max, page| to.take().expect("page_to runs once")(offset, max, page))
+        self.page_to_with(i, crate::ScrollSource::Direct, to)
     }
 
-    fn page_to_dyn(&mut self, i: usize, to: &mut dyn FnMut(f64, f64, f64) -> f64) -> bool {
+    #[inline]
+    pub(in crate::runtime) fn page_to_with(&mut self, i: usize, source: crate::ScrollSource, to: impl FnOnce(f64, f64, f64) -> f64) -> bool {
+        let mut to = Some(to);
+        self.page_to_dyn(i, source, &mut |offset, max, page| to.take().expect("page_to runs once")(offset, max, page))
+    }
+
+    fn page_to_dyn(&mut self, i: usize, source: crate::ScrollSource, to: &mut dyn FnMut(f64, f64, f64) -> f64) -> bool {
         self.release_hover_hold();
         self.drop_scroll_holds();
         let (id, page, stick) = (self.tree.nodes[i].id, f64::from(self.tree.nodes[i].local.h * 0.9), self.tree.nodes[i].scroll.is_some_and(|s| s.stick_bottom));
         let Some(st) = self.scroll.scrolls.get_mut(&id) else { return false };
+        let before = st.offset;
         st.offset = to(st.offset, st.max, page).clamp(0.0, st.max);
         st.moved();
+        if (st.offset - before).abs() > 1e-6 { st.note_source(source); }
         st.land(stick);
         true
     }
@@ -191,7 +326,7 @@ impl RuntimeCore {
     }
 
     #[inline]
-    pub(in crate::runtime) fn with_focused(&mut self, app: &mut dyn AppDriver, f: impl FnOnce(&mut crate::edit::TextEdit) -> EditOutcome, tx: &mut Tx) -> bool {
+    pub(crate) fn with_focused(&mut self, app: &mut dyn AppDriver, f: impl FnOnce(&mut crate::edit::TextEdit) -> EditOutcome, tx: &mut Tx) -> bool {
         let mut f = Some(f);
         self.with_focused_state_dyn(app, &mut |state, access, _| f.take().expect("focused edit runs once")(access(state)), tx)
     }
@@ -209,9 +344,20 @@ impl RuntimeCore {
         f: &mut dyn FnMut(crate::states::States<'_>, &crate::el::EditFn, &mut Tx) -> EditOutcome,
         tx: &mut Tx,
     ) -> bool {
+        if self.focused_input_disabled() { return false; }
         let Some(path) = self.kbd.focus.owned() else { return false };
-        let Some((access, submit, change, animate_layout, single_line, secure, revealed_override)) =
-            self.focused_input().map(|i| (i.access.clone(), i.submit.clone(), i.change.clone(), i.animate_layout, i.single_line, i.edit.is_secure(), i.revealed_override))
+        let Some((access, submit, change, selection_change, animate_layout, single_line, secure, revealed_override, line_home_end_override)) =
+            self.focused_input().map(|i| (
+                i.access.clone(),
+                i.submit.clone(),
+                i.change.clone(),
+                i.selection_change.clone(),
+                i.animate_layout,
+                i.single_line,
+                i.edit.is_secure(),
+                i.revealed_override,
+                i.line_home_end_override,
+            ))
         else {
             return false;
         };
@@ -222,8 +368,13 @@ impl RuntimeCore {
             edit.set_single_line(single_line);
             if secure && !edit.is_secure() { edit.set_secure(true); }
             if let Some(rev) = revealed_override { edit.set_revealed(rev); }
+            if let Some(line_home_end) = line_home_end_override { edit.set_line_home_end(line_home_end); }
         }
         let before = change.as_ref().map(|_| zeroize::Zeroizing::new(access(app.states()).text.clone()));
+        let before_sel = selection_change.as_ref().map(|_| {
+            let e = access(app.states());
+            (e.anchor, e.focus)
+        });
         let mut out = f(app.states(), &access, tx);
         // Submit and Escape's blur act once per press; held keys still type, move and delete.
         if tx.key_repeat { out.submit = false; out.blur = false; }
@@ -235,6 +386,15 @@ impl RuntimeCore {
         {
             change(app.states(), tx);
             access(app.states()).mark_edited();
+        }
+        if let Some(selection_change) = selection_change {
+            let after_sel = {
+                let e = access(app.states());
+                (e.anchor, e.focus)
+            };
+            if before_sel != Some(after_sel) {
+                selection_change(app.states(), tx);
+            }
         }
         if let Some(c) = out.copy {
             tx.copy(c);
@@ -264,8 +424,39 @@ impl RuntimeCore {
         }
     }
 
-    pub(in crate::runtime) fn node(&self, path: &str) -> Option<&Node> {
-        self.tree.nodes.iter().enumerate().find(|(i, n)| n.path == path && !self.subtree_exiting(*i) && !self.subtree_unmounted(*i)).map(|(_, n)| n)
+    pub(crate) fn node_index(&self, path: &str) -> Option<usize> {
+        self.tree.nodes.iter().enumerate().position(|(i, n)| n.path == path && !self.subtree_exiting(i) && !self.subtree_unmounted(i))
+    }
+
+    pub(crate) fn node(&self, path: &str) -> Option<&Node> {
+        self.node_index(path).map(|i| &self.tree.nodes[i])
+    }
+
+    /// `El::on_key_preview` handlers on the focused element's allowed ancestors and the focused
+    /// element itself, outermost first (DOM capture-phase `keydown` / WPF `PreviewKeyDown`).
+    /// Runs for focused text fields too (including one scrolled out of a virtual list), stops at
+    /// an active modal or inert boundary, and never runs on key-up.
+    pub(in crate::runtime) fn element_key_preview(&mut self, app: &mut dyn AppDriver, ev: &KeyEvent, tx: &mut Tx) -> bool {
+        let i = match self.focused_index() {
+            Some(i) if self.can_focus(i) || (self.active_modal() == Some(i) && self.reachable(i)) => i,
+            None if self.focused_input().is_some() => {
+                let Some(path) = self.kbd.focus.path() else { return false };
+                let Some(anc) = std::iter::successors(path.rsplit_once('/').map(|(head, _)| head), |p| p.rsplit_once('/').map(|(head, _)| head))
+                    .find_map(|p| self.node_index(p))
+                else {
+                    return false;
+                };
+                if !self.reachable(anc) { return false; }
+                anc
+            }
+            _ => return false,
+        };
+        let mut handlers: Vec<_> = std::iter::successors(Some(i), |&j| self.tree.nodes[j].parent)
+            .take_while(|&j| self.allowed(j) && !self.subtree_exiting(j))
+            .filter_map(|j| self.tree.nodes[j].focus.key_preview.clone())
+            .collect();
+        handlers.reverse();
+        handlers.into_iter().any(|f| Tx::took(f(app.states(), ev, tx), tx))
     }
 
     /// `El::on_key` handlers on the focused element and its ancestors, innermost first. A
@@ -277,7 +468,10 @@ impl RuntimeCore {
             .take_while(|&j| self.allowed(j) && !self.subtree_exiting(j))
             .filter_map(|j| self.tree.nodes[j].focus.key.clone())
             .collect();
-        handlers.into_iter().any(|f| Tx::took(f(app.states(), ev, tx), tx))
+        let rtl = std::mem::replace(&mut tx.key_rtl, self.tree.nodes[i].flow == crate::el::Flow::Rtl);
+        let took = handlers.into_iter().any(|f| Tx::took(f(app.states(), ev, tx), tx));
+        tx.key_rtl = rtl;
+        took
     }
 
     pub(in crate::runtime) fn focused_input(&self) -> Option<&InputSpec> {
@@ -285,38 +479,70 @@ impl RuntimeCore {
         self.node(path).and_then(|n| n.input.as_deref()).or_else(|| self.commit.virtual_inputs.get(path).map(Box::as_ref))
     }
 
+    /// Whether node `i` or any of its ancestors marks it read-only (`El::read_only(true)`),
+    /// or its `InputSpec` carries `read_only`.
+    pub(crate) fn is_node_read_only(&self, i: usize) -> bool {
+        if self.tree.nodes[i].input.as_ref().is_some_and(|inp| inp.read_only) {
+            return true;
+        }
+        std::iter::successors(Some(i), |&p| self.tree.nodes[p].parent)
+            .any(|k| self.tree.nodes[k].a11y.more.as_ref().is_some_and(|m| m.read_only))
+    }
+
+    /// Whether the currently focused text input is read-only (`El::read_only(true)` on the field
+    /// or an ancestor, including a focused field scrolled out of a virtual list).
+    pub(crate) fn focused_input_read_only(&self) -> bool {
+        match self.focused_index() {
+            Some(i) => self.is_node_read_only(i),
+            None => self.focused_input().is_some_and(|inp| inp.read_only),
+        }
+    }
+
     /// What [`Tx::focused`] reports: the focused link's id, else the focused element's key,
     /// else its path's last segment (a field in a virtual row that scrolled out has no node).
     pub(in crate::runtime) fn focused_key(&self) -> Option<String> {
         let path = self.kbd.focus.path()?;
-        if let Some(id) = self.focused_index().and_then(|i| self.focused_link_id(i)) { return Some(id); }
+        if let Some(id) = self.focused_index().and_then(|i| self.edit.focused_link_id(&self.tree.nodes[i])) { return Some(id); }
         Some(self.focused_index().and_then(|i| self.tree.nodes[i].key.clone())
-            .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path).to_owned()))
+            .unwrap_or_else(|| {
+                let last = path.rsplit('/').next().unwrap_or(path);
+                element_path::decode_key_segment(last).map_or_else(|| last.to_owned(), std::borrow::Cow::into_owned)
+            }))
     }
 
     /// The focused element's index. Unlike [`Runtime::node`], this finds it while it exits.
-    pub(in crate::runtime) fn focused_index(&self) -> Option<usize> {
-        let path = self.kbd.focus.path()?;
-        self.tree.nodes.iter().position(|n| n.path == path)
+    #[inline]
+    pub(crate) fn focused_index(&self) -> Option<usize> {
+        self.kbd.focused_index(&self.tree.nodes)
     }
 
     pub fn key(&mut self, ev: KeyEvent) {
         self.queue_key(ev, false);
     }
 
+    /// Opt into hardware media transport keys (`Key::Media`). Off by default.
+    #[inline]
+    pub(crate) fn set_media_keys(&mut self, enabled: bool) { self.kbd.media_keys = enabled; }
+
+    /// Whether this runtime accepts hardware media transport keys (`Key::Media`).
+    #[inline]
+    pub(crate) fn media_keys(&self) -> bool { self.kbd.media_keys }
+
     /// [`Runtime::key`]; `stage` routes it to the open playground's stage, for `Play::press`.
     pub(in crate::runtime) fn queue_key(&mut self, ev: KeyEvent, stage: bool) {
+        if matches!(ev.key, crate::Key::Media(_)) && !self.kbd.media_keys { return; }
         self.dismiss_help();
         // A key ends a middle-click autoscroll, and does nothing else.
-        if self.autoscroll_key() { return; }
-        // Escape during a drag cancels it and goes no further.
-        if ev.key == crate::Key::Escape && self.cancel_drag() { return; }
+        if self.pointer.autoscroll_key() { return; }
+        // Escape cancels a held drag first, or releases an active pointer lock, and goes no further.
+        if ev.key == crate::Key::Escape && (self.cancel_drag() || self.release_pointer_lock()) { return; }
         self.frame.queue.push(Action::Key { ev, repeat: false, stage });
     }
 
     /// Queue an auto-repeat of a held key, as the OS sends after the first press. Handlers see
     /// `Tx::key_repeat` true for it.
     pub fn repeat_key(&mut self, ev: KeyEvent) {
+        if matches!(ev.key, crate::Key::Media(_)) && !self.kbd.media_keys { return; }
         self.frame.queue.push(Action::Key { ev, repeat: true, stage: false });
     }
 
@@ -345,10 +571,12 @@ impl RuntimeCore {
     pub(in crate::runtime) fn app_paste_handler(&self) -> Option<crate::el::PasteFn> {
         self.tree.nodes.get(self.active_modal().unwrap_or_else(|| self.app_root()))?.handlers.on_paste.clone()
     }
+    #[cfg(any(test, target_vendor = "apple"))]
     pub(crate) fn accepts_paste(&self) -> bool {
         self.paste_target().is_some() || self.app_paste_handler().is_some()
     }
     pub(crate) fn paste_target(&self) -> Option<String> {
+        if self.focused_input_read_only() || self.focused_input_disabled() { return None; }
         self.focused_input().filter(|i| i.access.is_some()).and(self.kbd.focus.owned())
     }
     /// What the paste target hears: every form, images too, for a field with
@@ -373,6 +601,13 @@ impl RuntimeCore {
     pub(crate) fn read_result(&mut self, id: u64, content: crate::ClipboardContent) {
         self.frame.queue.push(Action::ClipboardRead(id, content));
     }
+    pub(crate) fn copy_image_result(&mut self, id: u64, result: Result<(), crate::CopyImageError>) {
+        self.frame.queue.push(Action::CopyImageDone(id, result));
+    }
+    /// Queues a `Tx::open_url_then` callback with what came of its open.
+    pub(crate) fn url_opened(&mut self, f: crate::open_url::OpenedFn, result: Result<(), crate::open_url::OpenUrlError>) {
+        self.frame.queue.push(Action::UrlOpened(f, result));
+    }
 
     /// Whether a text field, or a caret an app draws itself, has the focus: a host with a soft
     /// keyboard shows it.
@@ -383,6 +618,7 @@ impl RuntimeCore {
 
     /// The focused field's text around its selection, for the platform's input method.
     pub(crate) fn ime_text(&self) -> Option<crate::edit::ImeText> {
+        if self.focused_input_read_only() || self.focused_input_disabled() { return None; }
         self.focused_input().and_then(|i| i.edit.ime_text())
     }
 
@@ -410,7 +646,12 @@ impl RuntimeCore {
         self.focused_input().map(|i| (i.edit.can_undo(), i.edit.can_redo()))
     }
 
+    #[inline]
     pub fn has_focus(&self) -> bool {
-        self.kbd.focus.path().is_some()
+        self.kbd.has_focus()
     }
 }
+
+#[cfg(test)]
+#[path = "key_preview_tests.rs"]
+mod key_preview_tests;

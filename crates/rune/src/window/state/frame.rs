@@ -14,13 +14,21 @@ pub(crate) struct FrameRequest {
     /// request (`Tx::instant`, `Tx::motion`, reduced motion).
     pub spring: Option<Spring>,
     pub center: bool,
+    /// Start an interactive OS/compositor window resize from this edge (`Tx::drag_resize_window`).
+    pub resize_drag: Option<crate::ResizeEdge>,
 }
 
 impl FrameRequest {
-    /// A later request's size replaces an earlier one's; centring sticks.
+    /// A later request's size or resize drag replaces an earlier one's; centring sticks.
     pub fn merge(self, later: FrameRequest) -> FrameRequest {
         let (size, animate, spring) = if later.size.is_some() { (later.size, later.animate, later.spring) } else { (self.size, self.animate, self.spring) };
-        FrameRequest { size, animate, spring, center: self.center || later.center }
+        FrameRequest {
+            size,
+            animate,
+            spring,
+            center: self.center || later.center,
+            resize_drag: later.resize_drag.or(self.resize_drag),
+        }
     }
 }
 
@@ -29,6 +37,7 @@ impl FrameRequest {
 /// usable area of its screen. The top edge stays put, as an AppKit window grows downward;
 /// centring follows AppKit's `center` (centred across, a quarter of the spare height above).
 /// A frame never moves further off the visible area than it already was.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn target(current: [f32; 4], outer: Option<(f32, f32)>, center: bool, visible: [f32; 4]) -> [f32; 4] {
     let (w, h) = outer.unwrap_or((current[2], current[3]));
     let [vx, vy, vw, vh] = visible;
@@ -108,12 +117,20 @@ pub(crate) fn snap(rect: [f32; 4], scale: f32) -> [f32; 4] {
 }
 
 /// The drawable size a window takes when its scale changes from `from` to `to` and it keeps its
-/// logical size, rounded as winit rounds it. Windows sends `ScaleFactorChanged` before it resizes
-/// the window, so its `inner_size` is still the old scale's then.
+/// logical size, rounded as winit rounds it.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) fn rescaled(size: (u32, u32), from: f64, to: f64) -> (u32, u32) {
     let scale = |v: u32| (f64::from(v) / from * to).round() as u32;
     (scale(size.0), scale(size.1))
+}
+
+/// The drawable size a Windows window takes on `ScaleFactorChanged`. A normal window's
+/// `inner_size` is still at `from` because winit resizes it after the event; a maximised or
+/// full-screen window keeps `size` because winit does not resize it and Windows already sent
+/// `Resized` with the new monitor's size.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn scale_change_size(size: (u32, u32), from: f64, to: f64, maximized: bool, fullscreen: bool) -> (u32, u32) {
+    if maximized || fullscreen { size } else { rescaled(size, from, to) }
 }
 
 #[cfg(test)]
@@ -129,6 +146,19 @@ mod tests {
         assert_eq!(rescaled((1225, 950), 1.25, 1.75), (1715, 1330));
         assert_eq!(rescaled(rescaled((1225, 950), 1.25, 1.75), 1.75, 1.25), (1225, 950));
         assert_eq!(rescaled((1001, 777), 1.0, 1.25), (1251, 971));
+    }
+
+    #[test]
+    fn a_maximized_or_fullscreen_scale_change_keeps_its_size() {
+        // Normal window rescales from old DPI to new DPI.
+        assert_eq!(scale_change_size((1470, 1140), 1.5, 1.0, false, false), (980, 760));
+        assert_eq!(scale_change_size((980, 760), 1.0, 1.5, false, false), (1470, 1140));
+        // Maximised window moved from 200% to 100% and back already carries the target monitor's size.
+        assert_eq!(scale_change_size((2560, 1392), 2.0, 1.0, true, false), (2560, 1392));
+        assert_eq!(scale_change_size((3840, 2064), 1.0, 2.0, true, false), (3840, 2064));
+        // Full-screen window is also not resized by winit on WM_DPICHANGED.
+        assert_eq!(scale_change_size((2560, 1440), 2.0, 1.0, false, true), (2560, 1440));
+        assert_eq!(scale_change_size((2560, 1440), 1.0, 1.5, true, true), (2560, 1440));
     }
 
     const SCREEN: [f32; 4] = [0.0, 33.0, 1728.0, 1084.0];
@@ -198,9 +228,19 @@ mod tests {
 
     #[test]
     fn later_sizes_win_and_centring_sticks() {
-        let a = FrameRequest { size: Some((1.0, 2.0)), animate: true, spring: None, center: true };
-        let b = FrameRequest { size: Some((3.0, 4.0)), animate: false, spring: None, center: false };
-        assert_eq!(a.merge(b), FrameRequest { size: Some((3.0, 4.0)), animate: false, spring: None, center: true });
+        let a = FrameRequest { size: Some((1.0, 2.0)), animate: true, spring: None, center: true, resize_drag: None };
+        let b = FrameRequest { size: Some((3.0, 4.0)), animate: false, spring: None, center: false, resize_drag: None };
+        assert_eq!(a.merge(b), FrameRequest { size: Some((3.0, 4.0)), animate: false, spring: None, center: true, resize_drag: None });
         assert_eq!(b.merge(FrameRequest { center: true, ..Default::default() }), FrameRequest { center: true, ..b });
+    }
+
+    #[test]
+    fn resize_drag_merges_with_size_and_center_and_later_edge_wins() {
+        let resize = FrameRequest { resize_drag: Some(crate::ResizeEdge::SouthEast), ..Default::default() };
+        let sized = FrameRequest { size: Some((500.0, 400.0)), animate: true, center: true, ..Default::default() };
+        assert_eq!(resize.merge(sized), FrameRequest { resize_drag: Some(crate::ResizeEdge::SouthEast), ..sized });
+        assert_eq!(sized.merge(resize), FrameRequest { resize_drag: Some(crate::ResizeEdge::SouthEast), ..sized });
+        let newer = FrameRequest { resize_drag: Some(crate::ResizeEdge::NorthWest), ..Default::default() };
+        assert_eq!(resize.merge(newer).resize_drag, Some(crate::ResizeEdge::NorthWest));
     }
 }

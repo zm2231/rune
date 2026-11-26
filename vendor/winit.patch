@@ -23,13 +23,39 @@ diff --git a/src/platform_impl/linux/wayland/seat/pointer/mod.rs b/src/platform_
 +                            LogicalPosition::new(-horizontal.absolute * gain, -vertical.absolute * gain)
                                  .to_physical(scale_factor),
 diff --git a/src/platform/macos.rs b/src/platform/macos.rs
-index 30623b0..943e97b 100644
 --- a/src/platform/macos.rs
 +++ b/src/platform/macos.rs
-@@ -529,3 +529,25 @@ pub enum OptionAsAlt {
-     #[default]
-     None,
+@@ -435,2 +435,10 @@ pub trait EventLoopBuilderExtMacOS {
+     fn with_activate_ignoring_other_apps(&mut self, ignore: bool) -> &mut Self;
++
++    /// Whether a bundled app with no activation policy of its own gets `NewEvents(Init)` and
++    /// `Resumed` in `applicationWillFinishLaunching:` instead of `applicationDidFinishLaunching:`,
++    /// so its first window is made and drawn before AppKit's own launch work, not after it.
++    /// Activation still waits for `applicationDidFinishLaunching:`.
++    ///
++    /// Off by default.
++    fn with_init_before_finish_launching(&mut self, early: bool) -> &mut Self;
  }
+@@ -438,2 +446,8 @@ pub trait EventLoopBuilderExtMacOS {
+ impl<T> EventLoopBuilderExtMacOS for EventLoopBuilder<T> {
++    #[inline]
++    fn with_init_before_finish_launching(&mut self, early: bool) -> &mut Self {
++        self.platform_specific.init_before_finish_launching = early;
++        self
++    }
++
+     #[inline]
+@@ -531 +545,32 @@ pub enum OptionAsAlt {
+ }
++
++/// Rune: the default menu `with_default_menu` installs before the init events, for an app that
++/// turned it off there to install it later in the same launch (after its first window's first
++/// frame). On the main thread; elsewhere it does nothing.
++pub fn install_default_menu() {
++    if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
++        crate::platform_impl::menu::initialize(&objc2_app_kit::NSApplication::sharedApplication(mtm));
++    }
++}
 +
 +/// Rune: the focused field's text around its selection (the selection a byte range of it), which
 +/// the input method reads through `selectedRange` and `attributedSubstringForProposedRange:` to
@@ -97,16 +123,14 @@ index 1b427a8..fff68ab 100644
  mod event_loop;
  mod ffi;
 +pub(crate) mod ime_text;
- mod menu;
+-mod menu;
++pub(crate) mod menu;
  mod monitor;
  mod observer;
 diff --git a/src/platform_impl/macos/view.rs b/src/platform_impl/macos/view.rs
-index c7ca5bc..c83d635 100644
 --- a/src/platform_impl/macos/view.rs
 +++ b/src/platform_impl/macos/view.rs
-@@ -262,6 +262,16 @@ declare_class!(
-         #[method(selectedRange)]
-         fn selected_range(&self) -> NSRange {
+@@ -264,2 +264,12 @@ declare_class!(
              trace_scope!("selectedRange");
 +            // Rune: the app's selection in the text it published, so the input method can
 +            // reconvert it.
@@ -119,11 +143,7 @@ index c7ca5bc..c83d635 100644
 +                }
 +            }
              // Documented to return `{NSNotFound, 0}` if there is no selection.
-             NSRange::new(NSNotFound as NSUInteger, 0)
-         }
-@@ -271,16 +281,27 @@ declare_class!(
-             &self,
-             string: &NSObject,
+@@ -273,7 +283,15 @@ declare_class!(
              selected_range: NSRange,
 -            _replacement_range: NSRange,
 +            replacement_range: NSRange,
@@ -141,27 +161,19 @@ index c7ca5bc..c83d635 100644
 +            }
 +
              // SAFETY: This method is guaranteed to get either a `NSString` or a `NSAttributedString`.
-             let (marked_text, string) = if string.is_kind_of::<NSAttributedString>() {
-                 let string: *const NSObject = string;
-                 let string: *const NSAttributedString = string.cast();
+@@ -283,2 +301,5 @@ declare_class!(
                  let string = unsafe { &*string };
 +                // Rune: the clauses, by the input method's clause segments and underlines.
 +                let clauses = marked_clauses(string);
 +                super::ime_text::CLAUSES.with_borrow_mut(|c| *c = Some((string.string().to_string(), clauses)));
                  (
-                     NSMutableAttributedString::from_attributed_nsstring(string),
-                     string.string(),
-@@ -354,17 +375,30 @@ declare_class!(
-         #[method_id(validAttributesForMarkedText)]
-         fn valid_attributes_for_marked_text(&self) -> Retained<NSArray<NSAttributedStringKey>> {
+@@ -356,3 +377,4 @@ declare_class!(
              trace_scope!("validAttributesForMarkedText");
 -            NSArray::new()
 +            // Rune: the underline and clause segments, which carry a composition's clauses.
 +            NSArray::from_vec(vec![NSString::from_str("NSUnderline"), NSString::from_str("NSMarkedClauseSegment")])
          }
- 
-         #[method_id(attributedSubstringForProposedRange:actualRange:)]
-         fn attributed_substring_for_proposed_range(
+@@ -362,7 +384,19 @@ declare_class!(
              &self,
 -            _range: NSRange,
 -            _actual_range: *mut NSRange,
@@ -184,11 +196,15 @@ index c7ca5bc..c83d635 100644
 +                Some(NSAttributedString::from_nsstring(&NSString::from_str(&text[a..b])))
 +            })
          }
+@@ -823,3 +857,6 @@ impl WinitView {
  
-         #[method(characterIndexForPoint:)]
-@@ -1140,3 +1174,32 @@ fn replace_event(event: &NSEvent, option_as_alt: OptionAsAlt) -> Retained<NSEven
-         event.copy()
-     }
+-        *this.ivars().input_source.borrow_mut() = this.current_input_source();
++        // The input source is not read here: making the view's input context and asking the
++        // keyboard's input source took about 8,500 µs of a first window's creation. It is
++        // compared only while the IME is enabled (`keyDown:`), and `setMarkedText:` reads it
++        // as the IME becomes enabled.
+ 
+@@ -1142 +1179,30 @@ fn replace_event(event: &NSEvent, option_as_alt: OptionAsAlt) -> Retained<NSEven
  }
 +
 +/// Rune: a marked text's clauses, byte ranges with whether each is the one being converted: one
@@ -363,7 +379,7 @@ diff --git a/src/platform_impl/windows/mod.rs b/src/platform_impl/windows/mod.rs
  pub(crate) use self::window::Window;
  
 diff --git a/src/platform_impl/windows/event_loop.rs b/src/platform_impl/windows/event_loop.rs
-index 6d60c1c5..8b63fa59 100644
+index 6d60c1c5..c386d644 100644
 --- a/src/platform_impl/windows/event_loop.rs
 +++ b/src/platform_impl/windows/event_loop.rs
 @@ -18,8 +18,9 @@ use crate::utils::Lazy;
@@ -377,6 +393,15 @@ index 6d60c1c5..8b63fa59 100644
  use windows_sys::Win32::Graphics::Gdi::{
      GetMonitorInfoW, MonitorFromRect, MonitorFromWindow, RedrawWindow, ScreenToClient,
      ValidateRect, MONITORINFO, MONITOR_DEFAULTTONULL, RDW_INTERNALPAINT, SC_SCREENSAVE,
+@@ -51,7 +52,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
+     PT_TOUCH, QS_ALLINPUT, RI_MOUSE_HWHEEL, RI_MOUSE_WHEEL, SC_MINIMIZE, SC_RESTORE,
+     SIZE_MAXIMIZED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WHEEL_DELTA, WINDOWPOS,
+     WMSZ_BOTTOM, WMSZ_BOTTOMLEFT, WMSZ_BOTTOMRIGHT, WMSZ_LEFT, WMSZ_RIGHT, WMSZ_TOP, WMSZ_TOPLEFT,
+-    WMSZ_TOPRIGHT, WM_CAPTURECHANGED, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
++    WMSZ_TOPRIGHT, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
+     WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION,
+     WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION, WM_INPUT, WM_INPUT_DEVICE_CHANGE, WM_KEYDOWN,
+     WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
 @@ -950,6 +951,17 @@ fn create_event_target_window() -> HWND {
              util::get_instance_handle(),
              ptr::null(),
@@ -395,6 +420,26 @@ index 6d60c1c5..8b63fa59 100644
  
          super::set_window_long(
              window,
+@@ -1137,8 +1149,17 @@ unsafe fn public_window_callback_inner(
+ 
+     let keyboard_callback = || {
+         use crate::event::WindowEvent::KeyboardInput;
+-        let events =
+-            userdata.key_event_builder.process_message(window, msg, wparam, lparam, &mut result);
++        // Rune: a bare WM_CHAR is dropped while an input method's composition is open.
++        let ime_composing =
++            msg == WM_CHAR && userdata.window_state_lock().ime_state != ImeState::Disabled;
++        let events = userdata.key_event_builder.process_message(
++            window,
++            msg,
++            wparam,
++            lparam,
++            ime_composing,
++            &mut result,
++        );
+         for event in events {
+             userdata.send_event(Event::WindowEvent {
+                 window_id: RootWindowId(WindowId(window)),
 diff --git a/src/platform/wayland.rs b/src/platform/wayland.rs
 index 9c1a8e4..63c0a92 100644
 --- a/src/platform/wayland.rs
@@ -564,3 +609,1985 @@ index 1ef7a06..9cd83c4 100644
      }
  
      /// Try to resize the window when the user can do so.
+diff --git a/src/platform_impl/windows/dark_mode.rs b/src/platform_impl/windows/dark_mode.rs
+index 366e44c6..67c4fc53 100644
+--- a/src/platform_impl/windows/dark_mode.rs
++++ b/src/platform_impl/windows/dark_mode.rs
+@@ -5,7 +5,9 @@ use std::{ffi::c_void, ptr};
+ use crate::utils::Lazy;
+ use windows_sys::core::PCSTR;
+ use windows_sys::Win32::Foundation::{BOOL, HWND, NTSTATUS, S_OK};
+-use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
++use windows_sys::Win32::System::LibraryLoader::{
++    GetProcAddress, LoadLibraryExA, LOAD_LIBRARY_SEARCH_SYSTEM32,
++};
+ use windows_sys::Win32::System::SystemInformation::OSVERSIONINFOW;
+ use windows_sys::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTA};
+ use windows_sys::Win32::UI::Controls::SetWindowTheme;
+@@ -138,7 +140,9 @@ fn should_apps_use_dark_mode() -> bool {
+             return None;
+         }
+ 
+-        let module = LoadLibraryA("uxtheme.dll\0".as_ptr().cast());
++        // Rune: load uxtheme.dll from System32 only, not the app directory or CWD.
++        let module =
++            LoadLibraryExA("uxtheme.dll\0".as_ptr().cast(), 0, LOAD_LIBRARY_SEARCH_SYSTEM32);
+ 
+         if module == 0 {
+             return None;
+diff --git a/src/platform_impl/windows/util.rs b/src/platform_impl/windows/util.rs
+index a3a7705d..c3980673 100644
+--- a/src/platform_impl/windows/util.rs
++++ b/src/platform_impl/windows/util.rs
+@@ -9,7 +9,9 @@ use crate::utils::Lazy;
+ use windows_sys::core::{HRESULT, PCWSTR};
+ use windows_sys::Win32::Foundation::{BOOL, HANDLE, HMODULE, HWND, POINT, RECT};
+ use windows_sys::Win32::Graphics::Gdi::{ClientToScreen, HMONITOR};
+-use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
++use windows_sys::Win32::System::LibraryLoader::{
++    GetProcAddress, LoadLibraryExA, LOAD_LIBRARY_SEARCH_SYSTEM32,
++};
+ use windows_sys::Win32::System::SystemServices::IMAGE_DOS_HEADER;
+ use windows_sys::Win32::UI::HiDpi::{
+     DPI_AWARENESS_CONTEXT, MONITOR_DPI_TYPE, PROCESS_DPI_AWARENESS,
+@@ -195,7 +197,8 @@ pub(super) fn get_function_impl(library: &str, function: &str) -> Option<*const
+     assert_eq!(function.chars().last(), Some('\0'));
+ 
+     // Library names we will use are ASCII so we can use the A version to avoid string conversion.
+-    let module = unsafe { LoadLibraryA(library.as_ptr()) };
++    // Rune: load Windows system DLLs from System32 only, not the app directory or CWD.
++    let module = unsafe { LoadLibraryExA(library.as_ptr(), 0, LOAD_LIBRARY_SEARCH_SYSTEM32) };
+     if module == 0 {
+         return None;
+     }
+diff --git a/src/platform_impl/windows/keyboard.rs b/src/platform_impl/windows/keyboard.rs
+index 9c109490..705976d6 100644
+--- a/src/platform_impl/windows/keyboard.rs
++++ b/src/platform_impl/windows/keyboard.rs
+@@ -4,7 +4,9 @@ use std::mem::MaybeUninit;
+ use std::os::windows::ffi::OsStringExt;
+ use std::sync::atomic::AtomicU32;
+ use std::sync::atomic::Ordering::Relaxed;
++use std::collections::VecDeque;
+ use std::sync::{Mutex, MutexGuard};
++use std::time::{Duration, Instant};
+ 
+ use windows_sys::Win32::Foundation::{HWND, LPARAM, WPARAM};
+ use windows_sys::Win32::System::SystemServices::LANG_KOREAN;
+@@ -14,8 +16,8 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+     VK_CONTROL, VK_DECIMAL, VK_DELETE, VK_DIVIDE, VK_DOWN, VK_END, VK_F4, VK_HOME, VK_INSERT,
+     VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_MULTIPLY, VK_NEXT, VK_NUMLOCK,
+     VK_NUMPAD0, VK_NUMPAD1, VK_NUMPAD2, VK_NUMPAD3, VK_NUMPAD4, VK_NUMPAD5, VK_NUMPAD6, VK_NUMPAD7,
+-    VK_NUMPAD8, VK_NUMPAD9, VK_PRIOR, VK_RCONTROL, VK_RETURN, VK_RIGHT, VK_RMENU, VK_RSHIFT,
+-    VK_RWIN, VK_SCROLL, VK_SHIFT, VK_SUBTRACT, VK_UP,
++    VK_NUMPAD8, VK_NUMPAD9, VK_PACKET, VK_PRIOR, VK_RCONTROL, VK_RETURN, VK_RIGHT, VK_RMENU,
++    VK_RSHIFT, VK_RWIN, VK_SCROLL, VK_SHIFT, VK_SUBTRACT, VK_UP,
+ };
+ use windows_sys::Win32::UI::TextServices::HKL;
+ use windows_sys::Win32::UI::WindowsAndMessaging::{
+@@ -64,23 +66,39 @@ pub struct MessageAsKeyEvent {
+ /// text input. The "sequence" only consists of one WM_KEYUP / WM_SYSKEYUP event.
+ pub struct KeyEventBuilder {
+     event_info: Mutex<Option<PartialKeyEventInfo>>,
++    // Rune: high surrogate waiting for its matching low surrogate across consecutive VK_PACKET or
++    // bare WM_CHAR messages (Win+. emoji panel, Win+H voice typing, SendInput KEYEVENTF_UNICODE).
++    pending_high_surrogate: Mutex<Option<u16>>,
++    // Rune: recent key-downs whose `TranslateMessage` character may still arrive after their
++    // key-up (a program that posts keys), to tell that copy from other text.
++    translated: Mutex<VecDeque<Translated>>,
++    // Rune: the `lParam` of the key-down whose event takes the `WM_CHAR`s that follow it.
++    building: Mutex<Option<LPARAM>>,
+     pending: PendingEventQueue<MessageAsKeyEvent>,
+ }
+ impl Default for KeyEventBuilder {
+     fn default() -> Self {
+-        KeyEventBuilder { event_info: Mutex::new(None), pending: Default::default() }
++        KeyEventBuilder {
++            event_info: Mutex::new(None),
++            pending_high_surrogate: Mutex::new(None),
++            translated: Mutex::new(VecDeque::new()),
++            building: Mutex::new(None),
++            pending: Default::default(),
++        }
+     }
+ }
+ impl KeyEventBuilder {
+     /// Call this function for every window message.
+     /// Returns Some() if this window message completes a KeyEvent.
+     /// Returns None otherwise.
++    /// `ime_composing`: an input method's composition is open in the window (Rune).
+     pub(crate) fn process_message(
+         &self,
+         hwnd: HWND,
+         msg_kind: u32,
+         wparam: WPARAM,
+         lparam: LPARAM,
++        ime_composing: bool,
+         result: &mut ProcResult,
+     ) -> Vec<MessageAsKeyEvent> {
+         enum MatchResult {
+@@ -98,6 +116,8 @@ impl KeyEventBuilder {
+                     MatchResult::MessagesToDispatch(self.pending.complete_multi(key_events))
+                 },
+                 WM_KILLFOCUS => {
++                    *self.pending_high_surrogate.lock().unwrap() = None;
++                    self.translated.lock().unwrap().clear();
+                     // synthesize keyup events
+                     let kbd_state = get_kbd_state();
+                     let key_events = Self::synthesize_kbd_state(ElementState::Released, &kbd_state);
+@@ -109,6 +129,18 @@ impl KeyEventBuilder {
+                         // This is handled in `event_loop.rs`
+                         return MatchResult::Nothing;
+                     }
++                    // Rune: preserve an unpaired high surrogate across the two VK_PACKET presses
++                    // that deliver a supplementary-plane Unicode character; drop it on any real key.
++                    if wparam as VIRTUAL_KEY != VK_PACKET {
++                        *self.pending_high_surrogate.lock().unwrap() = None;
++                    }
++                    // Rune: `TranslateMessage` has already posted this key's character, with this
++                    // `lParam`; a program that posted the key-up too gets it after the key-up.
++                    let noted = msg_kind == WM_KEYDOWN && wparam as VIRTUAL_KEY != VK_PACKET;
++                    if noted {
++                        note_key_down(&mut self.translated.lock().unwrap(), lparam, Instant::now());
++                    }
++                    *self.building.lock().unwrap() = noted.then_some(lparam);
+                     let pending_token = self.pending.add_pending();
+                     *result = ProcResult::Value(0);
+ 
+@@ -168,40 +200,63 @@ impl KeyEventBuilder {
+                 WM_CHAR | WM_SYSCHAR => {
+                     let mut event_info = self.event_info.lock().unwrap();
+                     if event_info.is_none() {
+-                        trace!(
+-                            "Received a CHAR message but no `event_info` was available. The \
+-                             message is probably IME, returning."
+-                        );
+-                        return MatchResult::Nothing;
++                        // Rune: a WM_CHAR with no preceding WM_KEYDOWN (text expanders, password
++                        // managers, assistive tools, remote input) still carries text, as Chromium
++                        // takes it. WM_SYSCHAR stays ignored so Alt+key mnemonics never type text.
++                        drop(event_info);
++                        if msg_kind == WM_SYSCHAR {
++                            trace!("Received a SYSCHAR message with no `event_info`; ignoring.");
++                            return MatchResult::Nothing;
++                        }
++                        let pending_token = self.pending.add_pending();
++                        *result = ProcResult::Value(0);
++                        // Rune: a posted key's own character, after a key-up that came first,
++                        // when that key already typed it: not text a second time.
++                        if bare_char_is_copy(&mut self.translated.lock().unwrap(), wparam, lparam, Instant::now()) {
++                            return MatchResult::TokenToRemove(pending_token);
++                        }
++                        let mut pending_high = self.pending_high_surrogate.lock().unwrap();
++                        let Some(text) = bare_char_text(&mut pending_high, wparam, ime_composing)
++                        else {
++                            return MatchResult::TokenToRemove(pending_token);
++                        };
++                        let ev = standalone_char_event(text, (lparam & 0xffff) > 1);
++                        return MatchResult::MessagesToDispatch(self.pending.complete_pending(
++                            pending_token,
++                            MessageAsKeyEvent { event: ev, is_synthetic: false },
++                        ));
++                    }
++                    // Rune: an earlier posted key's own character, arriving while a later key waits
++                    // for its own: the earlier key-down's event went out with no text (its key-up
++                    // came first), so this is that key's text. It types now, on its own, before the
++                    // waiting key's; appended to the waiting key it would be lost (that event types
++                    // by its own key). A real keyboard's character always follows its own key-down.
++                    let stray = msg_kind == WM_CHAR
++                        && self.building.lock().unwrap().is_some_and(|down| down != lparam)
++                        && claim_untyped_copy(&mut self.translated.lock().unwrap(), lparam, Instant::now());
++                    if stray {
++                        drop(event_info);
++                        let pending_token = self.pending.add_pending();
++                        *result = ProcResult::Value(0);
++                        let mut pending_high = self.pending_high_surrogate.lock().unwrap();
++                        let Some(text) = bare_char_text(&mut pending_high, wparam, ime_composing)
++                        else {
++                            return MatchResult::TokenToRemove(pending_token);
++                        };
++                        let ev = standalone_char_event(text, false);
++                        return MatchResult::MessagesToDispatch(self.pending.complete_pending(
++                            pending_token,
++                            MessageAsKeyEvent { event: ev, is_synthetic: false },
++                        ));
+                     }
+                     let pending_token = self.pending.add_pending();
+                     *result = ProcResult::Value(0);
+-                    let is_high_surrogate = (0xd800..=0xdbff).contains(&wparam);
+-                    let is_low_surrogate = (0xdc00..=0xdfff).contains(&wparam);
+-
+-                    let is_utf16 = is_high_surrogate || is_low_surrogate;
+-
+-                    if is_utf16 {
+-                        if let Some(ev_info) = event_info.as_mut() {
+-                            ev_info.utf16parts.push(wparam as u16);
+-                        }
+-                    } else {
+-                        // In this case, wparam holds a UTF-32 character.
+-                        // Let's encode it as UTF-16 and append it to the end of `utf16parts`
+-                        let utf16parts = match event_info.as_mut() {
+-                            Some(ev_info) => &mut ev_info.utf16parts,
+-                            None => {
+-                                warn!("The event_info was None when it was expected to be some");
+-                                return MatchResult::TokenToRemove(pending_token);
+-                            },
+-                        };
+-                        let start_offset = utf16parts.len();
+-                        let new_size = utf16parts.len() + 2;
+-                        utf16parts.resize(new_size, 0);
+-                        if let Some(ch) = char::from_u32(wparam as u32) {
+-                            let encode_len = ch.encode_utf16(&mut utf16parts[start_offset..]).len();
+-                            let new_size = start_offset + encode_len;
+-                            utf16parts.resize(new_size, 0);
++                    if let Some(ev_info) = event_info.as_mut() {
++                        if keyed_char_is_text(wparam, ev_info.vkey) {
++                            append_wparam_utf16(wparam, &mut ev_info.utf16parts);
++                            if let Some(down) = *self.building.lock().unwrap() {
++                                note_keyed_text(&mut self.translated.lock().unwrap(), down, wparam);
++                            }
+                         }
+                     }
+                     // It's important that we unlock the mutex, and create the pending event token
+@@ -224,6 +279,14 @@ impl KeyEventBuilder {
+                                 return MatchResult::TokenToRemove(pending_token);
+                             },
+                         };
++                        let paired = resolve_surrogates(
++                            &mut self.pending_high_surrogate.lock().unwrap(),
++                            &mut event_info.utf16parts,
++                        );
++                        if !paired && event_info.vkey == VK_PACKET {
++                            // Rune: high half of a VK_PACKET surrogate pair; wait for the low half.
++                            return MatchResult::TokenToRemove(pending_token);
++                        }
+                         let mut layouts = LAYOUT_CACHE.lock().unwrap();
+                         // It's okay to call `ToUnicode` here, because at this point the dead key
+                         // is already consumed by the character.
+@@ -238,10 +301,11 @@ impl KeyEventBuilder {
+                             mod_state.contains(WindowsModifiers::CONTROL)
+                         };
+ 
+-                        // If Ctrl is not pressed, just use the text with all
+-                        // modifiers because that already consumed the dead key. Otherwise,
+-                        // we would interpret the character incorrectly, missing the dead key.
+-                        if !ctrl_on {
++                        // If Ctrl is not pressed (or this is VK_PACKET Unicode injection), just
++                        // use the text with all modifiers because that already consumed the dead
++                        // key. Otherwise, we would interpret the character incorrectly, missing
++                        // the dead key.
++                        if !ctrl_on || event_info.vkey == VK_PACKET {
+                             event_info.text = PartialText::System(event_info.utf16parts.clone());
+                         } else {
+                             let mod_no_ctrl = mod_state.remove_only_ctrl();
+@@ -510,7 +574,14 @@ impl PartialKeyEventInfo {
+         } else {
+             new_ex_scancode(lparam_struct.scancode, lparam_struct.extended)
+         };
+-        let physical_key = scancode_to_physicalkey(scancode as u32);
++        // Rune: a VK_PACKET carries text, not a key: it is named as a bare WM_CHAR is
++        // (`standalone_char_event`), `Unidentified(NativeKeyCode::Unidentified)`, which Windows
++        // never reports for a real key (an unknown scan code is `NativeKeyCode::Windows(_)`).
++        let physical_key = if vkey == VK_PACKET {
++            PhysicalKey::Unidentified(NativeKeyCode::Unidentified)
++        } else {
++            scancode_to_physicalkey(scancode as u32)
++        };
+         let location = get_location(scancode, layout.hkl as HKL);
+ 
+         let kbd_state = get_kbd_state();
+@@ -541,9 +612,11 @@ impl PartialKeyEventInfo {
+ 
+         let logical_key = if let Some(key) = code_as_key.clone() {
+             PartialLogicalKey::This(key)
+-        } else if is_pressed && key_is_char && !mods.contains(WindowsModifiers::CONTROL) {
++        } else if is_pressed
++            && (vkey == VK_PACKET || (key_is_char && !mods.contains(WindowsModifiers::CONTROL)))
++        {
+             // In some cases we want to use the UNICHAR text for logical_key in order to allow
+-            // dead keys to have an effect on the character reported by `logical_key`.
++            // dead keys (and Rune's VK_PACKET Unicode injection) to supply `logical_key`.
+             PartialLogicalKey::TextOr(preliminary_logical_key)
+         } else {
+             PartialLogicalKey::This(preliminary_logical_key)
+@@ -612,7 +685,12 @@ impl PartialKeyEventInfo {
+         let logical_key = match self.logical_key {
+             PartialLogicalKey::TextOr(fallback) => match text.as_ref() {
+                 Some(s) => {
+-                    if s.grapheme_indices(true).count() > 1 {
++                    // Rune: a VK_PACKET names its text as the key, unless the text is a control
++                    // character: that keeps the `Unidentified` key it had before.
++                    let packet = self.vkey == VK_PACKET;
++                    if (packet && s.chars().any(char::is_control))
++                        || (!packet && s.grapheme_indices(true).count() > 1)
++                    {
+                         fallback
+                     } else {
+                         Key::Character(s.clone())
+@@ -638,6 +716,571 @@ impl PartialKeyEventInfo {
+     }
+ }
+ 
++/// Rune: whether a `WM_CHAR` that follows a key-down is part of that key's text. `TranslateMessage`
++/// adds `WM_CHAR(0)` after a VK_PACKET key-down that carries no packet (one a program posted): it
++/// is not the packet's text. A real key's NUL (Ctrl+2, Ctrl+@) is that key's text, as before.
++fn keyed_char_is_text(wparam: WPARAM, vkey: VIRTUAL_KEY) -> bool {
++    !(wparam == 0 && vkey == VK_PACKET)
++}
++
++/// Rune: a recent `WM_KEYDOWN` whose character `TranslateMessage` posted with the same `lParam`.
++/// A program that posts a key-down and its key-up together gets that character AFTER the key-up,
++/// with no key in progress. `typed` is the character the key's own event already took (from a
++/// `WM_CHAR` that program posted between the two), if any.
++#[derive(Clone, Copy, Debug, PartialEq)]
++struct Translated {
++    lparam: LPARAM,
++    typed: Option<WPARAM>,
++    at: Instant,
++}
++
++/// How many key-downs are remembered, and for how long: a copy comes within a few messages. The
++/// count is far above any burst inside the second, so no typed key's entry is lost to it.
++const TRANSLATED_KEEP: usize = 256;
++const TRANSLATED_FOR: Duration = Duration::from_secs(1);
++
++/// Rune: a `WM_KEYDOWN` with `lparam` happened at `now`.
++fn note_key_down(list: &mut VecDeque<Translated>, lparam: LPARAM, now: Instant) {
++    list.retain(|t| now.saturating_duration_since(t.at) < TRANSLATED_FOR);
++    list.push_back(Translated { lparam, typed: None, at: now });
++    while list.len() > TRANSLATED_KEEP {
++        list.pop_front();
++    }
++}
++
++/// Rune: the event of the key-down with `down` took `wparam` as its text. A hardware key's own
++/// copy is that `WM_CHAR` (posted messages come before input), so nothing more follows it.
++fn note_keyed_text(list: &mut VecDeque<Translated>, down: LPARAM, wparam: WPARAM) {
++    if let Some(t) = list.iter_mut().rev().find(|t| t.lparam == down && t.typed.is_none()) {
++        t.typed = Some(wparam);
++    }
++}
++
++/// Rune: whether a bare `WM_CHAR` is a remembered key-down's own copy of the character that key
++/// already typed (dropped), rather than text. A key-down that typed nothing yet claims a copy
++/// with its `lParam` first (oldest first): that copy is its character, and types once. Only then
++/// does a key-down that typed this same character claim it, and the copy is dropped. Any other
++/// `lParam` (programs that post text alone post 0 or 1), or an entry older than a second, matches
++/// nothing. Each entry is claimed once.
++fn bare_char_is_copy(list: &mut VecDeque<Translated>, wparam: WPARAM, lparam: LPARAM, now: Instant) -> bool {
++    list.retain(|t| now.saturating_duration_since(t.at) < TRANSLATED_FOR);
++    if let Some(i) = list.iter().position(|t| t.lparam == lparam && t.typed.is_none()) {
++        list.remove(i);
++        return false;
++    }
++    if let Some(i) = list.iter().position(|t| t.lparam == lparam && t.typed == Some(wparam)) {
++        list.remove(i);
++        return true;
++    }
++    false
++}
++
++/// Rune: whether a `WM_CHAR` that arrives while another key-down waits for its own character is
++/// the copy of an earlier remembered key-down that typed nothing (oldest first): that entry is
++/// claimed, and the character is that key's text. Any other `lParam`, or an entry older than a
++/// second, matches nothing.
++fn claim_untyped_copy(list: &mut VecDeque<Translated>, lparam: LPARAM, now: Instant) -> bool {
++    list.retain(|t| now.saturating_duration_since(t.at) < TRANSLATED_FOR);
++    let Some(i) = list.iter().position(|t| t.lparam == lparam && t.typed.is_none()) else { return false };
++    list.remove(i);
++    true
++}
++
++/// Rune: appends a `WM_CHAR` `wparam` (UTF-16 surrogate unit or Unicode scalar) onto
++/// `utf16parts`.
++fn append_wparam_utf16(wparam: WPARAM, utf16parts: &mut Vec<u16>) {
++    let is_high_surrogate = (0xd800..=0xdbff).contains(&wparam);
++    let is_low_surrogate = (0xdc00..=0xdfff).contains(&wparam);
++    if is_high_surrogate || is_low_surrogate {
++        utf16parts.push(wparam as u16);
++    } else if let Some(ch) = char::from_u32(wparam as u32) {
++        let mut buf = [0u16; 2];
++        utf16parts.extend_from_slice(ch.encode_utf16(&mut buf));
++    }
++}
++
++/// Rune: pairs a pending high surrogate with an incoming leading low surrogate, and stashes a
++/// trailing lone high surrogate for the next `WM_CHAR`. Returns `false` when `units` held only
++/// that lone high surrogate so the caller waits for the low half instead of dropping it, and when
++/// `units` is empty (a VK_PACKET key-down whose only `WM_CHAR` was the NUL): nothing to type, and
++/// a waiting high half keeps waiting.
++fn resolve_surrogates(pending: &mut Option<u16>, units: &mut Vec<u16>) -> bool {
++    if units.is_empty() {
++        return false;
++    }
++    if units.first().copied().is_some_and(|u| (0xdc00..=0xdfff).contains(&u)) {
++        if let Some(hi) = pending.take() {
++            units.insert(0, hi);
++        }
++    } else {
++        *pending = None;
++    }
++    if units.last().copied().is_some_and(|u| (0xd800..=0xdbff).contains(&u)) {
++        *pending = units.pop();
++        if units.is_empty() {
++            return false;
++        }
++    }
++    true
++}
++
++/// Rune: the text a `WM_CHAR` with no preceding `WM_KEYDOWN` types, if any. A high surrogate
++/// waits in `pending` for its low half; a lone half is dropped, never inserted. Control
++/// characters (Backspace, Enter, Escape, DEL, …) are not text: they act only as keys. While an
++/// input method's composition is open its result arrives as `Ime::Commit`, so a stray `WM_CHAR`
++/// then would type the text twice: it is dropped. A NUL (the `WM_CHAR(0)` that `TranslateMessage`
++/// adds after a posted VK_PACKET key-down) changes nothing, not even a waiting high surrogate.
++fn bare_char_text(pending: &mut Option<u16>, wparam: WPARAM, ime_composing: bool) -> Option<String> {
++    if wparam == 0 {
++        return None;
++    }
++    if ime_composing {
++        *pending = None;
++        return None;
++    }
++    let mut units = Vec::with_capacity(2);
++    append_wparam_utf16(wparam, &mut units);
++    if !resolve_surrogates(pending, &mut units) {
++        return None;
++    }
++    let text = String::from_utf16(&units).ok()?;
++    (!text.is_empty() && !text.chars().any(char::is_control)).then_some(text)
++}
++
++/// Rune: a pressed `KeyEvent` that types `text` and names no physical key.
++fn standalone_char_event(text: String, is_repeat: bool) -> KeyEvent {
++    let text = SmolStr::new(text);
++    KeyEvent {
++        physical_key: PhysicalKey::Unidentified(NativeKeyCode::Unidentified),
++        logical_key: Key::Character(text.clone()),
++        text: Some(text.clone()),
++        location: KeyLocation::Standard,
++        state: ElementState::Pressed,
++        repeat: is_repeat,
++        platform_specific: KeyEventExtra {
++            text_with_all_modifiers: Some(text),
++            key_without_modifiers: Key::Unidentified(NativeKey::Unidentified),
++        },
++    }
++}
++
++#[cfg(test)]
++mod rune_bare_char_tests {
++    use super::{bare_char_text, keyed_char_is_text, resolve_surrogates};
++    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_2, VK_A, VK_PACKET};
++
++    const NONE: Option<String> = None;
++
++    fn s(text: &str) -> Option<String> {
++        Some(text.to_owned())
++    }
++
++    /// Feeds `units` as consecutive bare `WM_CHAR`s and returns the text each one typed.
++    fn feed(units: &[usize], ime_composing: bool) -> Vec<Option<String>> {
++        let mut pending = None;
++        units.iter().map(|&u| bare_char_text(&mut pending, u, ime_composing)).collect()
++    }
++
++    #[test]
++    fn bmp_characters_type_themselves() {
++        assert_eq!(feed(&[0x61, 0xe9, 0x65e5], false), [s("a"), s("é"), s("日")]);
++    }
++
++    #[test]
++    fn a_surrogate_pair_split_over_two_messages_types_one_character() {
++        assert_eq!(feed(&[0xd83d, 0xde00], false), [NONE, s("😀")]);
++    }
++
++    #[test]
++    fn a_lone_surrogate_half_is_dropped() {
++        // High half then a BMP character: the high half is dropped, the character types.
++        assert_eq!(feed(&[0xd83d, 0x61], false), [NONE, s("a")]);
++        // Low half with no high half before it.
++        assert_eq!(feed(&[0xde00], false), [NONE]);
++        // Two high halves: the first is dropped, the second pairs with the low half.
++        assert_eq!(feed(&[0xd83d, 0xd83d, 0xde00], false), [NONE, NONE, s("😀")]);
++    }
++
++    #[test]
++    fn an_empty_packet_key_down_keeps_the_waiting_high_half() {
++        let mut pending = None;
++        // The high half's VK_PACKET key-down: it waits.
++        let mut high = vec![0xd83d];
++        assert!(!resolve_surrogates(&mut pending, &mut high));
++        assert_eq!(pending, Some(0xd83d));
++        // The low half's VK_PACKET key-down completes with empty text (its only WM_CHAR was the
++        // NUL): nothing to type, and the high half keeps waiting.
++        let mut empty = Vec::new();
++        assert!(!resolve_surrogates(&mut pending, &mut empty));
++        assert_eq!(pending, Some(0xd83d));
++        // The low half's character then arrives: one emoji.
++        assert_eq!(bare_char_text(&mut pending, 0xde00, false), s("😀"));
++        assert_eq!(pending, None);
++    }
++
++    #[test]
++    fn only_a_packet_key_downs_nul_is_left_out_of_its_text() {
++        // The NUL `TranslateMessage` adds after a posted VK_PACKET key-down is not text.
++        assert!(!keyed_char_is_text(0, VK_PACKET));
++        // The packet's real characters are.
++        assert!(keyed_char_is_text('a' as usize, VK_PACKET));
++        assert!(keyed_char_is_text(0xd83d, VK_PACKET));
++        // A real key's NUL (Ctrl+2) stays that key's text, as before.
++        assert!(keyed_char_is_text(0, VK_2));
++        assert!(keyed_char_is_text(0, VK_A));
++    }
++
++    #[test]
++    fn a_nul_between_the_halves_neither_types_nor_breaks_the_pair() {
++        // `TranslateMessage` adds `WM_CHAR(0)` after a posted VK_PACKET key-down.
++        assert_eq!(feed(&[0xd83d, 0x00, 0xde00], false), [NONE, NONE, s("😀")]);
++        assert_eq!(feed(&[0x00, 0x61, 0x00], false), [NONE, s("a"), NONE]);
++    }
++
++    #[test]
++    fn a_combining_mark_types_after_its_base() {
++        assert_eq!(feed(&[0x65, 0x301], false), [s("e"), s("\u{301}")]);
++    }
++
++    #[test]
++    fn control_characters_are_not_text() {
++        for c in [0x08, 0x09, 0x0a, 0x0d, 0x1b, 0x7f, 0x00, 0x85] {
++            assert_eq!(feed(&[c], false), [NONE], "U+{c:04X}");
++        }
++    }
++
++    #[test]
++    fn nothing_types_while_an_ime_composition_is_open() {
++        assert_eq!(feed(&[0x61, 0xd83d, 0xde00], true), [NONE, NONE, NONE]);
++        // A high half that arrived before the composition opened does not pair after it.
++        let mut pending = None;
++        assert_eq!(bare_char_text(&mut pending, 0xd83d, false), None);
++        assert_eq!(bare_char_text(&mut pending, 0xde00, true), None);
++        assert_eq!(bare_char_text(&mut pending, 0xde00, false), None);
++    }
++}
++
++#[cfg(test)]
++mod rune_posted_key_tests {
++    //! What a posted key's `TranslateMessage` copy does, for each order of key messages. Each test
++    //! replays the order through the same calls the key-down, keyed `WM_CHAR` and bare `WM_CHAR`
++    //! handlers make, and counts the characters that type.
++    use std::collections::VecDeque;
++    use std::time::{Duration, Instant};
++
++    use super::{bare_char_is_copy, note_key_down, note_keyed_text, Translated};
++
++    const H: usize = 'h' as usize;
++    const E: usize = 'e' as usize;
++    const L: usize = 'l' as usize;
++    // lParam: repeat count 1, scan code in bits 16-23 (as `TranslateMessage` copies it).
++    fn lp(scan: isize) -> isize { 1 | (scan << 16) }
++
++    /// The text a sequence types: keyed chars type with their key; a bare char types unless it is
++    /// a copy of text its key already typed.
++    struct Replay { list: VecDeque<Translated>, now: Instant, typed: String }
++    impl Replay {
++        fn new() -> Self { Self { list: VecDeque::new(), now: Instant::now(), typed: String::new() } }
++        fn down(&mut self, lparam: isize) { note_key_down(&mut self.list, lparam, self.now); }
++        fn keyed(&mut self, down: isize, ch: usize) { note_keyed_text(&mut self.list, down, ch); self.typed.push(char::from_u32(ch as u32).unwrap()); }
++        fn bare(&mut self, ch: usize, lparam: isize) {
++            if !bare_char_is_copy(&mut self.list, ch, lparam, self.now) { self.typed.push(char::from_u32(ch as u32).unwrap()); }
++        }
++        fn wait(&mut self, d: Duration) { self.now += d; }
++    }
++
++    #[test]
++    fn hardware_order_types_each_char_once() {
++        // down, its own char (posted before the key-up, which is input), up.
++        let mut r = Replay::new();
++        for (ch, scan) in [(H, 0x23), (E, 0x12), (L, 0x26), (L, 0x26)] { r.down(lp(scan)); r.keyed(lp(scan), ch); }
++        assert_eq!(r.typed, "hell");
++    }
++
++    #[test]
++    fn down_and_up_back_to_back_type_the_late_copy_once() {
++        // The key's event takes no text (its key-up came first); its copy arrives bare.
++        let mut r = Replay::new();
++        r.down(lp(0x23));
++        r.bare(H, lp(0x23));
++        assert_eq!(r.typed, "h");
++    }
++
++    #[test]
++    fn all_downs_then_all_ups_type_every_copy_once_in_order() {
++        let mut r = Replay::new();
++        for scan in [0x23, 0x12, 0x26, 0x26] { r.down(lp(scan)); }
++        for (ch, scan) in [(H, 0x23), (E, 0x12), (L, 0x26), (L, 0x26)] { r.bare(ch, lp(scan)); }
++        assert_eq!(r.typed, "hell");
++    }
++
++    #[test]
++    fn down_char_up_does_not_type_the_copy_again() {
++        // A program posts key-down, WM_CHAR and key-up together: the explicit char types with the
++        // key; TranslateMessage's copy lands after the key-up (driver log, 02:58 run: `hhelloo`).
++        let mut r = Replay::new();
++        for (ch, scan) in [(H, 0x23), (E, 0x12), (L, 0x26), (L, 0x26)] { r.down(lp(scan)); r.keyed(lp(scan), ch); }
++        for (ch, scan) in [(H, 0x23), (E, 0x12), (L, 0x26), (L, 0x26)] { r.bare(ch, lp(scan)); }
++        assert_eq!(r.typed, "hell");
++    }
++
++    #[test]
++    fn bare_text_from_a_program_types_as_before() {
++        // Programs that post text alone post lParam 0 or 1: never a remembered key-down's.
++        let mut r = Replay::new();
++        r.down(lp(0x23));
++        r.keyed(lp(0x23), H);
++        for ch in [E, L, L] { r.bare(ch, 1); }
++        r.bare(H, 0);
++        assert_eq!(r.typed, "hellh");
++    }
++
++    #[test]
++    fn with_nothing_remembered_every_bare_char_types() {
++        // VK_PACKET and bare paths: no key-down was remembered (VK_PACKET is never noted).
++        let mut r = Replay::new();
++        r.bare(0xe9, 1);
++        r.bare(H, lp(0x23));
++        assert_eq!(r.typed, "éh");
++    }
++
++    #[test]
++    fn a_held_key_s_repeats_type_one_char_each_and_nothing_is_dropped() {
++        // Auto-repeat: the same scan code, bit 30 (previous state) set, each repeat with its own char.
++        let rep = lp(0x26) | (1 << 30);
++        let mut r = Replay::new();
++        r.down(lp(0x26));
++        r.keyed(lp(0x26), L);
++        for _ in 0..5 { r.wait(Duration::from_millis(33)); r.down(rep); r.keyed(rep, L); }
++        assert_eq!(r.typed, "llllll");
++        // A program's bare text afterwards still types.
++        r.bare(L, 1);
++        assert_eq!(r.typed, "lllllll");
++    }
++
++    #[test]
++    fn the_same_key_posted_twice_types_twice() {
++        // down, up, down, up, then the two copies: each copy belongs to one press.
++        let mut r = Replay::new();
++        r.down(lp(0x26));
++        r.down(lp(0x26));
++        r.bare(L, lp(0x26));
++        r.bare(L, lp(0x26));
++        assert_eq!(r.typed, "ll");
++        // And with explicit chars (down + char + up, twice): two l, no copies.
++        let mut r = Replay::new();
++        r.down(lp(0x26)); r.keyed(lp(0x26), L);
++        r.down(lp(0x26)); r.keyed(lp(0x26), L);
++        r.bare(L, lp(0x26));
++        r.bare(L, lp(0x26));
++        assert_eq!(r.typed, "ll");
++    }
++
++    #[test]
++    fn a_stale_key_down_never_eats_later_text() {
++        // An entry older than a second matches nothing: later bare text with the same lParam types.
++        let mut r = Replay::new();
++        r.down(lp(0x23));
++        r.keyed(lp(0x23), H);
++        r.wait(Duration::from_millis(1001));
++        r.bare(H, lp(0x23));
++        assert_eq!(r.typed, "hh");
++        // A different character with that lParam is not the copy either.
++        let mut r = Replay::new();
++        r.down(lp(0x23));
++        r.keyed(lp(0x23), H);
++        r.bare(E, lp(0x23));
++        assert_eq!(r.typed, "he");
++    }
++
++    #[test]
++    fn a_real_key_s_entry_never_takes_a_later_posted_key_s_copy() {
++        // A real H (its char keyed), then a program's H down + up with the same lParam inside the
++        // second: the late copy belongs to the program's key, which typed nothing: it types.
++        let mut r = Replay::new();
++        r.down(lp(0x23));
++        r.keyed(lp(0x23), H);
++        r.wait(Duration::from_millis(200));
++        r.down(lp(0x23));
++        r.bare(H, lp(0x23));
++        assert_eq!(r.typed, "hh");
++    }
++
++    #[test]
++    fn a_burst_of_forty_posted_letters_types_each_once() {
++        // down + char + up for forty letters, every copy after them: no typed entry is evicted.
++        let letters: Vec<(usize, isize)> = (0..40).map(|i| ('a' as usize + i % 26, 0x10 + (i % 26) as isize)).collect();
++        let mut r = Replay::new();
++        for &(ch, scan) in &letters { r.down(lp(scan)); r.keyed(lp(scan), ch); }
++        for &(ch, scan) in &letters { r.bare(ch, lp(scan)); }
++        let want: String = letters.iter().map(|&(ch, _)| char::from_u32(ch as u32).unwrap()).collect();
++        assert_eq!(r.typed, want);
++    }
++
++    #[test]
++    fn at_most_two_hundred_fifty_six_key_downs_are_remembered() {
++        let mut list = VecDeque::new();
++        let now = Instant::now();
++        for scan in 0..300 { note_key_down(&mut list, lp(scan), now); }
++        assert_eq!(list.len(), 256);
++        assert_eq!(list.front().map(|t| t.lparam), Some(lp(44)), "the oldest go first");
++    }
++}
++
++#[cfg(test)]
++mod rune_posted_key_handler_tests {
++    //! The same orders as real messages through `KeyEventBuilder::process_message`: posted to this
++    //! test thread's own queue, taken off it in order and handed to the handler with no window
++    //! (`hwnd` 0, so `next_kbd_msg` peeks this thread's queue as it peeks the window's). The test
++    //! posts `TranslateMessage`'s copy itself, where the driver log shows it: after the key-up,
++    //! with the key-down's `lParam`.
++    use std::mem::MaybeUninit;
++
++    use windows_sys::Win32::System::Threading::GetCurrentThreadId;
++    use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_PACKET;
++    use windows_sys::Win32::UI::WindowsAndMessaging::{
++        PeekMessageW, PostThreadMessageW, MSG, PM_NOREMOVE, PM_REMOVE, WM_CHAR, WM_KEYDOWN,
++        WM_KEYUP, WM_KILLFOCUS,
++    };
++
++    use super::KeyEventBuilder;
++    use crate::event::ElementState;
++    use crate::platform_impl::platform::event_loop::ProcResult;
++
++    const VK_H: usize = 0x48;
++    const VK_E: usize = 0x45;
++    const H: usize = 'h' as usize;
++    const E: usize = 'e' as usize;
++    fn lp(scan: isize) -> isize { 1 | (scan << 16) }
++    fn up(scan: isize) -> isize { lp(scan) | (3 << 30) }
++
++    /// Posts `messages` to this thread, then hands each to the handler in queue order; the text
++    /// of every pressed key event, in order.
++    fn feed(builder: &KeyEventBuilder, messages: &[(u32, usize, isize)]) -> String {
++        let mut msg = MaybeUninit::<MSG>::zeroed();
++        // SAFETY: plain Win32 calls on this thread's own queue; `msg` is written before it is read.
++        unsafe {
++            PeekMessageW(msg.as_mut_ptr(), 0, 0, 0, PM_NOREMOVE);
++            let thread = GetCurrentThreadId();
++            for &(kind, wparam, lparam) in messages {
++                assert_ne!(PostThreadMessageW(thread, kind, wparam, lparam), 0, "post {kind:#x}");
++            }
++            let mut typed = String::new();
++            while PeekMessageW(msg.as_mut_ptr(), 0, 0, 0, PM_REMOVE) != 0 {
++                let m = msg.assume_init_ref();
++                let mut result = ProcResult::DefWindowProc(m.wParam);
++                for ev in builder.process_message(0, m.message, m.wParam, m.lParam, false, &mut result) {
++                    if ev.event.state == ElementState::Pressed {
++                        typed.push_str(ev.event.text.as_deref().unwrap_or(""));
++                    }
++                }
++            }
++            typed
++        }
++    }
++
++    #[test]
++    fn down_char_up_then_the_copy_types_once() {
++        let b = KeyEventBuilder::default();
++        let typed = feed(&b, &[
++            (WM_KEYDOWN, VK_H, lp(0x23)), (WM_CHAR, H, lp(0x23)), (WM_KEYUP, VK_H, up(0x23)),
++            (WM_KEYDOWN, VK_E, lp(0x12)), (WM_CHAR, E, lp(0x12)), (WM_KEYUP, VK_E, up(0x12)),
++            (WM_CHAR, H, lp(0x23)), (WM_CHAR, E, lp(0x12)),
++        ]);
++        assert_eq!(typed, "he", "the bare path consulted the list and dropped both copies");
++    }
++
++    #[test]
++    fn down_up_then_the_copy_types_once() {
++        let b = KeyEventBuilder::default();
++        let typed = feed(&b, &[(WM_KEYDOWN, VK_H, lp(0x23)), (WM_KEYUP, VK_H, up(0x23)), (WM_CHAR, H, lp(0x23))]);
++        assert_eq!(typed, "h");
++    }
++
++    #[test]
++    fn a_real_key_then_a_posted_key_s_copy_types_twice() {
++        // Hardware order (the char comes before the key-up), then a program's down + up + copy.
++        let b = KeyEventBuilder::default();
++        let typed = feed(&b, &[
++            (WM_KEYDOWN, VK_H, lp(0x23)), (WM_CHAR, H, lp(0x23)), (WM_KEYUP, VK_H, up(0x23)),
++            (WM_KEYDOWN, VK_H, lp(0x23)), (WM_KEYUP, VK_H, up(0x23)), (WM_CHAR, H, lp(0x23)),
++        ]);
++        assert_eq!(typed, "hh");
++    }
++
++    #[test]
++    fn bare_text_from_a_program_types() {
++        let b = KeyEventBuilder::default();
++        assert_eq!(feed(&b, &[(WM_CHAR, H, 1), (WM_CHAR, E, 0)]), "he");
++    }
++
++    #[test]
++    fn a_vk_packet_key_down_is_not_remembered() {
++        let b = KeyEventBuilder::default();
++        let typed = feed(&b, &[(WM_KEYDOWN, VK_PACKET as usize, 1), (WM_CHAR, 0xe9, 1), (WM_KEYUP, VK_PACKET as usize, up(0))]);
++        assert_eq!(typed, "é");
++        assert!(b.translated.lock().unwrap().is_empty());
++    }
++
++    #[test]
++    fn focus_loss_forgets_every_key_down() {
++        let b = KeyEventBuilder::default();
++        feed(&b, &[(WM_KEYDOWN, VK_H, lp(0x23)), (WM_CHAR, H, lp(0x23)), (WM_KEYUP, VK_H, up(0x23))]);
++        assert_eq!(b.translated.lock().unwrap().len(), 1);
++        feed(&b, &[(WM_KILLFOCUS, 0, 0)]);
++        assert!(b.translated.lock().unwrap().is_empty());
++        // So a copy arriving after focus came back types as text.
++        assert_eq!(feed(&b, &[(WM_CHAR, H, lp(0x23))]), "h");
++    }
++
++    const VK_L: usize = 0x4c;
++    const VK_O: usize = 0x4f;
++    const L: usize = 'l' as usize;
++    const O: usize = 'o' as usize;
++
++    #[test]
++    fn an_earlier_key_s_copy_that_reaches_a_waiting_key_types_on_its_own() {
++        // The order a driver's back-to-back down + up made (typing run 09:51, rep Aauto 1, was
++        // `hllo`): E's event goes out with no text (its key-up came first); L's key-down waits for
++        // a WM_CHAR, and E's copy arrives before L's own.
++        let b = KeyEventBuilder::default();
++        let typed = feed(&b, &[
++            (WM_KEYDOWN, VK_H, lp(0x23)), (WM_CHAR, H, lp(0x23)), (WM_KEYUP, VK_H, up(0x23)),
++            (WM_KEYDOWN, VK_E, lp(0x12)), (WM_KEYUP, VK_E, up(0x12)),
++            (WM_KEYDOWN, VK_L, lp(0x26)), (WM_CHAR, E, lp(0x12)), (WM_CHAR, L, lp(0x26)), (WM_KEYUP, VK_L, up(0x26)),
++        ]);
++        assert_eq!(typed, "hel");
++    }
++
++    #[test]
++    fn all_downs_then_all_ups_with_late_copies_type_every_letter_in_order() {
++        // The order of rep A2 3 of the same run (was `heo`): both L key-downs go out with no text,
++        // O's waits, and both L copies arrive before O's own character.
++        let b = KeyEventBuilder::default();
++        let typed = feed(&b, &[
++            (WM_KEYDOWN, VK_H, lp(0x23)), (WM_CHAR, H, lp(0x23)),
++            (WM_KEYDOWN, VK_E, lp(0x12)), (WM_CHAR, E, lp(0x12)),
++            (WM_KEYDOWN, VK_L, lp(0x26)), (WM_KEYDOWN, VK_L, lp(0x26)), (WM_KEYDOWN, VK_O, lp(0x18)),
++            (WM_CHAR, L, lp(0x26)), (WM_CHAR, L, lp(0x26)), (WM_CHAR, O, lp(0x18)),
++            (WM_KEYUP, VK_H, up(0x23)), (WM_KEYUP, VK_E, up(0x12)), (WM_KEYUP, VK_L, up(0x26)),
++            (WM_KEYUP, VK_L, up(0x26)), (WM_KEYUP, VK_O, up(0x18)),
++        ]);
++        assert_eq!(typed, "hello");
++    }
++
++    #[test]
++    fn the_same_key_s_copy_reaching_its_own_next_press_still_types_twice() {
++        // L down (no text, its up first), then L down again waiting: the first L's copy has the
++        // waiting key's own lParam, so it joins that event; the second L's copy comes bare and types.
++        let b = KeyEventBuilder::default();
++        let typed = feed(&b, &[
++            (WM_KEYDOWN, VK_L, lp(0x26)), (WM_KEYUP, VK_L, up(0x26)),
++            (WM_KEYDOWN, VK_L, lp(0x26)), (WM_CHAR, L, lp(0x26)), (WM_KEYUP, VK_L, up(0x26)), (WM_CHAR, L, lp(0x26)),
++        ]);
++        assert_eq!(typed, "ll");
++    }
++}
++
+ #[derive(Debug, Copy, Clone)]
+ struct KeyLParam {
+     pub scancode: u8,
+diff --git a/src/platform_impl/macos/app_state.rs b/src/platform_impl/macos/app_state.rs
+--- a/src/platform_impl/macos/app_state.rs
++++ b/src/platform_impl/macos/app_state.rs
+@@ -25,2 +25,5 @@ pub(super) struct AppState {
+     activate_ignoring_other_apps: bool,
++    init_before_finish_launching: bool,
++    /// Whether `applicationWillFinishLaunching:` dispatched the init events.
++    init_dispatched: Cell<bool>,
+     run_loop: RunLoop,
+@@ -63,2 +66,7 @@ declare_class!(
+     unsafe impl NSApplicationDelegate for ApplicationDelegate {
++        #[method(applicationWillFinishLaunching:)]
++        fn app_will_finish_launching(&self, notification: &NSNotification) {
++            self.will_finish_launching(notification)
++        }
++
+         #[method(applicationDidFinishLaunching:)]
+@@ -81,2 +89,3 @@ impl ApplicationDelegate {
+         activate_ignoring_other_apps: bool,
++        init_before_finish_launching: bool,
+     ) -> Retained<Self> {
+@@ -86,2 +95,4 @@ impl ApplicationDelegate {
+             activate_ignoring_other_apps,
++            init_before_finish_launching,
++            init_dispatched: Cell::new(false),
+             run_loop: RunLoop::main(mtm),
+@@ -104,2 +115,31 @@ impl ApplicationDelegate {
+ 
++    /// With `init_before_finish_launching`: the default menu and the init events now, so the
++    /// app's first window is made and drawn before AppKit's own launch work (on macOS 27 about
++    /// 30,000 to 55,000 µs between this notification and `applicationDidFinishLaunching:`).
++    /// Only where `did_finish_launching` leaves the activation policy alone, a bundled app
++    /// that names none: any other app's windows wait for the policy it sets after the launch.
++    fn will_finish_launching(&self, _notification: &NSNotification) {
++        trace_scope!("applicationWillFinishLaunching:");
++        if !self.ivars().init_before_finish_launching
++            || self.ivars().activation_policy.is_some()
++            || self.ivars().stop_on_launch.get()
++        {
++            return;
++        }
++        let is_bundled =
++            unsafe { NSRunningApplication::currentApplication().bundleIdentifier().is_some() };
++        if !is_bundled {
++            return;
++        }
++        let mtm = MainThreadMarker::from(self);
++        let app = NSApplication::sharedApplication(mtm);
++        if self.ivars().default_menu {
++            menu::initialize(&app);
++        }
++        self.ivars().waker.borrow_mut().start();
++        self.set_is_running(true);
++        self.ivars().init_dispatched.set(true);
++        self.dispatch_init_events();
++    }
++
+     // NOTE: This will, globally, only be run once, no matter how many
+@@ -138,12 +178,15 @@ impl ApplicationDelegate {
+ 
+-        if self.ivars().default_menu {
+-            // The menubar initialization should be before the `NewEvents` event, to allow
+-            // overriding of the default menu even if it's created
+-            menu::initialize(&app);
+-        }
++        // `will_finish_launching` did the rest already.
++        if !self.ivars().init_dispatched.get() {
++            if self.ivars().default_menu {
++                // The menubar initialization should be before the `NewEvents` event, to allow
++                // overriding of the default menu even if it's created
++                menu::initialize(&app);
++            }
+ 
+-        self.ivars().waker.borrow_mut().start();
++            self.ivars().waker.borrow_mut().start();
+ 
+-        self.set_is_running(true);
+-        self.dispatch_init_events();
++            self.set_is_running(true);
++            self.dispatch_init_events();
++        }
+ 
+diff --git a/src/platform_impl/macos/event_loop.rs b/src/platform_impl/macos/event_loop.rs
+--- a/src/platform_impl/macos/event_loop.rs
++++ b/src/platform_impl/macos/event_loop.rs
+@@ -207,2 +207,3 @@ pub(crate) struct PlatformSpecificEventLoopAttributes {
+     pub(crate) activate_ignoring_other_apps: bool,
++    pub(crate) init_before_finish_launching: bool,
+ }
+@@ -211,3 +212,8 @@ impl Default for PlatformSpecificEventLoopAttributes {
+     fn default() -> Self {
+-        Self { activation_policy: None, default_menu: true, activate_ignoring_other_apps: true }
++        Self {
++            activation_policy: None,
++            default_menu: true,
++            activate_ignoring_other_apps: true,
++            init_before_finish_launching: false,
++        }
+     }
+@@ -236,2 +242,3 @@ impl<T> EventLoop<T> {
+             attributes.activate_ignoring_other_apps,
++            attributes.init_before_finish_launching,
+         );
+diff --git a/src/platform_impl/macos/window_delegate.rs b/src/platform_impl/macos/window_delegate.rs
+--- a/src/platform_impl/macos/window_delegate.rs
++++ b/src/platform_impl/macos/window_delegate.rs
+@@ -780,2 +780,11 @@ impl WindowDelegate {
+ 
++        // A window that opens maximized is zoomed before it is ordered front: `zoom:` animates
++        // a window on screen and returns only when the animation is over (about 260,000 µs),
++        // with the window on screen at its restored size meanwhile. A full screen window keeps
++        // its zoom for `window_did_exit_fullscreen`, as before.
++        let maximize_first = attrs.maximized && attrs.fullscreen.is_none();
++        if maximize_first {
++            delegate.set_maximized(true);
++        }
++
+         // Set fullscreen mode after we setup everything
+@@ -795,3 +804,3 @@ impl WindowDelegate {
+ 
+-        if attrs.maximized {
++        if attrs.maximized && !maximize_first {
+             delegate.set_maximized(attrs.maximized);
+diff --git a/src/platform_impl/linux/wayland/state.rs b/src/platform_impl/linux/wayland/state.rs
+index 13ef99c26..27b73b6a4 100644
+--- a/src/platform_impl/linux/wayland/state.rs
++++ b/src/platform_impl/linux/wayland/state.rs
+@@ -123,6 +123,19 @@ impl WinitState {
+         queue_handle: &QueueHandle<Self>,
+         loop_handle: LoopHandle<'static, WinitState>,
+     ) -> Result<Self, OsError> {
++        // A compositor without the decoration protocol answers a decorated window's first
++        // configure with a client-side frame, and that frame reads the system's colour scheme and
++        // button layout through two `dbus-send` processes, 100 ms of reply timeout each. Started
++        // here, on threads of their own, they are done (or well on their way) when the configure
++        // asks, instead of running one after the other on this thread before the first frame.
++        #[cfg(feature = "sctk-adwaita")]
++        if !globals
++            .contents()
++            .with_list(|list| list.iter().any(|global| global.interface == "zxdg_decoration_manager_v1"))
++        {
++            sctk_adwaita::read_system_config_early();
++        }
++
+         let registry_state = RegistryState::new(globals);
+         let compositor_state =
+             CompositorState::bind(globals, queue_handle).map_err(WaylandError::Bind)?;
+diff --git a/src/platform_impl/linux/wayland/seat/touch/mod.rs b/src/platform_impl/linux/wayland/seat/touch/mod.rs
+index 124504fee..86dc8b4e8 100644
+--- a/src/platform_impl/linux/wayland/seat/touch/mod.rs
++++ b/src/platform_impl/linux/wayland/seat/touch/mod.rs
+@@ -21,15 +21,15 @@ impl TouchHandler for WinitState {
+         _: &Connection,
+         _: &QueueHandle<Self>,
+         touch: &WlTouch,
+-        _: u32,
++        serial: u32,
+         _: u32,
+         surface: WlSurface,
+         id: i32,
+         position: (f64, f64),
+     ) {
+         let window_id = wayland::make_wid(&surface);
+-        let scale_factor = match self.windows.get_mut().get(&window_id) {
+-            Some(window) => window.lock().unwrap().scale_factor(),
++        let window = match self.windows.get_mut().get(&window_id) {
++            Some(window) => window.clone(),
+             None => return,
+         };
+ 
+@@ -41,6 +41,12 @@ impl TouchHandler for WinitState {
+             },
+         };
+ 
++        let scale_factor = {
++            let mut window = window.lock().unwrap();
++            window.touch_down(id, touch.seat().clone(), serial);
++            window.scale_factor()
++        };
++
+         // Update the state of the point.
+         let location = LogicalPosition::<f64>::from(position);
+         seat_state.touch_map.insert(id, TouchPoint { surface, location });
+@@ -84,7 +90,11 @@ impl TouchHandler for WinitState {
+ 
+         let window_id = wayland::make_wid(&touch_point.surface);
+         let scale_factor = match self.windows.get_mut().get(&window_id) {
+-            Some(window) => window.lock().unwrap().scale_factor(),
++            Some(window) => {
++                let mut window = window.lock().unwrap();
++                window.touch_up(id, touch.seat());
++                window.scale_factor()
++            },
+             None => return,
+         };
+ 
+@@ -159,7 +169,11 @@ impl TouchHandler for WinitState {
+         for (id, touch_point) in seat_state.touch_map.drain() {
+             let window_id = wayland::make_wid(&touch_point.surface);
+             let scale_factor = match self.windows.get_mut().get(&window_id) {
+-                Some(window) => window.lock().unwrap().scale_factor(),
++                Some(window) => {
++                    let mut window = window.lock().unwrap();
++                    window.touch_up(id, touch.seat());
++                    window.scale_factor()
++                },
+                 None => return,
+             };
+ 
+diff --git a/src/platform_impl/linux/wayland/window/state.rs b/src/platform_impl/linux/wayland/window/state.rs
+index 9cd83c4a3..077451053 100644
+--- a/src/platform_impl/linux/wayland/window/state.rs
++++ b/src/platform_impl/linux/wayland/window/state.rs
+@@ -69,6 +69,9 @@ pub struct WindowState {
+     /// The pointers observed on the window.
+     pub pointers: Vec<Weak<ThemedPointer<WinitPointerData>>>,
+ 
++    /// Rune: active touches on the window, for interactive move/resize/menu serials.
++    active_touches: ActiveTouches<WlSeat>,
++
+     selected_cursor: SelectedCursor,
+ 
+     /// Whether the cursor is visible.
+@@ -206,6 +209,7 @@ impl WindowState {
+             resize_increments: None,
+             pointer_constraints,
+             pointers: Default::default(),
++            active_touches: ActiveTouches::default(),
+             queue_handle: queue_handle.clone(),
+             resizable: true,
+             scale_factor: 1.,
+@@ -234,6 +238,28 @@ impl WindowState {
+         })
+     }
+ 
++    /// Rune: record an active touch down on this window.
++    pub fn touch_down(&mut self, id: i32, seat: WlSeat, serial: u32) {
++        self.active_touches.down(id, seat, serial);
++    }
++
++    /// Rune: clear a touch point that ended or was cancelled on this window.
++    pub fn touch_up(&mut self, id: i32, seat: &WlSeat) {
++        self.active_touches.up(id, seat);
++    }
++
++    /// Rune: run an interactive xdg-shell request using the active touch's `(seat, serial)`,
++    /// falling back to the observed pointers' latest button serial when no touch is down.
++    fn with_interactive_serial(&self, mut callback: impl FnMut(&WlSeat, u32)) {
++        if let Some((seat, serial)) = self.active_touches.latest() {
++            callback(seat, serial);
++            return;
++        }
++        self.apply_on_pointer(|_, data| {
++            callback(data.seat(), data.latest_button_serial());
++        });
++    }
++
+     /// Get the current state of the frame callback.
+     pub fn frame_callback_state(&self) -> FrameCallbackState {
+         self.frame_callback_state
+@@ -435,11 +461,7 @@ impl WindowState {
+     /// Start interacting drag resize.
+     pub fn drag_resize_window(&self, direction: ResizeDirection) -> Result<(), ExternalError> {
+         let xdg_toplevel = self.window.xdg_toplevel();
+-
+-        // TODO(kchibisov) handle touch serials.
+-        self.apply_on_pointer(|_, data| {
+-            let serial = data.latest_button_serial();
+-            let seat = data.seat();
++        self.with_interactive_serial(|seat, serial| {
+             xdg_toplevel.resize(seat, serial, direction.into());
+         });
+ 
+@@ -449,10 +471,7 @@ impl WindowState {
+     /// Start the window drag.
+     pub fn drag_window(&self) -> Result<(), ExternalError> {
+         let xdg_toplevel = self.window.xdg_toplevel();
+-        // TODO(kchibisov) handle touch serials.
+-        self.apply_on_pointer(|_, data| {
+-            let serial = data.latest_button_serial();
+-            let seat = data.seat();
++        self.with_interactive_serial(|seat, serial| {
+             xdg_toplevel._move(seat, serial);
+         });
+ 
+@@ -982,10 +1001,7 @@ impl WindowState {
+     }
+ 
+     pub fn show_window_menu(&self, position: LogicalPosition<u32>) {
+-        // TODO(kchibisov) handle touch serials.
+-        self.apply_on_pointer(|_, data| {
+-            let serial = data.latest_button_serial();
+-            let seat = data.seat();
++        self.with_interactive_serial(|seat, serial| {
+             self.window.show_window_menu(seat, serial, position.into());
+         });
+     }
+@@ -1268,3 +1284,58 @@ fn into_sctk_adwaita_config(theme: Option<Theme>) -> sctk_adwaita::FrameConfig {
+         None => sctk_adwaita::FrameConfig::auto(),
+     }
+ }
++
++/// Rune: active touches on a window `(id, seat, down_serial)` in arrival order.
++#[derive(Debug)]
++struct ActiveTouches<S> {
++    points: Vec<(i32, S, u32)>,
++}
++
++impl<S> Default for ActiveTouches<S> {
++    fn default() -> Self {
++        Self { points: Vec::new() }
++    }
++}
++
++impl<S: PartialEq> ActiveTouches<S> {
++    fn down(&mut self, id: i32, seat: S, serial: u32) {
++        self.points.retain(|(i, s, _)| !(*i == id && *s == seat));
++        self.points.push((id, seat, serial));
++    }
++
++    fn up(&mut self, id: i32, seat: &S) {
++        self.points.retain(|(i, s, _)| !(*i == id && s == seat));
++    }
++
++    fn latest(&self) -> Option<(&S, u32)> {
++        self.points.last().map(|(_, seat, serial)| (seat, *serial))
++    }
++}
++
++#[cfg(test)]
++mod touch_serial_tests {
++    use super::ActiveTouches;
++
++    #[test]
++    fn active_touch_serial_tracks_down_up_and_multitouch() {
++        let mut touches = ActiveTouches::default();
++        assert_eq!(touches.latest(), None);
++
++        touches.down(0, "seat0", 41);
++        assert_eq!(touches.latest(), Some((&"seat0", 41)));
++
++        // Second finger down becomes latest; lifting it restores the first finger's serial.
++        touches.down(1, "seat0", 42);
++        assert_eq!(touches.latest(), Some((&"seat0", 42)));
++        touches.up(1, &"seat0");
++        assert_eq!(touches.latest(), Some((&"seat0", 41)));
++
++        // Duplicate id on the same seat updates its serial without duplicating entries.
++        touches.down(0, "seat0", 43);
++        assert_eq!(touches.latest(), Some((&"seat0", 43)));
++
++        // Lifting the last finger returns None so callers fall back to pointer serials.
++        touches.up(0, &"seat0");
++        assert_eq!(touches.latest(), None);
++    }
++}
+diff --git a/src/platform/wayland.rs b/src/platform/wayland.rs
+index 63c0a922d..7b22e69f0 100644
+--- a/src/platform/wayland.rs
++++ b/src/platform/wayland.rs
+@@ -27,6 +27,12 @@ pub use crate::window::Theme;
+ pub trait ActiveEventLoopExtWayland {
+     /// True if the [`ActiveEventLoop`] uses Wayland.
+     fn is_wayland(&self) -> bool;
++
++    /// Rune: when `wake` is true, any successful Wayland display read marks the event loop as
++    /// having dispatched events so `ControlFlow::Wait` runs a turn even when winit's own queues
++    /// had no events. Foreign Wayland queues sharing the display (such as layer-shell overlays)
++    /// dispatch on that turn without background reader threads. Off by default; no-op on X11.
++    fn set_wake_on_wayland_read(&self, wake: bool);
+ }
+ 
+ impl ActiveEventLoopExtWayland for ActiveEventLoop {
+@@ -34,6 +40,11 @@ impl ActiveEventLoopExtWayland for ActiveEventLoop {
+     fn is_wayland(&self) -> bool {
+         self.p.is_wayland()
+     }
++
++    #[inline]
++    fn set_wake_on_wayland_read(&self, wake: bool) {
++        self.p.set_wake_on_wayland_read(wake);
++    }
+ }
+ 
+ /// Additional methods on [`EventLoop`] that are specific to Wayland.
+diff --git a/src/platform_impl/linux/mod.rs b/src/platform_impl/linux/mod.rs
+index bc0e71c80..0071dfee2 100644
+--- a/src/platform_impl/linux/mod.rs
++++ b/src/platform_impl/linux/mod.rs
+@@ -869,6 +869,19 @@ impl ActiveEventLoop {
+         }
+     }
+ 
++    /// Rune: opt into waking from `ControlFlow::Wait` on any Wayland display read; no-op on X11.
++    #[inline]
++    pub fn set_wake_on_wayland_read(&self, wake: bool) {
++        match *self {
++            #[cfg(wayland_platform)]
++            ActiveEventLoop::Wayland(ref evlp) => evlp.set_wake_on_wayland_read(wake),
++            #[cfg(x11_platform)]
++            ActiveEventLoop::X(_) => {
++                let _ = wake;
++            },
++        }
++    }
++
+     pub fn create_custom_cursor(&self, cursor: CustomCursorSource) -> CustomCursor {
+         x11_or_wayland!(match self; ActiveEventLoop(evlp) => evlp.create_custom_cursor(cursor))
+     }
+diff --git a/src/platform_impl/linux/wayland/event_loop/mod.rs b/src/platform_impl/linux/wayland/event_loop/mod.rs
+index fef13f455..f73e50056 100644
+--- a/src/platform_impl/linux/wayland/event_loop/mod.rs
++++ b/src/platform_impl/linux/wayland/event_loop/mod.rs
+@@ -107,10 +107,12 @@ impl<T: 'static> EventLoop<T> {
+         let wayland_dispatcher =
+             calloop::Dispatcher::new(wayland_source, |_, queue, winit_state: &mut WinitState| {
+                 let result = queue.dispatch_pending(winit_state);
+-                if result.is_ok()
+-                    && (!winit_state.events_sink.is_empty()
+-                        || !winit_state.window_compositor_updates.is_empty())
+-                {
++                if should_mark_dispatched(
++                    result.is_ok(),
++                    winit_state.wake_on_wayland_read,
++                    !winit_state.events_sink.is_empty(),
++                    !winit_state.window_compositor_updates.is_empty(),
++                ) {
+                     winit_state.dispatched_events = true;
+                 }
+                 result
+@@ -656,6 +658,12 @@ pub struct ActiveEventLoop {
+ }
+ 
+ impl ActiveEventLoop {
++    /// Rune: opt into waking from `ControlFlow::Wait` on any Wayland display read.
++    #[inline]
++    pub(crate) fn set_wake_on_wayland_read(&self, wake: bool) {
++        self.state.borrow_mut().wake_on_wayland_read = wake;
++    }
++
+     pub(crate) fn set_control_flow(&self, control_flow: ControlFlow) {
+         self.control_flow.set(control_flow)
+     }
+@@ -808,3 +816,32 @@ enum PumpEventNotifierAction {
+     /// Shutdown the thread.
+     Shutdown,
+ }
++
++/// Rune: whether a completed Wayland source read should set `WinitState::dispatched_events`.
++fn should_mark_dispatched(
++    read_ok: bool,
++    wake_on_wayland_read: bool,
++    has_events: bool,
++    has_compositor_updates: bool,
++) -> bool {
++    read_ok && (wake_on_wayland_read || has_events || has_compositor_updates)
++}
++
++#[cfg(test)]
++mod wake_on_wayland_read_tests {
++    use super::should_mark_dispatched;
++
++    #[test]
++    fn empty_sink_read_sets_dispatched_events_only_when_wake_flag_is_enabled() {
++        // Default (flag off): empty-sink reads do not wake from ControlFlow::Wait.
++        assert!(!should_mark_dispatched(true, false, false, false));
++        // Flag on: a successful empty-sink read wakes the loop for foreign queues.
++        assert!(should_mark_dispatched(true, true, false, false));
++        // Dispatch errors never mark dispatched_events even with the flag on.
++        assert!(!should_mark_dispatched(false, true, false, false));
++        assert!(!should_mark_dispatched(false, false, true, true));
++        // Non-empty winit sinks still wake when the flag is off.
++        assert!(should_mark_dispatched(true, false, true, false));
++        assert!(should_mark_dispatched(true, false, false, true));
++    }
++}
+diff --git a/src/platform_impl/linux/wayland/state.rs b/src/platform_impl/linux/wayland/state.rs
+index 27b73b6a4..eda2cea4b 100644
+--- a/src/platform_impl/linux/wayland/state.rs
++++ b/src/platform_impl/linux/wayland/state.rs
+@@ -115,6 +115,11 @@ pub struct WinitState {
+     /// Whether we have dispatched events to the user thus we want to
+     /// send `AboutToWait` and normally wakeup the user.
+     pub dispatched_events: bool,
++
++    /// Rune: when true, any successful Wayland display read marks `dispatched_events = true`
++    /// even when winit's own event sinks are empty, so foreign queues sharing the display
++    /// dispatch on that turn without background reader threads.
++    pub wake_on_wayland_read: bool,
+ }
+ 
+ impl WinitState {
+@@ -205,6 +210,7 @@ impl WinitState {
+             loop_handle,
+             // Make it true by default.
+             dispatched_events: true,
++            wake_on_wayland_read: false,
+         })
+     }
+ 
+diff --git a/src/platform_impl/windows/event_loop.rs b/src/platform_impl/windows/event_loop.rs
+index c386d644..a8181f95 100644
+--- a/src/platform_impl/windows/event_loop.rs
++++ b/src/platform_impl/windows/event_loop.rs
+@@ -1238,35 +1238,47 @@ unsafe fn public_window_callback_inner(
+         },
+ 
+         WM_NCLBUTTONDOWN => {
+-            if wparam == HTCAPTION as _ {
+-                // Prevent the user event loop from pausing when left clicking the title bar.
+-                //
+-                // When the user interacts with the title bar, Windows enters the modal event
+-                // loop. Currently, a left click causes a pause for about 500ms. Sending a dummy
+-                // mouse-move event seems to cancel the modal loop early, preventing the pause.
+-                // The application will never see this dummy event.
+-                //
+-                // The mouse coordinates are encoded into the lparam value, however the WM_MOUSEMOVE
+-                // event is not using the same coordinate system of the WM_NCLBUTTONDOWN event.
+-                // One uses client-area coordinates and the other is screen-coordinates. In any
+-                // case, passing the lparam as-is with the dummy event does not seem the cancel
+-                // the modal loop.
+-                //
+-                // However, passing in a value of 0 has been observed to always cancel the pause.
+-                //
+-                // Other notes:
+-                //
+-                // For some unknown reason, the cursor will blink when clicking the title bar.
+-                // Cancelling the modal loop early causes the blink to happen *immediately*.
+-                // Otherwise, the blank happens *after* the pause.
+-                //
+-                // When right-click the title bar, the system window menu is presented to the user,
+-                // and the modal event loop begins. This dummy event does *not* prevent the freeze
+-                // in the main event loop caused by that popup menu.
+-                let lparam = 0;
+-                unsafe { PostMessageW(window, WM_MOUSEMOVE, 0, lparam) };
++            if userdata.window_state_lock().dragging {
++                let res = unsafe { DefWindowProcW(window, msg, wparam, lparam) };
++                let mut state = userdata.window_state_lock();
++                if state.dragging {
++                    state.dragging = false;
++                    if !userdata.userdata_removed.get() {
++                        unsafe { PostMessageW(window, WM_LBUTTONUP, 0, lparam) };
++                    }
++                }
++                result = ProcResult::Value(res);
++            } else {
++                if wparam == HTCAPTION as _ {
++                    // Prevent the user event loop from pausing when left clicking the title bar.
++                    //
++                    // When the user interacts with the title bar, Windows enters the modal event
++                    // loop. Currently, a left click causes a pause for about 500ms. Sending a dummy
++                    // mouse-move event seems to cancel the modal loop early, preventing the pause.
++                    // The application will never see this dummy event.
++                    //
++                    // The mouse coordinates are encoded into the lparam value, however the WM_MOUSEMOVE
++                    // event is not using the same coordinate system of the WM_NCLBUTTONDOWN event.
++                    // One uses client-area coordinates and the other is screen-coordinates. In any
++                    // case, passing the lparam as-is with the dummy event does not seem the cancel
++                    // the modal loop.
++                    //
++                    // However, passing in a value of 0 has been observed to always cancel the pause.
++                    //
++                    // Other notes:
++                    //
++                    // For some unknown reason, the cursor will blink when clicking the title bar.
++                    // Cancelling the modal loop early causes the blink to happen *immediately*.
++                    // Otherwise, the blank happens *after* the pause.
++                    //
++                    // When right-click the title bar, the system window menu is presented to the user,
++                    // and the modal event loop begins. This dummy event does *not* prevent the freeze
++                    // in the main event loop caused by that popup menu.
++                    let lparam = 0;
++                    unsafe { PostMessageW(window, WM_MOUSEMOVE, 0, lparam) };
++                }
++                result = ProcResult::DefWindowProc(wparam);
+             }
+-            result = ProcResult::DefWindowProc(wparam);
+         },
+ 
+         WM_CLOSE => {
+diff --git a/src/platform_impl/windows/window.rs b/src/platform_impl/windows/window.rs
+index 1fcf1f2b..85dfb5e3 100644
+--- a/src/platform_impl/windows/window.rs
++++ b/src/platform_impl/windows/window.rs
+@@ -514,7 +514,7 @@ impl Window {
+             unsafe { ReleaseCapture() };
+ 
+             unsafe {
+-                PostMessageW(window, WM_NCLBUTTONDOWN, wparam, &points as *const _ as LPARAM)
++                PostMessageW(window, WM_NCLBUTTONDOWN, wparam, pack_points(points))
+             };
+         });
+     }
+@@ -1595,3 +1595,30 @@ unsafe fn force_window_active(handle: HWND) {
+ 
+     unsafe { SetForegroundWindow(handle) };
+ }
++
++fn pack_points(points: POINTS) -> LPARAM {
++    ((points.x as u16 as u32) | ((points.y as u16 as u32) << 16)) as LPARAM
++}
++
++#[cfg(test)]
++mod drag_lparam_tests {
++    use super::*;
++
++    #[test]
++    fn pack_points_encodes_signed_screen_coordinates_by_value() {
++        for (x, y) in [
++            (0i16, 0i16),
++            (120, 40),
++            (-1920, -100),
++            (-1, -1),
++            (1920, -540),
++            (-2560, 1440),
++            (i16::MIN, i16::MAX),
++            (i16::MAX, i16::MIN),
++        ] {
++            let lparam = pack_points(POINTS { x, y });
++            assert_eq!(lparam as i16, x, "low 16 bits must encode signed x for ({x}, {y})");
++            assert_eq!((lparam >> 16) as i16, y, "high 16 bits must encode signed y for ({x}, {y})");
++        }
++    }
++}
+diff --git a/src/platform_impl/linux/wayland/state.rs b/src/platform_impl/linux/wayland/state.rs
+--- a/src/platform_impl/linux/wayland/state.rs
++++ b/src/platform_impl/linux/wayland/state.rs
+@@ -33,6 +33,7 @@ use crate::platform_impl::wayland::types::kwin_blur::KWinBlurManager;
+ use crate::platform_impl::wayland::types::wp_fractional_scaling::FractionalScalingManager;
+ use crate::platform_impl::wayland::types::wp_viewporter::ViewporterState;
+ use crate::platform_impl::wayland::types::xdg_activation::XdgActivationState;
++use crate::platform_impl::wayland::types::xdg_toplevel_icon::XdgToplevelIconManagerState;
+ use crate::platform_impl::wayland::window::{WindowRequests, WindowState};
+ use crate::platform_impl::wayland::{WaylandError, WindowId};
+ use crate::platform_impl::OsError;
+@@ -94,6 +95,9 @@ pub struct WinitState {
+     /// Xdg activation.
+     pub xdg_activation: Option<XdgActivationState>,
+ 
++    /// Xdg toplevel icon manager, for window icons.
++    pub xdg_toplevel_icon_manager: Option<XdgToplevelIconManagerState>,
++
+     /// Relative pointer.
+     pub relative_pointer: Option<RelativePointerState>,
+ 
+@@ -187,6 +191,8 @@ impl WinitState {
+ 
+             xdg_shell: XdgShell::bind(globals, queue_handle).map_err(WaylandError::Bind)?,
+             xdg_activation: XdgActivationState::bind(globals, queue_handle).ok(),
++            xdg_toplevel_icon_manager: XdgToplevelIconManagerState::bind(globals, queue_handle)
++                .ok(),
+ 
+             windows: Default::default(),
+             window_requests: Default::default(),
+diff --git a/src/platform_impl/linux/wayland/types/mod.rs b/src/platform_impl/linux/wayland/types/mod.rs
+--- a/src/platform_impl/linux/wayland/types/mod.rs
++++ b/src/platform_impl/linux/wayland/types/mod.rs
+@@ -5,3 +5,4 @@ pub mod kwin_blur;
+ pub mod wp_fractional_scaling;
+ pub mod wp_viewporter;
+ pub mod xdg_activation;
++pub mod xdg_toplevel_icon;
+diff --git a/src/platform_impl/linux/wayland/types/xdg_toplevel_icon.rs b/src/platform_impl/linux/wayland/types/xdg_toplevel_icon.rs
+new file mode 100644
+--- /dev/null
++++ b/src/platform_impl/linux/wayland/types/xdg_toplevel_icon.rs
+@@ -0,0 +1,92 @@
++//! Handling of xdg toplevel icons, the window's own icon (backport of rust-windowing/winit#4288).
++
++use sctk::globals::GlobalData;
++use sctk::reexports::client::globals::{BindError, GlobalList};
++use sctk::reexports::client::protocol::wl_shm::Format;
++use sctk::reexports::client::{delegate_dispatch, Connection, Dispatch, Proxy, QueueHandle};
++use sctk::reexports::protocols::xdg::toplevel_icon::v1::client::xdg_toplevel_icon_manager_v1::XdgToplevelIconManagerV1;
++use sctk::reexports::protocols::xdg::toplevel_icon::v1::client::xdg_toplevel_icon_v1::XdgToplevelIconV1;
++use sctk::shm::slot::{Buffer, CreateBufferError, SlotPool};
++
++use crate::platform_impl::wayland::state::WinitState;
++use crate::platform_impl::PlatformIcon;
++
++#[derive(Debug)]
++pub struct XdgToplevelIconManagerState {
++    xdg_toplevel_icon_manager: XdgToplevelIconManagerV1,
++}
++
++impl XdgToplevelIconManagerState {
++    pub fn bind(
++        globals: &GlobalList,
++        queue_handle: &QueueHandle<WinitState>,
++    ) -> Result<Self, BindError> {
++        let xdg_toplevel_icon_manager = globals.bind(queue_handle, 1..=1, GlobalData)?;
++        Ok(Self { xdg_toplevel_icon_manager })
++    }
++
++    pub fn global(&self) -> &XdgToplevelIconManagerV1 {
++        &self.xdg_toplevel_icon_manager
++    }
++}
++
++/// The window's icon in an shm buffer, kept alive while the toplevel shows it.
++#[derive(Debug)]
++pub struct ToplevelIcon {
++    buffer: Buffer,
++}
++
++impl ToplevelIcon {
++    pub(crate) fn new(icon: &PlatformIcon, pool: &mut SlotPool) -> Result<Self, CreateBufferError> {
++        let (width, height) = (icon.width as i32, icon.height as i32);
++        let (buffer, canvas) = pool.create_buffer(width, height, 4 * width, Format::Argb8888)?;
++        argb_premultiplied(&icon.rgba, canvas);
++        Ok(Self { buffer })
++    }
++
++    pub fn add_buffer(&self, xdg_toplevel_icon: &XdgToplevelIconV1) {
++        xdg_toplevel_icon.add_buffer(self.buffer.wl_buffer(), 1);
++    }
++}
++
++/// Writes straight RGBA pixels as premultiplied little-endian ARGB8888.
++fn argb_premultiplied(rgba: &[u8], canvas: &mut [u8]) {
++    for (canvas_chunk, rgba) in canvas.chunks_exact_mut(4).zip(rgba.chunks_exact(4)) {
++        let alpha = rgba[3] as f32 / 255.;
++        let r = (rgba[0] as f32 * alpha) as u32;
++        let g = (rgba[1] as f32 * alpha) as u32;
++        let b = (rgba[2] as f32 * alpha) as u32;
++        let color = ((rgba[3] as u32) << 24) + (r << 16) + (g << 8) + b;
++        let array: &mut [u8; 4] = canvas_chunk.try_into().unwrap();
++        *array = color.to_le_bytes();
++    }
++}
++
++impl Dispatch<XdgToplevelIconManagerV1, GlobalData, WinitState> for XdgToplevelIconManagerState {
++    fn event(
++        _state: &mut WinitState,
++        _proxy: &XdgToplevelIconManagerV1,
++        _event: <XdgToplevelIconManagerV1 as Proxy>::Event,
++        _data: &GlobalData,
++        _conn: &Connection,
++        _qhandle: &QueueHandle<WinitState>,
++    ) {
++        // Preferred icon sizes: one buffer is enough, the compositor scales it.
++    }
++}
++
++impl Dispatch<XdgToplevelIconV1, GlobalData, WinitState> for XdgToplevelIconManagerState {
++    fn event(
++        _state: &mut WinitState,
++        _proxy: &XdgToplevelIconV1,
++        _event: <XdgToplevelIconV1 as Proxy>::Event,
++        _data: &GlobalData,
++        _conn: &Connection,
++        _qhandle: &QueueHandle<WinitState>,
++    ) {
++        // No events.
++    }
++}
++
++delegate_dispatch!(WinitState: [XdgToplevelIconManagerV1: GlobalData] => XdgToplevelIconManagerState);
++delegate_dispatch!(WinitState: [XdgToplevelIconV1: GlobalData] => XdgToplevelIconManagerState);
+diff --git a/src/platform_impl/linux/wayland/window/mod.rs b/src/platform_impl/linux/wayland/window/mod.rs
+--- a/src/platform_impl/linux/wayland/window/mod.rs
++++ b/src/platform_impl/linux/wayland/window/mod.rs
+@@ -132,6 +132,9 @@ impl Window {
+         // Set the window title.
+         window_state.set_title(attributes.title);
+ 
++        // Set the window icon before the first commit.
++        window_state.set_window_icon(attributes.window_icon.map(|icon| icon.inner));
++
+         // Set the min and max sizes. We must set the hints upon creating a window, so
+         // we use the default `1.` scaling...
+         let min_size = attributes.min_inner_size.map(|size| size.to_logical(1.));
+@@ -442,7 +445,9 @@ impl Window {
+     pub fn set_window_level(&self, _level: WindowLevel) {}
+ 
+     #[inline]
+-    pub(crate) fn set_window_icon(&self, _window_icon: Option<PlatformIcon>) {}
++    pub(crate) fn set_window_icon(&self, window_icon: Option<PlatformIcon>) {
++        self.window_state.lock().unwrap().set_window_icon(window_icon);
++    }
+ 
+     #[inline]
+     pub fn set_minimized(&self, minimized: bool) {
+diff --git a/src/platform_impl/linux/wayland/window/state.rs b/src/platform_impl/linux/wayland/window/state.rs
+--- a/src/platform_impl/linux/wayland/window/state.rs
++++ b/src/platform_impl/linux/wayland/window/state.rs
+@@ -19,8 +19,10 @@ use sctk::reexports::protocols::wp::fractional_scale::v1::client::wp_fractional_
+ use sctk::reexports::protocols::wp::text_input::zv3::client::zwp_text_input_v3::ZwpTextInputV3;
+ use sctk::reexports::protocols::wp::viewporter::client::wp_viewport::WpViewport;
+ use sctk::reexports::protocols::xdg::shell::client::xdg_toplevel::ResizeEdge as XdgResizeEdge;
++use sctk::reexports::protocols::xdg::toplevel_icon::v1::client::xdg_toplevel_icon_manager_v1::XdgToplevelIconManagerV1;
+ 
+ use sctk::compositor::{CompositorState, Region, SurfaceData, SurfaceDataExt};
++use sctk::globals::GlobalData;
+ use sctk::seat::pointer::{PointerDataExt, ThemedPointer};
+ use sctk::shell::xdg::window::{DecorationMode, Window, WindowConfigure};
+ use sctk::shell::xdg::XdgSurface;
+@@ -36,7 +38,8 @@ use crate::error::{ExternalError, NotSupportedError};
+ use crate::platform_impl::wayland::logical_to_physical_rounded;
+ use crate::platform_impl::wayland::types::cursor::{CustomCursor, SelectedCursor};
+ use crate::platform_impl::wayland::types::kwin_blur::KWinBlurManager;
+-use crate::platform_impl::{PlatformCustomCursor, WindowId};
++use crate::platform_impl::wayland::types::xdg_toplevel_icon::ToplevelIcon;
++use crate::platform_impl::{PlatformCustomCursor, PlatformIcon, WindowId};
+ use crate::window::{CursorGrabMode, CursorIcon, ImePurpose, ResizeDirection, Theme};
+ 
+ use crate::platform_impl::wayland::seat::{
+@@ -63,6 +66,12 @@ pub struct WindowState {
+     // A shared pool where to allocate custom cursors.
+     custom_cursor_pool: Arc<Mutex<SlotPool>>,
+ 
++    /// Xdg toplevel icon manager, to set the window's icon.
++    xdg_toplevel_icon_manager: Option<XdgToplevelIconManagerV1>,
++
++    /// The window's current icon, whose buffer the compositor may still read.
++    toplevel_icon: Option<ToplevelIcon>,
++
+     /// The last received configure.
+     pub last_configure: Option<WindowConfigure>,
+ 
+@@ -185,8 +194,12 @@ impl WindowState {
+             .fractional_scaling_manager
+             .as_ref()
+             .map(|fsm| fsm.fractional_scaling(window.wl_surface(), queue_handle));
++        let xdg_toplevel_icon_manager =
++            winit_state.xdg_toplevel_icon_manager.as_ref().map(|manager| manager.global().clone());
+ 
+         Self {
++            toplevel_icon: None,
++            xdg_toplevel_icon_manager,
+             blur: None,
+             blur_manager: winit_state.kwin_blur_manager.clone(),
+             compositor,
+@@ -1183,6 +1196,41 @@ impl WindowState {
+         self.title = title;
+     }
+ 
++    /// Set the window's icon through `xdg_toplevel_icon_v1`, when the compositor has it.
++    pub(crate) fn set_window_icon(&mut self, window_icon: Option<PlatformIcon>) {
++        let Some(manager) = self.xdg_toplevel_icon_manager.as_ref() else {
++            if window_icon.is_some() {
++                info!("`xdg_toplevel_icon_manager_v1` is not supported");
++            }
++            return;
++        };
++
++        let (toplevel_icon, xdg_toplevel_icon) = match window_icon {
++            Some(icon) => {
++                let mut pool = self.custom_cursor_pool.lock().unwrap();
++                let toplevel_icon = match ToplevelIcon::new(&icon, &mut pool) {
++                    Ok(toplevel_icon) => toplevel_icon,
++                    Err(error) => {
++                        warn!("Error setting window icon: {error}");
++                        return;
++                    },
++                };
++                let xdg_toplevel_icon = manager.create_icon(&self.queue_handle, GlobalData);
++                toplevel_icon.add_buffer(&xdg_toplevel_icon);
++                (Some(toplevel_icon), Some(xdg_toplevel_icon))
++            },
++            None => (None, None),
++        };
++
++        manager.set_icon(self.window.xdg_toplevel(), xdg_toplevel_icon.as_ref());
++        self.toplevel_icon = toplevel_icon;
++
++        // The icon object is immutable once set; the toplevel keeps what it showed.
++        if let Some(xdg_toplevel_icon) = xdg_toplevel_icon {
++            xdg_toplevel_icon.destroy();
++        }
++    }
++
+     /// Mark the window as transparent.
+     #[inline]
+     pub fn set_transparent(&mut self, transparent: bool) {
+diff --git a/src/platform/wayland.rs b/src/platform/wayland.rs
+index 7b22e69f0..fb28071f2 100644
+--- a/src/platform/wayland.rs
++++ b/src/platform/wayland.rs
+@@ -109,6 +109,13 @@ pub trait WindowExtWayland {
+     /// False when the compositor draws the decorations, when decorations are off, when no frame
+     /// could be made, and on X11.
+     fn has_client_side_frame(&self) -> bool;
++
++    /// Rune: confirmed Wayland `xdg_toplevel` / `xdg-decoration` state from the latest configure:
++    /// `(is_server_decoration, tiled_edges [top, right, bottom, left], wm_capabilities bits)`.
++    ///
++    /// Returns `None` before the initial configure and on X11. `tiled_edges` is `None` below
++    /// `xdg_toplevel` v2 and `wm_capabilities` is `None` below v5.
++    fn wayland_wm_state(&self) -> Option<(bool, Option<[bool; 4]>, Option<u16>)>;
+ }
+ 
+ impl WindowExtWayland for Window {
+@@ -144,6 +151,17 @@ impl WindowExtWayland for Window {
+             crate::platform_impl::Window::Wayland(window) => window.has_client_side_frame(),
+         }
+     }
++
++    #[inline]
++    fn wayland_wm_state(&self) -> Option<(bool, Option<[bool; 4]>, Option<u16>)> {
++        #[allow(clippy::single_match)]
++        match &self.window {
++            #[cfg(x11_platform)]
++            crate::platform_impl::Window::X(_) => None,
++            #[cfg(wayland_platform)]
++            crate::platform_impl::Window::Wayland(window) => window.wayland_wm_state(),
++        }
++    }
+ }
+ 
+ /// Additional methods on [`WindowAttributes`] that are specific to Wayland.
+diff --git a/src/platform/x11.rs b/src/platform/x11.rs
+index 4ab900c94..416c6dc20 100644
+--- a/src/platform/x11.rs
++++ b/src/platform/x11.rs
+@@ -137,9 +137,25 @@ impl<T> EventLoopBuilderExtX11 for EventLoopBuilder<T> {
+ }
+ 
+ /// Additional methods on [`Window`] that are specific to X11.
+-pub trait WindowExtX11 {}
++pub trait WindowExtX11 {
++    /// Rune: returns and clears whether an EWMH/GTK window-manager property (`_NET_WM_STATE`,
++    /// `_NET_WM_ALLOWED_ACTIONS`, `_GTK_EDGE_CONSTRAINTS`, or `_NET_FRAME_EXTENTS`) changed on
++    /// this window since the last call. Always `false` on Wayland.
++    fn take_wm_state_changed(&self) -> bool;
++}
+ 
+-impl WindowExtX11 for Window {}
++impl WindowExtX11 for Window {
++    #[inline]
++    fn take_wm_state_changed(&self) -> bool {
++        #[allow(clippy::single_match)]
++        match &self.window {
++            #[cfg(x11_platform)]
++            crate::platform_impl::Window::X(window) => window.take_wm_state_changed(),
++            #[cfg(wayland_platform)]
++            crate::platform_impl::Window::Wayland(_) => false,
++        }
++    }
++}
+ 
+ /// Additional methods on [`WindowAttributes`] that are specific to X11.
+ pub trait WindowAttributesExtX11 {
+diff --git a/src/platform_impl/linux/wayland/window/mod.rs b/src/platform_impl/linux/wayland/window/mod.rs
+index 428449df4..d37580a1d 100644
+--- a/src/platform_impl/linux/wayland/window/mod.rs
++++ b/src/platform_impl/linux/wayland/window/mod.rs
+@@ -441,6 +441,12 @@ impl Window {
+         self.window_state.lock().unwrap().has_client_side_frame()
+     }
+ 
++    /// Rune: see `WindowExtWayland::wayland_wm_state`.
++    #[inline]
++    pub fn wayland_wm_state(&self) -> Option<(bool, Option<[bool; 4]>, Option<u16>)> {
++        self.window_state.lock().unwrap().wayland_wm_state()
++    }
++
+     #[inline]
+     pub fn set_window_level(&self, _level: WindowLevel) {}
+ 
+diff --git a/src/platform_impl/linux/wayland/window/state.rs b/src/platform_impl/linux/wayland/window/state.rs
+index f0b5936ef..6714852de 100644
+--- a/src/platform_impl/linux/wayland/window/state.rs
++++ b/src/platform_impl/linux/wayland/window/state.rs
+@@ -419,6 +419,9 @@ impl WindowState {
+ 
+         let new_state = configure.state;
+         let old_state = self.last_configure.as_ref().map(|configure| configure.state);
++        let old_decoration_mode =
++            self.last_configure.as_ref().map(|configure| configure.decoration_mode);
++        let old_capabilities = self.last_configure.as_ref().map(|configure| configure.capabilities);
+ 
+         let state_change_requires_resize = old_state
+             .map(|old_state| {
+@@ -426,6 +429,8 @@ impl WindowState {
+                     .symmetric_difference(new_state)
+                     .difference(XdgWindowState::ACTIVATED | XdgWindowState::SUSPENDED)
+                     .is_empty()
++                    || old_decoration_mode != Some(configure.decoration_mode)
++                    || old_capabilities != Some(configure.capabilities)
+             })
+             // NOTE: `None` is present for the initial configure, thus we must always resize.
+             .unwrap_or(true);
+@@ -650,6 +655,26 @@ impl WindowState {
+             && self.frame.is_some()
+     }
+ 
++    /// Rune: confirmed Wayland `xdg_toplevel` / `xdg-decoration` state from `last_configure`,
++    /// gated by `xdg_toplevel` protocol version (`>= 2` for tiled edges, `>= 5` for
++    /// `wm_capabilities`).
++    #[inline]
++    pub fn wayland_wm_state(&self) -> Option<(bool, Option<[bool; 4]>, Option<u16>)> {
++        let configure = self.last_configure.as_ref()?;
++        let server = matches!(configure.decoration_mode, DecorationMode::Server);
++        let version = self.window.xdg_toplevel().version();
++        let tiled = (version >= 2).then(|| {
++            [
++                configure.is_tiled_top(),
++                configure.is_tiled_right(),
++                configure.is_tiled_bottom(),
++                configure.is_tiled_left(),
++            ]
++        });
++        let capabilities = (version >= 5).then(|| configure.capabilities.bits());
++        Some((server, tiled, capabilities))
++    }
++
+     /// Rune: the radius, in logical points, of the arc the window's content takes at its bottom
+     /// corners, which the client-side frame leaves it (the frame's visible border lies just
+     /// outside it). Zero when no client-side frame is drawn, and when the frame draws the window
+diff --git a/src/platform_impl/linux/x11/atoms.rs b/src/platform_impl/linux/x11/atoms.rs
+index c6d96c8fe..cc6248e75 100644
+--- a/src/platform_impl/linux/x11/atoms.rs
++++ b/src/platform_impl/linux/x11/atoms.rs
+@@ -93,7 +93,9 @@ atom_manager! {
+     None: b"None",
+ 
+     // Miscellaneous Atoms
++    _GTK_EDGE_CONSTRAINTS,
+     _GTK_THEME_VARIANT,
++    _NET_WM_ALLOWED_ACTIONS,
+     _MOTIF_WM_HINTS,
+     _NET_ACTIVE_WINDOW,
+     _NET_CLIENT_LIST,
+diff --git a/src/platform_impl/linux/x11/event_processor.rs b/src/platform_impl/linux/x11/event_processor.rs
+index 79f5c114f..ce78af014 100644
+--- a/src/platform_impl/linux/x11/event_processor.rs
++++ b/src/platform_impl/linux/x11/event_processor.rs
+@@ -857,6 +857,18 @@ impl EventProcessor {
+             || atom == atoms[_XSETTINGS_SETTINGS]
+         {
+             self.process_dpi_change(&mut callback);
++        } else if atom == atoms[_NET_WM_STATE]
++            || atom == atoms[_NET_WM_ALLOWED_ACTIONS]
++            || atom == atoms[_GTK_EDGE_CONSTRAINTS]
++            || atom == atoms[_NET_FRAME_EXTENTS]
++        {
++            let xwindow = xev.window as xproto::Window;
++            if self.with_window(xwindow, |window| window.mark_wm_state_changed()).is_some() {
++                callback(&self.target, Event::WindowEvent {
++                    window_id: mkwid(xwindow),
++                    event: WindowEvent::RedrawRequested,
++                });
++            }
+         }
+     }
+ 
+diff --git a/src/platform_impl/linux/x11/window.rs b/src/platform_impl/linux/x11/window.rs
+index 7e15d5f24..3cdcecfd3 100644
+--- a/src/platform_impl/linux/x11/window.rs
++++ b/src/platform_impl/linux/x11/window.rs
+@@ -2,6 +2,7 @@ use std::ffi::CString;
+ use std::mem::replace;
+ use std::os::raw::*;
+ use std::path::Path;
++use std::sync::atomic::{AtomicBool, Ordering};
+ use std::sync::{Arc, Mutex, MutexGuard};
+ use std::{cmp, env};
+ 
+@@ -124,6 +125,7 @@ pub struct UnownedWindow {
+     pub shared_state: Mutex<SharedState>,
+     redraw_sender: WakeSender<WindowId>,
+     activation_sender: WakeSender<super::ActivationToken>,
++    wm_state_changed: AtomicBool,
+ }
+ 
+ macro_rules! leap {
+@@ -351,6 +353,7 @@ impl UnownedWindow {
+             shared_state: SharedState::new(guessed_monitor, &window_attrs),
+             redraw_sender: event_loop.redraw_sender.clone(),
+             activation_sender: event_loop.activation_sender.clone(),
++            wm_state_changed: AtomicBool::new(false),
+         };
+ 
+         // Title must be set before mapping. Some tiling window managers (i.e. i3) use the window
+@@ -826,6 +829,19 @@ impl UnownedWindow {
+         }
+     }
+ 
++    /// Rune: records that an EWMH/GTK window-manager property changed on this window.
++    #[inline]
++    pub(crate) fn mark_wm_state_changed(&self) {
++        self.wm_state_changed.store(true, Ordering::Release);
++    }
++
++    /// Rune: returns and clears whether an EWMH/GTK window-manager property changed since
++    /// the last check (`WindowExtX11::take_wm_state_changed`).
++    #[inline]
++    pub fn take_wm_state_changed(&self) -> bool {
++        self.wm_state_changed.swap(false, Ordering::AcqRel)
++    }
++
+     // Called by EventProcessor when a VisibilityNotify event is received
+     pub(crate) fn visibility_notify(&self) {
+         let mut shared_state = self.shared_state_lock();

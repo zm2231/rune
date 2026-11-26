@@ -33,6 +33,7 @@ use crate::platform_impl::wayland::types::kwin_blur::KWinBlurManager;
 use crate::platform_impl::wayland::types::wp_fractional_scaling::FractionalScalingManager;
 use crate::platform_impl::wayland::types::wp_viewporter::ViewporterState;
 use crate::platform_impl::wayland::types::xdg_activation::XdgActivationState;
+use crate::platform_impl::wayland::types::xdg_toplevel_icon::XdgToplevelIconManagerState;
 use crate::platform_impl::wayland::window::{WindowRequests, WindowState};
 use crate::platform_impl::wayland::{WaylandError, WindowId};
 use crate::platform_impl::OsError;
@@ -94,6 +95,9 @@ pub struct WinitState {
     /// Xdg activation.
     pub xdg_activation: Option<XdgActivationState>,
 
+    /// Xdg toplevel icon manager, for window icons.
+    pub xdg_toplevel_icon_manager: Option<XdgToplevelIconManagerState>,
+
     /// Relative pointer.
     pub relative_pointer: Option<RelativePointerState>,
 
@@ -115,6 +119,11 @@ pub struct WinitState {
     /// Whether we have dispatched events to the user thus we want to
     /// send `AboutToWait` and normally wakeup the user.
     pub dispatched_events: bool,
+
+    /// Rune: when true, any successful Wayland display read marks `dispatched_events = true`
+    /// even when winit's own event sinks are empty, so foreign queues sharing the display
+    /// dispatch on that turn without background reader threads.
+    pub wake_on_wayland_read: bool,
 }
 
 impl WinitState {
@@ -123,6 +132,19 @@ impl WinitState {
         queue_handle: &QueueHandle<Self>,
         loop_handle: LoopHandle<'static, WinitState>,
     ) -> Result<Self, OsError> {
+        // A compositor without the decoration protocol answers a decorated window's first
+        // configure with a client-side frame, and that frame reads the system's colour scheme and
+        // button layout through two `dbus-send` processes, 100 ms of reply timeout each. Started
+        // here, on threads of their own, they are done (or well on their way) when the configure
+        // asks, instead of running one after the other on this thread before the first frame.
+        #[cfg(feature = "sctk-adwaita")]
+        if !globals
+            .contents()
+            .with_list(|list| list.iter().any(|global| global.interface == "zxdg_decoration_manager_v1"))
+        {
+            sctk_adwaita::read_system_config_early();
+        }
+
         let registry_state = RegistryState::new(globals);
         let compositor_state =
             CompositorState::bind(globals, queue_handle).map_err(WaylandError::Bind)?;
@@ -169,6 +191,8 @@ impl WinitState {
 
             xdg_shell: XdgShell::bind(globals, queue_handle).map_err(WaylandError::Bind)?,
             xdg_activation: XdgActivationState::bind(globals, queue_handle).ok(),
+            xdg_toplevel_icon_manager: XdgToplevelIconManagerState::bind(globals, queue_handle)
+                .ok(),
 
             windows: Default::default(),
             window_requests: Default::default(),
@@ -192,6 +216,7 @@ impl WinitState {
             loop_handle,
             // Make it true by default.
             dispatched_events: true,
+            wake_on_wayland_read: false,
         })
     }
 

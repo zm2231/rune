@@ -55,6 +55,23 @@ let mut k = rune_kit::Kit::from_palette(rune_kit::PaletteSeed {
 k.radius.sm = 3.0;
 ```
 
+**Component metrics (`Kit::metrics`).** Controls whose corner radii match the radius scale (`SegmentedControl` `md`, `Collapsible` trigger `sm`, `Keybind` `xs`) read `k.radius` automatically. Override per-component heights, padding, radii, borders or flat switch chrome on `k.metrics` (all entries default to `None`, keeping the built-in values; start from each type's `::kit(&k)` constructor with `..`):
+
+```rust
+let mut k = rune_kit::Kit::neutral(true);
+k.radius.md = 8.0;
+k.metrics.segmented = Some(rune_kit::SegmentedMetrics { height: 24.0, padding_x: 8.0, ..rune_kit::SegmentedMetrics::kit(&k) });
+k.metrics.disclosure_header_height = Some(26.0);
+k.metrics.progress = Some(rune_kit::ProgressMetrics { border_width: 0.0, ..rune_kit::ProgressMetrics::kit(&k) });
+k.metrics.divider_thickness = Some(0.5);
+k.metrics.keybind = Some(rune_kit::KeybindMetrics { height: 16.0, ..rune_kit::KeybindMetrics::kit(&k) });
+k.metrics.text_area_min_height = Some(60.0);
+k.metrics.standard_switch = Some(rune_kit::StandardSwitchMetrics { track_width: 32.0, track_height: 18.0, ..rune_kit::StandardSwitchMetrics::kit(&k) });
+k.metrics.switch_look = Some(rune_kit::SwitchLook { track_border: 1.0, ..rune_kit::SwitchLook::flat(&k) });
+```
+
+For a one-off flat compact or web switch without changing the theme, call `Switch::new(on).flat()`. See `rune-metrics--themes` and `rune-switch--flat` in `examples/kit-gallery`.
+
 Layers step OKLab lightness away from `bg`; borders, hover and press are `fg` at low alpha,
 as a browser blends it (solved over `bg`, `k.blend_over`, when built in a window that blends in
 linear light). Secondary text uses OKLab with contrast floors of 4.5:1
@@ -89,39 +106,182 @@ selection keys during IME composition. Escape closes it. A keystroke's rows and 
 height land in its frame; `.animate_filtering(true)` crossfades the rows and springs the
 height instead. `PopupList`, the list it shares with `@`-mention and `/`-command popovers,
 takes the same switch, so rows an app's commit changes land at once even when the field it
-follows animates its layout. The contract follows OpenCode's
+follows animates its layout. `PopupItem::label_with(El)` draws custom inline label content (such as match-highlighted
+spans) while keeping the plain string passed to `PopupItem::new` as the option's accessible
+name, and `PopupList::build_list(&k)` returns the scrollable listbox element without anchoring
+it into an overlay layer so an app can embed it inside its own popover or panel (see
+`rune-popup-list--rich-inline` in the gallery). The contract follows OpenCode's
 `components/list` and `use-filtered-list`; Rune's fuzzy ranking
-is its own, not bit-identical to fuzzysort. `rune-combobox--searchable` is its 200-row gallery
-scene, and `rune-combobox--animated-filter` the same with the crossfade; there is no matching
-combobox Storybook story to diff.
+is its own, not bit-identical to fuzzysort. `.search_label(..)` sets the internal search
+input's accessible name independently of the outer label, and the open search input reports
+`AutoComplete::List` (`aria-autocomplete="list"`). `rune-combobox--searchable` is its
+200-row gallery scene, `rune-combobox--animated-filter` the same with the crossfade, and
+`rune-combobox--localized` shows localised labels; there is no matching combobox Storybook story
+to diff.
 
 `TextInput::on_key` intercepts a focused field's keys before editing; `on_change` runs after
-text changes and receives a `Tx`, for filtering and exact debounce wakes. `TextInput`, `TextArea`
-and `TextField` also accept `.decorations(spans)` (or `.spans(spans)`) and `.rich_style(style)` for
-attributed `TextEdit` marks, paragraph blocks and per-frame syntax highlights, and
-`.pill_style(f)` / `.pill_icon(f)` / `.pill_colors(bg, fg)` for `@` mention pills (build the edit with
+text changes and receives a `Tx`, for filtering and exact debounce wakes. `TextArea` also
+supports `.plain()` (omitting box chrome so a custom composer container can draw its own while
+keeping padding, forced-colors focus outline, invalid red ink and disabled dimming),
+`.trailing(el)` (reserving bottom-end width beside the wrapping/scrolling viewport while keeping
+the accessory independently focusable), and `.scroll_bar(bool)` / `.scroll_bar_styled(style)`
+(attaching a kit scroll bar to its internal `auto_grow` or `max_height` scroll viewport; see
+`rune-textarea--composer` in `kit-gallery`), `.line_home_end(bool)` (opting into visual line-based Home/End and Shift+Home/End on macOS for code editors while keeping Cmd+Home/End and Cmd+Up/Down on document ends; see `rune-textarea--code-keys` in `kit-gallery`), and `.reveal_caret_on_focus(bool)` (also on `TextInput`, off by default, forwarding `El::reveal_caret_on_focus` so focusing a scrolled field brings its caret into view; see `rune-textarea--focus-caret` in `kit-gallery`). `TextInput` and `TextArea` also accept `.read_only(bool)` (forwarding `El::read_only` to the
+inner editor so focus, caret, keyboard/pointer selection, and Copy stay active while mutating
+edits, Cut, Paste, Undo/Redo, IME, and spellcheck are blocked; see `rune-text-input--read-only`
+in `kit-gallery`), and `TextInput::auto_complete(rune::AutoComplete)` forwards
+`El::auto_complete` (`aria-autocomplete`) to the inner editor. `TextInput`, `TextArea`
+and `TextField` forward `on_secondary_press` (replacing the default field context menu),
+`on_pill_press` and `on_pill_secondary` (intercepting primary and secondary clicks on `Mark::Pill`
+chips, skipped when disabled), `on_input_selection` (running before view rebuild whenever runtime
+input moves the caret or selection, skipped when disabled), `on_input_copy` (intercepting
+keyboard and context-menu Copy/Cut, skipped when disabled), and `on_input_paste` (intercepting
+pastes before plain-text insertion, skipped when disabled), `on_blur` (when the focused editor
+loses focus to another app, Tab, a click elsewhere or `Tx::focus`, so a form can commit a half-typed
+value; Return stays `on_submit`; skipped when disabled), as well as `on_submit` and accessible
+`description`. They also accept `.decorations(spans)` (or `.spans(spans)`), `.line_fill(fill)` / `.line_fills(fills)`,
+and `.rich_style(style)` for attributed `TextEdit` marks, paragraph blocks, full-width code/quote
+line decorations and per-frame syntax highlights, and `.pill_style(f)` / `.pill_image(f)` /
+`.pill_icon(f)` / `.pill_colors(bg, fg)` / `.pill_copy_text(f)` for `@` mention pills (build the edit with
 `TextEdit::rich()` for formatting keys and rich paste; see
 [`examples/rich_editor.rs`](examples/rich_editor.rs)):
 
 ![rich editor](../../demo/kit/rich-editor.png)
+
+**Labelled form fields.** Wrap `TextInput`, `TextArea` or `Select` in `Field` for a visible label
+and wrapped help text:
+
+```rust
+let host = Field::new()
+    .label("Host")
+    .info()
+    .prefix("Hostname or IP of the remote server.")
+    .control(
+        TextInput::new(&s.host)
+            .label("Host")
+            .placeholder("api.example.com")
+            .width(None)
+            .on_edit(|s: &mut App| &mut s.host)
+            .on_submit(|s: &mut App, tx: &mut Tx| s.connect(tx))
+            .build(k),
+    )
+    .build(k);
+
+let password = Field::new()
+    .label("Password")
+    .control(
+        TextInput::new(&s.password)
+            .label("Password")
+            .placeholder("Required")
+            .width(None)
+            .secure()
+            .invalid(s.error.is_some())
+            .on_edit(|s: &mut App| &mut s.password)
+            .on_change(|s: &mut App, _: &mut Tx| s.error = None)
+            .on_submit(|s: &mut App, tx: &mut Tx| s.connect(tx))
+            .build(k),
+    )
+    .suffix(s.error.as_deref().unwrap_or("Stored in your system keychain."))
+    .build(k);
+```
+
+- `Field` draws the visible label, optional `.info()` icon (pair with a `Tooltip` if needed) and
+  wrapped `.prefix()` / `.suffix()` help lines, and exposes them as the outer group's accessible
+  name and description.
+- `TextInput::label`, `TextInput::description`, `TextArea::label` and `TextArea::description`
+  are accessibility-only and are not drawn. Still pass `.label(..)` on the inner `TextInput` or
+  `TextArea` so assistive technology names the editor itself rather than falling back to the
+  placeholder.
+- `TextInput` and `TextArea` default to a 280 pt width; pass `.width(None)` so they fill `Field`.
+- Mark validation errors with `.invalid(true)` on the inner control alongside error text (in
+  `.suffix(..)` or an assertive error element beneath the control, plus `.description(..)` on the
+  `TextInput` or `TextArea` when the error should also be read as the editor's description).
+- `TextField` is the older self-contained labelled field (`components/text-field`): it draws a
+  label and an assertive wrapped `.error()` line, and forwards `description`, `on_submit`,
+  `on_secondary_press` and `on_input_paste`, but has no `secure`, `on_change` or visible help
+  text. Prefer `Field` + `TextInput` / `TextArea` for new forms.
 
 `k.selection()` is the selection highlight TextInput and TextArea draw. Pass it to Rune's
 selectable text so a selected command line looks like a selected field:
 `text(cmd).selectable(true).selection_color(k.selection())`. `rune-text--selectable-help` in the
 gallery shows both, with an icon button explained by `.help`.
 
-Button (10 variants × 3 sizes × 5 states), IconButton, Switch (compact, standard), Checkbox,
+Button (10 variants × 5 `ControlSize` sizes × 5 states), IconButton, Switch (compact, standard), Slider (5 `ControlSize` sizes, continuous or stepped, drag/keyboard/Escape cancel), ColorPicker (HSV square, hue strip, hex field, swatches, eyedropper toggle), Checkbox,
 RadioGroup/RadioItem, TextInput, TextArea, TextField (older), Field, Select (inline and field
-triggers, grouped), Popover, Menu (compact and standard, checkbox/radio items, submenus,
+triggers, grouped), Dialog, Popover, Menu (compact and standard, checkbox/radio items, submenus,
 context menus via `.at(x, y)`), Tooltip (compact, standard, large), HoverCard, Toast and
 ToastRegion, Card, List, Accordion, Collapsible, Badge, Divider, Keybind, Spinner, Loader,
 Progress, ProgressCircle, SegmentedControl.
 
 `Button::new(label).rolling("import-label")` rolls the label's changed characters
 (`RollingText`) and springs the button's width with it; `.label_with(|font, ink| ..)` draws any
-label element in the button's font and ink. The text stays the button's accessible label.
+label element in the button's font and ink; `.shortcut("cmd+s").show_shortcut()` draws the
+formatted shortcut inline beside a plain text label in the label's font at 60% of the label ink's
+alpha while keeping it hidden from assistive technology (the button's shortcut hint still exposes
+it; see `rune-button--shortcuts` in `kit-gallery`). The text stays the button's accessible label.
 A `RollingText` reads as its whole label wherever text is looked up: its row's `text` in
 `--tree` and `ElementInfo::text`, so tests find it by text as they find a plain `text`.
+
+`SegmentedControl` supports per-segment leading 14 pt icons (`.icon(i, icon)`, `.icons(&[..])`),
+trailing elements such as count badges or status dots (`.trailing(i, el)`), hover tooltips and
+shortcut hints formatted like `Button` (`.help(i, text)`, `.shortcut(i, s)`), explicit
+accessible descriptions (`.description(i, text)`), `aria-controls` wiring (`.controls(i, key)`),
+and WAI-ARIA Tabs semantics (`.as_tabs()`, switching `radiogroup`/`radio` to horizontal
+`tablist`/`tab` with `aria-selected`); empty segment labels omit the text element for
+icon-only switchers whose `help` supplies the accessible name (see `rune-segmented-control--rich`
+in `kit-gallery`).
+
+`Keybind::new(&["g"])` upper-cases single-character keycaps by default (`"G"`); call
+`.keep_case()` to preserve authored letter case verbatim (for example Vim-style `g` vs
+`Shift` + `G`, shown in `rune-keybind--keep-case` in the gallery).
+
+**Scroll bars.** Any `El::scroll` (or `El::scroll_x`) viewport takes `.scroll_bar(&k)` or
+`.scroll_bar_styled(style)`, and any `El::scroll_xy` viewport takes `.scroll_bars_xy(&k)` or
+`.scroll_bars_xy_styled(vertical, horizontal)` for both vertical and horizontal bars leaving
+the bottom-end corner clear when both axes overflow, all with zero view commits per scroll frame.
+`ScrollBarStyle` ships presets (`from_kit`, `neutral`, `scroll_view`, `native`, `menu_scroll`)
+and builders to customise thumb colour/width (`thumb`, `thumb_hover`, `width`, `hover_width`,
+`min_thumb`, `webkit_parts`), track inset (`track_inset`), optional trough fills (`track`,
+`track_hover`), and `always_visible()` to keep a bar visible whenever content overflows
+regardless of the system scroll bar preference. The gallery's `rune-scroll-bar--basic`,
+`rune-scroll-bar--grow`, `rune-scroll-bar--styled` and `rune-scroll-bar--xy` scenes show them.
+
+`Placement` covers all 12 Floating UI placements (`Top`/`Bottom`/`Left`/`Right` plus `*Start`
+and `*End`). `HoverCard` accepts `.gutter(f32)` (default 4 pt), `.min_width(f32)` (default 200),
+`.max_width(f32)` (default 320), `.width(f32)` (fixed width overriding min/max), `.on_hover` /
+`.on_hover_tx` on the open card surface (including descendants, so moving onto the card keeps it
+open), and `.role` / `.label` for accessibility (see `rune-hover-card--placements` in the
+gallery). `scrim_tx`, `Popover::on_close_tx`, `Select::on_toggle_tx`, and `Select::on_close_tx`
+pass `&mut Tx` to overlay toggle and close callbacks so focus, scroll or announcements run in the
+same commit (see `rune-overlays--tx-callbacks`). `Select::step_closed(true)` opts a closed
+`Select` into stepping through choices with Up and Down via `on_choose` without opening the
+popup, clamping at the ends while `Alt+Down`, Space and clicking still open it (see
+`rune-select--step-closed`, and `rune-focus--keyboard` for `El::press_on_return()` and
+entering a `focus_group` from a focused container). `Kit::metrics` also covers overlays (`DialogMetrics`, `PopupRowMetrics`, `SelectMetrics`,
+`PopoverMetrics`, and `MenuMetrics`), with `::kit(&k)` constructors whose radii follow
+`k.radius.{sm,md}` automatically (see `rune-overlays--metrics` in the gallery). `Menu::padding`,
+`Menu::separator_spacing(above, below)`, and `Menu::inner_border` override a menu's row padding,
+separator spacing, and inner border per instance (propagating to open submenus), and
+`Menu::separator_keyed` assigns a separator a stable key without changing `MenuEntry`. `Menu::label` names the open `role="menu"`
+surface; `MenuItem::key` assigns a stable key instead of positional `{menu_key}-item{i}` so
+inserting rows above keeps focus; `MenuItem::a11y_label` separates the accessible name (and
+typeahead / submenu name) from truncated drawn text; and `MenuItem::submenu_placement` (default
+`Placement::RightStart`) plus `MenuItem::submenu_min_width` (default `160.0`, `0.0` for
+content width) place and size submenus per item (see `rune-menu--submenu-options`).
+`MenuItem::on_submenu(|s, open| ..)` hands the menu the submenu's open flag: Right, Return and
+Space on the row open the submenu and move focus to its first item, and Left or Escape inside it
+closes only the submenu and returns focus to the row (the WAI-ARIA menu pattern; right to left,
+Left opens and Right closes, as the chevron points, and a submenu flipped for lack of room keeps
+the keys). Resting the pointer 200 ms on the row opens it, and resting on another row of the same
+menu closes it. `Menu::on_close` (Escape, a press outside) and picking an item other than a
+checkbox or radio also close the open submenus through it, so the menu reopens with them closed;
+an app that closes the menu some other way clears the flags itself. All `on_submenu` callbacks in
+one menu take the same state type. Side-placed
+menus and submenus clamp on both axes via `El::anchored_fit` when they would overflow a small
+window so long submenus shrink and scroll inside the viewport (see
+`rune-menu--submenu-small-window`, `rune-menu--field-menu-fallback` for rendering
+`App::on_field_menu` with `Menu`, and `Menu::from_popup_menu` + `Menu::on_close_tx` for
+rendering `App::on_popup_menu` in one call — see `rune-menu--popup-menu-fallback`).
 
 ### Accessibility
 
@@ -131,14 +291,20 @@ assistive technology runs through the same handlers as pointer and keys.
 
 - **Names**: a control's label, else the text it shows. Give every `IconButton` a `.label` (or
   a `.help`, which names it when unlabelled). `Select`, `Combobox`, `SegmentedControl`,
-  `TextInput`, `TextArea`, `ShortcutRecorder`, `ProgressCircle` and `Popover` take `.label` for
-  the name when no visible label says it; a text field falls back to its placeholder.
-- **Values**: a select or combobox reads its chosen option, progress its percentage, a pane's
+  `TextInput`, `TextArea`, `ShortcutRecorder`, `ProgressCircle`, `Menu`, `Popover`,
+  `PopupList` and `HoverCard` take `.label` (and `HoverCard` also `.role`) for the name when
+  no visible label says it; `MenuItem::a11y_label` overrides an item's accessible name while
+  keeping its drawn text, `PopupItem::label_with` keeps the plain string as the option's
+  accessible name, and a text field falls back to its placeholder.
+  `Combobox::search_label` names its internal search field, `Dialog::close_label` names its
+  header close button, and `Dialog::close_disabled` keeps that button visibly disabled while
+  blocking button press, Escape and outside clicks.
+- **Values**: a slider reads its numeric range, step, and optional `value_text` (taking `Increment`, `Decrement`, and `SetValue`), a select or combobox reads its chosen option, progress its percentage, a pane's
   grip its width (increment and decrement resize it), a shortcut recorder its keys.
 - **States**: checked (checkbox, switch, radio, segment, checked menu item, task), expanded or
   collapsed (accordion, collapsible, menu and popover triggers given `.expanded`, select,
   combobox, submenu, tree row, sidebar section, sidebar toggle, diff file), selected and place
-  in the set (list, select, popup list, table, tree and sidebar rows), disabled, modal
+  in the set (list, select, popup list, table, tree, sidebar rows and `as_tabs()` segments), disabled, modal
   (dialog, open menu and select).
 - **Descriptions and live regions**: tooltips and help text describe their control; a field's
   error describes it and is announced; toasts and badges are polite live regions.
@@ -220,10 +386,20 @@ SidebarRow::new(&x.title).height(45.0).avatar(avatar(x)).subtitle(&x.project)
   a click inside docks it. Under Reduce Motion it fades in place.
 - `SidebarToggle::in_header` puts the toggle at the end of the sidebar's title row while it is
   open; it travels past the traffic lights on the sidebar's spring as it closes. `unread`
-  marks it with a dot while closed.
-- `SidebarRow::reorder` lifts the row above its neighbours and follows the pointer; they step
-  aside on springs, a drop calls the app's move, and Escape or losing focus puts it back. It
-  works in `virtual_rows` lists too.
+  marks it with a dot while closed. `SidebarToggle::labels(show, hide)` replaces the default
+  `"Show sidebar"` / `"Hide sidebar"` accessible name and tooltip text for localized apps.
+- `SplitView::flat_main(true)` (and `Page::flat_main(true)`) draws the main pane flat instead
+  of as a rounded, bordered card: it drops the corner radius and rounded clip, defaults
+  `frame_inset` to `0.0` unless set explicitly, and draws 1-point hairlines only on edges that
+  meet an open sidebar, open inspector or outer toolbar band (`rune-split-view--flat-main` in
+  the gallery).
+- `SidebarRow::reorder` (and `SidebarRow::reorder_tx`, which also passes `&mut Tx` to the
+  drop callback) lifts the row above its neighbours and follows the pointer; they step aside on
+  springs, a drop calls the app's move, and Escape or losing focus puts it back. Configure
+  `Reorder::landing(ReorderLanding::HalfRow)` for half-row/gap targeting (default
+  `ReorderLanding::Nearest`), `Reorder::cancel_outside_x(max_dx)` to cancel drops dragged past
+  a horizontal margin, and read `Reorder::offset`, `Reorder::pitch` and `Reorder::shift` while
+  dragging. It works in `virtual_rows` lists too.
 - Rune's `El::raise`, `El::offset` and `El::hover_delays` do the floating, the stepping aside
   and the resting, and `Kit::interactive` gives an app's own elements the rows' hover look.
 
@@ -258,7 +434,11 @@ arrows. Selection fills, rules and type come from the kit, and they follow reduc
 builds it. Each row has an indent guide, a chevron that springs open, an icon, the label and
 trailing content (`changes`, `dot`, `badge` or any `trailing` element). Up and Down move,
 Right opens or steps in, Left closes or climbs, Home, End and Page Up and Down jump, Return and Space toggle a
-folder or open a file (`on_open`), and typing a name jumps to it. `multi_select(true)` adds
+folder or open a file (`on_open`), typing a name jumps to it, and `on_menu` handles a row's
+context menu from a secondary press, the Menu key, Shift+F10 or an assistive `ShowContextMenu`
+action. `scroll_bar(true)` (or `scroll_bar_styled(style)`) attaches a kit scroll bar to the
+tree's viewport following `rune::system_scroll_bars()`; `rune-tree--scroll-menu` in the gallery
+shows both. `TreeModel::insert_branch`, `set_branch` and `is_branch` mark unloaded or empty folders as expandable branches, and `Tree::on_toggle(|s, id, open, tx| ..)` fires on click, keyboard or assistive expand/collapse for lazy loading (`rune-tree--lazy-branches` in the gallery shows both unloaded and empty folders). `multi_select(true)` adds
 Shift and Cmd. `filter(|n| ..)` keeps the folders that lead to a match open. `reveal(id, tx)`
 opens, selects and scrolls to a row, so a tree can follow an editor or a diff. Rows report
 `treeitem` with their level, open state and selection. 50,000 files scroll at 0.4 ms a frame
@@ -273,7 +453,26 @@ selection, sort and column widths in a `TableState`. `TableColumn::new(id, title
 over the rows, and a drag on a header edge resizes a column within its bounds (a double-click
 resets it). A header click calls `on_sort(column, direction)` and the app sorts; the header
 shows the direction. Cells come from `cell(|s, i, column| Cell::text(..))`; text cut short
-shows its whole text as a tooltip. `zebra(true)` stripes rows. The keys are the arrows, Page
+shows its whole text as a tooltip. `row(|s, i, el| ..)` customises each mounted row element after
+the table's own styling and press handlers (for example `El::on_secondary_press` context menus
+without dropping `Cell::text`'s truncation tooltip). `zebra(true)` stripes rows,
+`stick_bottom(true)` keeps appended rows in view while scrolled to the end, and
+`cursor_outline(false)` hides the 1 pt multi-select cursor outline when rows draw their own mark
+(`rune-table--options` in the gallery shows all three). `scroll_wide(true)` scrolls header and
+rows sideways together when visible columns exceed the viewport while still filling available width
+when they fit, with a sticky header over vertical scrolling; `TableState::hide_column`,
+`show_column`, `set_column_hidden`, and `is_column_hidden` toggle column visibility while
+preserving resized widths; `on_header_secondary_press` and `on_column_fit` hook header context
+menus and edge double-click fit-to-content; and `TableColumn` getters plus `TableColumn::size_el`
+expose column sizing for custom rows (`rune-table--wide` in the gallery shows these together).
+`on_reorder(|s, from, to, tx| ..)` lets a header drag sideways move its column, kept in
+`TableState::column_order` (`set_column_order`, `move_column`, `reset_column_order`); a press
+that doesn't move still sorts. For rows the app draws itself, `Table::header(s, k)` builds only
+the header (sorting, resizing, reordering and header hooks included) and
+`Table::visible_columns(s)` gives the shown columns in order to size each cell with
+`TableColumn::size_el`; `TableState::laid_out_width` is a flex column's resolved width and
+`TableState::dragged_column` the header being dragged and how far.
+`Table::new` takes closures, so its accessors can capture (several tables over one state). `virtual_overscan(overscan, edge)` forwards `El::virtual_overscan` to the table's internal `virtual_rows` list (default `2.0` viewports either side, `1.75` edge; `rune-table--overscan` in the gallery compares presets on 10,000 rows). Inside `scroll_wide(true)`, opt-in `virtual_columns(true)` windows non-frozen columns to the horizontal viewport plus overscan (keeping resized, reordered, and focused or caret-browsed columns mounted) and `frozen_columns(count)` pins the leading `count` visible columns to the left edge with opaque fills under the sticky header; both report true ARIA grid counts and 1-based row/column indices (`rune-table--virtual-columns` in the gallery demonstrates a 10,000 × 200 sheet). The keys are the arrows, Page
 Up and Down, Home, End, Return (`on_open`), and in a multi-select table Shift and Cmd-A. Roles
 are `grid`, `row`, `columnheader` and `gridcell`. 100,000 rows scroll at 0.4 ms a frame (p50)
 and 3.4 ms when rows mount (p95) (`--test integration table::`).
@@ -286,7 +485,13 @@ draws Markdown tables with the same font, padding and rules.
 Feature `markdown`: `Markdown::new(src).build(&kit)`, or without a kit
 `Markdown::new(src).render(&MarkdownStyle::neutral(dark))`.
 It renders CommonMark plus GFM tables, and is built for streaming: re-render with the longer
-source each time, and earlier blocks stay mounted.
+source each time, and earlier blocks stay mounted. Real-URL links (`http:`, `https:`, `mailto:`) get Rune's default Open Link / Copy Link context menu on right-click and Menu / Shift+F10 (yielding to `Markdown::on_link_secondary` and ancestor `on_secondary_press`; opt out with `Markdown::link_menu(false)`). `Markdown::on_link_hover(|s, url: Option<&str>, rect: Option<[f32; 4]>, tx| ..)`
+reports the hovered link's destination and hit line box in window points (activating link hover
+tracking even without `on_link` or `on_link_secondary`, and leaving the old block before entering
+the new one across paragraphs; see `rune-markdown--link-hover` in `kit-gallery`).
+To give Markdown images a right-click context menu (Save Image As…, Copy Image, Copy Image Address), compose `El::image_menu` inside `Markdown::image_frame(|el, frame| el.image_menu(ImageMenu::new(frame.image).save_bytes(..).address(frame.src)))` (see `rune-image--decode` in `kit-gallery`). `Markdown::emoji(|name| Option<Pixels>)` draws `:name:` shortcodes in prose (not in code, math or
+a link showing its address) as the app's pictures, 1.2 em tall on the baseline; selection, copy and
+search still see the shortcode. The pictures are drawn only, with no hover or press of their own.
 
 - **Tables** keep their header row, per-column alignment and inline formatting. Columns start
   at their content's width, so a table with room never wraps a cell, and shrink in proportion
@@ -327,11 +532,20 @@ source each time, and earlier blocks stay mounted.
 - **```` ```diff ````** (or `patch`) fences tint `+` and `-` lines edge to edge, and dim `@@`
   and file header lines. Set colours with `MarkdownStyle::diff` and `diff_hunk`. Line text
   keeps the body colour unless `diff_text(added, removed)` or `diff_text_tint(0.5)` (toward the
-  theme's green and red) colours it.
-- **```` ```mermaid ````** (feature `mermaid`, backed by `rune-mermaid`) draws flowcharts,
-  sequence diagrams and state diagrams natively, with no JS or webview, themed through
-  `MarkdownStyle::diagram*`. Layout runs once per source and is cached. Anything outside the
-  supported subset (listed in `rune-mermaid`) shows as its plain code block. `rune_kit::mermaid::render(src, &style)` draws one on its own.
+  theme's green and red) colours it. Wrap diff cards with `Markdown::diff_frame(|card, d| ...)`
+  (`DiffFrame` gives 0-based `index`, raw patch `source`, and streaming `open` state) without
+  affecting `Markdown::code_frame` or `CodeFrame::index`.
+- **```` ```mermaid ````** (feature `mermaid`, backed by `rune-mermaid`) draws 17 Mermaid
+  diagram types natively (flowcharts, sequence, state, class, ER, gantt, pie, mindmap, timeline,
+  user journey, git graph, quadrant, XY chart, sankey, block, requirement and C4), with no JS or
+  webview, themed through `MarkdownStyle::diagram*`. While a fence streams in, it lays out
+  complete lines without reshuffling earlier nodes, then settles once complete; finished layouts are
+  cached per source. Anything outside the supported subset (listed in `rune-mermaid`) shows as its
+  plain code block. Diagrams default to a 400-item parser cap; opt into larger diagrams (up to
+  1,500 items, never raisable from diagram directives) with `MarkdownStyle::diagram_max_items`
+  or `DiagramStyle::max_items` (and check support under custom limits with
+  `rune_kit::mermaid::supported_with`). `rune_kit::mermaid::render(src, &style)` draws one on its
+  own.
 - **`selectable(true)`** lets people select and copy the text as one selection: a drag runs from
   a paragraph through list items into a code block, Shift-click extends, Cmd+A selects the
   whole Markdown and Cmd+C copies the text as drawn, as a web browser does: a newline between
@@ -342,19 +556,36 @@ source each time, and earlier blocks stay mounted.
   text in source UTF-8 byte ranges across inline markers, tables and code blocks without
   reshaping text (`Highlight::new()` and `Highlight::current()`, scrolled to with
   `Tx::scroll_into_view` by `Markdown::highlight_key(index)` or `.key(..)`).
+- **Layout, margins and inline/fence styling.** `MarkdownStyle::prose_width(points)` caps
+  top-level paragraphs, headings, lists and quotes at a readable measure while code blocks, diffs,
+  diagrams, tables, images and rules keep the full column width; `inline_code_text(color)` colours
+  ordinary inline code glyphs without changing code inside links or `Markdown::code_link`;
+  `paragraph_margin`, `heading_margin(level, top, bottom)`, `list_margin`, `quote_margin`, `rule_margin` and `image_margin` override vertical
+  block spacing while preserving CSS margin collapsing and list-item rules; and
+  `code_block_radius(radius)` overrides the 6 pt corner radius on fenced code and diff cards.
+  `Markdown::wrap_anywhere(true)` enables CSS `overflow-wrap: anywhere` on paragraphs, headings,
+  lists, block quotes, table cells, diff lines, and non-`scroll_wide` code fences so long unbroken
+  tokens wrap inside narrow columns instead of overflowing (`false` by default).
+  `Markdown::hard_breaks(true)` renders CommonMark soft line breaks (single newlines in paragraphs,
+  list items, block quotes, headings and table cells) as line breaks (`'\n'`) instead of spaces
+  for user-typed chat messages (`false` by default, following CommonMark), while leaving code spans,
+  code blocks, post-image line breaks, streaming incremental parsing and `copy_source(true)` intact.
 
 `Tooltip::label(..).render(&TooltipStyle::neutral(dark), &mut layer)` builds a tooltip without
 a kit. `TooltipStyle::max_width(w)` caps its width; `label`, `text` and a `.wrap()` text `child` wrap at it. The
 app owns `open`, so the hover delay is a `wake_after` in its hover handler; `El::help(text)` is
 the delayed, self-dismissing system tooltip when the look needn't match. The gallery's `rune-markdown--walkthrough`, `rune-markdown--diagrams`,
-`rune-markdown--table-styles` and `rune-markdown--code` scenes show every feature.
+`rune-markdown--mermaid-large`, `rune-markdown--table-styles`, `rune-markdown--code`, `rune-markdown--styled`, `rune-markdown--wrap-and-frames` and `rune-markdown--hard-breaks` scenes show every feature.
 
 ## Diff
 
 `rune_kit::diff` shows code changes for review. `diff::parse(patch)` reads `git diff` output
 (several files, renames with similarity, mode changes, binary files, `\ No newline at end of
 file`, quoted paths) and `FileDiff::from_texts(path, old, new)` diffs two texts (Myers, line
-by line, three lines of context; `from_texts_with_context` keeps another count). Changed lines
+by line, three lines of context; `from_texts_with_context` keeps another count, and
+`from_texts_with` / `between_with` take `DiffOptions` for context count and
+`ignore_edge_whitespace(true)`, which ignores leading/trailing ASCII spaces and tabs while
+preserving each side's original text for split rendering, selection and copying). Changed lines
 that pair up get word-level changes. The app keeps a `DiffState` in
 its state and draws it with `DiffView`:
 
@@ -372,23 +603,38 @@ DiffView::new(|s: &App| &s.diff, |s: &mut App| &mut s.diff)
 - **Unified or split** (`set_mode`). Rows keep their keys across modes, so a switch inside
   `tx.motion(..)` moves rows rather than replacing them. Long lines scroll sideways, or wrap
   with `set_wrap(true)`; split always wraps.
+- **Scroll bars**: `DiffView::scroll_bar(true)` (or `scroll_bar_styled(style)`) attaches a kit
+  vertical scroll bar below the 44-point sticky file header and, in unwrapped unified mode, a
+  horizontal scroll bar along the bottom edge, following `rune::system_scroll_bars()` (see
+  `rune-diff--scroll-bars` in `kit-gallery`).
 - **Colours** come from the kit's palette: added and removed lines take a tint of the success
   and danger colours, word changes a stronger one, with a bar at the edge. Syntax colours sit
-  under them (`rune_kit::syntax`, swappable with `set_highlighter`). Tabs line up at
-  four-column stops and copy as tabs.
+  under them (`rune_kit::syntax`, swappable with `set_highlighter` and customisable with
+  `DiffView::syntax_theme`). Tabs line up at four-column stops and copy as tabs.
 - **Unchanged ranges** between hunks fold into a row that opens 20 lines up, 20 down, or all
   (`expand`). A parsed patch has no whole files, so only diffs built from two texts have folds that open.
 - **Files** have a header with the path, a rename arrow, +/− counts, a collapse chevron and
-  an app slot (`header_actions`). The header of the file in view sticks to the top.
+  an app slot (`header_actions`), or a custom header via `DiffView::file_header(|s, file, collapsed| ...)`
+  that keeps the 44-point row, heading label, horizontal pinning and sticky top overlay
+  (collapse files via `DiffState::set_collapsed`; see `rune-diff--custom` in `kit-gallery`).
+  The header of the file in view sticks to the top.
 - **Annotations** are the app's widgets under a line, keyed by file, side and line, such as
   review comments. Rows grow to fit them.
-- **Line selection**: click a line number, Shift-click to extend, or drag down the numbers;
-  `on_select` gets the range. With `on_comment`, a "+" shows by the hovered line's number.
-  Cmd-C copies the selected lines of one side, without numbers or markers; a text selection
-  over the code copies the side it started on.
+- **Line selection and comments**: click a line number, Shift-click to extend, or drag down
+  the numbers; `on_select` gets the range. With `on_comment`, a "+" shows by the hovered
+  line's number on both sides by default; `comment_filter(|file, at| ...)` restricts which
+  files and lines show and invoke it (in unified mode, context lines try `Side::New` first
+  and fall back to `Side::Old`). Cmd-C copies the selected lines of one side, without numbers
+  or markers; a text selection over the code copies the side it started on.
+- **Localisation**: `DiffView::labels(|label: DiffLabel<'_>| -> Option<String>)` replaces
+  any visible or accessible string `DiffView` emits (the list name, line rows, `+` comment
+  button, fold summaries and expand buttons, file toggle/status/summary, no-newline marker
+  and empty/binary file notes), returning `None` (or a blank string) to keep the default
+  English text. Changing locale or labels invalidates memoised diff rows automatically. The
+  gallery's `rune-diff--localized` scene shows both `labels` and `comment_filter`.
 - **Keys**: call `diff.key(ev, tx)` from `on_key` for `j`/`k` (next/previous hunk), `]`/`[`
   (next/previous file) and Escape. Shift-click needs `App::modifier_keys`. Rows read as
-  "added line 12: ..." to accessibility.
+  "added line 12: ..." to accessibility by default.
 - **Beside a file tree**: `scroll_to_file(i, tx)` and `scroll_to_line` scroll to it, and
   `on_visible_file` reports the file at the top as the list scrolls.
 - **Long diffs** are a virtual list built by index, so a commit costs the rows in view, not
@@ -432,17 +678,22 @@ Known differences, and why:
 - **Glyph advances.** Chromium on Linux rounds each glyph advance to a device pixel (no subpixel
   positioning); Rune keeps Parley's fractional advances and rounds text boxes up to a device pixel.
   Words differ by up to ~0.5 pt, which adds up along wrapped rows (button variants).
-- **Antialiasing.** Rune's greyscale atlas with luminance dilation vs Chromium's FreeType/Skia
-  rasteriser: stems differ by a fraction of a pixel; diff images show text outlines.
-- **Blending.** Rune blends in linear light; translucent tokens are re-solved per backdrop
-  (`Kit::on`), exact over the surface they were solved for and close elsewhere. CSS group opacity
-  (disabled controls) is per-layer opacity in Rune, so text over a dimmed fill is slightly lighter.
+- **Antialiasing.** On Linux, Rune defaults to `WindfoilChromium` (undilated GPU outline box
+  coverage on quarter-pixel pens with Skia's text gamma) vs Chromium's FreeType `hintslight` on
+  whole-pixel pens (`FontSmoothing::Hinted`): stems and subpixel alignment differ slightly; diff
+  images show text outlines.
+- **Blending.** Rune blends in sRGB by default, matching the browser; only windows that opt into
+  linear-light blending (`App::srgb_blend(false)`) re-solve translucent tokens per backdrop
+  (`Kit::on` / `rune::theme::for_blend`), exact over the surface they were solved for and close
+  elsewhere. Disabled controls use isolated layer opacity (`El::layer_opacity`), matching CSS group
+  opacity.
 - **Focus.** Controls support keyboard focus rings, Tab, activation and arrow-key roving.
-  Dialog traps focus and restores the opener; popover/select opening autofocus is still separate.
+  Dialog, Menu and Select trap focus and restore the trigger on close; Popover restores the trigger
+  on close while leaving opening autofocus to the caller.
 - **Motion.** Spinner pulses use fixed seeds in the web's randomized timing ranges; Loader rotates
   every 900 ms. Both use Rune's clock and hold a static pose under reduced motion. Indeterminate
   progress remains static. Transitions use springs rather than CSS easing curves.
-- **Not drawn.** The textarea resize grip, hover-card trigger underline, scrollbars.
+- **Not drawn.** The textarea resize grip, hover-card trigger underline.
 - **Story quirks mirrored on purpose.** Solid ignores `defaultValue` on the v2 inputs (the web shows
   placeholders), the Basic and NonCollapsible accordions render closed, and the menu Rich story's
   `settings`/`save`/`print` icons fall back to `plus`. `components-popover--inline` and the

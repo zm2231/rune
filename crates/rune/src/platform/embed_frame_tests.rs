@@ -9,7 +9,7 @@ const FRAME_60HZ: Duration = Duration::from_micros(16_667);
 #[test]
 fn compositor_animating_keeps_real_frame_gap_instead_of_clamping_to_resume_step() {
     fn view(_: &(), _: &mut Cx<()>) -> El { el().size(40.0, 20.0) }
-    let start = Instant::now();
+    let start = crate::time::now();
     let mut clock = FrameClock::new(start);
     let mut rt = Runtime::new((), view, (40.0, 20.0), Env::default());
     rt.wall_start = Some(start);
@@ -40,7 +40,7 @@ fn post_present_delays_overrunning_new_motion_and_reports_stale_and_requests_dro
     fn view(s: &S, _: &mut Cx<S>) -> El {
         el().child(el().key("box").size(s.width, 8.0))
     }
-    let start = Instant::now();
+    let start = crate::time::now();
     let overrun = Duration::from_millis(50);
 
     let run = |with_present: bool| {
@@ -90,7 +90,7 @@ fn missed_step_runs_poll_without_advancing_frame_clock() {
     #[derive(Default)]
     struct S { polls: u32 }
     fn view(_: &S, _: &mut Cx<S>) -> El { el() }
-    let start = Instant::now();
+    let start = crate::time::now();
     let mut clock = FrameClock::new(start);
     let mut rt = Runtime::new(S::default(), view, (40.0, 20.0), Env::default());
     rt.poll = Some(|s, _, _| { s.polls += 1; false });
@@ -122,6 +122,7 @@ struct MockEmbedSurface {
     rt: Runtime<EmbedTestState>,
     clock: FrameClock,
     suspended: bool,
+    surface_health: EmbedSurfaceHealth,
     renderer_srgb: bool,
     reblend_succeeds: bool,
     acquires: std::collections::VecDeque<Acquire<u32>>,
@@ -151,6 +152,7 @@ impl MockEmbedSurface {
             rt,
             clock: FrameClock::new(start),
             suspended: false,
+            surface_health: EmbedSurfaceHealth::default(),
             renderer_srgb: true,
             reblend_succeeds: true,
             acquires: std::collections::VecDeque::from([Acquire::Ready(1)]),
@@ -167,6 +169,7 @@ impl EmbedSurface for MockEmbedSurface {
     type Prepared = u32;
 
     fn suspended(&self) -> bool { self.suspended }
+    fn surface_health_mut(&mut self) -> &mut EmbedSurfaceHealth { &mut self.surface_health }
     fn renderer_srgb_blend(&self) -> bool { self.renderer_srgb }
     fn rt_srgb_blend(&self) -> bool { self.rt.core().srgb_blend() }
 
@@ -224,7 +227,7 @@ impl EmbedSurface for MockEmbedSurface {
 
     fn submit_and_present(&mut self, prepared: u32) -> Instant {
         self.log.push(format!("present:{prepared}"));
-        Instant::now()
+        crate::time::now()
     }
 
     fn clock_and_rt_mut(&mut self) -> (&mut FrameClock, &mut RuntimeCore) {
@@ -240,7 +243,7 @@ impl EmbedSurface for MockEmbedSurface {
 
 #[test]
 fn run_embed_frame_follows_shared_acquire_step_reblend_present_order() {
-    let start = Instant::now();
+    let start = crate::time::now();
     let mut surface = MockEmbedSurface::new(start);
     surface.rt.state.switch_blend = true;
     surface.acquires = std::collections::VecDeque::from([Acquire::Ready(1), Acquire::Ready(2)]);
@@ -254,7 +257,7 @@ fn run_embed_frame_follows_shared_acquire_step_reblend_present_order() {
 
 #[test]
 fn run_embed_frame_suspended_touches_nothing() {
-    let start = Instant::now();
+    let start = crate::time::now();
     let mut surface = MockEmbedSurface::new(start);
     surface.suspended = true;
     let out = run_embed_frame(&mut surface);
@@ -264,7 +267,7 @@ fn run_embed_frame_suspended_touches_nothing() {
 
 #[test]
 fn run_embed_frame_post_step_reblend_miss_preserves_stale_and_live_pending_without_double_step() {
-    let start = Instant::now();
+    let start = crate::time::now();
     let mut surface = MockEmbedSurface::new(start);
     surface.rt.state.switch_blend = true;
     surface.reblend_succeeds = false;
@@ -294,7 +297,7 @@ fn run_embed_frame_post_step_reblend_miss_preserves_stale_and_live_pending_witho
 
 #[test]
 fn a_missed_drawable_that_waits_stops_ticking_and_wakes_at_the_retry() {
-    let start = Instant::now();
+    let start = crate::time::now();
     let mut surface = MockEmbedSurface::new(start);
     surface.retry = Some(0.25);
     surface.rt.update(|_, tx| tx.wake_after(Duration::from_millis(100)));
@@ -315,16 +318,16 @@ fn a_missed_drawable_that_waits_stops_ticking_and_wakes_at_the_retry() {
 
 #[test]
 fn a_frame_aimed_at_a_display_tick_steps_the_clock_to_it() {
-    let start = Instant::now();
+    let start = crate::time::now();
     let mut surface = MockEmbedSurface::new(start);
-    let target = Instant::now() + Duration::from_millis(8);
+    let target = crate::time::now() + Duration::from_millis(8);
     assert!(run_embed_frame_at(&mut surface, Some(target)).drew);
     assert_eq!(surface.clock.last(), target, "the clock steps to when the frame will show");
 }
 
 #[test]
 fn a_host_serving_the_clipboard_receives_before_the_step_and_flushes_after_it() {
-    let start = Instant::now();
+    let start = crate::time::now();
     let mut surface = MockEmbedSurface::new(start);
     surface.clipboard = true;
     assert!(run_embed_frame(&mut surface).drew);
@@ -336,3 +339,59 @@ fn a_host_serving_the_clipboard_receives_before_the_step_and_flushes_after_it() 
     assert!(!run_embed_frame(&mut surface).drew);
     assert_eq!(surface.log, ["acquire:missed:Timeout", "missed:Timeout", "receive", "step", "flush"], "a missed frame still delivers pastes and copies");
 }
+
+#[test]
+fn run_embed_frame_stops_animating_after_consecutive_lost_drawables_until_resize() {
+    let start = crate::time::now();
+    let mut surface = MockEmbedSurface::new(start);
+    // Settle the first frame so rt.stale() is false.
+    surface.acquires = std::collections::VecDeque::from([Acquire::Ready(1)]);
+    let first = run_embed_frame(&mut surface);
+    assert!(first.drew && !first.animating);
+
+    // Consecutive Outdated misses request retries only up to EMBED_MAX_LOST_RETRIES - 1 times,
+    // then stop reporting animating instead of spinning the display link indefinitely.
+    for i in 1..EMBED_MAX_LOST_RETRIES {
+        surface.acquires = std::collections::VecDeque::from([Acquire::Missed(Missed::Outdated)]);
+        let out = run_embed_frame(&mut surface);
+        assert!(!out.drew && out.animating, "attempt {i} should keep ticking to retry");
+    }
+    surface.acquires = std::collections::VecDeque::from([Acquire::Missed(Missed::Outdated)]);
+    let gave_up = run_embed_frame(&mut surface);
+    assert!(!gave_up.drew && !gave_up.animating, "exhausted retries must stop reporting animating");
+
+    // A resize resets the failure run so future transient misses can retry again.
+    surface.surface_health.step(EmbedSurfaceEvent::Resized);
+    surface.acquires = std::collections::VecDeque::from([Acquire::Missed(Missed::Outdated)]);
+    let resumed = run_embed_frame(&mut surface);
+    assert!(!resumed.drew && resumed.animating, "resize must re-arm lost-drawable retries");
+}
+
+#[test]
+fn frame_summary_is_copy_and_step_and_flush_preserves_haptics_for_host() {
+    fn assert_copy<T: Copy>() {}
+    assert_copy::<FrameSummary>();
+
+    let start = crate::time::now();
+    let mut clock = FrameClock::new(start);
+    let mut rt = Runtime::new((), |_, _| el().size(40.0, 20.0), (40.0, 20.0), Env::default());
+    rt.wall_start = Some(start);
+    {
+        let (core, mut app) = rt.split_mut();
+        step_and_flush(&mut clock, core, &mut app, start, false, Serves::default());
+    }
+    rt.update(|_, tx| {
+        tx.haptic(crate::Haptic::Selection);
+        tx.haptic(crate::Haptic::Impact(crate::ImpactStrength::Light));
+    });
+    {
+        let (core, mut app) = rt.split_mut();
+        step_and_flush(&mut clock, core, &mut app, start + FRAME_60HZ, false, Serves::default());
+    }
+    assert_eq!(
+        rt.take_haptics(),
+        [crate::Haptic::Selection, crate::Haptic::Impact(crate::ImpactStrength::Light)],
+        "embed_frame::flush_requests must preserve haptics for LayerHost::take_haptics()",
+    );
+}
+

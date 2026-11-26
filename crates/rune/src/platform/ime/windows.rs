@@ -11,6 +11,8 @@
 //! reachable there, so each answer comes from what it published, and each finding waits for it
 //! in a cell, taken in order before the preedit it belongs to.
 
+#![allow(unsafe_code)]
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
@@ -72,6 +74,26 @@ pub(crate) fn take_clauses(window: &winit::window::Window, preedit: &str) -> Vec
 pub(crate) fn take_select(window: &winit::window::Window) -> Option<Range<usize>> {
     let (_, k) = key(window)?;
     WINDOWS.with_borrow_mut(|all| all.get_mut(&k).and_then(|w| w.select.take()))
+}
+
+/// Whether any keyboard layout installed on this Windows session belongs to a right-to-left
+/// language, matching Chrome's `IsRTLKeyboardLayoutInstalled` (`GetKeyboardLayoutList`).
+pub(crate) fn has_rtl_keyboard_layout() -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayoutList;
+    // SAFETY: passing (0, null) queries the count of installed keyboard layouts.
+    let count = unsafe { GetKeyboardLayoutList(0, std::ptr::null_mut()) };
+    if count <= 0 {
+        return false;
+    }
+    let mut layouts = vec![std::ptr::null_mut(); count as usize];
+    // SAFETY: `layouts` has capacity for `count` HKL handles.
+    let got = unsafe { GetKeyboardLayoutList(count, layouts.as_mut_ptr()) };
+    if got <= 0 {
+        return false;
+    }
+    layouts[..got.min(count) as usize]
+        .iter()
+        .any(|&hkl| super::is_rtl_primary_lang_id((hkl as usize as u16) & 0x03ff))
 }
 
 unsafe extern "system" fn procedure(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _: usize, _: usize) -> LRESULT {

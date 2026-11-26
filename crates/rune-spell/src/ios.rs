@@ -1,12 +1,15 @@
 //! UIKit's `UITextChecker`, which checks one language at a time: one checker, asked once per
 //! chosen dictionary (`super::languages`). UIKit keeps the class to the main thread, where a
 //! view's fields are drawn and their menus open; asked anywhere else, these answer nothing.
+
+#![allow(unsafe_code)]
+
 use std::cell::RefCell;
 
-use objc2_foundation_video::{NSArray, NSRange, NSString};
-use objc2_video::rc::Retained;
-use objc2_video::runtime::AnyObject;
-use objc2_video::{MainThreadMarker, class, msg_send};
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
+use objc2::{MainThreadMarker, class, msg_send};
+use objc2_foundation::{NSArray, NSRange, NSString};
 
 use super::convert;
 

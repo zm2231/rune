@@ -13,7 +13,7 @@ use winit::window::Window;
 
 use crate::edit::Ime;
 use crate::runtime::{AppDriver, RuntimeCore, Unhandled};
-use crate::window::{key_base, map_key_event, map_mods};
+use crate::window::{consumed_mods, key_base, map_key_event, map_mods, platform_text};
 
 /// Host-neutral key input over plain Rune types.
 pub(crate) struct KeyInput {
@@ -24,18 +24,25 @@ pub(crate) struct KeyInput {
     pub pressed: bool,
     pub repeat: bool,
     pub unhandled: Option<Unhandled>,
+    /// The platform text for the key (`PhysicalInput::Key::text`).
+    pub text: Option<String>,
+    /// The modifiers the platform spent producing `text`.
+    pub consumed_mods: crate::Mods,
 }
 
 /// Host-neutral wheel input in window points (before dividing by `rt.zoom()`).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct WheelInput {
     pub dx: f32,
     pub dy: f32,
+    /// Vertical wheel ticks (notches) for line-delta wheels, independent of OS scroll-lines
+    /// scaling; `None` for pixel-precise deltas or Shift-turned horizontal wheels.
+    pub ticks: Option<f32>,
     pub mods: crate::Mods,
     pub phase: crate::GesturePhase,
     pub precise: bool,
     pub notch: bool,
-    /// Whether Ctrl+wheel tries `pinch_wheel` before scrolling (true off macOS).
+    /// Whether Ctrl+wheel tries `pinch_wheel` before scrolling.
     pub pinch: bool,
 }
 
@@ -156,6 +163,65 @@ pub(crate) fn mouse_button_core(
     action
 }
 
+/// When a web input event should activate the browser's editing proxy (`bridge.js::activate`)
+/// after its immediate frame commits.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WebActivate {
+    /// Leave DOM focus alone.
+    Never,
+    /// Activate the editing proxy (or the canvas outside document mode when no field is focused).
+    Always,
+    /// Activate only when the committed frame has an editable text field focused, so a mouse
+    /// release handler that calls `Tx::focus` moves DOM focus to the proxy without disturbing
+    /// DOM focus on ordinary releases.
+    IfFieldFocused,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl WebActivate {
+    /// Resolves whether `sync_input` should call `activate()` for the post-frame runtime state.
+    /// Never steals DOM focus while a pop-up menu is open.
+    pub(crate) fn should_activate(self, rt: &RuntimeCore) -> bool {
+        if rt.popup_menu().is_some() {
+            return false;
+        }
+        match self {
+            Self::Never => false,
+            Self::Always => true,
+            Self::IfFieldFocused => rt.web_has_editable_focus(),
+        }
+    }
+}
+
+/// Returns how a web mouse button action should activate DOM focus after its immediate frame.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn web_mouse_activate(action: ButtonAction) -> WebActivate {
+    match action {
+        ButtonAction::PrimaryDown => WebActivate::Always,
+        ButtonAction::PrimaryUp => WebActivate::IfFieldFocused,
+        ButtonAction::SecondaryDown
+        | ButtonAction::SecondaryUp
+        | ButtonAction::OtherDown(_)
+        | ButtonAction::OtherUp(_) => WebActivate::Never,
+    }
+}
+
+/// Returns how a web touch release (`TouchPhase::Ended`) should activate DOM focus after its
+/// immediate frame. Lifting a finger after a long press (`ended_in_menu`) or while a pop-up menu
+/// is open leaves DOM focus alone so `[data-rune-menu]` keeps focus.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn web_touch_end_activate(rt: &RuntimeCore, document: bool, ended_in_menu: bool) -> WebActivate {
+    if ended_in_menu || rt.popup_menu().is_some() {
+        return WebActivate::Never;
+    }
+    if !document || rt.has_focus() {
+        WebActivate::Always
+    } else {
+        WebActivate::Never
+    }
+}
+
 /// Maps a winit touch/gesture phase to Rune's `GesturePhase`.
 pub(crate) fn gesture_phase(phase: TouchPhase) -> crate::GesturePhase {
     match phase {
@@ -168,6 +234,7 @@ pub(crate) fn gesture_phase(phase: TouchPhase) -> crate::GesturePhase {
 /// Whether the mouse message being handled is one Windows synthesized from a touch or pen
 /// (`GetMessageExtraInfo` carries `MI_WP_SIGNATURE`).
 #[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
 pub(crate) fn touch_promoted() -> bool {
     const MI_WP_SIGNATURE: u32 = 0xFF51_5700;
     // SAFETY: reads the calling thread's current message info; no pointers involved.
@@ -223,29 +290,34 @@ pub(crate) fn sync_modifiers(
     modifiers(rt, app, mods, next)
 }
 
-/// Translates a host-neutral key input into runtime physical/logical key calls, including
-/// clipboard paste read on non-physical fallback keys. Returns whether a redraw is needed.
+/// Translates a host-neutral key input into runtime physical/logical key calls. Returns whether a
+/// redraw is needed.
 pub(crate) fn keyboard_core(
     rt: &mut RuntimeCore,
     app: &mut dyn AppDriver,
-    clipboard: &crate::clipboard::Client,
     input: KeyInput,
 ) -> bool {
+    let logical = input.logical.filter(|ev| rt.media_keys() || !matches!(ev.key, crate::Key::Media(_)));
     if let Some(key) = input.physical {
         rt.physical_then(
             app,
-            crate::PhysicalInput::Key { key, mods: input.mods, pressed: input.pressed, repeat: input.repeat },
-            input.logical,
+            crate::PhysicalInput::Key {
+                key,
+                mods: input.mods,
+                pressed: input.pressed,
+                repeat: input.repeat,
+                text: input.text,
+                consumed_mods: input.consumed_mods,
+            },
+            logical,
             input.base,
             input.unhandled,
         )
-    } else if let Some(ev) = input.logical {
+    } else if let Some(ev) = logical {
         if !input.pressed {
             rt.key_up(app, ev)
         } else {
-            if ev.edit_command() == Some('v') && rt.accepts_paste() {
-                clipboard.read_core(rt);
-            } else if input.repeat {
+            if input.repeat {
                 rt.repeat_key(ev);
             } else {
                 rt.key(ev);
@@ -257,36 +329,41 @@ pub(crate) fn keyboard_core(
     }
 }
 
-/// Translates a non-synthetic winit `KeyboardInput` into runtime physical/logical key calls,
-/// including clipboard paste read on non-physical fallback keys. Returns whether a redraw is
-/// needed.
+/// Translates a non-synthetic winit `KeyboardInput` into runtime physical/logical key calls.
+/// Returns whether a redraw is needed.
 pub(crate) fn keyboard(
     rt: &mut RuntimeCore,
     app: &mut dyn AppDriver,
-    clipboard: &crate::clipboard::Client,
     event: &winit::event::KeyEvent,
     mods: ModifiersState,
     unhandled: Option<Unhandled>,
 ) -> bool {
     let pressed = event.state == ElementState::Pressed;
-    // A release's logical key only matters to `on_key_up` handlers.
-    let logical = (pressed || rt.wants_key_up()).then(|| map_key_event(event, mods)).flatten();
+    // A release's logical key only matters to `on_key_up` handlers. Media keys stay hidden
+    // unless the runtime opted in (`App::media_keys`), so opt-out apps see no new keys.
+    let logical = (pressed || rt.wants_key_up())
+        .then(|| map_key_event(event, mods))
+        .flatten()
+        .filter(|ev| rt.media_keys() || !matches!(ev.key, crate::Key::Media(_)));
     let physical = match event.physical_key {
         PhysicalKey::Code(key) => Some(key),
         PhysicalKey::Unidentified(_) => None,
     };
+    let text = platform_text(event);
+    let consumed_mods = consumed_mods(event, text.as_deref(), map_mods(mods));
     keyboard_core(
         rt,
         app,
-        clipboard,
         KeyInput {
             physical,
             logical,
-            base: key_base(event),
+            base: key_base(event, mods),
             mods: map_mods(mods),
             pressed,
             repeat: event.repeat,
             unhandled,
+            text,
+            consumed_mods,
         },
     )
 }
@@ -296,7 +373,7 @@ pub(crate) fn keyboard(
 pub(crate) fn wheel_core(rt: &mut RuntimeCore, input: WheelInput) -> WheelOutcome {
     match rt.pointer() {
         // Off macOS a trackpad pinch is a Ctrl + wheel.
-        Some((x, y)) if input.pinch && input.mods.ctrl && rt.pinch_wheel(x, y, input.dy) => WheelOutcome::Pinched,
+        Some((x, y)) if input.pinch && input.mods.ctrl && rt.pinch_wheel(x, y, input.dy, input.ticks) => WheelOutcome::Pinched,
         Some((x, y)) => {
             let zoom = rt.zoom();
             rt.wheel_event(
@@ -353,7 +430,7 @@ pub(crate) fn web_wheel(
     // A page's pinch is the browser's zoom; elsewhere unclaimed Ctrl+wheel stays with browser
     // zoom instead of falling through to scroll.
     if mods.ctrl {
-        let used = !document && rt.pinch_wheel(x, y, dy);
+        let used = !document && rt.pinch_wheel(x, y, dy, None);
         return (used, Some(used));
     }
     // On a content-sized embedded canvas, vertical wheel belongs to the page unless a
@@ -363,9 +440,74 @@ pub(crate) fn web_wheel(
     }
     let outcome = wheel_core(
         rt,
-        WheelInput { dx, dy, mods, phase, precise, notch: false, pinch: false },
+        WheelInput { dx, dy, ticks: None, mods, phase, precise, notch: false, pinch: false },
     );
     (outcome != WheelOutcome::Ignored, None)
+}
+
+/// Returns whether a winit wheel delta comes from a discrete mouse-wheel notch on a platform
+/// whose browsers ease notched wheels.
+///
+/// On macOS, AppKit's `hasPreciseScrollingDeltas == false` (mapped by winit to `LineDelta`)
+/// already isolates discrete physical mouse wheels from trackpads, Magic Mouse, Mighty Mouse,
+/// and smooth-scroll utilities (`PixelDelta`), while OS scroll acceleration makes those line
+/// deltas fractional; matching Chromium (`components/input/web_input_event_builders_mac.mm`
+/// and `cc/input/input_handler.cc::ShouldAnimateScroll`), every macOS `LineDelta` is a notch.
+/// On Windows and Linux, whole lines are a notched wheel while a free-spinning wheel or a
+/// precision touchpad sends fractions (the run decides, `WheelLock::notched`).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn line_delta_is_notch(delta: MouseScrollDelta, is_macos: bool, is_win_or_linux: bool) -> bool {
+    match delta {
+        MouseScrollDelta::LineDelta(_, _) if is_macos => true,
+        MouseScrollDelta::LineDelta(x, y) if is_win_or_linux => x.fract() == 0.0 && y.fract() == 0.0,
+        _ => false,
+    }
+}
+
+/// Translates a `MouseScrollDelta` with host-neutral `Mods` into runtime pinch-wheel,
+/// `WheelEvent`, or pointer-less phase begin/end notifications, scaled into view points.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn wheel_from_delta(
+    rt: &mut RuntimeCore,
+    delta: MouseScrollDelta,
+    phase: crate::GesturePhase,
+    scale: f32,
+    mods: crate::Mods,
+) -> WheelOutcome {
+    let shift = crate::runtime::SHIFT_TURNS_WHEEL && mods.shift && !mods.ctrl;
+    // In window points: a wheel turns as far on screen at any zoom, as Chromium's does,
+    // and a pinch is the same gesture whatever the zoom.
+    #[cfg(target_os = "windows")]
+    let points = rt.windows_wheel_points(delta, shift);
+    #[cfg(not(target_os = "windows"))]
+    let points = crate::runtime::LINE_POINTS;
+    let (dx, dy) = crate::runtime::wheel_delta(delta, scale, shift, points);
+    let precise = matches!(delta, MouseScrollDelta::PixelDelta(_));
+    let ticks = match delta {
+        MouseScrollDelta::LineDelta(_, y) if !shift => Some(y),
+        _ => None,
+    };
+    let notch = line_delta_is_notch(
+        delta,
+        cfg!(target_os = "macos"),
+        cfg!(any(target_os = "windows", target_os = "linux")),
+    );
+    wheel_core(
+        rt,
+        WheelInput {
+            dx,
+            dy,
+            ticks,
+            mods,
+            phase,
+            precise,
+            notch,
+            // On macOS too: Chromium hands a page Ctrl + wheel and a trackpad pinch alike, as a
+            // wheel with `ctrlKey`, so a zoom handler hears both (`MagnifyEvent::wheel` tells them
+            // apart); a real pinch still arrives as its own gesture.
+            pinch: true,
+        },
+    )
 }
 
 /// Translates a winit `MouseWheel` event into runtime pinch-wheel, `WheelEvent`, or
@@ -378,32 +520,7 @@ pub(crate) fn wheel(
     scale: f32,
     mods: ModifiersState,
 ) {
-    let shift = crate::runtime::SHIFT_TURNS_WHEEL && mods.shift_key();
-    // In window points: a wheel turns as far on screen at any zoom, as Chromium's does,
-    // and a pinch is the same gesture whatever the zoom.
-    #[cfg(target_os = "windows")]
-    let points = rt.windows_wheel_points(delta, shift);
-    #[cfg(not(target_os = "windows"))]
-    let points = crate::runtime::LINE_POINTS;
-    let (dx, dy) = crate::runtime::wheel_delta(delta, scale, shift, points);
-    let precise = matches!(delta, MouseScrollDelta::PixelDelta(_));
-    // Whole lines are a notched wheel; a free-spinning wheel or a precision touchpad
-    // sends fractions (the run decides, `WheelLock::notched`). On Linux winit gives a
-    // wheel's detents as whole lines too and a touchpad's as fractions or pixels.
-    let notch = cfg!(any(target_os = "windows", target_os = "linux"))
-        && matches!(delta, MouseScrollDelta::LineDelta(x, y) if x.fract() == 0.0 && y.fract() == 0.0);
-    let _ = wheel_core(
-        rt,
-        WheelInput {
-            dx,
-            dy,
-            mods: map_mods(mods),
-            phase,
-            precise,
-            notch,
-            pinch: !cfg!(target_os = "macos"),
-        },
-    );
+    let _ = wheel_from_delta(rt, delta, phase, scale, map_mods(mods));
 }
 
 /// Translates a winit `PinchGesture` at the current pointer; returns true when delivered.
@@ -441,10 +558,83 @@ pub(crate) fn ime_core(rt: &mut RuntimeCore, select: Option<Range<usize>>, ime: 
     rt.ime(ime);
 }
 
+/// Host-side record of what was last sent to the native window's input method, so unchanged
+/// frames don't re-submit the cursor area. On Wayland each `set_ime_cursor_area` commits
+/// `zwp_text_input_v3`, which prompts a `done` reply and wakes the window for another frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) enum ImeSync {
+    #[default]
+    Disabled,
+    Enabled { sent: Option<([f32; 4], f32)> },
+}
+
+/// Native window IME calls needed for one frame or focus sync.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) struct ImeStep {
+    pub(crate) cancel: bool,
+    pub(crate) set_allowed: Option<bool>,
+    pub(crate) cursor_area: Option<[f32; 4]>,
+}
+
+impl ImeSync {
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) fn is_enabled(self) -> bool {
+        matches!(self, Self::Enabled { .. })
+    }
+
+    /// Clears host IME state when the window disables IME directly (focus loss, hide, creation).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) fn clear(&mut self) {
+        *self = Self::Disabled;
+    }
+
+    /// Drops the last-sent cursor area while keeping the current enabled state, so the next sync
+    /// resends it (for example after `Ime::Enabled` when Wayland's `text_input` enters after
+    /// `set_ime_allowed(true)` already ran).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) fn invalidate_area(&mut self) {
+        if let Self::Enabled { sent } = self {
+            *sent = None;
+        }
+    }
+
+    /// Advances host IME state for one sync and returns the window calls to issue.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) fn step(
+        &mut self,
+        reset: bool,
+        area: Option<[f32; 4]>,
+        secure_focus: bool,
+        focused: bool,
+        scale: f32,
+    ) -> ImeStep {
+        let allowed = area.is_some() && !secure_focus && focused;
+        let set_allowed = if reset || allowed != self.is_enabled() {
+            *self = if allowed { Self::Enabled { sent: None } } else { Self::Disabled };
+            Some(allowed)
+        } else {
+            None
+        };
+        let cursor_area = match (self, area) {
+            (Self::Enabled { sent }, Some(a)) if *sent != Some((a, scale)) => {
+                *sent = Some((a, scale));
+                Some(a)
+            }
+            _ => None,
+        };
+        ImeStep { cancel: reset, set_allowed, cursor_area }
+    }
+}
+
 /// Translates a winit `Ime` event (plus any native reconversion range and clauses) into the
 /// runtime.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-pub(crate) fn ime(rt: &mut RuntimeCore, window: &Window, ime: WIme) {
+pub(crate) fn ime(rt: &mut RuntimeCore, window: &Window, ime_state: &mut ImeSync, ime: WIme) {
+    if matches!(ime, WIme::Enabled | WIme::Disabled) {
+        ime_state.invalidate_area();
+    }
     let select = crate::platform::ime::take_select(window);
     let event = match ime {
         WIme::Preedit(s, cur) => {
@@ -503,27 +693,51 @@ pub(crate) fn pointer_cancel(
     true
 }
 
+/// Computes the IME sync step for `rt` and advances `ime_state`.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn ime_sync_step(rt: &mut RuntimeCore, ime_state: &mut ImeSync, focused: bool) -> ImeStep {
+    let (reset, area) = ime_sync_state(rt);
+    ime_state.step(reset, area, rt.has_secure_focus(), focused, rt.window_scale())
+}
+
+/// Maps Rune's active `OptionAsAlt` mode and IME allowance to winit's macOS `OptionAsAlt`.
+#[cfg(target_os = "macos")]
+pub(crate) fn winit_option_as_alt(
+    ime_allowed: bool,
+    mode: crate::OptionAsAlt,
+) -> winit::platform::macos::OptionAsAlt {
+    use winit::platform::macos::OptionAsAlt as WinitOptionAsAlt;
+    if !ime_allowed {
+        return WinitOptionAsAlt::None;
+    }
+    match mode {
+        crate::OptionAsAlt::None => WinitOptionAsAlt::None,
+        crate::OptionAsAlt::Left => WinitOptionAsAlt::OnlyLeft,
+        crate::OptionAsAlt::Right => WinitOptionAsAlt::OnlyRight,
+        crate::OptionAsAlt::Both => WinitOptionAsAlt::Both,
+    }
+}
+
 /// Synchronizes a window's OS IME allowance, cursor area, and published text with the runtime.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-pub(crate) fn sync_ime(window: &Window, rt: &mut RuntimeCore, ime_state: &mut bool, focused: bool) {
-    let (reset, area) = ime_sync_state(rt);
-    let ime_allowed = area.is_some() && !rt.has_secure_focus() && focused;
-    if reset { crate::platform::ime::cancel(window); }
-    if reset || ime_allowed != *ime_state {
+pub(crate) fn sync_ime(window: &Window, rt: &mut RuntimeCore, ime_state: &mut ImeSync, focused: bool) {
+    let step = ime_sync_step(rt, ime_state, focused);
+    let ime_allowed = ime_state.is_enabled();
+    if step.cancel { crate::platform::ime::cancel(window); }
+    if let Some(allowed) = step.set_allowed {
         window.set_ime_allowed(false);
-        window.set_ime_allowed(ime_allowed);
-        *ime_state = ime_allowed;
+        if allowed { window.set_ime_allowed(true); }
     }
     #[cfg(target_os = "macos")]
     {
-        use winit::platform::macos::{OptionAsAlt, WindowExtMacOS};
-        let want = if ime_allowed && rt.edit.ime_option_as_alt { OptionAsAlt::Both } else { OptionAsAlt::None };
+        use winit::platform::macos::WindowExtMacOS;
+        let want = winit_option_as_alt(ime_allowed, rt.edit.ime_option_as_alt);
         if window.option_as_alt() != want {
             window.set_option_as_alt(want);
         }
     }
     crate::platform::ime::sync(window, if ime_allowed { rt.ime_text() } else { None });
-    if let Some(a) = area {
+    if let Some(a) = step.cursor_area {
         window.set_ime_cursor_area(
             LogicalPosition::new(a[0] as f64, a[1] as f64),
             LogicalSize::new(a[2] as f64, a[3] as f64),
@@ -538,6 +752,8 @@ pub(crate) fn refresh_focus_preferences(
     scroll_bars_override: Option<crate::platform::scroll_bars::ScrollBars>,
 ) {
     rt.set_system_reduced_motion(crate::platform::preferences::reduced_motion());
+    #[cfg(target_os = "linux")]
+    { rt.double_click_interval = crate::platform::preferences::double_click_interval(); }
     rt.set_system_contrast(crate::platform::preferences::contrast());
     rt.set_system_increased_contrast(crate::platform::preferences::increased_contrast());
     rt.set_full_keyboard_access(crate::platform::preferences::full_keyboard_access());
@@ -547,3 +763,7 @@ pub(crate) fn refresh_focus_preferences(
 #[cfg(test)]
 #[path = "host_events_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "host_events_wheel_tests.rs"]
+mod wheel_tests;

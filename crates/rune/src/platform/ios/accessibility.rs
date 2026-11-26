@@ -8,14 +8,16 @@
 //! whose label or value changed, and what a reader does to it (a double tap, a swipe on a
 //! slider, a three-finger scroll) goes back to the runtime as the tree's own action.
 
+#![allow(unsafe_code)]
+
 use std::cell::Cell;
 
 use accesskit::{ActionRequest, TreeUpdate};
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
-use objc2_foundation_video::NSString;
-use objc2_video::rc::{Retained, Weak};
-use objc2_video::runtime::{AnyObject, NSObject};
-use objc2_video::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, extern_class, msg_send};
+use objc2_foundation::NSString;
+use objc2::rc::{Retained, Weak};
+use objc2::runtime::{AnyObject, NSObject};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, extern_class, msg_send};
 
 use super::view::RuneView;
 use crate::a11y::ios::{Element, Gesture, Mirror, Toward, traits};

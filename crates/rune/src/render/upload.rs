@@ -29,8 +29,8 @@ pub(super) struct Uploads {
     has_layers: bool,
     /// The viewport last written to globals (`width << 32 | height`, `u64::MAX` before any).
     viewport: AtomicU64,
-    /// Gamma-space blend and byte-source flags last written to globals.
-    srgb: Option<(bool, bool)>,
+    /// Gamma-space blend, byte-source, and packed scroll-fade stops last written to globals.
+    srgb: Option<(bool, bool, [u32; 2])>,
     /// `Staging::lost` as last seen by `prepare` and by `upload_images`.
     lost: (u64, u64),
     /// The paint the next `prepare`'s instances come from, and which of them alone changed
@@ -55,7 +55,7 @@ impl Default for Uploads {
 
 impl Uploads {
     /// Forgets what the instance buffer holds, so the next frame writes and batches it all.
-    fn forget_instances(&mut self) {
+    pub(super) fn forget_instances(&mut self) {
         self.instances.clear();
         self.batched = false;
         self.held_paint = None;
@@ -66,8 +66,24 @@ impl Uploads {
     }
 
     /// Frees the staging chunks kept for reuse (`Renderer::give_back`).
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn trim(&self) {
         if let Some(staging) = &self.staging { staging.trim(); }
+        if let Some(frame_writes) = &self.frame_writes { frame_writes.trim(); }
+    }
+
+    /// Frees only oversized (> 4 MiB) staging chunks at idle rest, keeping <= 4 MiB chunks.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn trim_oversized(&self) {
+        if let Some(staging) = &self.staging { staging.trim_oversized(); }
+        if let Some(frame_writes) = &self.frame_writes { frame_writes.trim_oversized(); }
+    }
+
+    /// Whether any recyclable oversized staging chunks are in flight on the GPU.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn has_oversized_in_flight(&self) -> bool {
+        self.staging.as_ref().is_some_and(Staging::has_oversized_in_flight)
+            || self.frame_writes.as_ref().is_some_and(Staging::has_oversized_in_flight)
     }
 
     #[cfg(test)]
@@ -133,11 +149,16 @@ impl Renderer {
     fn write_rows(staging: &Staging, texture: &wgpu::Texture, data: &[u8], (y0, y1): (u32, u32)) {
         if y1 <= y0 { return; }
         let row = texture.width() * texture.format().block_copy_size(None).unwrap();
+        let max_y = (data.len() / row as usize) as u32;
+        let y1 = y1.min(max_y);
+        if y1 <= y0 { return; }
         staging.write_texture_rows(texture, y0, &data[(y0 * row) as usize..(y1 * row) as usize]);
     }
 
     /// Uploads changed rows of the runtime's image atlas (`El::pixels`), creating its texture on
-    /// first use.
+    /// first use. Note: `ImageCache` decodes on CPU only; `upload_images`, `FillPass`, and
+    /// `build_surfaces` run strictly inside frame preparation, which is unreachable once
+    /// `GpuLossPolicy::Terminal` latches.
     pub fn upload_images(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, images: &mut ImageAtlas) {
         if images.pages.is_empty() && self.images.is_empty() { return self.refresh_layer_bindings(device); }
         let staging = self.uploads.staging(device, queue);
@@ -148,7 +169,11 @@ impl Renderer {
         let mut changed = self.images.len() != images.pages.len();
         self.images.resize_with(images.pages.len(), || None);
         for (index, page) in images.pages.iter_mut().enumerate() {
-            if page.data.is_empty() { changed |= self.images[index].is_some(); self.images[index] = None; continue; }
+            // A page past the device's largest texture (placed before this renderer said its limit)
+            // draws nothing rather than failing validation.
+            if page.data.is_empty() || page.width.max(page.height) > self.max_texture_dim {
+                changed |= self.images[index].is_some(); self.images[index] = None; continue;
+            }
             if self.images[index].as_ref().is_none_or(|(t, _)| t.width() != page.width || t.height() != page.height) {
                 let texture = Self::image_texture(device, page.width, page.height);
                 let bind = Self::bind_group(device, &self.bind_layout, &self.globals, self.uber.outlines(), &self.atlas, &texture, None);
@@ -161,6 +186,69 @@ impl Renderer {
         }
         if changed { self.images_changed(); }
         self.refresh_layer_bindings(device);
+    }
+
+    /// Drops every uploaded image page's GPU texture and any layer bind groups referencing them.
+    /// Returns whether any texture was held. The next `upload_images` recreates textures for pages
+    /// still present in `ImageAtlas`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn clear_images(&mut self) -> bool {
+        let had = self.images.iter().any(Option::is_some);
+        if self.images.is_empty() && !had { return false; }
+        self.images.clear();
+        self.layers.clear_images();
+        self.images_changed();
+        #[cfg(all(feature = "alloc-sites", not(target_arch = "wasm32")))]
+        self.report_pools();
+        had
+    }
+
+    /// Drops GPU textures for image pages `ImageAtlas::rest` truncated or emptied (or whose
+    /// dimensions no longer match), keeping live pages resident. Drops layer image bind groups
+    /// when anything changes so no layer target retains a reference to a freed texture. Returns
+    /// whether any GPU image texture was dropped.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn prune_images(&mut self, images: &ImageAtlas) -> bool {
+        let mut dropped = false;
+        let mut changed = self.images.len() > images.pages.len();
+        if changed {
+            dropped = self.images[images.pages.len()..].iter().any(Option::is_some);
+            self.images.truncate(images.pages.len());
+        }
+        for (slot, page) in self.images.iter_mut().zip(&images.pages) {
+            if (page.data.is_empty()
+                || slot.as_ref().is_some_and(|(t, _)| t.width() != page.width || t.height() != page.height))
+                && slot.take().is_some()
+            {
+                dropped = true;
+                changed = true;
+            }
+        }
+        if changed {
+            self.layers.clear_images();
+            self.images_changed();
+            #[cfg(all(feature = "alloc-sites", not(target_arch = "wasm32")))]
+            self.report_pools();
+        }
+        dropped
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_images(&self) -> bool {
+        self.images.iter().any(Option::is_some)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn image_texture_count(&self) -> usize {
+        self.images.iter().flatten().count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn image_texture_bytes(&self) -> u64 {
+        self.images.iter().flatten().map(|(t, _)| {
+            u64::from(t.width()) * u64::from(t.height())
+                * u64::from(t.format().block_copy_size(None).unwrap_or(4))
+        }).sum()
     }
 
     /// Uploads several instance lists back to back (one buffer, one glyph upload) and returns
@@ -222,6 +310,7 @@ impl Renderer {
         // The pinned pipelines (`variant::start_pinned`): asked for at the first prepare, taken once their thread has them.
         if self.pinned.is_none() && self.pinned_building.is_none() { self.start_pinned(device); }
         self.take_pinned();
+        self.poll_effect_warm();
         #[cfg(feature = "frame-profile")]
         super::report_pinned();
         let staging = self.uploads.staging(device, queue);
@@ -284,9 +373,9 @@ impl Renderer {
             staging.write_buffer(&self.globals, std::mem::offset_of!(Globals, viewport) as u64, bytemuck::cast_slice(&[viewport.0 as f32, viewport.1 as f32]));
             #[cfg(test)] { self.uploads.globals_writes += 1; }
         }
-        let mode = (self.srgb_blend, byte_source);
+        let mode = (self.srgb_blend, byte_source, [self.fade_stops[0].to_bits(), self.fade_stops[1].to_bits()]);
         if self.uploads.srgb.replace(mode) != Some(mode) {
-            let flags: [f32; 4] = [self.srgb_blend as u8 as f32, byte_source as u8 as f32, 0.0, 0.0];
+            let flags: [f32; 4] = [self.srgb_blend as u8 as f32, byte_source as u8 as f32, self.fade_stops[0], self.fade_stops[1]];
             staging.write_buffer(&self.globals, std::mem::offset_of!(Globals, flags) as u64, bytemuck::cast_slice(&flags));
             #[cfg(test)] { self.uploads.globals_writes += 1; }
         }
@@ -307,15 +396,21 @@ impl Renderer {
         self.sync_resident_caches(&mut atlas.resident_caches);
         self.backdrop_used = self.effects.iter().any(|(_, i)| i.params[0] != 0.0 || i.kind() == Some(Kind::BackdropBlur));
         if self.backdrop_used {
-            self.ensure_backdrop(device, self.format, viewport);
+            // Every pooled copy holds the same part of the window, so a backdrop reads the same
+            // texels whichever format its pass draws in.
+            let (origin, size) = self.backdrop_frame(viewport);
+            self.ensure_backdrop(device, self.format, origin, size);
             for index in 0..self.extra.len() {
-                self.ensure_backdrop(device, self.extra[index].0, viewport);
+                self.ensure_backdrop(device, self.extra[index].0, origin, size);
             }
             if self.layers.targets.iter().any(Option::is_some) {
-                self.ensure_backdrop(device, layers::FORMAT, viewport);
+                self.ensure_backdrop(device, layers::FORMAT, origin, size);
             }
         }
         self.prepare_backdrop_blur(device, queue, viewport);
+        if self.first_frame_submitted.load(Ordering::Acquire) {
+            self.warm_effects(device);
+        }
         #[cfg(all(feature = "alloc-sites", not(target_arch = "wasm32")))]
         self.report_pools();
     }
@@ -327,6 +422,13 @@ impl Renderer {
     pub(crate) fn build_surfaces(&mut self, device: &wgpu::Device, draws: &[crate::native_surface::SurfaceDraw], done: impl FnOnce() + Send + 'static) {
         if draws.is_empty() || self.surfaces.is_some() || self.surfaces_building.is_some() { return; }
         self.surfaces_building = Some(crate::native_surface::SurfaceRenderer::build(device, self.format, Box::new(done)));
+    }
+
+    /// Whether the native-surface pipeline is still compiling (`build_surfaces`), so the frame
+    /// skipped drawing surfaces and must not be recorded as a presented resting frame.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) fn surfaces_pending(&self) -> bool {
+        self.surfaces.is_none() && self.surfaces_building.is_some()
     }
 
     /// Punches these native surfaces' places out of the window's pixels from the next
@@ -495,7 +597,7 @@ impl Renderer {
     }
 
     /// The instances the buffer holds, when they are paint `paint`'s and `len` of them.
-    #[cfg_attr(not(any(target_os = "windows", target_arch = "wasm32")), allow(dead_code))]
+    #[cfg(target_os = "windows")]
     pub(super) fn held_instances(&self, paint: u64, len: usize) -> Option<&[Instance]> {
         (self.uploads.held_paint == Some(paint) && self.uploads.instances.len() == len).then_some(&self.uploads.instances[..])
     }

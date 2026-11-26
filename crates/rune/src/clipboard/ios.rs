@@ -8,10 +8,13 @@
 //! in the other backends and never on the main thread, which UIKit's headers do not keep
 //! `UIPasteboard` to; and nothing here reads content until a paste or a read was asked for.
 //! Watching a held secret reads only the change count.
-use objc2_foundation_video::{NSData, NSString};
-use objc2_video::rc::{Retained, autoreleasepool};
-use objc2_video::runtime::AnyObject;
-use objc2_video::{class, msg_send};
+
+#![allow(unsafe_code)]
+
+use objc2_foundation::{NSData, NSString};
+use objc2::rc::{Retained, autoreleasepool};
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send};
 use zeroize::Zeroizing;
 
 use super::html::MAX_RICH_BYTES;

@@ -131,7 +131,8 @@ impl<'a> B<'a> {
         self.fx_with(l, FxSlot::default());
     }
     fn fx_with(&mut self, l: FxLayer, slot: FxSlot) {
-        let l = l.at(if l.time == 0.0 { self.t } else { l.time }).reduced(self.reduced);
+        let t = if l.time == 0.0 { self.t } else { l.time };
+        let l = l.at(t).reduced(self.reduced);
         self.ops.push(Op::Fx(self.layers.len()));
         self.layers.push(l);
         self.slots.push(slot);
@@ -510,7 +511,7 @@ fn timings() -> String {
             enc.copy_buffer_to_buffer(&qbuf, 0, &rbuf, 0, 128);
             ctx.queue.submit([enc.finish()]);
             let sl = rbuf.slice(..128);
-            sl.map_async(wgpu::MapMode::Read, |r| r.unwrap());
+            sl.map_async(wgpu::MapMode::Read, |_| {});
             ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
             {
                 let d = sl.get_mapped_range().unwrap();

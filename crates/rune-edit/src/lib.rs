@@ -29,6 +29,26 @@ mod secure;
 mod typing;
 
 #[doc(hidden)]
+pub use caret_motion::Arrow as CaretArrow;
+#[doc(hidden)]
+pub use caret_motion::CaretMove;
+#[doc(hidden)]
+pub use caret_motion::Landing as CaretLanding;
+#[doc(hidden)]
+pub use caret_motion::classify_caret_key;
+#[doc(hidden)]
+pub use caret_motion::collapse_edge;
+#[doc(hidden)]
+pub use caret_motion::home_end_is_doc;
+#[doc(hidden)]
+pub use caret_motion::next_word_in;
+#[doc(hidden)]
+pub use caret_motion::prev_word_in;
+#[doc(hidden)]
+pub use caret_motion::space_ahead;
+#[doc(hidden)]
+pub use caret_motion::visual_in;
+#[doc(hidden)]
 pub use direction_keys::DirChord;
 #[doc(hidden)]
 pub use direction_keys::step_dir_chord;
@@ -48,6 +68,7 @@ pub use keys::KeyPlatform;
 pub use keys::KeySide;
 #[doc(hidden)]
 pub use keys::MAC_KEYS;
+pub use keys::MediaKey;
 pub use keys::Modifier;
 pub use keys::Mods;
 #[doc(hidden)]
@@ -67,6 +88,10 @@ pub use model::MarkRange;
 pub use model::ParagraphInfo;
 pub use model::RichStyle;
 #[doc(hidden)]
+pub use replace::next_char;
+#[doc(hidden)]
+pub use replace::prev_char;
+#[doc(hidden)]
 pub use secure::MULTILINE_SECURE_MASK;
 #[doc(hidden)]
 pub use secure::Masking;
@@ -74,7 +99,7 @@ pub use secure::Masking;
 use caret_motion::Column;
 use direction_keys::FieldDir;
 use history::{EditKind, EditedTag, Group};
-use replace::{count_newlines, next_char, prev_backspace, prev_char};
+use replace::{count_newlines, prev_backspace};
 use secure::LineMode;
 use typing::Typing;
 
@@ -101,9 +126,13 @@ pub struct TextEdit {
     revealed: bool,
     /// Mirrors the field's `El::single_line()`; the runtime sets it before each edit.
     line_mode: LineMode,
+    /// Opt-in macOS code-editor mode: plain `Home`/`End` move to the current visual line's edges
+    /// instead of the document's ends. Off by default.
+    line_home_end: bool,
     /// Formatting keys and rich paste are on (see [`TextEdit::rich`]).
     rich: bool,
-    /// The mark kinds this field keeps, one bit per [`Mark::kind_order`]; `None` keeps all.
+    /// The mark kinds this field keeps, one bit per [`Mark::kind_order`]; `None` keeps
+    /// [`DEFAULT_ALLOWED_MARKS`] (every kind except [`Mark::Color`]).
     allowed_marks: Option<u16>,
     /// The block kinds this field keeps ([`Block::kind_bit`]); `None` keeps all.
     allowed_blocks: Option<u8>,
@@ -122,8 +151,17 @@ pub struct TextEdit {
 
 impl std::fmt::Debug for TextEdit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TextEdit").field("text", &if self.secure { "[redacted]" } else { &self.text })
-            .field("anchor", &self.anchor).field("focus", &self.focus).field("focused", &self.focused)
+        let mut s = f.debug_struct("TextEdit");
+        if self.secure {
+            s.field("text", &"[redacted]")
+                .field("anchor", &"[redacted]")
+                .field("focus", &"[redacted]");
+        } else {
+            s.field("text", &self.text)
+                .field("anchor", &self.anchor)
+                .field("focus", &self.focus);
+        }
+        s.field("focused", &self.focused)
             .field("marks", &self.marks).field("blocks", &self.blocks)
             .field("secure", &self.secure).field("revealed", &self.revealed).finish_non_exhaustive()
     }
@@ -177,6 +215,7 @@ impl Drop for TextEdit {
 /// out (volatile writes and a fence, as `zeroize`), then empties it. Eight bytes a write, not
 /// one: a 1.7 MB draft's copy goes in a tenth of a millisecond, where a byte at a time was most
 /// of one on every frame a long draft's field was built.
+#[allow(unsafe_code)]
 pub(crate) fn wipe(s: &mut String) {
     // SAFETY: only zeros are written, inside the allocation (`capacity` bytes from its start),
     // each at an address aligned for what's written there; the length is reset to 0 after.
@@ -246,6 +285,7 @@ impl TextEdit {
             secure: false,
             revealed: false,
             line_mode: LineMode::Default,
+            line_home_end: false,
             rich: false,
             allowed_marks: None,
             allowed_blocks: None,
@@ -256,13 +296,46 @@ impl TextEdit {
         }
     }
 
+    /// The seven inline mark kinds allowed on a [`TextEdit`] by default (`Bold`, `Italic`,
+    /// `Underline`, `Strike`, `Code`, `Link`, and `Pill`), excluding [`Mark::Color`] so pasted
+    /// browser or editor ink colours never enter a rich field unless the app opts in.
+    pub(crate) const DEFAULT_ALLOWED_MARKS: u16 =
+        (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6);
+
+    pub(crate) fn effective_allowed_marks(&self) -> u16 {
+        self.allowed_marks.unwrap_or(Self::DEFAULT_ALLOWED_MARKS)
+    }
+
     /// Construct a [`TextEdit`] from plain text, inline [`MarkRange`]s, and per-line [`Block`]s.
     /// Caret starts at the end of `text`. Ranges are clamped to char boundaries and canonicalized,
     /// and `blocks` is padded or truncated to match the number of `\n`-separated lines in `text`.
+    /// Passing any [`Mark::Color`] in `marks` enables text colours on the returned field.
     pub fn from_parts(text: impl Into<String>, marks: Vec<MarkRange>, blocks: Vec<Block>) -> TextEdit {
         let mut edit = Self::new(text).rich();
+        if marks.iter().any(|m| matches!(m.mark, Mark::Color(_))) {
+            edit.allowed_marks = Some(Self::DEFAULT_ALLOWED_MARKS | (1 << Mark::Color(String::new()).kind_order()));
+        }
         edit.marks = marks;
         edit.blocks = blocks;
+        edit.clamp_list_levels();
+        edit.sync_invariants();
+        edit
+    }
+
+    /// Internal constructor for `html::parse_html` that keeps parsed [`Mark::Color`] marks until
+    /// [`from_html`](Self::from_html), [`from_html_with_color`](Self::from_html_with_color), or
+    /// [`paste_html`](Self::paste_html) applies the target field's allowed-mark mask.
+    pub(crate) fn from_parsed_html(
+        text: String,
+        marks: Vec<MarkRange>,
+        blocks: Vec<Block>,
+        soft_breaks: Vec<u32>,
+    ) -> TextEdit {
+        let mut edit = Self::new(text).rich();
+        edit.allowed_marks = Some(Self::DEFAULT_ALLOWED_MARKS | (1 << Mark::Color(String::new()).kind_order()));
+        edit.marks = marks;
+        edit.blocks = blocks;
+        edit.soft_breaks = soft_breaks;
         edit.clamp_list_levels();
         edit.sync_invariants();
         edit
@@ -287,20 +360,85 @@ impl TextEdit {
         self.rich
     }
 
+    /// Whether plain `Home` and `End` (and `Shift+Home` / `Shift+End`) move to the current visual
+    /// line's edges on macOS instead of the document's ends. Off (`false`) by default so native
+    /// macOS navigation stays unchanged; on Windows and Linux plain `Home` and `End` always move
+    /// to the current visual line's edges.
+    pub fn line_home_end(&self) -> bool {
+        self.line_home_end
+    }
+
+    /// Opt into visual line-based `Home` and `End` on macOS (keeping `Cmd+Home`/`Cmd+End`,
+    /// `Ctrl+Home`/`Ctrl+End`, and `Cmd+Up`/`Cmd+Down` on the document's ends).
+    ///
+    /// ```
+    /// # use rune_edit::TextEdit;
+    /// let mut edit = TextEdit::new("first\nsecond");
+    /// edit.set_line_home_end(true);
+    /// assert!(edit.line_home_end());
+    /// ```
+    pub fn set_line_home_end(&mut self, on: bool) {
+        self.line_home_end = on;
+    }
+
+    /// Builder form of [`set_line_home_end`](Self::set_line_home_end).
+    ///
+    /// ```
+    /// # use rune_edit::TextEdit;
+    /// let edit = TextEdit::new("first\nsecond").with_line_home_end(true);
+    /// assert!(edit.line_home_end());
+    /// ```
+    pub fn with_line_home_end(mut self, on: bool) -> Self {
+        self.line_home_end = on;
+        self
+    }
+
     /// Keep only these kinds of inline mark, for a field whose storage can't hold the rest (an
     /// app that saves Markdown has no underline). A disallowed mark's shortcut (`⌘U`) goes on
     /// to the app's key handlers, `toggle_mark` and `set_mark` ignore it, and paste drops it.
-    /// Kinds match by [`Mark::same_kind`], so any [`Mark::Link`] allows links. The field never
+    /// Kinds match by [`Mark::same_kind`], so any [`Mark::Link`] allows links and any
+    /// [`Mark::Color`] allows colours. The field never
     /// holds a disallowed mark: marks it already has, or that `set_marks` adds, are dropped.
-    /// Every kind is allowed by default, and [`Mark::Pill`] always is: pills are the app's own
-    /// tokens, not formatting.
+    /// Every kind except [`Mark::Color`] is allowed by default (opt into colour with
+    /// [`allow_color`](Self::allow_color) or by including `Mark::Color(String::new())` here), and
+    /// [`Mark::Pill`] always is: pills are the app's own tokens, not formatting.
     ///
-    /// ```ignore
+    /// ```
+    /// # use rune_edit::{Mark, TextEdit};
+    /// # let _ =
     /// TextEdit::new("").rich().allow_marks([Mark::Bold, Mark::Italic, Mark::Strike, Mark::Code, Mark::Link(String::new())])
+    /// # ;
     /// ```
     pub fn allow_marks(mut self, marks: impl IntoIterator<Item = Mark>) -> Self {
         let pill = 1 << Mark::Pill(String::new()).kind_order();
         self.allowed_marks = Some(marks.into_iter().fold(pill, |bits, m| bits | 1 << m.kind_order()));
+        self.sync_invariants();
+        self
+    }
+
+    /// Allow or disallow [`Mark::Color`] inline text colours on this field.
+    ///
+    /// Off by default so rich fields do not import hard-coded browser or code-editor ink colours
+    /// on paste (for example black text into a dark theme). Turning it on keeps all currently
+    /// allowed mark kinds and adds [`Mark::Color`]; turning it off strips any existing colour
+    /// marks and pending colour style.
+    ///
+    /// ```
+    /// use rune_edit::{Mark, TextEdit};
+    /// let mut edit = TextEdit::new("hello").rich().allow_color(true);
+    /// assert!(edit.allows_mark(&Mark::Color(String::new())));
+    /// edit.set_selection(0, 5);
+    /// edit.set_color(Some("#D93025"));
+    /// assert_eq!(edit.active_color(), Some("#d93025"));
+    /// ```
+    pub fn allow_color(mut self, on: bool) -> Self {
+        let bits = self.allowed_marks.get_or_insert(Self::DEFAULT_ALLOWED_MARKS);
+        let color = 1 << Mark::Color(String::new()).kind_order();
+        if on {
+            *bits |= color;
+        } else {
+            *bits &= !color;
+        }
         self.sync_invariants();
         self
     }
@@ -315,11 +453,12 @@ impl TextEdit {
         self
     }
 
-    /// Whether this field keeps marks of `mark`'s kind (see [`allow_marks`](Self::allow_marks)),
-    /// to hide a formatting bar's button for one it doesn't (`Mark::Link(String::new())` checks
-    /// links).
+    /// Whether this field keeps marks of `mark`'s kind (see [`allow_marks`](Self::allow_marks)
+    /// and [`allow_color`](Self::allow_color)), to hide a formatting bar's button for one it
+    /// doesn't (`Mark::Link(String::new())` checks links; `Mark::Color(String::new())` checks
+    /// text colour).
     pub fn allows_mark(&self, mark: &Mark) -> bool {
-        self.allowed_marks.is_none_or(|bits| bits & 1 << mark.kind_order() != 0)
+        self.effective_allowed_marks() & (1 << mark.kind_order()) != 0
     }
 
     /// Whether this field keeps blocks of `block`'s kind (see [`allow_blocks`](Self::allow_blocks)).
@@ -358,11 +497,30 @@ impl TextEdit {
     }
 
     /// Parse an HTML fragment (`<b>`, `<strong>`, `<i>`, `<em>`, `<u>`, `<s>`, `<del>`, `<strike>`,
-    /// `<a href>`, `<code>`, `<pre>`, `<ul>`, `<ol>`, `<li>`, `<blockquote>`, `<p>`, `<div>`, `<br>`,
-    /// and inline `style` for `font-weight`, `font-style`, `text-decoration`) into a [`TextEdit`].
+    /// `<a href>`, `<code>`, `<pre>`, `<ul>`, `<ol>`, `<li>`, `<blockquote>`, `<p>`, `<div>`,
+    /// `<br>`, and inline `style` for `font-weight`, `font-style`, `text-decoration`) into a
+    /// [`TextEdit`].
     /// Unknown tags keep their text and strip the wrapper; `<script>` and `<style>` are dropped.
+    /// Text colours (`style="color:..."`, `<font color>`) are stripped by default; use
+    /// [`from_html_with_color`](Self::from_html_with_color) to load saved coloured HTML.
     pub fn from_html(html_str: &str) -> TextEdit {
-        html::parse_html(html_str).rich()
+        let mut edit = html::parse_html(html_str).rich();
+        edit.allowed_marks = None;
+        edit.sync_invariants();
+        edit
+    }
+
+    /// Like [`from_html`](Self::from_html), but opts the returned field into [`Mark::Color`]
+    /// (as if built with [`allow_color(true)`](Self::allow_color)) and keeps CSS `style="color:..."`
+    /// and `<font color>` text colours.
+    ///
+    /// ```
+    /// use rune_edit::TextEdit;
+    /// let edit = TextEdit::from_html_with_color(r#"<p><span style="color:#d93025">red</span></p>"#);
+    /// assert_eq!(edit.active_color(), Some("#d93025"));
+    /// ```
+    pub fn from_html_with_color(html_str: &str) -> TextEdit {
+        html::parse_html(html_str).rich().allow_color(true)
     }
 
     /// Serialize the entire document's text, inline marks, and paragraph blocks to safe HTML.
@@ -425,9 +583,12 @@ impl TextEdit {
     /// paragraph, list item or quote above it, as `Shift+Return` makes, so a draft rebuilt with
     /// [`from_parts`](Self::from_parts) keeps them. Line 0 and lines past the end are dropped.
     ///
-    /// ```ignore
+    /// ```
+    /// # use rune_edit::{Block, TextEdit};
     /// // "one" then "two" on a new line of the same bullet.
+    /// # let _ =
     /// TextEdit::from_parts("one\ntwo", vec![], vec![Block::Bullet(0); 2]).with_soft_breaks(vec![1])
+    /// # ;
     /// ```
     pub fn with_soft_breaks(mut self, lines: Vec<u32>) -> Self {
         self.set_soft_breaks(lines);
@@ -628,16 +789,6 @@ impl TextEdit {
         })
     }
 
-    /// The start of the pill that ends at or contains `j`, when `j` is past its start.
-    fn pill_before(&self, j: usize) -> Option<usize> {
-        self.marks.iter().find(|m| m.mark.is_pill() && m.start < j && j <= m.end).map(|m| m.start)
-    }
-
-    /// The end of the pill that starts at or contains `j`, when `j` is before its end.
-    fn pill_after(&self, j: usize) -> Option<usize> {
-        self.marks.iter().find(|m| m.mark.is_pill() && m.start <= j && j < m.end).map(|m| m.end)
-    }
-
     /// Replace the selection with `label` as one [`Mark::Pill`] carrying `id`, and put the
     /// caret after it: one undo step. Line breaks in `label` become spaces.
     pub fn insert_pill(&mut self, id: impl Into<String>, label: &str) {
@@ -747,5 +898,9 @@ impl TextEdit {
     }
 }
 
+#[cfg(test)]
+mod color_tests;
+#[cfg(test)]
+mod pill_copy_tests;
 #[cfg(test)]
 mod tests;

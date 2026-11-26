@@ -8,7 +8,8 @@ use bytemuck::{Pod, Zeroable};
 
 use super::*;
 
-/// Backdrop-blurred elements per frame. Elements past this many draw only their fill.
+/// Initial uniform-slot capacity for backdrop blurs in a frame. Frames with more blurred
+/// elements grow the buffer so every blurred element blurs, matching CSS `backdrop-filter`.
 pub const MAX_BACKDROP_BLURS: usize = 4;
 
 /// Pyramid levels below the backdrop, the first at half resolution.
@@ -132,7 +133,9 @@ fn composite_from_wgsl(device: &wgpu::Device, wgsl: &str) -> super::dxbc::Shader
     super::dxbc::Shaders::one(device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("backdrop blur composite"), source: wgpu::ShaderSource::Wgsl(wgsl.into()) }))
 }
 
-pub(super) struct BackdropBlur {
+/// Pre-compiled pipelines, layouts, shaders and sampler for [`BackdropBlur`], built off-thread
+/// without allocating any GPU textures, buffers or bind groups until the first blurred frame.
+pub(super) struct WarmedBackdropBlur {
     down: wgpu::RenderPipeline,
     up: wgpu::RenderPipeline,
     level_layout: wgpu::BindGroupLayout,
@@ -143,24 +146,9 @@ pub(super) struct BackdropBlur {
     composite_precompiled: bool,
     composites: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
     sampler: wgpu::Sampler,
-    dummy: wgpu::TextureView,
-    uniforms: wgpu::Buffer,
-    pyramid: Option<Pyramid>,
-    /// The down pass into level 0, reading the pooled backdrop of each format.
-    first: Vec<(wgpu::TextureFormat, wgpu::BindGroup)>,
-    records: Vec<Record>,
 }
 
-/// The up chain's start level `n` (1..=top) and the share of level `n` that gives `sigma`.
-pub(in crate::render) fn levels(sigma: f32, top: usize) -> (usize, f32) {
-    let top = top.clamp(1, SIGMAS.len() - 1);
-    let sigma = sigma.clamp(SIGMAS[0], SIGMAS[top]);
-    let n = (1..=top).find(|&n| sigma <= SIGMAS[n]).unwrap_or(top);
-    let (a, b) = (SIGMAS[n - 1], SIGMAS[n]);
-    (n, ((sigma * sigma - a * a) / (b * b - a * a)).clamp(0.0, 1.0))
-}
-
-impl BackdropBlur {
+impl WarmedBackdropBlur {
     pub(super) fn new(device: &wgpu::Device, uber: &wgpu::BindGroupLayout) -> Self {
         let texture = |binding| wgpu::BindGroupLayoutEntry {
             binding,
@@ -245,6 +233,102 @@ impl BackdropBlur {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        Self {
+            down, up, level_layout, result_layout, composite_layout, composite, composite_precompiled,
+            composites: Vec::new(), sampler,
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn ensure_composite(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
+        ensure_composite_in(device, &self.composite_layout, &mut self.composite, &mut self.composite_precompiled, &mut self.composites, format);
+    }
+}
+
+fn ensure_composite_in(
+    device: &wgpu::Device,
+    composite_layout: &wgpu::PipelineLayout,
+    composite: &mut super::dxbc::Shaders,
+    composite_precompiled: &mut bool,
+    composites: &mut Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
+    format: wgpu::TextureFormat,
+) {
+    if composites.iter().any(|(f, _)| *f == format) { return; }
+    let make = |shaders: &super::dxbc::Shaders| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("backdrop blur composite"),
+        layout: Some(composite_layout),
+        vertex: wgpu::VertexState {
+            module: &shaders.vertex,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[Some(metallib::uber_vertex_layout())],
+        },
+        primitive: metallib::uber_primitive(),
+        depth_stencil: None,
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shaders.fragment,
+            entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(super::blend_state(Blend::SourceOver)),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    #[cfg(target_os = "windows")]
+    if *composite_precompiled {
+        if let Some(pipeline) = super::dxbc::checked(device, "backdrop blur composite", "compiling WGSL", || make(composite)) {
+            composites.push((format, pipeline));
+            return;
+        }
+        *composite = composite_from_wgsl(device, &composite_wgsl());
+        *composite_precompiled = false;
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = composite_precompiled;
+    let pipeline = make(composite);
+    composites.push((format, pipeline));
+}
+
+pub(super) struct BackdropBlur {
+    down: wgpu::RenderPipeline,
+    up: wgpu::RenderPipeline,
+    level_layout: wgpu::BindGroupLayout,
+    result_layout: wgpu::BindGroupLayout,
+    composite_layout: wgpu::PipelineLayout,
+    /// The composite's stages: precompiled (`composite_precompiled`) or from WGSL.
+    composite: super::dxbc::Shaders,
+    composite_precompiled: bool,
+    composites: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
+    sampler: wgpu::Sampler,
+    dummy: wgpu::TextureView,
+    uniforms: wgpu::Buffer,
+    capacity: usize,
+    pyramid: Option<Pyramid>,
+    /// The down pass into level 0, reading the pooled backdrop of each format.
+    first: Vec<(wgpu::TextureFormat, wgpu::BindGroup)>,
+    records: Vec<Record>,
+}
+
+/// The up chain's start level `n` (1..=top) and the share of level `n` that gives `sigma`.
+pub(in crate::render) fn levels(sigma: f32, top: usize) -> (usize, f32) {
+    let top = top.clamp(1, SIGMAS.len() - 1);
+    let sigma = sigma.clamp(SIGMAS[0], SIGMAS[top]);
+    let n = (1..=top).find(|&n| sigma <= SIGMAS[n]).unwrap_or(top);
+    let (a, b) = (SIGMAS[n - 1], SIGMAS[n]);
+    (n, ((sigma * sigma - a * a) / (b * b - a * a)).clamp(0.0, 1.0))
+}
+
+impl BackdropBlur {
+    pub(super) fn from_warmed(device: &wgpu::Device, warmed: WarmedBackdropBlur) -> Self {
+        let WarmedBackdropBlur {
+            down, up, level_layout, result_layout, composite_layout, composite, composite_precompiled,
+            composites, sampler,
+        } = warmed;
         let dummy = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("backdrop blur stand-in"),
             size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
@@ -255,16 +339,21 @@ impl BackdropBlur {
             usage: wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         }).create_view(&Default::default());
+        let capacity = MAX_BACKDROP_BLURS;
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("backdrop blur levels"),
-            size: (MAX_BACKDROP_BLURS * SLOTS) as u64 * SLOT,
+            size: (capacity * SLOTS) as u64 * SLOT,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         BackdropBlur {
             down, up, level_layout, result_layout, composite_layout, composite, composite_precompiled,
-            composites: Vec::new(), sampler, dummy, uniforms, pyramid: None, first: Vec::new(), records: Vec::new(),
+            composites, sampler, dummy, uniforms, capacity, pyramid: None, first: Vec::new(), records: Vec::new(),
         }
+    }
+
+    pub(super) fn new(device: &wgpu::Device, uber: &wgpu::BindGroupLayout) -> Self {
+        Self::from_warmed(device, WarmedBackdropBlur::new(device, uber))
     }
 
     fn levels_binding(&self) -> wgpu::BindingResource<'_> {
@@ -291,6 +380,7 @@ impl BackdropBlur {
     /// Points the first down pass at the pooled backdrop of `format` (new or resized).
     /// Drops the pyramid and the bindings of the pooled backdrops, which `Renderer::give_back`
     /// drops; the next blurred frame makes them again.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn give_back(&mut self) {
         self.pyramid = None;
         self.first.clear();
@@ -304,44 +394,32 @@ impl BackdropBlur {
         }
     }
 
+
     pub(super) fn ensure_composite(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
-        if self.composites.iter().any(|(f, _)| *f == format) { return; }
-        let make = |shaders: &super::dxbc::Shaders| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("backdrop blur composite"),
-            layout: Some(&self.composite_layout),
-            vertex: wgpu::VertexState {
-                module: &shaders.vertex,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[Some(metallib::uber_vertex_layout())],
-            },
-            primitive: metallib::uber_primitive(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shaders.fragment,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(super::blend_state(Blend::SourceOver)),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
+        ensure_composite_in(device, &self.composite_layout, &mut self.composite, &mut self.composite_precompiled, &mut self.composites, format);
+    }
+
+    /// Grows the level uniform buffer when a frame holds more than `self.capacity` blur records,
+    /// rebuilding the bind groups that reference it. Returns the usable slot capacity.
+    fn ensure_capacity(&mut self, device: &wgpu::Device, count: usize, backdrops: &[pass::Backdrop]) -> usize {
+        if count <= self.capacity { return self.capacity; }
+        let stride = SLOTS as u64 * SLOT;
+        let max_cap = (device.limits().max_buffer_size.min(u32::MAX as u64) / stride) as usize;
+        let target = count.next_power_of_two().max(MAX_BACKDROP_BLURS).min(max_cap);
+        if target <= self.capacity { return self.capacity; }
+        self.uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("backdrop blur levels"),
+            size: target as u64 * stride,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
-        #[cfg(target_os = "windows")]
-        if self.composite_precompiled {
-            if let Some(pipeline) = super::dxbc::checked(device, "backdrop blur composite", "compiling WGSL", || make(&self.composite)) {
-                self.composites.push((format, pipeline));
-                return;
-            }
-            self.composite = composite_from_wgsl(device, &composite_wgsl());
-            self.composite_precompiled = false;
-        }
-        let pipeline = make(&self.composite);
-        self.composites.push((format, pipeline));
+        self.capacity = target;
+        // Pyramid and backdrop bind groups reference `self.uniforms`; drop the pyramid so
+        // `ensure_pyramid` recreates it, and rebind every pooled backdrop against the new buffer.
+        self.pyramid = None;
+        self.first.clear();
+        for bd in backdrops { self.bind_backdrop(device, bd.format, &bd.view); }
+        self.capacity
     }
 
     /// Makes the pyramid's level 0 at least `need` texels, grown in `STEP`s and never past `cap`.
@@ -434,7 +512,10 @@ impl Renderer {
         if !any || vw == 0 || vh == 0 { return; }
         let staging = self.uploads.staging(device, queue);
         if self.backdrop_blur.is_none() {
-            let mut blur = BackdropBlur::new(device, &self.bind_layout);
+            let mut blur = match self.harvest_warmed_backdrop_blur() {
+                Some(warmed) => BackdropBlur::from_warmed(device, warmed),
+                None => BackdropBlur::new(device, &self.bind_layout),
+            };
             for bd in &self.backdrops { blur.bind_backdrop(device, bd.format, &bd.view); }
             self.backdrop_blur = Some(blur);
         }
@@ -442,31 +523,39 @@ impl Renderer {
         blur.ensure_composite(device, self.format);
         for (format, _) in &self.extra { blur.ensure_composite(device, *format); }
         if self.layers.targets.iter().any(Option::is_some) { blur.ensure_composite(device, layers::FORMAT); }
-        let viewport = [vw as f32, vh as f32];
+        // Where the pooled copies sit in the window, and their size (`Renderer::backdrop_frame`:
+        // the same for every format).
+        let (corner, held) = self.backdrops.iter().find(|b| b.format == self.format).map_or(([0.0; 2], [vw as f32, vh as f32]), |b| {
+            ([b.origin[0] as f32, b.origin[1] as f32], [b.texture.width() as f32, b.texture.height() as f32])
+        });
         let mut placed = Vec::new();
         let mut need = [STEP; 2];
-        let records = self.effects.iter().filter(|(_, i)| i.kind() == Some(Kind::BackdropBlur)).take(MAX_BACKDROP_BLURS);
+        let records = self.effects.iter().filter(|(_, i)| i.kind() == Some(Kind::BackdropBlur));
         for (at, i) in records {
             let Some(plan) = plan_region(i, (vw, vh)) else { continue };
             for k in 0..2 { need[k] = need[k].max(plan.size[k]); }
             placed.push((*at, plan.levels, plan.share, plan.region, plan.origin));
         }
         if placed.is_empty() { return; }
+        let slots = blur.ensure_capacity(device, placed.len(), &self.backdrops);
+        placed.truncate(slots);
+        if placed.is_empty() { return; }
         // The window plus the most an aligned origin can sit before it.
         let cap = [vw, vh].map(|v| (v.div_ceil(2) + STEP).next_multiple_of(STEP));
         blur.ensure_pyramid(device, need, cap);
         let Some(pyramid) = &blur.pyramid else { return };
         let extent = [pyramid.size[0] as f32 * 2.0, pyramid.size[1] as f32 * 2.0];
-        let mut levels_data = vec![0u8; MAX_BACKDROP_BLURS * SLOTS * SLOT as usize];
+        let mut levels_data = vec![0u8; placed.len() * SLOTS * SLOT as usize];
         for (slot, (at, n, share, region, origin)) in placed.into_iter().enumerate() {
             let inside = [(region[0] - origin[0]) / extent[0], (region[1] - origin[1]) / extent[1],
                 (region[2] - origin[0]) / extent[0], (region[3] - origin[1]) / extent[1]];
             let place = [origin[0], origin[1], extent[0], extent[1]];
             for m in 0..SLOTS {
-                // The first down pass reads the window-sized backdrop; the rest read the pyramid.
+                // The first down pass reads the pooled backdrop, which holds the window from
+                // `corner` for `held` pixels; the rest read the pyramid.
                 let (region, map) = if m == MIPS as usize {
-                    ([region[0] / viewport[0], region[1] / viewport[1], region[2] / viewport[0], region[3] / viewport[1]],
-                        [extent[0] / viewport[0], extent[1] / viewport[1], origin[0] / viewport[0], origin[1] / viewport[1]])
+                    ([(region[0] - corner[0]) / held[0], (region[1] - corner[1]) / held[1], (region[2] - corner[0]) / held[0], (region[3] - corner[1]) / held[1]],
+                        [extent[0] / held[0], extent[1] / held[1], (origin[0] - corner[0]) / held[0], (origin[1] - corner[1]) / held[1]])
                 } else {
                     (inside, [1.0, 1.0, 0.0, 0.0])
                 };
@@ -476,8 +565,7 @@ impl Renderer {
             }
             blur.records.push(Record { at, slot, levels: n, region, origin });
         }
-        let used = blur.records.last().map_or(0, |r| (r.slot + 1) * SLOTS * SLOT as usize);
-        staging.write_buffer(&blur.uniforms, 0, &levels_data[..used]);
+        staging.write_buffer(&blur.uniforms, 0, &levels_data);
     }
 
     /// Draws the backdrop blur record at `at`: splits the pass to copy and blur what is below,
@@ -509,7 +597,7 @@ impl Renderer {
             pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
             pass.set_pipeline(composite);
             pass.set_bind_group(0, bind, &[]);
-            pass.set_bind_group(1, &pyramid.result, &[(record.slot * SLOTS) as u32 * SLOT as u32]);
+            pass.set_bind_group(1, &pyramid.result, &[((record.slot * SLOTS) as u64 * SLOT) as u32]);
             pass.set_vertex_buffer(0, self.instances.slice(..));
             pass.draw(0..4, at..at + 1);
         }

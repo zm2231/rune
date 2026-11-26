@@ -3,32 +3,44 @@ name = "rune-spell"
 version = "0.0.1"
 edition.workspace = true
 license.workspace = true
-description = "Platform spell checking for Rune: Windows ISpellChecker, macOS NSSpellChecker, and web Hunspell via spellbook."
+description = "Platform spell checking for Rune: Windows ISpellChecker, macOS NSSpellChecker, Linux and web Hunspell via spellbook."
+
+[features]
+default = ["hunspell"]
+# Pure-Rust Hunspell spellchecking via `spellbook` (MPL-2.0) and `unicode-segmentation` on Linux
+# and `wasm32`. Off, Linux and `wasm32` fall back to a no-op backend without compiling `spellbook`.
+hunspell = ["dep:spellbook", "dep:unicode-segmentation"]
 
 [dependencies]
 rune-core = { workspace = true }
 rustc-hash = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = { version = "0.2.2", features = ["NSSpellChecker"] }
-objc2-foundation = { version = "0.2.2", features = ["NSArray", "NSEnumerator", "NSObject", "NSRange", "NSString"] }
+objc2-app-kit = { workspace = true, features = ["std", "NSSpellChecker"] }
+objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSEnumerator", "NSObject", "NSRange", "NSString"] }
 
-# UIKit's `UITextChecker` (`ios.rs`), through the objc2 0.6 line Rune's iOS code uses.
+# UIKit's `UITextChecker` (`ios.rs`).
 [target.'cfg(target_os = "ios")'.dependencies]
-objc2-video = { package = "objc2", version = "0.6" }
-objc2-foundation-video = { package = "objc2-foundation", version = "0.3", default-features = false, features = ["std", "NSArray", "NSEnumerator", "NSLocale", "NSRange", "NSString"] }
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSEnumerator", "NSLocale", "NSRange", "NSString"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { workspace = true, features = ["Win32_Foundation", "Win32_Globalization", "Win32_System_Com"] }
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
 
+[target.'cfg(any(target_os = "linux", target_arch = "wasm32"))'.dependencies]
+spellbook = { version = "0.4", optional = true }
+unicode-segmentation = { workspace = true, optional = true }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = { workspace = true }
-spellbook = "0.4"
-unicode-segmentation = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = ["console"] }
+
+[dev-dependencies]
+spellbook = "0.4"
+unicode-segmentation = { workspace = true }
 
 [lints]
 workspace = true

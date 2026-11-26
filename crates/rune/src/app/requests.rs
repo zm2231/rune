@@ -37,6 +37,9 @@ pub(crate) struct WindowRequests {
     pub window: Option<WindowRequest>,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub dock: Option<bool>,
+    /// `AppHandle::set_color_scheme`: app-wide light/dark appearance override; last-wins.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub color_scheme: Option<crate::ColorScheme>,
     /// `AppHandle::focus` or `AppHandle::minimize`; last-wins (`cancel_minimize`).
     pub activation: Option<Activation>,
     pub position: Option<(i32, i32)>,
@@ -62,6 +65,7 @@ impl WindowRequests {
     }
 
     /// Nothing but updates: no wake for `poll`, no window, focus or geometry request.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn only_updates(&self) -> bool {
         !self.woken && !self.asks_window()
     }
@@ -99,6 +103,10 @@ pub(crate) struct SharedCore {
     /// `AppHandle::quit` was called, or the web app is ending.
     pub(crate) quitting: AtomicBool,
     pub(crate) window_error: Mutex<Option<String>>,
+    /// Shared terminal GPU-loss latch synced from `App::gpu_loss_policy` so any `AppHandle`
+    /// cloned before or after `.gpu_loss_policy(...)` sees the app's latch.
+    #[cfg(not(target_arch = "wasm32"))]
+    gpu_loss_latch: Mutex<Option<Arc<crate::render::loss_latch::GpuLossLatch>>>,
 }
 
 impl SharedCore {
@@ -175,6 +183,15 @@ impl SharedCore {
         self.request(|q| q.dock = Some(visible));
     }
 
+    pub(crate) fn set_color_scheme(&self, scheme: crate::ColorScheme) {
+        self.request(|q| q.color_scheme = Some(scheme));
+    }
+
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) fn take_color_scheme(&self) -> Option<crate::ColorScheme> {
+        self.requests.lock().unwrap().color_scheme.take()
+    }
+
     pub(crate) fn is_visible(&self) -> bool {
         self.visible.load(Ordering::Acquire)
     }
@@ -187,6 +204,19 @@ impl SharedCore {
         self.window_error.lock().unwrap().clone()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn set_gpu_loss_latch(
+        &self,
+        latch: Option<Arc<crate::render::loss_latch::GpuLossLatch>>,
+    ) {
+        *self.gpu_loss_latch.lock().unwrap_or_else(|e| e.into_inner()) = latch;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn gpu_loss_latch(&self) -> Option<Arc<crate::render::loss_latch::GpuLossLatch>> {
+        self.gpu_loss_latch.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     pub(crate) fn set_window_error(&self, error: Option<String>) {
         *self.window_error.lock().unwrap() = error;
     }
@@ -195,6 +225,7 @@ impl SharedCore {
         std::mem::take(&mut self.requests.lock().unwrap())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn finish_drain_window(&self, rt: &mut crate::runtime::RuntimeCore, minimize: Option<NonZeroU64>) -> WindowRequests {
         let batch = self.take_window();
         if minimize > batch.last_cancel {
@@ -257,6 +288,7 @@ impl<S> Shared<S> {
     }
 
     /// Drain a native window's updates, running `after` (menu callbacks) after each update.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn drain_window(&self, rt: &mut crate::runtime::Runtime<S>, mut after: impl FnMut(bool)) -> WindowRequests
     where S: 'static {
         // Only these updates’ minimizes, and only those that survive their pick callbacks, are

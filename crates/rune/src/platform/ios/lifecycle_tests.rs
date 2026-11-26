@@ -361,7 +361,7 @@ impl Scene {
                     self.rt.scene_focus(focused);
                     released |= !focused;
                 }
-                Rest => self.rt.rest(self.on_rest, None, true),
+                Rest => self.rt.rest_with(self.on_rest, None, true),
                 Quit => {}
             }
         }
@@ -374,7 +374,7 @@ impl Scene {
         for effect in keys::step(&mut self.seq, &mut self.repeat, event) {
             match effect {
                 keys::Effect::Down { stroke, repeat } => {
-                    let input = crate::PhysicalInput::Key { key: stroke.code.unwrap(), mods: stroke.mods, pressed: true, repeat };
+                    let input = crate::PhysicalInput::Key { key: stroke.code.unwrap(), mods: stroke.mods, pressed: true, repeat, text: None, consumed_mods: Default::default() };
                     self.rt.physical_key_input(input, stroke.key.unwrap(), stroke.base);
                 }
                 keys::Effect::Up(_) => {}

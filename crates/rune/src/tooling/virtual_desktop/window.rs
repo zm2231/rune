@@ -12,7 +12,7 @@ use crate::el::Shell;
 use crate::frame::clock::FrameClock;
 use crate::frame::encoded::{FrameReports, OnFrameEncoded};
 use crate::frame::host_step::{self, Acquire, FrameHost, Gate, RenderPrep, StepInfo, draw_ui, prepare_gpu_resources};
-use crate::render::{Gpu, OFFSCREEN_FORMAT, Renderer};
+use crate::render::{Gpu, OFFSCREEN_FORMAT, OFFSCREEN_FORMAT_LINEAR, Renderer};
 use crate::runtime::{AppDriver, Env, Runtime, RuntimeCore};
 use crate::time::Instant;
 use crate::tooling::{Args, FrameTiming, Kind, Trace, headless::{step_window_frame, take_window_frame}};
@@ -68,11 +68,16 @@ pub(crate) trait Member {
     fn reopen_hook(&mut self, has_visible_windows: bool) -> bool;
     /// Shows it in front with the keyboard, as the default reopen.
     fn reopen(&mut self) -> Changes;
+    /// Runs `App::on_close_request` and closes the window unless it defers.
+    fn close_requested(&mut self) {}
+    /// Runs `App::on_quit_request` if live; returns `Some(QuitResponse)` when registered.
+    fn quit_requested(&mut self) -> Option<crate::QuitResponse> { None }
     fn menu(&self, item: &str) -> Result<(), crate::MenuError>;
     fn popup_open(&self) -> bool;
     fn resolve_popup(&mut self, picked: Option<&str>) -> Result<(), crate::PopupMenuError>;
     fn file_dialog_open(&self) -> bool;
     fn resolve_file_dialog(&mut self, path: Option<std::path::PathBuf>) -> Result<(), crate::FileDialogError>;
+    fn resolve_file_dialog_files(&mut self, paths: Option<Vec<std::path::PathBuf>>) -> Result<(), crate::FileDialogError>;
     /// Draws its frame into `slot`, `px` device pixels.
     fn render(&mut self, gpu: &Gpu, slot: &Slot, px: (u32, u32), dt: f64, update_ms: f64, frame_start: Instant);
     fn flush_interaction(&mut self);
@@ -98,6 +103,8 @@ trait DesktopApp {
     fn rt(&self) -> &RuntimeCore;
     fn rt_mut(&mut self) -> &mut RuntimeCore;
     fn with_driver(&mut self, f: &mut dyn FnMut(&mut RuntimeCore, &mut dyn AppDriver));
+    fn run_on_close_request(&mut self) -> Option<crate::CloseResponse>;
+    fn run_on_quit_request(&mut self) -> Option<crate::QuitResponse>;
     fn run_on_close(&mut self);
     fn run_on_reopen(&mut self, has_visible_windows: bool) -> bool;
     fn drain_updates(&mut self, menus: &mut crate::native_menu::MenuGuard) -> WindowRequests;
@@ -139,6 +146,8 @@ struct TypedDesktopApp<S: 'static> {
     rt: Runtime<S>,
     shared: Arc<Shared<S>>,
     comp: Option<Box<dyn Compositor<S>>>,
+    on_close_request: Option<fn(&mut S, &mut crate::Tx) -> crate::CloseResponse>,
+    on_quit_request: Option<fn(&mut S, &mut crate::Tx) -> crate::QuitResponse>,
     on_close: Option<fn(&mut S, &mut crate::Tx)>,
     on_reopen: Option<fn(&mut S, bool, &mut crate::Tx) -> bool>,
 }
@@ -149,6 +158,18 @@ impl<S: 'static> DesktopApp for TypedDesktopApp<S> {
     fn with_driver(&mut self, f: &mut dyn FnMut(&mut RuntimeCore, &mut dyn AppDriver)) {
         let (core, mut driver) = self.rt.split_mut();
         f(core, &mut driver);
+    }
+    fn run_on_close_request(&mut self) -> Option<crate::CloseResponse> {
+        let f = self.on_close_request?;
+        let mut resp = crate::CloseResponse::Close;
+        self.rt.update(|s, tx| resp = f(s, tx));
+        Some(resp)
+    }
+    fn run_on_quit_request(&mut self) -> Option<crate::QuitResponse> {
+        let f = self.on_quit_request?;
+        let mut resp = crate::QuitResponse::Quit;
+        self.rt.update(|s, tx| resp = f(s, tx));
+        Some(resp)
     }
     fn run_on_close(&mut self) {
         if let Some(f) = self.on_close { self.rt.update(f); }
@@ -265,12 +286,13 @@ impl Window {
         let own = app.resolve_args(inherited_window_args(args, selected));
         let comp = app.compositor.take();
         let on_frame_encoded = app.on_frame_encoded.take();
-        let (open, keep_running, fit_height, on_close, on_reopen) = (
-            app.open, app.keep_running, app.fit_content_height, app.on_close, app.on_reopen,
+        let (open, keep_running, fit_height, on_close_request, on_quit_request, on_close, on_reopen) = (
+            app.open, app.keep_running, app.fit_content_height, app.on_close_request, app.on_quit_request, app.on_close, app.on_reopen,
         );
         let native = std::mem::take(&mut app.macos_window);
         let (chrome, titlebar) = (app.chrome, app.titlebar);
         let (playground, attach_playground) = (app.playground.take(), app.attach_playground);
+        crate::credentials::note_headless_runtime();
         let (spec, state, shared, runtime) = app.into_parts(own.scene.as_deref());
         let shortcuts = crate::shortcuts::Guard::attach(&shared, Arc::new(|| {}), true, false);
         let menus = crate::native_menu::MenuGuard::attach(&shared, true);
@@ -283,7 +305,7 @@ impl Window {
         }
         rt.configure(runtime);
         let (shared_core, shortcuts_core) = (shared.core.clone(), shared.shortcuts.core.clone());
-        let typed = Box::new(TypedDesktopApp { rt, shared, comp, on_close, on_reopen });
+        let typed = Box::new(TypedDesktopApp { rt, shared, comp, on_close_request, on_quit_request, on_close, on_reopen });
         Self::from_app(typed, WindowInit {
             key,
             shared_core,
@@ -320,9 +342,9 @@ impl Window {
             if let Some(bars) = scroll_bars { rt.set_system_scroll_bars(bars); }
             rt.headless_chrome(chrome, titlebar, options.borderless);
             rt.transparent = options.transparent;
-            rt.host.fit_height = fit_height;
+            rt.host.set_fit_height(fit_height);
             rt.track_marks = has_comp;
-            if key_warnings { rt.commit.key_warnings = Some(Vec::new()); }
+            if key_warnings { rt.commit.enable_key_warnings(); }
         }
         let mut reports = FrameReports::new(on_frame_encoded, Some(&key));
         reports.set_refresh(Some(fps));
@@ -410,6 +432,16 @@ impl Window {
         self.publish();
     }
 
+    /// As the native host handles a user-initiated close request: asks `App::on_close_request`
+    /// before closing, and keeps the window open on `CloseResponse::Defer`.
+    fn close_requested(&mut self) {
+        if !self.life.closes(self.keep_running, true) { return; }
+        match self.app.run_on_close_request() {
+            None | Some(crate::CloseResponse::Close) => self.close(),
+            Some(crate::CloseResponse::Defer) => {}
+        }
+    }
+
     /// As the native host closes (`Life::closes`): a headless window always exists.
     fn close(&mut self) {
         if !self.life.closes(self.keep_running, true) { return; }
@@ -474,7 +506,7 @@ impl Member for Window {
 
     fn trace_on(&mut self) {
         let rt = self.app.rt_mut();
-        rt.frame.trace_channels = Some(Default::default());
+        rt.frame.enable_trace_channels(true);
         rt.scene.store_mut().audit_retargets(true);
     }
 
@@ -507,9 +539,12 @@ impl Member for Window {
         for _ in 0..8 {
             // A headless desktop draws no Dock to minimize into (`Activation::Minimize` too).
             self.app.rt_mut().minimize_step(crate::window::MinimizeEvent::Lost);
+            let user_close = self.app.rt_mut().take_user_close_request();
             match self.app.rt_mut().shell_request.take() {
                 Some(Shell::Close) => self.close(),
-                Some(Shell::Quit | Shell::Relaunch) | None => {}
+                Some(Shell::Quit | Shell::Relaunch) => {}
+                None if user_close => self.close_requested(),
+                None => {}
             }
             if self.life.shown() {
                 self.app.open_popup_headless();
@@ -517,13 +552,14 @@ impl Member for Window {
                 self.app.cancel_popups();
                 self.app.rt_mut().refuse_file_dialog("cannot open a file dialog while the window is hidden");
             }
-            if self.app.rt().shell_request.is_none() { break; }
+            if self.app.rt().shell_request.is_none() && !self.app.rt().has_user_close_request() { break; }
         }
         changes
     }
 
     fn pending(&self) -> bool {
         self.shared_core.asks_window() || self.app.has_updates() || self.app.rt().shell_request.is_some()
+            || self.app.rt().has_user_close_request()
             || self.handle.as_ref().is_some_and(WindowHandle::headless_pending)
     }
 
@@ -602,11 +638,17 @@ impl Member for Window {
         self.request(WindowRequest::Open(None), &mut changes);
         changes
     }
+    fn close_requested(&mut self) { Window::close_requested(self); }
+    fn quit_requested(&mut self) -> Option<crate::QuitResponse> {
+        if self.life.finished() { return None; }
+        self.app.run_on_quit_request()
+    }
     fn menu(&self, item: &str) -> Result<(), crate::MenuError> { self.menus.fire(item) }
     fn popup_open(&self) -> bool { self.app.rt().popup_menu().is_some() }
     fn resolve_popup(&mut self, picked: Option<&str>) -> Result<(), crate::PopupMenuError> { self.app.resolve_popup(picked) }
     fn file_dialog_open(&self) -> bool { self.app.rt().file_dialog().is_some() }
     fn resolve_file_dialog(&mut self, path: Option<std::path::PathBuf>) -> Result<(), crate::FileDialogError> { self.app.rt_mut().resolve_file_dialog(path) }
+    fn resolve_file_dialog_files(&mut self, paths: Option<Vec<std::path::PathBuf>>) -> Result<(), crate::FileDialogError> { self.app.rt_mut().resolve_file_dialog_files(paths) }
 
     fn render(&mut self, gpu: &Gpu, slot: &Slot, px: (u32, u32), dt: f64, update_ms: f64, frame_start: Instant) {
         let mut frame = DesktopFrame {
@@ -652,7 +694,7 @@ struct DesktopFrame<'a> {
 impl DesktopFrame<'_> {
     #[inline]
     fn target_format(&self) -> wgpu::TextureFormat {
-        if self.window.app.rt().srgb_blend() { OFFSCREEN_FORMAT.remove_srgb_suffix() } else { OFFSCREEN_FORMAT }
+        if self.window.app.rt().srgb_blend() { OFFSCREEN_FORMAT } else { OFFSCREEN_FORMAT_LINEAR }
     }
 }
 
@@ -682,7 +724,11 @@ impl FrameHost for DesktopFrame<'_> {
     #[inline]
     fn reblend(&mut self) -> bool {
         let format = self.target_format();
-        let renderer = self.window.renderer.get_or_insert_with(|| Renderer::new(&self.gpu.device, format));
+        let renderer = self.window.renderer.get_or_insert_with(|| {
+            let mut renderer = Renderer::try_new(&self.gpu.device, format).unwrap_or_else(|e| crate::tooling::args::die(&e));
+            renderer.attach_gpu(self.gpu);
+            renderer
+        });
         crate::window::rebuild_renderer_core(&self.gpu.device, renderer, format, self.window.app.rt_mut());
         true
     }
@@ -733,7 +779,7 @@ impl FrameHost for DesktopFrame<'_> {
         let renderer = self.window.renderer.as_mut().expect("renderer ensured by pre-reblend");
         renderer.submit(&self.gpu.queue, encoder);
         self.encoded_stamp = self.window.reports.stamp();
-        Instant::now()
+        crate::time::now()
     }
 
     #[inline]

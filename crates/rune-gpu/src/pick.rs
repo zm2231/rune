@@ -5,21 +5,33 @@
 //! drives its panel from the integrated GPU and offloads to the discrete one gets the integrated
 //! GPU, as before.
 //!
-//! On Windows, a window's or overlay's surface gets the adapter that drives the primary display
-//! (the one with the taskbar), else the next display's; offscreen work keeps the lowest-power
-//! one. On a hybrid laptop whose monitors hang off the discrete GPU, that's the discrete GPU,
+//! On Windows, every device takes the adapter that drives the primary display (the one with the
+//! taskbar), else the next display's: windows, overlays, offscreen renders and tests alike.
+//! Offscreen work for an existing window (snapshots, drag image, video) uses that window's own
+//! device, whichever display it is on. Only when no display's GPU has an adapter (a headless
+//! server, a remote session, a VM) does Rune take the lowest-power one. Offscreen work used to
+//! take the lowest-power adapter: on a desktop that is often an integrated GPU no monitor uses,
+//! far slower than the discrete card beside it, where a test's single submission ran past
+//! Windows' 2-second limit and reset it. On a hybrid laptop whose panel is on the integrated GPU,
+//! that GPU drives the primary display, so nothing changes there and the discrete GPU stays
+//! asleep. On a hybrid laptop whose monitors hang off the discrete GPU, that's the discrete GPU,
 //! for the main window and the HUD alike: an AMD integrated GPU presenting the HUD across to
 //! them grew the process by gigabytes over an hour of dictation (hex#1268). A swapchain on a GPU
 //! that drives none (a desktop's unused integrated GPU beside the discrete card the monitors
 //! hang off) is presented across adapters: each one costs the display GPU's driver a device of
 //! its own (about 37 threads with the NVIDIA driver, one of them waking 64 times a second) and
 //! about 100 MB per full-screen surface on each GPU, and takes 50 to 160 ms to make instead of
-//! 6 ms. A laptop whose panel is on its integrated GPU still gets the integrated GPU.
+//! 6 ms.
 //!
-//! `WGPU_ADAPTER_NAME` (a case-insensitive part of the adapter's name) and `WGPU_POWER_PREF`
-//! (`low`, `high` or `none`) override the choice. Without them, and without a compositor device
-//! or a display's GPU to match, Rune takes the lowest-power adapter. `RUNE_GPU_LOG=1` prints the choice and its
-//! reason; a machine with more than one GPU prints it anyway, once per process.
+//! `WGPU_ADAPTER_NAME` (a case-insensitive part of the adapter's name, software adapters
+//! included: `Microsoft Basic Render Driver` is WARP) and `WGPU_POWER_PREF` (`low`, `high` or
+//! `none`) override the choice. A named adapter is picked or the pick fails with an error: Rune
+//! never falls through to another GPU, and on Windows DX12 finds it from DXGI without making a
+//! device on any other adapter. A replacement device after a loss follows the same rule: the
+//! named adapter (or error), else the GPU a window would get, never falling back to lowest power
+//! when a display GPU exists. Without overrides, a compositor device or a display's GPU, Rune
+//! takes the lowest-power adapter. `RUNE_GPU_LOG=1` prints every pick in a process with its
+//! reason; without it, a machine with more than one GPU still prints the first once per process.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reason {
@@ -27,7 +39,11 @@ pub enum Reason {
     EnvPower,
     Compositor,
     Display,
+    /// Offscreen or test work, on the GPU driving the primary display.
+    WindowGpu,
     LowPower,
+    /// Software adapter selected after repeated hardware device losses.
+    SoftwareFallback,
 }
 
 impl Reason {
@@ -37,7 +53,9 @@ impl Reason {
             Reason::EnvPower => "WGPU_POWER_PREF",
             Reason::Compositor => "the compositor's GPU",
             Reason::Display => "the GPU driving the primary display",
+            Reason::WindowGpu => "the GPU a window would get (it drives the primary display)",
             Reason::LowPower => "lowest power",
+            Reason::SoftwareFallback => "software fallback after repeated device loss",
         }
     }
 }
@@ -53,6 +71,22 @@ impl Pick {
     /// The user chose the adapter; nothing else should swap it.
     pub fn from_env(&self) -> bool {
         matches!(self.reason, Reason::EnvName | Reason::EnvPower)
+    }
+
+    /// Fallback policy for this pick: a user-named adapter (`WGPU_ADAPTER_NAME`) or a software
+    /// fallback pick is pinned and never replaced; automatic choices may fall back on persistent
+    /// adapter/surface failures.
+    pub fn policy(&self) -> crate::fallback::Policy {
+        if matches!(self.reason, Reason::EnvName | Reason::SoftwareFallback) {
+            crate::fallback::Policy::Pinned
+        } else {
+            crate::fallback::Policy::Automatic
+        }
+    }
+
+    /// The compositor's main device as a PCI address, if known (Linux Wayland).
+    pub fn compositor(&self) -> Option<&str> {
+        self.compositor.as_deref()
     }
 
     /// Whether `info` is an adapter on the compositor's device.
@@ -77,21 +111,24 @@ fn shows(compositor: Option<&str>, pci: &str) -> bool {
 pub fn pick(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>, presented: bool) -> Result<Pick, String> {
     // DX12: the same order through DXGI's adapter list, and only the chosen adapter goes to wgpu.
     #[cfg(target_os = "windows")]
-    if let Some((pick, adapters)) = dxgi::pick(instance, surface, presented) {
+    if let Some(picked) = dxgi::pick(instance, surface, presented) {
+        let (pick, adapters) = picked.inspect_err(|error| log_failure(error))?;
         return Ok(log(pick, Some(adapters)));
     }
     let usable = |adapter: &wgpu::Adapter| surface.is_none_or(|s| adapter.is_surface_supported(s));
     let compositor = compositor_pci();
     let mut enumerated = None;
-    if let Ok(name) = std::env::var("WGPU_ADAPTER_NAME") {
+    if let Some(name) = rune_core::env::var("WGPU_ADAPTER_NAME") {
         let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
         let infos: Vec<_> = adapters.iter().map(|a| (a.get_info(), usable(a))).collect();
         let found = by_name(&name, &infos);
         enumerated = Some(infos.len());
-        match found {
-            Some(index) => return Ok(log(Pick { adapter: adapters.into_iter().nth(index).expect("index from this list"), reason: Reason::EnvName, compositor }, enumerated)),
-            None => eprintln!("rune: no GPU adapter matches WGPU_ADAPTER_NAME={name:?}; choosing as usual"),
-        }
+        let Some(adapter) = found.and_then(|index| adapters.into_iter().nth(index)) else {
+            let error = format!("no GPU adapter matches WGPU_ADAPTER_NAME={name:?}");
+            log_failure(&error);
+            return Err(error);
+        };
+        return Ok(log(Pick { adapter, reason: Reason::EnvName, compositor }, enumerated));
     }
     if let Some(power) = wgpu::PowerPreference::from_env() {
         let adapter = request(instance, surface, power)?;
@@ -101,24 +138,53 @@ pub fn pick(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>, pres
         let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
         let infos: Vec<_> = adapters.iter().map(|a| (a.get_info(), usable(a))).collect();
         enumerated = Some(infos.iter().filter(|(info, _)| info.device_type != wgpu::DeviceType::Cpu).count());
-        if let Some(index) = by_pci(pci, &infos) {
-            let adapter = adapters.into_iter().nth(index).expect("index from this list");
+        if let Some(adapter) = by_pci(pci, &infos).and_then(|index| adapters.into_iter().nth(index)) {
             return Ok(log(Pick { adapter, reason: Reason::Compositor, compositor }, enumerated));
         }
     }
-    // Only a surface is presented; offscreen work (tests, snapshots) keeps the lowest-power GPU.
-    let displays = if surface.is_some() || presented { display_devices() } else { Vec::new() };
+    // Every device takes the GPU a window would get; `presented` only names the reason.
+    let displays = display_devices();
     if !displays.is_empty() {
         let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
         let infos: Vec<_> = adapters.iter().map(|a| (a.get_info(), usable(a))).collect();
         enumerated = Some(infos.iter().filter(|(info, _)| info.device_type != wgpu::DeviceType::Cpu).count());
-        if let Some(index) = by_display(&displays, &infos) {
-            let adapter = adapters.into_iter().nth(index).expect("index from this list");
-            return Ok(log(Pick { adapter, reason: Reason::Display, compositor }, enumerated));
+        if let Some(adapter) = by_display(&displays, &infos).and_then(|index| adapters.into_iter().nth(index)) {
+            let reason = if surface.is_some() || presented { Reason::Display } else { Reason::WindowGpu };
+            return Ok(log(Pick { adapter, reason, compositor }, enumerated));
         }
     }
     let adapter = request(instance, surface, wgpu::PowerPreference::LowPower)?;
     Ok(log(Pick { adapter, reason: Reason::LowPower, compositor }, enumerated))
+}
+
+/// Picks a software GPU adapter (`DeviceType::Cpu`: DX12 WARP on Windows, `force_fallback_adapter`
+/// elsewhere) for repeated device-loss fallback. Refuses when `WGPU_ADAPTER_NAME` pins an adapter,
+/// and never returns a hardware adapter.
+pub fn pick_software(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>) -> Result<Pick, String> {
+    if env_policy() == crate::fallback::Policy::Pinned {
+        let error = "software fallback is disabled while WGPU_ADAPTER_NAME is set".to_owned();
+        log_failure(&error);
+        return Err(error);
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(picked) = dxgi::pick_software(instance, surface) {
+        let pick = picked.inspect_err(|error| log_failure(error))?;
+        return Ok(log(pick, None));
+    }
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::LowPower,
+        force_fallback_adapter: true,
+        compatible_surface: surface,
+        apply_limit_buckets: false,
+    }))
+    .map_err(|error| format!("no software GPU adapter: {error}"))?;
+    if adapter.get_info().device_type != wgpu::DeviceType::Cpu {
+        return Err(format!(
+            "no software GPU adapter is available (fallback request returned {:?})",
+            adapter.get_info().device_type
+        ));
+    }
+    Ok(log(Pick { adapter, reason: Reason::SoftwareFallback, compositor: None }, None))
 }
 
 fn request(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>, power_preference: wgpu::PowerPreference) -> Result<wgpu::Adapter, String> {
@@ -149,6 +215,7 @@ fn by_pci(pci: &str, adapters: &[(wgpu::AdapterInfo, bool)]) -> Option<usize> {
 /// adapter to describe it, the discrete GPU and WARP included: 1,050,000–1,110,000 µs on a
 /// two-GPU laptop, waking a discrete GPU the window never uses.
 #[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
 mod dxgi {
     use super::{Pick, Reason};
     use windows::Win32::Graphics::Dxgi::{
@@ -164,9 +231,16 @@ mod dxgi {
     /// `vendor/wgpu-hal`) gets wgpu-hal as published, which has no `expose_adapter`: the call then
     /// lands here (an inherent method wins over a trait's), and the pick falls back to wgpu's list.
     mod without_patch {
+        use std::cell::Cell;
+
+        thread_local! {
+            pub(super) static UNPATCHED: Cell<bool> = const { Cell::new(false) };
+        }
+
         #[allow(dead_code)]
         pub(super) trait ExposeAdapter {
             unsafe fn expose_adapter(&self, _: &windows::Win32::Graphics::Dxgi::IDXGIAdapter1) -> Option<wgpu::hal::ExposedAdapter<wgpu::hal::api::Dx12>> {
+                UNPATCHED.with(|unpatched| unpatched.set(true));
                 None
             }
         }
@@ -174,52 +248,161 @@ mod dxgi {
     }
 
     /// The pick and how many hardware adapters DXGI lists; None when the instance isn't DX12's,
-    /// or the adapter chosen can't run D3D12 or present to `surface` (the caller then asks wgpu).
-    pub(super) fn pick(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>, presented: bool) -> Option<(Pick, usize)> {
+    /// `wgpu-hal` is unpatched, or an automatic choice can't run D3D12 or present to `surface`
+    /// (the caller then asks wgpu). For `WGPU_ADAPTER_NAME` the answer is final: the adapter it
+    /// names, or the error saying why not, without making a device on any other adapter.
+    pub(super) fn pick(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>, presented: bool) -> Option<Result<(Pick, usize), String>> {
         // SAFETY: wgpu's DX12 instance, borrowed for this call.
         let hal = unsafe { instance.as_hal::<wgpu::hal::api::Dx12>() }?;
         // SAFETY: a DXGI factory and its adapters, asked for their descriptions.
         let factory = unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }.ok()?;
-        let hardware: Vec<(IDXGIAdapter1, DXGI_ADAPTER_DESC1)> = (0..)
-            .map_while(|i| unsafe { factory.EnumAdapters1(i) }.ok())
-            .filter_map(|a| unsafe { a.GetDesc1() }.ok().map(|d| (a, d)))
-            .filter(|(_, d)| d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 == 0)
+        let all: Vec<(IDXGIAdapter1, DXGI_ADAPTER_DESC1)> = (0..)
+            .map_while(|i| {
+                // SAFETY: `factory` is a live `IDXGIFactory1`; out-of-range `i` returns `DXGI_ERROR_NOT_FOUND`.
+                unsafe { factory.EnumAdapters1(i) }.ok()
+            })
+            .filter_map(|a| {
+                // SAFETY: `a` is a live `IDXGIAdapter1` returned by `EnumAdapters1`.
+                unsafe { a.GetDesc1() }.ok().map(|d| (a, d))
+            })
             .collect();
+        let is_hardware = |d: &DXGI_ADAPTER_DESC1| {
+            super::is_hardware_dxgi_adapter(
+                d.VendorId,
+                d.DeviceId,
+                d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0,
+            )
+        };
+        let hardware: Vec<&(IDXGIAdapter1, DXGI_ADAPTER_DESC1)> =
+            all.iter().filter(|(_, d)| is_hardware(d)).collect();
         let count = hardware.len();
         let by_preference = |preference: DXGI_GPU_PREFERENCE| -> Option<IDXGIAdapter1> {
             let factory6 = factory.cast::<IDXGIFactory6>().ok()?;
-            // SAFETY: as above; the first hardware adapter in DXGI's order for `preference`.
-            (0..).map_while(|i| unsafe { factory6.EnumAdapterByGpuPreference::<IDXGIAdapter1>(i, preference) }.ok())
-                .find(|a| unsafe { a.GetDesc1() }.is_ok_and(|d| d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 == 0))
+            (0..)
+                .map_while(|i| {
+                    // SAFETY: `factory6` is a live `IDXGIFactory6`; out-of-range `i` returns `DXGI_ERROR_NOT_FOUND`.
+                    unsafe { factory6.EnumAdapterByGpuPreference::<IDXGIAdapter1>(i, preference) }.ok()
+                })
+                .find(|a| {
+                    // SAFETY: `a` is a live `IDXGIAdapter1` returned by `EnumAdapterByGpuPreference`.
+                    unsafe { a.GetDesc1() }.is_ok_and(|d| is_hardware(&d))
+                })
         };
-        let name = |d: &DXGI_ADAPTER_DESC1| {
+        let description = |d: &DXGI_ADAPTER_DESC1| {
             let len = d.Description.iter().position(|&c| c == 0).unwrap_or(d.Description.len());
-            String::from_utf16_lossy(&d.Description[..len]).to_lowercase()
+            String::from_utf16_lossy(&d.Description[..len])
         };
-        let (adapter, reason) = if let Some(wanted) = std::env::var("WGPU_ADAPTER_NAME").ok().map(|n| n.to_lowercase()) {
-            let found = hardware.iter().find(|(_, d)| name(d).contains(&wanted))?;
-            (found.0.clone(), Reason::EnvName)
-        } else if let Some(power) = wgpu::PowerPreference::from_env() {
+        if let Some(wanted) = rune_core::env::var("WGPU_ADAPTER_NAME") {
+            let wanted_lower = wanted.to_lowercase();
+            // Software adapters too: `Microsoft Basic Render Driver` names WARP. Try every match
+            // in DXGI order: headless Windows lists a non-software WARP entry that `expose_adapter`
+            // rejects before the real software WARP adapter, and multi-adapter matches should skip
+            // unusable ones just like `by_name`.
+            let mut tried = Vec::new();
+            for (adapter, desc) in all.iter().filter(|(_, d)| description(d).to_lowercase().contains(&wanted_lower)) {
+                let label = description(desc);
+                without_patch::UNPATCHED.with(|unpatched| unpatched.set(false));
+                // SAFETY: `adapter` comes from a DXGI factory in this process, as `expose_adapter` asks.
+                let Some(exposed) = (unsafe { hal.expose_adapter(adapter) }) else {
+                    if without_patch::UNPATCHED.with(|unpatched| unpatched.replace(false)) {
+                        return None;
+                    }
+                    tried.push(format!("{label:?} (can't make a D3D12 device now)"));
+                    continue;
+                };
+                // SAFETY: `exposed` was exposed from this same DX12 `instance`'s HAL.
+                let adapter = unsafe { instance.create_adapter_from_hal(exposed) };
+                if surface.is_some_and(|s| !adapter.is_surface_supported(s)) {
+                    tried.push(format!("{label:?} (can't present to this window)"));
+                    continue;
+                }
+                return Some(Ok((Pick { adapter, reason: Reason::EnvName, compositor: None }, count)));
+            }
+            let error = if tried.is_empty() {
+                format!("no GPU adapter matches WGPU_ADAPTER_NAME={wanted:?}")
+            } else {
+                format!("WGPU_ADAPTER_NAME={wanted:?} matched {}, none usable", tried.join(", "))
+            };
+            return Some(Err(error));
+        }
+        let (adapter, reason) = if let Some(power) = wgpu::PowerPreference::from_env() {
             let preference = if power == wgpu::PowerPreference::HighPerformance { DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE } else { DXGI_GPU_PREFERENCE_MINIMUM_POWER };
             (by_preference(preference)?, Reason::EnvPower)
-        } else if let Some(found) = (surface.is_some() || presented)
-            .then(super::display_devices)
-            .unwrap_or_default()
+        } else if let Some(found) = super::display_devices()
             .iter()
             .find_map(|ids| hardware.iter().find(|(_, d)| (d.VendorId, d.DeviceId) == *ids))
         {
-            (found.0.clone(), Reason::Display)
+            // Every device takes the GPU a window would get; `presented` only names the reason.
+            (found.0.clone(), if surface.is_some() || presented { Reason::Display } else { Reason::WindowGpu })
         } else {
             (by_preference(DXGI_GPU_PREFERENCE_MINIMUM_POWER).or_else(|| hardware.first().map(|h| h.0.clone()))?, Reason::LowPower)
         };
-        // SAFETY: `adapter` comes from a DXGI factory in this process, as `expose_adapter` asks;
-        // the exposed adapter is handed to the instance it was exposed from.
+        // SAFETY: `adapter` comes from a DXGI factory in this process, as `expose_adapter` asks.
         let exposed = unsafe { hal.expose_adapter(&adapter) }?;
+        // SAFETY: `exposed` was exposed from this same DX12 `instance`'s HAL.
         let adapter = unsafe { instance.create_adapter_from_hal(exposed) };
         if surface.is_some_and(|s| !adapter.is_surface_supported(s)) {
             return None;
         }
-        Some((Pick { adapter, reason, compositor: None }, count))
+        Some(Ok((Pick { adapter, reason, compositor: None }, count)))
+    }
+
+    /// Zero-device DXGI probe: returns `Some(true)` if any hardware DXGI adapter exists (after
+    /// excluding both `DXGI_ADAPTER_FLAG_SOFTWARE` and headless non-software WARP entries with
+    /// `VendorId == 0x1414 && DeviceId == 0x008C`), `Some(false)` if only software adapters exist,
+    /// or `None` if DXGI factory creation fails. Creates no D3D12 device and loads no GPU driver.
+    pub(super) fn has_hardware_adapter() -> Option<bool> {
+        // SAFETY: a DXGI factory and its adapters, asked only for their descriptions.
+        let factory = unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }.ok()?;
+        let mut adapters = Vec::new();
+        for i in 0.. {
+            // SAFETY: `factory` is a live `IDXGIFactory1`; out-of-range `i` returns `DXGI_ERROR_NOT_FOUND`.
+            let Ok(adapter) = (unsafe { factory.EnumAdapters1(i) }) else { break };
+            // SAFETY: `adapter` is a live `IDXGIAdapter1` returned by `EnumAdapters1`.
+            if let Ok(desc) = unsafe { adapter.GetDesc1() } {
+                let software_flag = desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0;
+                adapters.push((desc.VendorId, desc.DeviceId, software_flag));
+            }
+        }
+        Some(super::has_hardware_dxgi_in(&adapters))
+    }
+
+    /// Picks a DXGI software adapter (`DXGI_ADAPTER_FLAG_SOFTWARE`, i.e. WARP) without creating a
+    /// device on any hardware adapter. Returns `None` when the instance is not DX12 or `wgpu-hal`
+    /// is unpatched so the caller falls through to wgpu's `force_fallback_adapter`.
+    pub(super) fn pick_software(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>) -> Option<Result<Pick, String>> {
+        // SAFETY: wgpu's DX12 instance, borrowed for this call.
+        let hal = unsafe { instance.as_hal::<wgpu::hal::api::Dx12>() }?;
+        // SAFETY: a DXGI factory and its adapters, asked for their descriptions.
+        let factory = unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }.ok()?;
+        let software: Vec<(IDXGIAdapter1, DXGI_ADAPTER_DESC1)> = (0..)
+            .map_while(|i| {
+                // SAFETY: `factory` is a live `IDXGIFactory1`; out-of-range `i` returns `DXGI_ERROR_NOT_FOUND`.
+                unsafe { factory.EnumAdapters1(i) }.ok()
+            })
+            .filter_map(|a| {
+                // SAFETY: `a` is a live `IDXGIAdapter1` returned by `EnumAdapters1`.
+                unsafe { a.GetDesc1() }.ok().map(|d| (a, d))
+            })
+            .filter(|(_, d)| d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0)
+            .collect();
+        for (adapter, _) in &software {
+            without_patch::UNPATCHED.with(|unpatched| unpatched.set(false));
+            // SAFETY: `adapter` comes from a DXGI factory in this process, as `expose_adapter` asks.
+            let Some(exposed) = (unsafe { hal.expose_adapter(adapter) }) else {
+                if without_patch::UNPATCHED.with(|unpatched| unpatched.replace(false)) {
+                    return None;
+                }
+                continue;
+            };
+            // SAFETY: `exposed` was exposed from this same DX12 `instance`'s HAL.
+            let adapter = unsafe { instance.create_adapter_from_hal(exposed) };
+            if surface.is_some_and(|s| !adapter.is_surface_supported(s)) {
+                continue;
+            }
+            return Some(Ok(Pick { adapter, reason: Reason::SoftwareFallback, compositor: None }));
+        }
+        Some(Err("no usable DXGI software adapter (WARP) is available".to_owned()))
     }
 }
 
@@ -231,15 +414,60 @@ fn by_display(displays: &[(u32, u32)], adapters: &[(wgpu::AdapterInfo, bool)]) -
     })
 }
 
+/// PCI vendor ID of Microsoft's WARP software rasterizer (`Microsoft Basic Render Driver`).
+#[doc(hidden)]
+pub const WARP_VENDOR_ID: u32 = 0x1414;
+/// PCI device ID of Microsoft's WARP software rasterizer (`Microsoft Basic Render Driver`).
+#[doc(hidden)]
+pub const WARP_DEVICE_ID: u32 = 0x008C;
+
+/// Whether a DXGI adapter description (`vendor_id`, `device_id`, `software_flag`) represents a
+/// hardware GPU rather than WARP or another software adapter.
+///
+/// Excludes both adapters marked with `DXGI_ADAPTER_FLAG_SOFTWARE` and headless non-software
+/// WARP entries (`0x1414:0x008C`) that Windows exposes on headless / RDP sessions.
+pub(crate) const fn is_hardware_dxgi_adapter(vendor_id: u32, device_id: u32, software_flag: bool) -> bool {
+    !software_flag && !(vendor_id == WARP_VENDOR_ID && device_id == WARP_DEVICE_ID)
+}
+
+/// Whether a slice of DXGI adapter descriptors `(vendor_id, device_id, software_flag)` contains
+/// at least one hardware adapter.
+#[doc(hidden)]
+pub fn has_hardware_dxgi_in(adapters: &[(u32, u32, bool)]) -> bool {
+    adapters
+        .iter()
+        .any(|&(vendor_id, device_id, software_flag)| {
+            is_hardware_dxgi_adapter(vendor_id, device_id, software_flag)
+        })
+}
+
+/// Zero-device DXGI check on Windows: returns `Some(true)` if any hardware DXGI adapter exists
+/// (excluding both `DXGI_ADAPTER_FLAG_SOFTWARE` and headless non-software WARP entries
+/// `0x1414:0x008C`), `Some(false)` if only software adapters exist, or `None` if DXGI factory
+/// creation fails. Makes no D3D12 device and loads no driver.
+#[cfg(target_os = "windows")]
+#[doc(hidden)]
+pub fn dxgi_has_hardware_adapter() -> Option<bool> {
+    dxgi::has_hardware_adapter()
+}
+
+/// Fallback policy for an optional user-supplied adapter name (`WGPU_ADAPTER_NAME`).
+pub const fn policy_for_adapter_name(adapter_name: Option<&str>) -> crate::fallback::Policy {
+    if adapter_name.is_some() {
+        crate::fallback::Policy::Pinned
+    } else {
+        crate::fallback::Policy::Automatic
+    }
+}
+
+/// Fallback policy derived from the process environment (`WGPU_ADAPTER_NAME` pins the adapter).
+pub fn env_policy() -> crate::fallback::Policy {
+    policy_for_adapter_name(rune_core::env::var("WGPU_ADAPTER_NAME").as_deref())
+}
+
 /// `PowerPreference::LowPower`'s order; a software adapter comes last.
 pub fn power_rank(device: wgpu::DeviceType) -> u8 {
-    match device {
-        wgpu::DeviceType::IntegratedGpu => 0,
-        wgpu::DeviceType::DiscreteGpu => 1,
-        wgpu::DeviceType::VirtualGpu => 2,
-        wgpu::DeviceType::Other => 3,
-        wgpu::DeviceType::Cpu => 4,
-    }
+    crate::fallback::power_rank(device)
 }
 
 /// The PCI vendor of the GPU driving the primary display, which `pick` chooses for a window:
@@ -255,16 +483,18 @@ static DISPLAY_VENDOR: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::n
 /// first window needn't wait for it; a window that asks sooner waits for that thread.
 #[cfg(target_os = "windows")]
 pub fn find_display_vendor_soon() {
-    let _ = std::thread::Builder::new().name("rune-display-vendor".into()).spawn(display_vendor);
+    std::thread::Builder::new().name("rune-display-vendor".into()).spawn(display_vendor).ok();
 }
 
 /// The PCI vendor and device IDs of the GPUs driving a display on the desktop, the primary
 /// display's first.
 #[cfg(target_os = "windows")]
-fn display_devices() -> Vec<(u32, u32)> {
+#[allow(unsafe_code)]
+pub fn display_devices() -> Vec<(u32, u32)> {
     use windows_sys::Win32::Graphics::Gdi::{DISPLAY_DEVICE_ATTACHED_TO_DESKTOP, DISPLAY_DEVICE_PRIMARY_DEVICE, DISPLAY_DEVICEW, EnumDisplayDevicesW};
     let mut found = Vec::new();
     for index in 0.. {
+        // SAFETY: `DISPLAY_DEVICEW` is a plain Win32 C struct where all-zero bytes are valid.
         let mut device = DISPLAY_DEVICEW { cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32, ..unsafe { std::mem::zeroed() } };
         // SAFETY: `device` is a DISPLAY_DEVICEW with `cb` set, as the call requires.
         if unsafe { EnumDisplayDevicesW(std::ptr::null(), index, &mut device, 0) } == 0 { break; }
@@ -282,7 +512,7 @@ fn display_devices() -> Vec<(u32, u32)> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn display_devices() -> Vec<(u32, u32)> {
+pub fn display_devices() -> Vec<(u32, u32)> {
     Vec::new()
 }
 
@@ -303,32 +533,67 @@ fn same_pci(a: &str, b: &str) -> bool {
 }
 
 fn log(pick: Pick, adapters: Option<usize>) -> Pick {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    if std::env::var_os("RUNE_GPU_LOG").is_some_and(|v| v != "0") || adapters.is_some_and(|n| n > 1) {
-        ONCE.call_once(|| {
-            let info = pick.adapter.get_info();
-            let pci = if info.device_pci_bus_id.is_empty() { String::new() } else { format!(", {}", info.device_pci_bus_id) };
-            let compositor = pick.compositor.as_deref().map(|c| format!("; compositor on {c}")).unwrap_or_default();
-            eprintln!("rune: GPU {:?} ({}; {:?}, {:?}{pci}): {}{compositor}", info.name, crate::backend::label(&pick.adapter), info.backend, info.device_type, pick.reason.describe());
-        });
+    static FIRST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+    if gpu_log() || (adapters.is_some_and(|n| n > 1) && FIRST.swap(false, std::sync::atomic::Ordering::Relaxed)) {
+        let info = pick.adapter.get_info();
+        let pci = if info.device_pci_bus_id.is_empty() { String::new() } else { format!(", {}", info.device_pci_bus_id) };
+        let compositor = pick.compositor.as_deref().map(|c| format!("; compositor on {c}")).unwrap_or_default();
+        eprintln!("rune: GPU {:?} ({}; {:?}, {:?}{pci}): {}{compositor}", info.name, crate::backend::label(&pick.adapter), info.backend, info.device_type, pick.reason.describe());
     }
     pick
 }
 
-/// The compositor's main device as a PCI address, asked once per process.
+/// A pick that found no adapter, said always: the device it was for won't be made.
+fn log_failure(error: &str) {
+    eprintln!("rune: no GPU: {error}");
+}
+
+fn gpu_log() -> bool {
+    rune_core::env::var_os("RUNE_GPU_LOG").is_some_and(|v| v != "0")
+}
+
+/// The Wayland compositor's DRM main device, queried once per process from
+/// `zwp_linux_dmabuf_v1` and sysfs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompositorDevice {
+    /// PCI address (`/sys/dev/char/<maj>:<min>/device`), lowercased; `None` on non-PCI SoCs.
+    pub pci: Option<String>,
+    /// Kernel driver name (file name of `/sys/dev/char/<maj>:<min>/device/driver`), e.g.
+    /// `"i915"`, `"xe"`, `"amdgpu"`, `"nvidia"`, `"msm"`, `"panthor"`.
+    pub driver: Option<String>,
+}
+
+/// The compositor's main DRM device (PCI address and kernel driver), asked once per process.
 #[cfg(target_os = "linux")]
-fn compositor_pci() -> Option<String> {
-    static PCI: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    PCI.get_or_init(|| {
-        let (major, minor) = dev_numbers(&dmabuf::main_device()?)?;
-        pci_address(&std::fs::read_link(format!("/sys/dev/char/{major}:{minor}/device")).ok()?)
-    })
-    .clone()
+pub fn compositor_device() -> Option<CompositorDevice> {
+    static DEVICE: std::sync::OnceLock<Option<CompositorDevice>> = std::sync::OnceLock::new();
+    DEVICE
+        .get_or_init(|| {
+            let (major, minor) = dev_numbers(&dmabuf::main_device()?)?;
+            let pci = std::fs::read_link(format!("/sys/dev/char/{major}:{minor}/device"))
+                .ok()
+                .and_then(|link| pci_address(&link));
+            let driver = std::fs::read_link(format!("/sys/dev/char/{major}:{minor}/device/driver"))
+                .ok()
+                .and_then(|link| driver_name(&link));
+            (pci.is_some() || driver.is_some()).then_some(CompositorDevice { pci, driver })
+        })
+        .clone()
 }
 
 #[cfg(not(target_os = "linux"))]
-fn compositor_pci() -> Option<String> {
+pub fn compositor_device() -> Option<CompositorDevice> {
     None
+}
+
+/// The compositor's main device as a PCI address, asked once per process.
+pub fn compositor_pci() -> Option<String> {
+    compositor_device().and_then(|device| device.pci)
+}
+
+/// The kernel driver name of the compositor's main device, asked once per process.
+pub fn compositor_driver() -> Option<String> {
+    compositor_device().and_then(|device| device.driver)
 }
 
 /// A `dev_t` sent as native-endian bytes, split into major and minor numbers (glibc's and the
@@ -355,6 +620,14 @@ fn pci_address(link: &std::path::Path) -> Option<String> {
     let (device, function) = rest.split_once('.')?;
     let hex = |s: &str, len: usize| s.len() == len && s.bytes().all(|b| b.is_ascii_hexdigit());
     (hex(domain, 4) && hex(bus, 2) && hex(device, 2) && hex(function, 1)).then_some(name)
+}
+
+/// The kernel driver name a DRM node's `device/driver` link points at
+/// (`../../../../bus/pci/drivers/i915` -> `"i915"`).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn driver_name(link: &std::path::Path) -> Option<String> {
+    let name = link.file_name()?.to_str()?;
+    (!name.is_empty()).then(|| name.to_owned())
 }
 
 #[cfg(target_os = "linux")]
@@ -405,7 +678,7 @@ mod dmabuf {
         }
         feedback.destroy();
         dmabuf.destroy();
-        let _ = queue.flush();
+        queue.flush().ok();
         state.main
     }
 }

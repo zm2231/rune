@@ -5,13 +5,30 @@ use std::hash::{Hash, Hasher};
 
 use accesskit::{Action as Ak, Affine, Live, Node as AkNode, Role, Toggled};
 
-use super::*;
-use super::a11y_tree::{Walk, hash_str, mix, rect};
-use crate::a11y::roles::{self, RoleCtx};
+use super::roles::{self, RoleCtx};
+use super::tree::{Walk, element_id, hash_str, mix, rect};
 use crate::el::Checked;
+use crate::runtime::RuntimeCore;
 
 /// Text named from an element's content stops here.
 const NAME_MAX: usize = 400;
+
+/// Which nodes stay visible in the accessibility tree and web mirror while an `El::modal` is
+/// open. Active modal members and (for anchored popup modals such as `menu` or `listbox`)
+/// their anchor trigger subtrees are in `included`; `outer_modal` marks enclosing outer modals
+/// that contain a kept trigger; `ancestor` marks all strict ancestors of `included` nodes.
+pub(crate) struct A11yModalMask {
+    pub(crate) included: Vec<bool>,
+    pub(crate) outer_modal: Vec<bool>,
+    pub(crate) ancestor: Vec<bool>,
+}
+
+impl A11yModalMask {
+    #[inline]
+    pub(crate) fn visible(&self, i: usize) -> bool {
+        self.included[i] || self.ancestor[i]
+    }
+}
 
 impl RuntimeCore {
     /// Node `i`'s role in the tree, or `None` when it joins its parent.
@@ -55,13 +72,18 @@ impl RuntimeCore {
         n.a11y.level.hash(&mut h);
         n.a11y.expanded.hash(&mut h);
         n.a11y.checked.hash(&mut h);
-        n.a11y.disabled.hash(&mut h);
+        self.node_disabled(i).hash(&mut h);
+        self.has_image_menu(i).hash(&mut h);
         n.a11y.live.hash(&mut h);
         if let Some(m) = n.a11y.more.as_deref() {
-            (&m.description, &m.value, &m.set, &m.shortcut, m.invalid, m.read_only, m.sorted, m.busy).hash(&mut h);
+            (&m.description, &m.value, &m.set, &m.shortcut, m.invalid, m.read_only, m.sorted, m.busy,
+                m.row_count, m.column_count, m.row_index, m.column_index).hash(&mut h);
+            (m.multiselectable, m.required, m.has_popup, m.orientation, m.auto_complete, m.list_start).hash(&mut h);
             [m.labelled_by.as_deref(), m.described_by.as_deref()].map(|k| k.and_then(|k| self.a11y_keyed(i, k)).map(|j| self.a11y_words(j))).hash(&mut h);
             if let Some(r) = m.range { [r.value, r.min, r.max, r.step.unwrap_or(f64::NAN)].map(f64::to_bits).hash(&mut h); }
             self.a11y_active_descendant(i).map(|j| self.tree.nodes[j].id.0).hash(&mut h);
+            m.controls.as_deref().and_then(|k| self.a11y_related_target(i, k)).map(|j| self.tree.nodes[j].id.0).hash(&mut h);
+            m.owns.as_deref().and_then(|k| self.a11y_related_target(i, k)).map(|j| self.tree.nodes[j].id.0).hash(&mut h);
         }
         n.text_cut(self.env.scale).hash(&mut h);
         let secure = n.is_secure();
@@ -75,39 +97,63 @@ impl RuntimeCore {
             if !secure {
                 match long_key {
                     Some(k) => (k, t.content.len()).hash(&mut h),
-                    None => t.content.hash(&mut h),
+                    None => {
+                        t.content.hash(&mut h);
+                        if t.source.is_some() { t.source_text().hash(&mut h); }
+                    }
                 }
             }
-            (t.redacted, t.selectable, t.cold.on_link.is_some(), t.cold.on_link_secondary.is_some(), t.cold.links.len()).hash(&mut h);
-            for l in &t.cold.links { (l.start, l.end, &l.id, l.role, &l.label).hash(&mut h); }
+            (
+                t.redacted,
+                t.selectable,
+                t.flags.has(crate::el::TextFlags::NO_LINK_MENU),
+                t.cold.on_link.is_some(),
+                t.cold.on_link_secondary.is_some(),
+                !t.cold.links.is_empty() && self.ancestor_has_secondary_press(i),
+                t.cold.links.len(),
+            ).hash(&mut h);
+            for l in &t.cold.links { (l.start, l.end, &l.id, &l.href, l.role, &l.label).hash(&mut h); }
+            for p in &t.cold.pills {
+                if let Some(b) = p.bare.as_deref().filter(|b| b.label.is_some()) { (p.start, &b.label, &b.help).hash(&mut h); }
+            }
         }
         // A text's lines come from its layout and where it scrolled; a long field's drawn lines
         // live under `lines_box_id`, whose own fingerprint tracks its layout and scroll band.
-        if !long_field {
+        if !long_field && !secure {
             n.text_layout.as_ref().map(crate::text::TextLayout::address).hash(&mut h);
         }
-        n.elided.map(|e| (e.head, e.tail)).hash(&mut h);
+        if !secure {
+            n.elided.map(|e| (e.head, e.tail)).hash(&mut h);
+        }
         if let Some(input) = n.input.as_deref() {
             let e = &input.edit;
-            if !secure && (long_key.is_none() || e.preedit().is_some()) {
-                if long_field {
-                    // During IME composition on a long field, `t.content` is the display string and
-                    // `long_key` already hashed it; only hash `e.text.len()` + preedit metadata.
-                    e.text.len().hash(&mut h);
-                } else {
-                    e.text.hash(&mut h);
+            if !secure {
+                if long_key.is_none() || e.preedit().is_some() {
+                    if long_field {
+                        // During IME composition on a long field, `t.content` is the display string and
+                        // `long_key` already hashed it; only hash `e.text.len()` + preedit metadata.
+                        e.text.len().hash(&mut h);
+                    } else {
+                        e.text.hash(&mut h);
+                    }
+                }
+                (e.anchor, e.focus, e.preedit().map(|p| (p.0.len(), p.1))).hash(&mut h);
+                if !long_field {
+                    self.edit.input_scroll.get(&n.path).map(|v| v.to_bits()).hash(&mut h);
                 }
             }
-            (e.anchor, e.focus, e.preedit().map(|p| (p.0.len(), p.1)), e.focused, &input.placeholder, input.single_line, input.access.is_some()).hash(&mut h);
-            if !long_field {
-                self.edit.input_scroll.get(&n.path).map(|v| v.to_bits()).hash(&mut h);
-            }
+            (e.focused, &input.placeholder, input.single_line, input.access.is_some(), self.is_node_read_only(i)).hash(&mut h);
         }
         let handlers = n.handlers.get();
         (handlers.is_some_and(|h| h.on_press.is_some()), handlers.is_some_and(|h| h.on_secondary_press.is_some()),
             handlers.is_some_and(|h| h.modal.is_some()), handlers.is_some_and(|h| h.has_primary())).hash(&mut h);
-        (n.focus.selected, n.focus.step.is_some(), n.focus.default, self.focus_group(i).is_some()).hash(&mut h);
-        (self.allowed(i), self.can_focus(i), n.inert).hash(&mut h);
+        (n.focus.selected, n.focus.step.is_some(), n.focus.set_value.is_some(), n.focus.default, n.focus.caret_browsing, self.focus_group(i).is_some()).hash(&mut h);
+        if n.input.is_none() && self.is_caret_browsing_node(n) {
+            self.a11y_caret_selection(i)
+                .map(|s| (s.anchor.node.0, s.anchor.character_index, s.focus.node.0, s.focus.character_index))
+                .hash(&mut h);
+        }
+        (self.allowed(i), self.can_focus(i), n.inert, w.delegated_a11y && roles::composite_item(role)).hash(&mut h);
         if let Some(st) = self.scroll.scrolls.get(&n.id).filter(|_| n.scroll.is_some()) {
             [st.offset.to_bits(), st.max.to_bits(), st.x.offset.to_bits(), st.x.max.to_bits()].hash(&mut h);
             [st.drawn_x, st.drawn.y()].map(f32::to_bits).hash(&mut h);
@@ -127,6 +173,33 @@ impl RuntimeCore {
         h.finish()
     }
 
+    /// Signature of a live region's spoken content and politeness (`Polite` or `Assertive`),
+    /// independent of layout geometry. `None` when the element is not an active live root.
+    pub(super) fn a11y_live_sig(&self, i: usize, content_print: u64) -> Option<u64> {
+        let n = &self.tree.nodes[i];
+        let live = n.a11y.live.or_else(|| roles::default_live(n.role))?;
+        if live == crate::LiveRegion::Off { return None; }
+        let mut h = rustc_hash::FxHasher::default();
+        live.hash(&mut h);
+        let secure = n.is_secure();
+        secure.hash(&mut h);
+        n.label.hash(&mut h);
+        if let Some(m) = n.a11y.more.as_deref() {
+            m.value.hash(&mut h);
+            m.labelled_by.as_deref().and_then(|k| self.a11y_keyed(i, k)).map(|j| self.a11y_words(j)).hash(&mut h);
+            if let Some(r) = m.range { r.value.to_bits().hash(&mut h); }
+        }
+        if !secure {
+            if let Some(input) = n.input.as_deref() {
+                input.edit.text.hash(&mut h);
+            } else if let Some(t) = n.text.as_deref() {
+                t.source_text().hash(&mut h);
+            }
+        }
+        content_print.hash(&mut h);
+        Some(h.finish())
+    }
+
     /// Per node, a hash of the text its name could be taken from (`a11y_content_name`): its
     /// own text or label, and its descendants', folded bottom-up. Zero for nodes whose role
     /// doesn't read it.
@@ -134,9 +207,9 @@ impl RuntimeCore {
         let mut sub = vec![0u64; self.tree.nodes.len()];
         for j in (0..self.tree.nodes.len()).rev() {
             let n = &self.tree.nodes[j];
-            let own = if n.a11y.hidden || n.vis.opacity <= 0.01 || n.is_secure() { 0 }
+            let own = if n.a11y.hidden || n.role == "list-marker" || n.vis.opacity <= 0.01 || n.is_secure() { 0 }
                 else if let Some(l) = n.label.as_deref() { hash_str(l) }
-                else { n.text.as_deref().filter(|_| n.input.is_none()).map_or(0, |t| hash_str(&t.content)) };
+                else { n.text.as_deref().filter(|_| n.input.is_none()).map_or(0, |t| hash_str(t.source_text())) };
             sub[j] = mix(sub[j], own);
             if let Some(p) = n.parent { sub[p] = mix(sub[p], sub[j]); }
         }
@@ -156,7 +229,7 @@ impl RuntimeCore {
         let mut node = AkNode::new(role);
         // Disabled is what the app says (or an inert subtree); an element that only contains an
         // open modal isn't. Actions go only where input may.
-        let enabled = !n.a11y.disabled && !n.inert;
+        let enabled = !self.node_disabled(i) && !n.inert;
         let actionable = enabled && self.allowed(i);
         if let Some(key) = &n.key { node.set_author_id(key.as_str()); }
         let more = n.a11y.more.as_deref();
@@ -197,8 +270,38 @@ impl RuntimeCore {
                 Some(false) => node.set_sort_direction(accesskit::SortDirection::Descending),
                 None => {}
             }
-            if let Some(j) = self.a11y_active_descendant(i) { node.set_active_descendant(super::a11y_tree::element_id(self.tree.nodes[j].id)); }
+            if let Some(j) = self.a11y_active_descendant(i) { node.set_active_descendant(element_id(self.tree.nodes[j].id)); }
             if m.busy { node.set_busy(); }
+            if m.multiselectable { node.set_multiselectable(); }
+            if m.required { node.set_required(); }
+            if let Some(hp) = m.has_popup {
+                node.set_has_popup(match hp {
+                    crate::HasPopup::Menu => accesskit::HasPopup::Menu,
+                    crate::HasPopup::Listbox => accesskit::HasPopup::Listbox,
+                    crate::HasPopup::Tree => accesskit::HasPopup::Tree,
+                    crate::HasPopup::Grid => accesskit::HasPopup::Grid,
+                    crate::HasPopup::Dialog => accesskit::HasPopup::Dialog,
+                });
+            }
+            if let Some(o) = m.orientation {
+                node.set_orientation(match o {
+                    crate::Orientation::Horizontal => accesskit::Orientation::Horizontal,
+                    crate::Orientation::Vertical => accesskit::Orientation::Vertical,
+                });
+            }
+            if let Some(ac) = m.auto_complete {
+                node.set_auto_complete(match ac {
+                    crate::AutoComplete::Inline => accesskit::AutoComplete::Inline,
+                    crate::AutoComplete::List => accesskit::AutoComplete::List,
+                    crate::AutoComplete::Both => accesskit::AutoComplete::Both,
+                });
+            }
+            if let Some(j) = m.controls.as_deref().and_then(|k| self.a11y_related_target(i, k)) {
+                node.set_controls(vec![element_id(self.tree.nodes[j].id)]);
+            }
+            if let Some(j) = m.owns.as_deref().and_then(|k| self.a11y_related_target(i, k)) {
+                node.set_owns(vec![element_id(self.tree.nodes[j].id)]);
+            }
         }
         if let Some(v) = more.and_then(|m| m.value.as_deref()) { node.set_value(v); }
         if let Some(r) = more.and_then(|m| m.range) {
@@ -209,6 +312,12 @@ impl RuntimeCore {
         }
         if let Some(keys) = more.and_then(|m| m.shortcut.as_deref()) { node.set_keyboard_shortcut(keys); }
         if let Some((pos, _)) = more.and_then(|m| m.set) { node.set_position_in_set(pos.saturating_sub(1)); }
+        if let Some(m) = more {
+            if let Some(rows) = m.row_count { node.set_row_count(rows); }
+            if let Some(cols) = m.column_count { node.set_column_count(cols); }
+            if let Some(r) = m.row_index { node.set_row_index(r.saturating_sub(1)); }
+            if let Some(c) = m.column_index { node.set_column_index(c.saturating_sub(1)); }
+        }
         if let Some(level) = n.a11y.level { node.set_level(level.saturating_sub(1) as usize); }
         if let Some(open) = n.a11y.expanded { node.set_expanded(open); }
         let checked = n.a11y.checked.or_else(|| (role == Role::RadioButton).then(|| if n.focus.selected { Checked::True } else { Checked::False }));
@@ -220,11 +329,17 @@ impl RuntimeCore {
         if roles::selectable_item(role) && (n.focus.selected || self.focus_group(i).is_some()) { node.set_selected(n.focus.selected); }
         let live = n.a11y.live.or_else(|| roles::default_live(n.role));
         match live {
+            Some(crate::LiveRegion::Polite | crate::LiveRegion::Assertive)
+                if self.a11y_live_muted(element_id(n.id)) => node.set_live(Live::Off),
             Some(crate::LiveRegion::Polite) => node.set_live(Live::Polite),
             Some(crate::LiveRegion::Assertive) => node.set_live(Live::Assertive),
-            _ => {}
+            Some(crate::LiveRegion::Off) => node.set_live(Live::Off),
+            None => {}
         }
-        if modal { node.set_modal(); }
+        // Per WAI-ARIA 1.2 and Chromium Blink (`AXObject::IsModal`), only `dialog` and
+        // `alertdialog` carry the modal state; popup widgets (`menu`, `listbox`, `tree`,
+        // `grid`, `treegrid`) do not.
+        if modal && matches!(role, Role::Dialog | Role::AlertDialog) { node.set_modal(); }
         if !enabled { node.set_disabled(); }
         // Bounds: a scroll viewport's own box sits in the space its offset moves.
         let mut shift = w.shift;
@@ -243,22 +358,33 @@ impl RuntimeCore {
             }
         }
         node.set_bounds(rect(self.paint.drawn[i], shift));
+        // A disabled-but-focusable control (`El::aria_disabled`) can still take assistive focus
+        // while activation actions stay gated behind `actionable`.
+        if focusable && !n.inert && self.allowed(i) {
+            node.add_action(Ak::Focus);
+        }
         // What a pointer or keyboard user can do to it, routed to the same handlers.
         if actionable {
-            if handlers.is_some_and(|h| h.on_press.is_some()) || input.is_some() { node.add_action(Ak::Click); }
-            if focusable { node.add_action(Ak::Focus); }
-            if handlers.is_some_and(|h| h.on_secondary_press.is_some()) { node.add_action(Ak::ShowContextMenu); }
+            if handlers.is_some_and(|h| h.on_press.is_some()) || input.is_some() || (w.delegated_a11y && roles::composite_item(role)) { node.add_action(Ak::Click); }
+            if handlers.is_some_and(|h| h.on_secondary_press.is_some()) || self.has_image_menu(i) { node.add_action(Ak::ShowContextMenu); }
             if n.a11y.expanded.is_some() && handlers.is_some_and(|h| h.on_press.is_some()) {
                 node.add_action(if n.a11y.expanded == Some(true) { Ak::Collapse } else { Ak::Expand });
             }
             if n.focus.step.is_some() {
                 node.add_action(Ak::Increment);
                 node.add_action(Ak::Decrement);
-                if more.and_then(|m| m.range).is_some_and(|r| r.step.is_some_and(|s| s > 0.0)) { node.add_action(Ak::SetValue); }
+                if more.and_then(|m| m.range).is_some_and(|r| r.usable_step().is_some()) { node.add_action(Ak::SetValue); }
             }
-            if input.is_some_and(|i| i.access.is_some()) {
+            if n.focus.set_value.is_some() && more.and_then(|m| m.range).is_none_or(|r| r.usable_bounds().is_some()) {
                 node.add_action(Ak::SetValue);
-                node.add_action(Ak::ReplaceSelectedText);
+            }
+            if input.is_some_and(|inp| inp.access.is_some()) {
+                if !self.is_node_read_only(i) {
+                    node.add_action(Ak::SetValue);
+                    node.add_action(Ak::ReplaceSelectedText);
+                }
+                if !secure { node.add_action(Ak::SetTextSelection); }
+            } else if self.is_caret_browsing_node(n) && !secure {
                 node.add_action(Ak::SetTextSelection);
             }
             if scroll.is_some() {
@@ -271,8 +397,15 @@ impl RuntimeCore {
                 }
             }
         }
-        if w.scrolled { node.add_action(Ak::ScrollIntoView); }
-        if let Some(input) = input { self.a11y_input(i, input, &mut node); }
+        if w.scrolled && self.allowed(i) { node.add_action(Ak::ScrollIntoView); }
+        if let Some(input) = input {
+            self.a11y_input(i, input, &mut node);
+        } else if self.is_caret_browsing_node(n) {
+            node.set_read_only();
+            if !secure && let Some(sel) = self.a11y_caret_selection(i) {
+                node.set_text_selection(sel);
+            }
+        }
         node
     }
 
@@ -285,6 +418,110 @@ impl RuntimeCore {
             .take_while(inside)
             .find(|&j| self.tree.nodes[j].named(key) && !self.subtree_exiting(j));
         own.or_else(|| self.live_named(None, key))
+    }
+
+    /// The live, accessible element node `i`'s `El::controls` or `El::owns` names: nearest
+    /// scope first (own subtree, then enclosing ancestors), falling back to root-attached
+    /// overlays and keyed paths via `live_named`. Never resolves to `i` itself or to a node
+    /// omitted from the accessibility tree.
+    pub(crate) fn a11y_related_target(&self, i: usize, key: &str) -> Option<usize> {
+        if key.is_empty() { return None; }
+        let usable = |j: usize| j != i && !self.subtree_exiting(j) && self.a11y_in_tree(j);
+        let mut scope = Some(i);
+        while let Some(s) = scope {
+            let inside = |j: &usize| std::iter::successors(self.tree.nodes[*j].parent, |&p| self.tree.nodes[p].parent).any(|p| p == s);
+            if let Some(j) = (s + 1..self.tree.nodes.len())
+                .take_while(inside)
+                .find(|&j| self.tree.nodes[j].named(key) && usable(j))
+            {
+                return Some(j);
+            }
+            scope = self.tree.nodes[s].parent;
+        }
+        self.live_named(None, key).filter(|&j| usable(j))
+    }
+
+    /// Whether modal node `i` is an anchored popup widget (`menu`, `listbox`, `tree`,
+    /// `grid`, or `treegrid`) that keeps its trigger readable in the accessibility tree.
+    fn is_anchored_popup_modal(&self, i: usize) -> bool {
+        self.has_anchor(i) && self.a11y_role(i).is_some_and(roles::popup_modal)
+    }
+
+    /// Accessibility visibility mask while an `El::modal` is active, or `None` when no modal
+    /// is open. Modal dialogs keep only their members and ancestors; anchored popup modals
+    /// (`menu`, `listbox`, `tree`, `grid`, `treegrid`) also keep their anchor trigger subtree
+    /// and any enclosing outer modal readable (inert to actions).
+    pub(crate) fn a11y_modal_mask(&self) -> Option<A11yModalMask> {
+        let active = self.active_modal()?;
+        let n_nodes = self.tree.nodes.len();
+        let mut included = (0..n_nodes).map(|i| self.modal_member(i)).collect::<Vec<_>>();
+        let mut outer_modal = vec![false; n_nodes];
+        if self.is_anchored_popup_modal(active) {
+            let mut queue = vec![active];
+            let mut followed = vec![false; n_nodes];
+            let mut steps = 0usize;
+            while let Some(overlay) = queue.pop() {
+                if followed[overlay] || steps >= crate::runtime::anchor::MAX_ANCHOR_CHAIN {
+                    continue;
+                }
+                followed[overlay] = true;
+                steps += 1;
+                let Some(anchor) = self.anchor_of(overlay) else { continue };
+                let end = self.subtree_end(anchor);
+                for slot in &mut included[anchor..end] {
+                    *slot = true;
+                }
+                let mut p = self.tree.nodes[anchor].parent;
+                while let Some(a) = p {
+                    let an = &self.tree.nodes[a];
+                    let is_modal = an.handlers.get().is_some_and(|h| h.modal.is_some());
+                    if is_modal && !self.modal_member(a) {
+                        outer_modal[a] = true;
+                    }
+                    if self.has_anchor(a)
+                        && !followed[a]
+                        && (!is_modal || self.is_anchored_popup_modal(a))
+                    {
+                        queue.push(a);
+                    }
+                    p = an.parent;
+                }
+            }
+        }
+        let mut ancestor = vec![false; n_nodes];
+        for (i, &inc) in included.iter().enumerate() {
+            if !inc { continue; }
+            let mut p = self.tree.nodes[i].parent;
+            while let Some(j) = p.filter(|&j| !ancestor[j]) {
+                ancestor[j] = true;
+                p = self.tree.nodes[j].parent;
+            }
+        }
+        Some(A11yModalMask { included, outer_modal, ancestor })
+    }
+
+    /// Whether node `j` appears in the accessibility tree (not hidden, exiting, unmounted,
+    /// transparent, inside a secure ancestor, occluded by a modal, or role-omitted).
+    pub(super) fn a11y_in_tree(&self, j: usize) -> bool {
+        let n = &self.tree.nodes[j];
+        if n.is_moved_stub() || n.a11y.hidden || n.vis.opacity <= 0.01 || self.is_exiting(n.id) || !self.scene.contains(n.id) {
+            return false;
+        }
+        let mut p = n.parent;
+        while let Some(a) = p {
+            let an = &self.tree.nodes[a];
+            if an.is_moved_stub() || an.a11y.hidden || an.vis.opacity <= 0.01 || an.is_secure() || self.is_exiting(an.id) || !self.scene.contains(an.id) {
+                return false;
+            }
+            p = an.parent;
+        }
+        if self.active_modal().is_some()
+            && !self.modal_member(j)
+            && !self.a11y_modal_mask().is_some_and(|m| m.visible(j))
+        {
+            return false;
+        }
+        self.a11y_role(j).is_some()
     }
 
     /// Debug builds: warns once per site about a control a screen reader would say only by its
@@ -355,7 +592,7 @@ impl RuntimeCore {
             let n = &self.tree.nodes[j];
             if skip.is_some_and(|s| inside.contains(&s)) { j += 1; continue; }
             skip = None;
-            if n.a11y.hidden || n.vis.opacity <= 0.01 || n.is_secure() {
+            if n.a11y.hidden || n.role == "list-marker" || n.vis.opacity <= 0.01 || n.is_secure() {
                 skip = Some(j);
             } else if let Some(l) = n.label.as_deref().filter(|l| !l.trim().is_empty()) {
                 push_words(&mut out, l);

@@ -7,11 +7,24 @@ pub mod fill_bench;
 pub(crate) mod glyph_cache;
 pub(crate) mod glyph_emit;
 pub mod mask_cache;
+#[cfg(test)]
+mod tests;
 
 use super::*;
 use fill::Residency;
 
 pub const ATLAS_SIZE: u32 = 2048;
+/// Initial CPU backing rows allocated on a glyph atlas page's first mask (2048 × 128 = 256 KiB);
+/// grows in power-of-two row steps up to [`ATLAS_SIZE`] (4 MiB) as shelves fill.
+pub(crate) const ATLAS_CPU_START_ROWS: u32 = 128;
+
+fn ensure_rows(data: &mut Vec<u8>, need_rows: u32) {
+    let rows = need_rows.clamp(ATLAS_CPU_START_ROWS, ATLAS_SIZE).next_power_of_two().min(ATLAS_SIZE);
+    let bytes = rows as usize * ATLAS_SIZE as usize;
+    if data.len() < bytes {
+        data.resize(bytes, 0);
+    }
+}
 
 /// Looked up for every glyph of every frame, so hashed with Fx rather than SipHash.
 pub(super) type GlyphMap<V> = HashMap<GlyphKey, V, std::hash::BuildHasherDefault<rune_motion::Fx>>;
@@ -134,14 +147,18 @@ pub struct AtlasPage {
     /// Rows `[y0, y1)` changed since the last upload.
     pub dirty: Option<(u32, u32)>,
     shelf: Shelf,
+    /// Monotonic eviction generation for this page, so reusable animated slots detect resets.
+    pub(super) epoch: u64,
 }
 
 impl AtlasPage {
-    pub(super) fn new(age: u64) -> Self {
+    pub(super) fn new(age: u64, epoch: u64) -> Self {
         AtlasPage {
-            data: vec![0; (ATLAS_SIZE * ATLAS_SIZE) as usize],
+            // Grown lazily in power-of-two row steps from `ATLAS_CPU_START_ROWS` in `Atlas::alloc`.
+            data: Vec::new(),
             dirty: None,
             shelf: Shelf::new(age),
+            epoch,
         }
     }
 }
@@ -159,7 +176,7 @@ pub struct GlyphQuad {
     /// Atlas origin with the page packed into y (`page * ATLAS_SIZE + y`).
     /// Use [`Self::atlas_page`] and [`Self::atlas_uv`] when sampling an atlas page directly.
     pub uv: [f32; 2],
-    pub ink: u16,
+    pub ink: u32,
     pub byte: u32,
     /// A colour glyph (emoji) drawn from [`TextSystem::color_glyph`] instead of the alpha
     /// atlas: 0 for none, else its index plus one.
@@ -194,7 +211,7 @@ pub(super) struct ColorGlyph {
 impl ColorGlyph {
     /// The quad for a resting pen at `[x, y]`, rounded at rest, then moved by `glide`
     /// (the image draws filtered).
-    pub(super) fn quad(&self, x: f32, y: f32, glide: [f32; 2], ink: u16, byte: u32) -> GlyphQuad {
+    pub(super) fn quad(&self, x: f32, y: f32, glide: [f32; 2], ink: u32, byte: u32) -> GlyphQuad {
         let rect = [
             x.round() + self.left as f32 + glide[0],
             y.round() - self.top as f32 + glide[1],
@@ -206,7 +223,8 @@ impl ColorGlyph {
 }
 
 pub struct Atlas {
-    /// The first page's CPU copy: empty until its first mask (`alloc`), then 2048x2048.
+    /// The first page's CPU copy: empty until its first mask (`alloc`), then grows in
+    /// power-of-two row steps from 2048×128 (256 KiB) up to 2048×2048 (4 MiB).
     pub data: Vec<u8>,
     /// Rows `[y0, y1)` changed since the last upload.
     pub dirty: Option<(u32, u32)>,
@@ -219,6 +237,14 @@ pub struct Atlas {
     pub(crate) resets: u64,
     pub(crate) rasterized: u64,
     shelf: Shelf,
+    page0_gen: u64,
+    /// Monotonic atlas-wide page generation counter so popped and recreated overflow pages never
+    /// collide with stale reusable slot handles (`SlotEntry`).
+    next_page_gen: u64,
+    /// Monotonic counter incremented each time the renderer consumes dirty atlas rows
+    /// (`rows_uploaded`), so double-buffered animated slots detect missed drawables per slot
+    /// without horizontal shelf aliasing.
+    pub(super) upload_gen: u64,
     pub(super) clock: u64,
     pub(super) map: GlyphMap<Residency>,
     /// Text draws subpixel masks this frame: the renderer blends by channel
@@ -290,6 +316,11 @@ impl Atlas {
 
     #[doc(hidden)]
     pub fn new() -> Self {
+        Atlas { outlines: Default::default(), ..Self::empty() }
+    }
+
+    /// An unallocated placeholder atlas, for [`TextSystem::empty`].
+    pub(crate) fn empty() -> Self {
         Atlas {
             // Made with the first mask (`alloc`).
             data: Vec::new(),
@@ -299,13 +330,16 @@ impl Atlas {
             resets: 0,
             rasterized: 0,
             shelf: Shelf::new(1),
+            page0_gen: 1,
+            next_page_gen: 2,
+            upload_gen: 0,
             clock: 1,
             map: GlyphMap::default(),
             lcd: false,
             lcd_wanted: false,
             fills: Vec::new(),
             icons: HashMap::new(),
-            outlines: Default::default(),
+            outlines: super::outline::OutlineStore::empty(),
         }
     }
 
@@ -325,6 +359,12 @@ impl Atlas {
         }
     }
 
+    fn alloc_page_gen(&mut self) -> u64 {
+        let id = self.next_page_gen;
+        self.next_page_gen = self.next_page_gen.wrapping_add(1).max(1);
+        id
+    }
+
     pub(super) fn evict_page(&mut self, page: usize) {
         let p16 = page as u16;
         self.map.retain(|_, v| v.mask().is_none_or(|g| g.page != p16));
@@ -333,12 +373,23 @@ impl Atlas {
         self.clock += 1;
         self.resets += 1;
         let age = self.clock;
+        let next_gen = self.alloc_page_gen();
         if page == 0 {
             self.dirty = None;
             self.shelf.reset(age);
+            self.page0_gen = next_gen;
         } else if let Some(p) = self.pages.get_mut(page - 1) {
             p.dirty = None;
             p.shelf.reset(age);
+            p.epoch = next_gen;
+        }
+    }
+
+    pub(super) fn page_gen(&self, page: u16) -> u64 {
+        if page == 0 {
+            self.page0_gen
+        } else {
+            self.pages.get(page as usize - 1).map_or(0, |p| p.epoch)
         }
     }
 
@@ -398,15 +449,16 @@ impl Atlas {
         }
     }
 
-    /// Room for a `w`x`h` mask: its page and place. The first page's CPU copy is made here, at its
-    /// first mask, so a text system that only measures (`measure`'s, on each thread that calls it)
-    /// never holds its 4 MiB.
+    /// Room for a `w`x`h` mask: its page and place. Each page's CPU copy starts at
+    /// `ATLAS_CPU_START_ROWS` (256 KiB) on its first mask and doubles in row steps up to
+    /// `ATLAS_SIZE` (4 MiB) as shelves fill, so a small overlay or a measure-only text system
+    /// never allocates 4 MiB eagerly.
     pub(super) fn alloc(&mut self, w: u32, h: u32) -> Option<(usize, u32, u32)> {
-        let placed = self.place(w, h);
-        if placed.is_some_and(|(page, ..)| page == 0) && self.data.is_empty() {
-            self.data = vec![0; (ATLAS_SIZE * ATLAS_SIZE) as usize];
-        }
-        placed
+        let (page, ax, ay) = self.place(w, h)?;
+        let need_rows = (ay + h + 1).min(ATLAS_SIZE);
+        let data = if page == 0 { &mut self.data } else { &mut self.pages[page - 1].data };
+        ensure_rows(data, need_rows);
+        Some((page, ax, ay))
     }
 
     fn place(&mut self, w: u32, h: u32) -> Option<(usize, u32, u32)> {
@@ -452,7 +504,8 @@ impl Atlas {
         }
         if total < MAX_OVERFLOW_PAGES {
             self.clock += 1;
-            let mut page = AtlasPage::new(self.clock);
+            let epoch = self.alloc_page_gen();
+            let mut page = AtlasPage::new(self.clock, epoch);
             let (x, y) = page.shelf.alloc(w, h).unwrap();
             self.pages.push(page);
             return Some((self.pages.len(), x, y));
@@ -492,6 +545,88 @@ impl Atlas {
         self.rasterized += 1;
         self.touch(page as u16, w * h);
         Some(AtlasGlyph { page: page as u16, x: ax, y: ay, w, h, left, top, lcd: false })
+    }
+
+    /// Borrow of this atlas restricted to in-place icon slot updates (`loop_step`).
+    /// By construction, exposes no allocation or eviction methods and never touches `live_texels`.
+    pub(super) fn in_place(&mut self) -> InPlaceAtlas<'_> {
+        InPlaceAtlas(self)
+    }
+
+    /// Allocates a `(px + 2) × (px + 2)` icon slot with a 1-texel transparent apron around `cov`
+    /// (`px × px`), returning its placement and page eviction generation for later in-place reuse.
+    pub(super) fn put_bordered(&mut self, px: u32, cov: &[u8]) -> Option<(AtlasGlyph, u64)> {
+        let side = px + 2;
+        let (page, ax, ay) = self.alloc(side, side)?;
+        let epoch = self.page_gen(page as u16);
+        let slot = AtlasGlyph { page: page as u16, x: ax, y: ay, w: side, h: side, left: 0, top: 0, lcd: false };
+        self.write_bordered_pixels(slot, px, cov);
+        self.touch(slot.page, side * side);
+        self.rasterized += 1;
+        Some((slot, epoch))
+    }
+
+    /// Rewrites an existing `(px + 2) × (px + 2)` bordered icon slot in place if its page has not
+    /// been evicted since allocation. Marks only the slot's row band dirty on the glyph atlas.
+    pub(super) fn write_bordered(&mut self, slot: AtlasGlyph, page_gen: u64, px: u32, cov: &[u8]) -> bool {
+        if slot.w != px + 2 || slot.h != px + 2 || self.page_gen(slot.page) != page_gen {
+            return false;
+        }
+        self.write_bordered_pixels(slot, px, cov);
+        self.touch(slot.page, slot.w * slot.h);
+        true
+    }
+
+    fn write_bordered_pixels(&mut self, slot: AtlasGlyph, px: u32, cov: &[u8]) {
+        let (page, ax, ay, side) = (slot.page as usize, slot.x, slot.y, px + 2);
+        let (data, dirty) = if page == 0 {
+            (&mut self.data, &mut self.dirty)
+        } else {
+            let p = &mut self.pages[page - 1];
+            (&mut p.data, &mut p.dirty)
+        };
+        let x0 = (ax - 1) as usize;
+        let x1 = (ax + side + 1) as usize;
+        // Zero outer gutter rows and top/bottom 1px transparent apron rows.
+        for gy in [ay - 1, ay, ay + px + 1, ay + side] {
+            let row_start = gy as usize * ATLAS_SIZE as usize;
+            data[row_start + x0..row_start + x1].fill(0);
+        }
+        for row in 0..px {
+            let src = &cov[(row * px) as usize..((row + 1) * px) as usize];
+            let line = (ay + 1 + row) as usize * ATLAS_SIZE as usize;
+            data[line + x0] = 0;
+            data[line + ax as usize] = 0;
+            data[line + (ax + 1) as usize..line + (ax + 1 + px) as usize].copy_from_slice(src);
+            data[line + (ax + 1 + px) as usize] = 0;
+            data[line + (ax + side) as usize] = 0;
+        }
+        let (y0, y1) = (ay - 1, ay + side + 1);
+        let d = dirty.get_or_insert((y0, y1));
+        *d = (d.0.min(y0), d.1.max(y1));
+    }
+}
+
+/// Restricted borrow of [`Atlas`] for `loop_step` in-place animated icon updates.
+/// By construction, it has no `alloc`, `place`, `put_bordered`, `evict_page`, or `touch` methods,
+/// so `loop_step` can never allocate in or evict from the glyph atlas or inflate `live_texels`.
+pub(super) struct InPlaceAtlas<'a>(&'a mut Atlas);
+
+impl InPlaceAtlas<'_> {
+    pub(super) fn page_gen(&self, page: u16) -> u64 {
+        self.0.page_gen(page)
+    }
+
+    pub(super) fn upload_gen(&self) -> u64 {
+        self.0.upload_gen
+    }
+
+    pub(super) fn write_bordered(&mut self, slot: AtlasGlyph, page_gen: u64, px: u32, cov: &[u8]) -> bool {
+        if slot.w != px + 2 || slot.h != px + 2 || self.0.page_gen(slot.page) != page_gen {
+            return false;
+        }
+        self.0.write_bordered_pixels(slot, px, cov);
+        true
     }
 }
 

@@ -3,7 +3,7 @@
 //! measuring and re-breaking a long paragraph doesn't rehash its bytes.
 use std::hash::{Hash, Hasher};
 
-use crate::{PillChip, Span};
+use crate::{InlineBoxRun, PillChip, Span, SpanBoxRun};
 use rune_core::tok::{OpticalSize, TextStyle};
 
 /// A fast, non-cryptographic hasher: bytes go through `rustc_hash`'s string hash and each word
@@ -60,7 +60,47 @@ pub fn shape_key(text: &str, spans: &[Span], style: TextStyle, scale: f32, wrap_
     let mut h = KeyHasher::default();
     (key, wrap_anywhere).hash(&mut h);
     for p in pills {
-        (p.start, p.end, p.icon.is_some(), p.bare.as_ref().map(|b| (b.size.to_bits(), b.gap.to_bits()))).hash(&mut h);
+        let replace = |r: &crate::Replace| [r.width, r.ascent, r.descent].map(f32::to_bits);
+        (p.start, p.end, p.has_lead_visual(), p.bare.as_ref().map(|b| (b.size.to_bits(), b.gap.to_bits(), b.replace.as_ref().map(replace)))).hash(&mut h);
+    }
+    h.finish()
+}
+
+/// Mixes layout-affecting [`SpanBoxRun`] horizontal padding into a [`shape_key`]. Returns `key`
+/// unchanged when no box adds horizontal padding, keeping plain text keys identical.
+#[doc(hidden)]
+pub fn mix_span_boxes(key: u64, span_boxes: &[SpanBoxRun]) -> u64 {
+    if !span_boxes.iter().any(|b| b.style.has_padding()) {
+        return key;
+    }
+    let mut h = KeyHasher::default();
+    (key, 0x7370_616e_626f_7801u64).hash(&mut h);
+    for b in span_boxes {
+        if b.style.has_padding() {
+            (b.start, b.end, b.style.pad_left().to_bits(), b.style.pad_right().to_bits()).hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
+/// Mixes in-flow [`InlineBoxRun`] slots into a [`shape_key`]. Returns `key` unchanged when
+/// `inline_boxes` is empty, keeping plain text keys bit-identical.
+#[doc(hidden)]
+pub fn mix_inline_boxes(key: u64, inline_boxes: &[InlineBoxRun]) -> u64 {
+    if inline_boxes.is_empty() {
+        return key;
+    }
+    let mut h = KeyHasher::default();
+    (key, 0x696e_6c69_6e65_6278u64).hash(&mut h);
+    for b in inline_boxes {
+        (
+            b.at,
+            b.slot.width().to_bits(),
+            b.slot.height().to_bits(),
+            b.slot.alignment(),
+            b.slot.baseline_offset().map(f32::to_bits),
+        )
+            .hash(&mut h);
     }
     h.finish()
 }
@@ -76,14 +116,15 @@ pub fn directed(key: u64, base: parley::BaseDirection) -> u64 {
     }
 }
 
-/// A shaping broken at `max_width`, aligned and block-indented: the shape key itself when the
-/// layout is unwrapped, start-aligned and unindented.
-pub(crate) fn break_key(shape: u64, max_width: Option<f32>, align: parley::Alignment, blocks: Option<&[crate::Block]>) -> u64 {
-    if max_width.is_none() && align == parley::Alignment::Start && blocks.is_none() {
+/// A shaping broken at `max_width`, aligned and block- or first-line-indented: the shape key
+/// itself when the layout is unwrapped, start-aligned and unindented.
+pub(crate) fn break_key(shape: u64, max_width: Option<f32>, align: parley::Alignment, blocks: Option<&[crate::Block]>, text_indent: f32) -> u64 {
+    if max_width.is_none() && align == parley::Alignment::Start && blocks.is_none() && text_indent == 0.0 {
         return shape;
     }
+    let indent_bits = if text_indent == 0.0 { 0u32 } else { text_indent.to_bits() };
     let mut h = KeyHasher::default();
-    (shape, max_width.map(f32::to_bits), align as u8, blocks).hash(&mut h);
+    (shape, max_width.map(f32::to_bits), align as u8, blocks, indent_bits).hash(&mut h);
     h.finish()
 }
 

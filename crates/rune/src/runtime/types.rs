@@ -22,15 +22,24 @@ pub(crate) struct NodeCold {
     pub(super) live: Vec<crate::live::Bound>,
     /// The run a cell measures and draws from (see `El::advance_in`).
     pub(super) run_layout: Option<Rc<crate::text::RunLayout>>,
+    /// Verified tabular-digit glyph substitution for a single-line `LiveText` node.
+    pub(super) tabular_layout: Option<Rc<crate::text::TabularGlyphs>>,
     pub(super) live_text_seen: Option<u128>,
     pub(super) looping: Option<Box<rune_motion::LoopSpec>>,
+    pub(super) loop_times: Option<u32>,
+    pub(super) frame_motion: Option<Box<rune_motion::Anim>>,
     pub(super) opacity_motion: Option<Box<rune_motion::Anim>>,
     pub(super) lead: Option<(Spring, Spring)>,
     pub(super) transition: Option<Box<Transition>>,
+    pub(super) transition_motion: Option<Box<(rune_motion::Anim, rune_motion::Anim)>>,
+    pub(super) enter_in_instant: bool,
     /// `El::matched` id, with the element's own (not inherited) layout spring.
     pub(super) matched: Option<(Rc<str>, Option<Spring>)>,
+    pub(super) matched_motion: Option<Box<rune_motion::Anim>>,
     pub(super) above: Option<crate::el::Anchor>,
-    pub(super) scroll: Option<ScrollSpec>,
+    pub(super) above_boundary: Option<String>,
+    pub(super) resolved_anchor: Option<(crate::Side, crate::Align)>,
+    pub(crate) scroll: Option<ScrollSpec>,
     pub(super) scroll_axes: crate::el::ScrollAxes,
     pub(super) scroll_edges: crate::el::ScrollEdges,
     /// `El::wheel_scrolls`: the viewport a wheel over this node scrolls, in place of what it
@@ -40,18 +49,22 @@ pub(crate) struct NodeCold {
     pub(super) sticky: Option<Box<crate::el::Sticky>>,
     pub(super) growth: Option<Box<GrowthSpec>>,
     pub(super) glide: Option<crate::growth::FoldGlide>,
-    pub(super) a11y: crate::el::A11y,
+    pub(crate) a11y: crate::el::A11y,
     /// The image ratio this picture's layout took, when it sizes one side from its pixels.
     pub(super) pixel_aspect: Option<f32>,
     /// `El::aspect_fit`: the ratio and the element's own style, which the fitted size replaces.
     pub(super) aspect_fit: Option<Box<(f32, CompactStyle)>>,
     pub(super) material: Option<crate::SystemMaterial>,
     /// `El::help`.
-    pub(super) help: Option<String>,
+    pub(crate) help: Option<String>,
     /// `El::help_when_truncated`.
-    pub(super) help_cut: bool,
+    pub(crate) help_cut: bool,
     /// `El::help_side`.
     pub(super) help_side: Option<crate::Side>,
+    /// `El::help_open`.
+    pub(super) help_open: bool,
+    /// `El::data`.
+    pub(super) data: Vec<crate::el::data::ElData>,
     #[cfg(debug_assertions)]
     pub(super) scroll_source: Option<&'static std::panic::Location<'static>>,
 }
@@ -63,16 +76,22 @@ impl crate::cold::Empty for NodeCold {
         label: None,
         live: Vec::new(),
         run_layout: None,
+        tabular_layout: None,
         live_text_seen: None,
         looping: None,
+        loop_times: None,
+        frame_motion: None,
         opacity_motion: None,
         lead: None,
         transition: None,
+        transition_motion: None,
+        enter_in_instant: false,
         matched: None,
-        above: None,
+        matched_motion: None,
+        above: None, above_boundary: None, resolved_anchor: None,
         scroll: None,
         scroll_axes: crate::el::ScrollAxes::Y,
-        scroll_edges: crate::el::ScrollEdges { fade: 0.0, fade_style: crate::el::FadeStyle::SMOOTH, margin: 0.0, anchor: false },
+        scroll_edges: crate::el::ScrollEdges { fade: 0.0, fade_style: crate::el::FadeStyle::SMOOTH, margin: 0.0, anchor: false, no_anchor: false },
         wheel_scrolls: None,
         sticky: None,
         growth: None,
@@ -84,6 +103,8 @@ impl crate::cold::Empty for NodeCold {
         help: None,
         help_cut: false,
         help_side: None,
+        help_open: false,
+        data: Vec::new(),
         #[cfg(debug_assertions)]
         scroll_source: None,
     };
@@ -101,9 +122,9 @@ pub(crate) struct Node {
     pub text_layout: Option<crate::text::TextLayout>,
     /// Where `text_layout` cut the text for `El::truncate` and its kin.
     pub(crate) elided: Option<Elision>,
-    pub(super) input: Option<Box<InputSpec>>,
-    pub(super) focus: crate::cold::Cold<crate::el::FocusSpec>,
-    pub(super) handlers: crate::cold::Cold<crate::el::Handlers>,
+    pub(crate) input: Option<Box<InputSpec>>,
+    pub(crate) focus: crate::cold::Cold<crate::el::FocusSpec>,
+    pub(crate) handlers: crate::cold::Cold<crate::el::Handlers>,
     pub(super) cold: crate::cold::Cold<NodeCold>,
     pub vis: Visual,
     pub(crate) vis_flags: crate::el::VisualFlags,
@@ -126,10 +147,14 @@ pub(crate) struct Node {
     pub(super) width_leads: bool,
     /// Inside an `El::instant_changes` element, or one itself.
     pub(super) instant_changes: bool,
+    /// `El::animated_changes` set directly on this element: stops an ancestor's `instant_changes`.
+    pub(super) animated_changes: bool,
     pub(super) streaming: bool,
     pub(super) whole: bool,
     /// Inside an `El::inert` subtree (this element or an ancestor).
     pub(crate) inert: bool,
+    /// Inside an `El::selection_enabled(false)` subtree no `true` reopens: its texts don't select.
+    pub(crate) selection_off: bool,
     /// The direction it lays out in (`El::dir`, its own or inherited): right to left, its
     /// children's x mirror inside it and its inset's sides swap.
     pub(crate) flow: crate::el::Flow,
@@ -142,12 +167,20 @@ pub(crate) struct Node {
     /// `P_GROUP_REST` fades a dropped `El::group_opacity` to full: paint reads it until it lands.
     pub(super) group_fade: bool,
     pub(super) virtual_mount: bool,
+    /// Built from `El::virtualize` or `El::virtual_rows`.
+    pub(super) virtual_list: bool,
+    /// Built from `El::virtual_items`.
+    pub(super) virtual_items: bool,
     /// `El::selection_group`.
     pub(super) selection_group: bool,
     pub(super) window_drag: crate::el::WindowDrag,
     pub(super) ime_cursor: bool,
-    /// `El::ime_option_as_alt`.
-    pub(super) ime_option_as_alt: bool,
+    /// `El::ime_option_as_alt` / `El::ime_option_as_alt_mode`.
+    pub(super) ime_option_as_alt: crate::OptionAsAlt,
+    /// Participates in its parent's normal flow (`position != Absolute && display != None`).
+    pub(super) in_flow: bool,
+    /// Exiting in-flow child whose main-axis slot is collapsing analytically (`hold_layout`).
+    pub(super) collapsing: bool,
     /// Placeholder left in `self.nodes` after `try_reuse_memo` moves a node into the new pass.
     pub(super) moved_stub: bool,
     /// A new one each time it's built from its element; a node a region keeps keeps it
@@ -173,6 +206,13 @@ impl Node {
     pub(super) fn clear_run_layout(&mut self) {
         if self.cold.get().is_some_and(|c| c.run_layout.is_some()) {
             self.cold_mut().run_layout = None;
+        }
+    }
+
+    #[inline]
+    pub(super) fn clear_tabular_layout(&mut self) {
+        if self.cold.get().is_some_and(|c| c.tabular_layout.is_some()) {
+            self.cold_mut().tabular_layout = None;
         }
     }
 
@@ -205,20 +245,26 @@ impl Node {
             time_scale: 1.0,
             in_row: RowLayout::Free,
             width_leads: false,
-            instant_changes: false,
+            instant_changes: old.instant_changes,
+            animated_changes: old.animated_changes,
             streaming: false,
             whole: false,
             inert: false,
+            selection_off: old.selection_off,
             flow: old.flow,
             directed: old.directed,
             pin: old.pin,
             scale_track: old.scale_track,
             group_fade: old.group_fade,
             virtual_mount: false,
+            virtual_list: false,
+            virtual_items: false,
             selection_group: false,
             window_drag: crate::el::WindowDrag::None,
             ime_cursor: false,
-            ime_option_as_alt: false,
+            ime_option_as_alt: crate::OptionAsAlt::None,
+            in_flow: old.in_flow,
+            collapsing: false,
             moved_stub: true,
             epoch: 0,
         }
@@ -232,12 +278,12 @@ impl Node {
     }
 
     #[inline]
-    pub(super) fn is_moved_stub(&self) -> bool {
+    pub(crate) fn is_moved_stub(&self) -> bool {
         self.moved_stub
     }
 
     /// Whether its text is a secret: marked secure, redacted, or a secure field.
-    pub(super) fn is_secure(&self) -> bool {
+    pub(crate) fn is_secure(&self) -> bool {
         self.cold.get().is_some_and(|c| c.a11y.secure)
             || self.text.as_ref().is_some_and(|t| t.redacted)
             || self.input.as_ref().is_some_and(|i| i.edit.is_secure())
@@ -268,105 +314,12 @@ impl AnimSource {
     pub const LIVE: u16 = 256;
     pub const VIRTUAL_FILL: u16 = 512;
     pub const TEXT_FILL: u16 = 1024;
-    pub const NAMES: [&'static str; 11] =
-        ["tracks", "growth", "scroll", "reveal", "loop", "scale-settle", "video", "text-flight", "live", "virtual-fill", "text-fill"];
+    pub const ICON_ANIM: u16 = 2048;
+    pub const NAMES: [&'static str; 12] =
+        ["tracks", "growth", "scroll", "reveal", "loop", "scale-settle", "video", "text-flight", "live", "virtual-fill", "text-fill", "icon-anim"];
 
     pub fn names(bits: u16) -> Vec<&'static str> {
         Self::NAMES.iter().enumerate().filter(|(i, _)| bits & (1 << i) != 0).map(|(_, n)| *n).collect()
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct Inh {
-    pub(super) opacity: f32,
-    pub(super) paint_opacity: f32,
-    /// `El::stuck_fade`: how much of a stuck header's first child (its title) shows.
-    pub(super) first_fade: f32,
-    pub(super) clip: [f32; 4],
-    pub(super) fade: [f32; 4],
-    pub(super) fade_origin: [f32; 4],
-    /// Paint clips are consumed by isolation; logical clips remain for hit tests/inspection.
-    pub(super) paint_clip: [f32; 4],
-    pub(super) paint_fade: [f32; 4],
-    pub(super) paint_fade_origin: [f32; 4],
-    pub(super) rounded: Option<([f32; 4], [f32; 4])>,
-    /// Ancestors' scales, composed: a point `x` (points, with `dx`/`dy` applied) draws at
-    /// `anchor_to + (x - anchor) * scale`. The anchors differ when scales nest.
-    pub(super) scale: f32,
-    pub(super) anchor: [f32; 2],
-    pub(super) anchor_to: [f32; 2],
-    pub(super) blur: f32,
-    /// Vertical offset in points from scroll viewports and growth rows above.
-    pub(super) dy: f32,
-    /// Horizontal offset in points: a matched flight centring its scaled children.
-    pub(super) dx: f32,
-    /// The part of `dx`/`dy` from flights' covers above. A flight nested in another travels its
-    /// own root-space path, so it drops this.
-    pub(super) cover: [f32; 2],
-    /// The clip, fade and fade origin outside the nearest flight above, for a flight nested in it.
-    pub(super) outer: Option<[[f32; 4]; 3]>,
-    pub(super) mark: u32,
-    /// The nearest hover group's hover amount (0-1), for `group_*` styles.
-    pub(super) group: f32,
-    /// The nearest `El::press_color` above or here, and how far a press on it is held (0-1).
-    pub(super) pressed: f32,
-    pub(super) press_to: Option<Color>,
-    /// `opacity` with each `El::group_opacity` at its hovered level: a press where the pointer
-    /// hovers the group finds what the hover shows, before a frame has drawn it.
-    pub(super) hit_opacity: f32,
-    /// The nearest hover group's rect in points (x0, y0, x1, y1): where a pointer hovers it.
-    pub(super) group_rect: [f32; 4],
-    /// How `scale` is changing, which decides how text rasterizes under it.
-    pub(super) scale_motion: ScaleMotion,
-    /// `(scale, anchor, anchor_to)` of the ancestors whose scales hold still from the root down,
-    /// as an app-wide zoom does, stopping at the first that moves. A flight keeps this part.
-    pub(super) still: (f32, [f32; 2], [f32; 2]),
-    /// Inside an active `El::cache` scope: do not cull children against the window viewport.
-    pub(super) in_cache: bool,
-    /// Inside an elided or off-screen `El::cache` scope: skip primitive emission.
-    pub(super) skip_paint: bool,
-    /// Ancestors' `El::rotate` layers, composed, as an index into `turn_scratch` plus one
-    /// (0: none): where this subtree's device pixels land. An index keeps `Inh` small.
-    pub(super) turn: u32,
-    pub(super) snap: pixel_snap::Inherit,
-}
-
-/// How a subtree's scale is changing. Text under a still scale rasterizes at its scaled size.
-/// Under a live zoom gesture it steps through logarithmic $2^{1/4}$ buckets and lands on the
-/// exact resting scale once still; under a short spring it samples its rest-size glyphs.
-#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum ScaleMotion {
-    #[default]
-    Still,
-    /// Bound to a live scale that is actively changing: rasterize at $2^{1/4}$ octave buckets.
-    Live,
-    Moving,
-}
-
-impl ScaleMotion {
-    /// The scale text under `sc` rasterizes at. It draws at `sc`, filtered, when they differ.
-    /// Moving text rasterizes at `rest`, the scale of its nearest still ancestor (an app's zoom,
-    /// say), so text that moves inside a zoomed window stays as crisp as at rest and doesn't
-    /// sharpen when the motion ends.
-    pub(super) fn raster(self, sc: f32, rest: f32) -> f32 {
-        let k = match self {
-            ScaleMotion::Still => sc,
-            ScaleMotion::Live => 2.0f32.powf((sc.max(1e-4).log2() * 4.0).round() * 0.25),
-            ScaleMotion::Moving => rest,
-        };
-        // A tiny or huge raster isn't worth its atlas space; sample the rest size instead.
-        if (1.0 / 16.0..=4.0).contains(&k) { k } else { 1.0 }
-    }
-}
-
-impl Default for Inh {
-    fn default() -> Self {
-        Inh { opacity: 1.0, paint_opacity: 1.0, first_fade: 1.0, clip: NO_CLIP, fade: [0.0; 4], fade_origin: NO_CLIP,
-            paint_clip: NO_CLIP, paint_fade: [0.0; 4], paint_fade_origin: NO_CLIP, rounded: None,
-            scale: 1.0, anchor: [0.0; 2], anchor_to: [0.0; 2], blur: 0.0, dy: 0.0, dx: 0.0, cover: [0.0; 2], outer: None, mark: 0, group: 0.0, pressed: 0.0, press_to: None,
-            hit_opacity: 1.0, group_rect: [f32::NEG_INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::INFINITY],
-            scale_motion: ScaleMotion::Still, still: (1.0, [0.0; 2], [0.0; 2]), in_cache: false, skip_paint: false, turn: 0,
-            snap: Default::default() }
     }
 }
 
@@ -393,11 +346,11 @@ impl GlideTo {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(super) struct ScrollState {
-    pub(super) offset: f64,
+pub(crate) struct ScrollState {
+    pub(crate) offset: f64,
     /// What moves it, with the hand's latches for this frame (`runtime/scroll/mode.rs`).
     pub(super) mode: ScrollMode,
-    pub(super) max: f64,
+    pub(crate) max: f64,
     /// At-bottom state last sent to `El::on_at_bottom`.
     pub(super) at_bottom: Option<bool>,
     /// State last sent to `El::on_far_from_bottom`.
@@ -405,13 +358,13 @@ pub(super) struct ScrollState {
     /// Whether the last frame drew the content's bottom on the viewport's (see `stuck_offset`).
     pub(super) held: bool,
     /// The horizontal offset the last frame drew the content at, in points.
-    pub(super) drawn_x: f32,
+    pub(crate) drawn_x: f32,
     /// Where it drew the vertical offset, and the pinned end's hold (`scroll_drawn`).
-    pub(super) drawn: PixelHold,
+    pub(crate) drawn: PixelHold,
     /// Room freed under a pinned growth stack, held under its last row (see `step_slack`).
     pub(super) slack: scroll_bottom::Slack,
     /// The horizontal axis of `El::scroll_x` and `El::scroll_xy`; all zero on a vertical one.
-    pub(super) x: AxisScroll,
+    pub(crate) x: AxisScroll,
     /// What `El::on_scroll_offset` has been told, and which handler heard it
     /// (`runtime/scroll/watch.rs`).
     pub(super) watch: super::scroll_watch::Watch,
@@ -441,10 +394,10 @@ pub(super) enum XMotion {
 
 /// A scroll viewport's horizontal offset, motion and limit (points).
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct AxisScroll {
-    pub(super) offset: f64,
+pub(crate) struct AxisScroll {
+    pub(crate) offset: f64,
     pub(super) motion: XMotion,
-    pub(super) max: f64,
+    pub(crate) max: f64,
     /// The viewport's flow (`El::dir`): right to left, its content starts at its right edge and
     /// `offset` counts how far it moved right, uncovering what is to the left.
     pub(super) flow: crate::el::Flow,
@@ -459,7 +412,7 @@ impl AxisScroll {
 
     /// `delta` points of physical movement (positive moving content right) as a change of
     /// `offset`.
-    pub(super) fn toward(&self, delta: f64) -> f64 {
+    pub(crate) fn toward(&self, delta: f64) -> f64 {
         match self.flow { crate::el::Flow::Ltr => -delta, crate::el::Flow::Rtl => delta }
     }
 
@@ -555,6 +508,11 @@ pub enum TitlebarAction {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FrameStats {
+    /// View commits run since the runtime started. In debug builds, one self-check commit runs a
+    /// quarter second after the last commit on the next event whose handler called
+    /// [`Tx::live_only`](crate::Tx::live_only) unless
+    /// [`Runtime::check_live_only`](crate::Runtime::check_live_only)`(false)` was called (release
+    /// builds never check), so a test counting commits turns the check off.
     pub commits: u64,
     pub layout_nodes: usize,
     pub glyphs: usize,
@@ -574,12 +532,18 @@ pub(crate) struct TreeState {
     pub(in crate::runtime) has_raise: bool,
     /// Some element sets `El::paint_order`: its siblings paint out of tree order.
     pub(in crate::runtime) has_paint_order: bool,
+    /// Some element is `El::anchored` / `El::above`.
+    pub(in crate::runtime) has_above: bool,
     pub(in crate::runtime) has_cache: bool,
     /// Some picture sizes a side from its image's ratio (`pixel_aspect`).
     pub(in crate::runtime) has_pixel_aspect: bool,
     pub(in crate::runtime) has_drawn_layout: bool,
+    pub(in crate::runtime) has_mount: bool,
     pub(in crate::runtime) has_key_up: bool,
-    pub(in crate::runtime) node_index: HashMap<NodeId, usize>,
+    pub(in crate::runtime) has_any_press: bool,
+    pub(in crate::runtime) has_link_hover: bool,
+    pub(in crate::runtime) has_pointer_lock: bool,
+    pub(in crate::runtime) node_index: NodeIndex,
     /// The node ids the last build indexed its scratch by.
     pub(in crate::runtime) built_ids: Vec<NodeId>,
     /// The last commit's node buffer, emptied, for the next flatten to fill: an app of a few
@@ -587,7 +551,7 @@ pub(crate) struct TreeState {
     pub(in crate::runtime) spare_nodes: Vec<Node>,
     pub(in crate::runtime) next_id: u64,
     /// The node index the app's view returned when the playground is attached.
-    pub(crate) app_root: usize,
+    app_root: usize,
     pub(in crate::runtime) path_ids: HashMap<String, NodeId>,
     /// Pictures whose image changed shape since the last commit, which lays them out at once.
     pub(in crate::runtime) aspect_snap: Vec<NodeId>,
@@ -597,6 +561,8 @@ pub(crate) struct TreeState {
     pub(crate) has_playground: bool,
     pub(in crate::runtime) exit_mask: exit_mask::Mask,
     pub(in crate::runtime) key_index: key_index::KeyIndex,
+    /// Packed explicit piecewise-linear scroll-fade stops (`ScrollFade::stops`) for `Globals::flags[2..4]`.
+    pub(in crate::runtime) fade_stops: [f32; 2],
 }
 
 impl TreeState {
@@ -610,13 +576,18 @@ impl TreeState {
             has_dissolve: false,
             has_raise: false,
             has_paint_order: false,
+            has_above: false,
             has_cache: false,
             has_pixel_aspect: false,
             has_drawn_layout: false,
+            has_mount: false,
             has_key_up: false,
+            has_any_press: false,
+            has_link_hover: false,
+            has_pointer_lock: false,
             built: false,
             has_playground: false,
-            node_index: HashMap::default(),
+            node_index: NodeIndex::default(),
             path_ids: HashMap::default(),
             spare_nodes: Vec::new(),
             built_ids: Vec::new(),
@@ -625,7 +596,129 @@ impl TreeState {
             app_root: 0,
             exit_mask: Default::default(),
             key_index: Default::default(),
+            fade_stops: [0.0; 2],
         }
+    }
+
+    /// Whether any node in the tree is `El::sticky_top` or `El::sticky_bottom`.
+    #[inline]
+    pub(crate) fn has_sticky(&self) -> bool {
+        self.has_sticky
+    }
+
+    #[inline]
+    pub(super) fn has_drawn_layout(&self) -> bool {
+        self.has_drawn_layout
+    }
+
+    #[inline]
+    pub(super) fn is_built(&self) -> bool {
+        self.built
+    }
+
+    /// Marks this tree as hosting a live playground so [`Self::app_root`] tracks the story root.
+    #[inline]
+    pub(super) fn attach_playground(&mut self) {
+        self.has_playground = true;
+    }
+
+    /// The node the app's view returned: the first, or with the playground attached, the one
+    /// above its bar or on its stage. Root handlers (window focus, paste, file drops) are there.
+    #[inline]
+    pub(crate) fn app_root(&self) -> usize {
+        if self.has_playground { self.app_root } else { self.view_root() }
+    }
+
+    /// The node the view returned: the first, or the first inside the frame that holds the
+    /// Windows caption buttons over it (`titlebar::frame`).
+    #[inline]
+    fn view_root(&self) -> usize {
+        usize::from(self.nodes.first().is_some_and(|n| n.key.as_deref() == Some(crate::titlebar::FRAME_KEY)))
+    }
+
+    pub(super) fn find_app_root(&mut self) {
+        let view_root = self.view_root();
+        if !self.has_playground { self.app_root = view_root; return; }
+        // A scrolling stage holds the root in a margin.
+        let margin = |k: Option<&str>| k == Some("playground-margin");
+        let wraps = |k: &str| k == "playground-closed" || margin(Some(k)) || crate::playground::is_stage(k);
+        let nodes = &self.nodes;
+        self.app_root = nodes.iter().position(|n| !margin(n.key.as_deref()) && n.parent.is_some_and(|p| nodes[p].key.as_deref().is_some_and(wraps))).unwrap_or(view_root);
+    }
+
+    /// The kept key index, when `nodes` are the current nodes as of `commit`.
+    #[inline]
+    pub(super) fn key_index_for(&self, nodes: &[Node], commit: u64) -> Option<&key_index::KeyIndex> {
+        self.key_index.get(nodes, commit)
+    }
+
+    /// Prepares the key index for `self.nodes` as of `commit` when `lookups` warrants it.
+    #[inline]
+    pub(super) fn prepare_key_index(&mut self, commit: u64, lookups: usize) {
+        self.key_index.prepare(&self.nodes, commit, lookups);
+    }
+
+    /// `self.nodes` changed without a commit: kept per-node answers no longer hold.
+    #[inline]
+    pub(super) fn nodes_replaced(&mut self) {
+        self.key_index.forget();
+        self.exit_mask.forget();
+    }
+
+    #[inline]
+    pub(super) fn index_of_id(&self, id: NodeId) -> Option<usize> {
+        self.node_index.get(&id).copied()
+    }
+
+    #[inline]
+    pub(super) fn node_by_id(&self, id: NodeId) -> Option<&Node> {
+        self.nodes.get(*self.node_index.get(&id)?)
+    }
+
+    #[inline]
+    pub(super) fn id_of_path(&self, path: &str) -> Option<NodeId> {
+        self.path_ids.get(path).copied()
+    }
+
+    /// Current node index for `path`, verified against `self.nodes` so stale ids return `None`.
+    #[inline]
+    pub(super) fn index_of_path(&self, path: &str) -> Option<usize> {
+        self.path_ids.get(path).and_then(|id| self.node_index.get(id)).copied().filter(|&i| self.nodes.get(i).is_some_and(|n| n.path == path))
+    }
+
+    /// Whether node `i` is `ancestor` or a descendant of `ancestor`.
+    #[inline]
+    pub(super) fn is_descendant(&self, i: usize, ancestor: usize) -> bool {
+        std::iter::successors(Some(i), |&p| self.nodes[p].parent).any(|p| p == ancestor)
+    }
+
+    /// Whether node `i` or an ancestor has a key `is` takes.
+    #[inline]
+    pub(super) fn under(&self, i: usize, is: impl Fn(&str) -> bool) -> bool {
+        std::iter::successors(Some(i), |&j| self.nodes[j].parent).any(|j| self.nodes[j].key.as_deref().is_some_and(&is))
+    }
+
+    /// The path of the element keyed `key`.
+    #[inline]
+    pub(super) fn key_path(&self, key: &str) -> Option<String> {
+        self.nodes.iter().find(|n| n.key.as_deref() == Some(key)).map(|n| n.path.clone())
+    }
+
+    #[inline]
+    pub(super) fn selects_index(&self, selector: &str) -> Option<usize> {
+        self.nodes.iter().position(|n| crate::flight::selects(selector, &n.path, n.key.as_deref()))
+    }
+
+    /// Index of the last node inside `root`'s contiguous pre-order subtree (`root` if leaf).
+    #[inline]
+    pub(super) fn subtree_end(&self, root: usize) -> usize {
+        (root + 1..self.nodes.len()).take_while(|&j| self.is_descendant(j, root)).last().unwrap_or(root)
+    }
+
+    /// Direct child of `parent` before `end` whose path equals `path`.
+    #[inline]
+    pub(super) fn direct_child_by_path(&self, parent: usize, end: usize, path: &str) -> Option<usize> {
+        (parent + 1..end).find(|&j| self.nodes[j].parent == Some(parent) && self.nodes[j].path == path)
     }
 }
 

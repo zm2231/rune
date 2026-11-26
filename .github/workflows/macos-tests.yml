@@ -16,9 +16,9 @@ permissions:
   contents: read
   actions: read
 
-# One run at a time: a newer run cancels an older one still testing.
+# One run per branch at a time: a newer run on the same branch cancels an older one still testing.
 concurrency:
-  group: macos-tests
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -65,7 +65,7 @@ jobs:
       # The virtual Metal adapter does not expose TIMESTAMP_QUERY. Keep the
       # shader freshness, pipeline, rendering, font and menu tests enabled.
       - run: >-
-          cargo test -p rune -p rune-core -p rune-edit -p rune-gpu -p rune-image -p rune-media -p rune-spell -p rune-text -p rune-kit
+          cargo test -p rune -p rune-core -p rune-edit -p rune-gpu -p rune-image -p rune-media -p rune-spell -p rune-text -p rune-mermaid -p rune-kit
           --features rune/test-gpu-counters,rune-gpu/test-gpu-counters,rune-kit/markdown,rune-kit/mermaid --no-fail-fast --
           --skip metal::compute_tests::passes_sample_timestamps_at_their_boundaries
       # Kept outside the main invocation above so rune-ref (`libm/force-soft-floats`, `serde/derive`)

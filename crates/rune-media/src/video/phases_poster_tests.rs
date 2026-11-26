@@ -4,7 +4,7 @@
 use super::*;
 
 fn clip(audio: bool, script: &[Sym]) -> New {
-    let mut new = New::new(audio, Instant::now());
+    let mut new = New::new(audio, rune_core::time::now());
     for &sym in script {
         new.run(sym);
     }
@@ -143,10 +143,10 @@ fn a_seek_past_the_end_still_shows_the_poster_its_length_clamps_to() {
 #[test]
 fn posters_for_repeated_seeks_to_one_time_all_show() {
     let mut c = Control::default();
-    let meta = Meta { duration: 1.0, size: Some((64, 36)), frame: 0.25, sound: false };
+    let meta = Meta { duration: 1.0, size: Some((64, 36)), frame: Some(0.25), sound: false };
     let (mut owed, mut shown) = (None, 0);
     for _ in 0..30 {
-        step(&mut c, Event::Seek(0.3));
+        step(&mut c, Event::Seek { to: 0.3, exact: true });
         let AskPoster(_, attempt) = only(step(&mut c, Event::Pull)) else { panic!("asks for a poster") };
         if let Some(answered) = owed.replace(attempt)
             && step(&mut c, Event::PosterDone { attempt: answered, result: Ok(meta) }) == Effects::one(Effect::ShowPoster)
@@ -162,23 +162,23 @@ fn a_superseded_poster_keeps_the_clips_frame_timing() {
     let mut c = Control::default();
     let AskPoster(0.0, stale) = only(step(&mut c, Event::Preload)) else { panic!("asks for a poster") };
     step(&mut c, Event::Play);
-    step(&mut c, Event::PlayerMade { created: Instant::now() });
+    step(&mut c, Event::PlayerMade { created: rune_core::time::now() });
     // The poster lands after the player took over, before its item is ready.
-    let sixty = Meta { duration: 1.0, size: Some((64, 36)), frame: 1.0 / 60.0, sound: false };
+    let sixty = Meta { duration: 1.0, size: Some((64, 36)), frame: Some(1.0 / 60.0), sound: false };
     assert!(step(&mut c, Event::PosterDone { attempt: stale, result: Ok(sixty) }).is_empty());
-    let now = Instant::now();
+    let now = rune_core::time::now();
     for effect in step(&mut c, Event::Item { item: Item::Ready, now }) {
         if effect == Effect::ReadFacts {
             // What a ready item reports, which has no frame timing of its own.
-            c.open(Ok(Meta { duration: 1.0, size: Some((64, 36)), frame: 1.0 / 30.0, sound: false }));
+            c.open(Ok(Meta { duration: 1.0, size: Some((64, 36)), frame: Some(1.0 / 30.0), sound: false }));
         }
     }
     step(&mut c, Event::Framed { shown: 0.0 });
     step(&mut c, Event::Pause);
-    step(&mut c, Event::Seek(0.02));
+    step(&mut c, Event::Seek { to: 0.02, exact: true });
     step(&mut c, Event::Reconcile { now });
 
-    assert_eq!(c.meta.map(|m| m.frame), Some(1.0 / 60.0));
+    assert_eq!(c.meta.and_then(|m| m.frame), Some(1.0 / 60.0));
     let Stage::Ready { settle, .. } = c.stage else { panic!("ready") };
     assert!(settle.waiting(), "20 ms is the next frame at 60 fps, so the pull waits for it");
 }

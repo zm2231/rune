@@ -9,14 +9,14 @@
 //!
 //! Events that test every request on every frame are types of their own, generic over what
 //! they measure, so a caller's measurements compile into the loop with no indirect call.
-use super::sticky::{Keep, Reveal};
+use super::sticky::{Hold, Keep, Reveal};
 use super::{AppDriver, HashMap, NodeId, RuntimeCore, ScrollState, Tx, scroll_x};
-use crate::machine::Effects;
+use crate::machine::{Attempt, Effects};
 
 /// Retained scroll viewports, wheel gesture locking, scroll requests and per-frame sticky state.
 /// Ordered hot-first under `#[repr(C)]` so per-node sticky vectors and `scrolls` stay contiguous.
 #[repr(C)]
-pub(in crate::runtime) struct ScrollTables {
+pub(crate) struct ScrollTables {
     /// Each node's sticky shift this frame (points), while `has_sticky`.
     pub(in crate::runtime) stuck: Vec<f32>,
     /// Per node, what its children stick within: the nearest vertical viewport's top and
@@ -26,14 +26,14 @@ pub(in crate::runtime) struct ScrollTables {
     /// Sections whose rows fade under their stuck header this frame (`ScrollFade::below_sticky`),
     /// with the paint clip top the header keeps.
     pub(in crate::runtime) sticky_bands: Vec<(usize, f32)>,
-    pub(in crate::runtime) scrolls: HashMap<NodeId, ScrollState>,
+    pub(crate) scrolls: HashMap<NodeId, ScrollState>,
     /// `Tx::keep_on_screen` across the commit underway, and `Tx::scroll_into_view` requests that
     /// follow their target while growth/layout springs run.
     pub(in crate::runtime) requests: Requests,
     /// The axis the current wheel or trackpad gesture scrolls (`runtime/scroll/x.rs`).
-    pub(in crate::runtime) wheel_lock: scroll_x::WheelLock,
+    pub(super) wheel_lock: scroll_x::WheelLock,
     /// Whole notches of a mouse wheel ease where the platform's browsers do (`Runtime::set_wheel_glide`).
-    pub(in crate::runtime) wheel_glide: bool,
+    wheel_glide: bool,
 }
 
 impl ScrollTables {
@@ -50,6 +50,90 @@ impl ScrollTables {
             wheel_lock: Default::default(),
             wheel_glide: true,
         }
+    }
+
+    /// Whether whole notches of a mouse wheel ease rather than jump.
+    #[inline]
+    pub(in crate::runtime) fn wheel_glides(&self, reduced_motion: bool, settled: bool) -> bool {
+        self.wheel_glide && !reduced_motion && !settled
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn set_wheel_glide(&mut self, on: bool) {
+        self.wheel_glide = on;
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn wheel_gesture(&self) -> Attempt {
+        self.wheel_lock.gesture
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn wheel_momentum(&self) -> bool {
+        self.wheel_lock.momentum()
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn wheel_phased(&self) -> bool {
+        self.wheel_lock.phased()
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn wheel_notched(&mut self, now: f64, notch: bool) -> bool {
+        self.wheel_lock.notched(now, notch)
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn wheel_owner(&self) -> &scroll_x::WheelOwner {
+        self.wheel_lock.owner()
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn wheel_owner_of(&self, gesture: Attempt) -> Option<&scroll_x::WheelOwner> {
+        self.wheel_lock.owner_of(gesture)
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn sync_wheel_gesture(&mut self, gesture: Attempt) {
+        self.wheel_lock.sync_gesture(gesture);
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn set_wheel_owner(&mut self, gesture: Attempt, owner: scroll_x::WheelOwner) {
+        self.wheel_lock.set_owner(gesture, owner);
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn wheel_vertical_run(&mut self, now: f64, x: f32, y: f32, dy: f32, mods: crate::Mods, phased: bool) -> Option<NodeId> {
+        self.wheel_lock.vertical_run(now, x, y, dy, mods, phased)
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn end_wheel_vertical(&mut self) {
+        self.wheel_lock.end_vertical();
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn ran_wheel_vertical(&mut self, id: NodeId, now: f64, x: f32, y: f32, dy: f32, mods: crate::Mods, phased: bool, moved: bool, held: bool) {
+        self.wheel_lock.ran_vertical(id, now, x, y, dy, mods, phased, moved, held);
+    }
+
+    /// A user or explicit scroll ends the holds and reveals that would pull the view back.
+    #[inline]
+    pub(in crate::runtime) fn drop_holds(&mut self) {
+        self.requests.step(Event::Cancel);
+    }
+
+    /// Whether a `Tx::keep_on_screen` holds a stuck header (`Hold`).
+    #[inline]
+    pub(in crate::runtime) fn holding(&self) -> bool {
+        self.requests.keeps().any(|k| k.hold.is_some())
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn hold_of(&self, path: &str) -> Option<&Hold> {
+        if !self.requests.has_keeps() { return None; }
+        self.requests.keeps().find_map(|k| k.hold.as_ref().filter(|h| h.path == path))
     }
 }
 
@@ -83,6 +167,9 @@ pub(in crate::runtime) enum Event<'a> {
     Cancel,
     /// An explicit destination wins over a reveal for its whole lifetime; holds stay.
     Destination,
+    /// `Tx::stop_scroll` on `viewport`: drop any pending reveal targeting it, leaving other
+    /// viewports' reveals and holds alone.
+    Stop { viewport: &'a str },
 }
 
 /// What placing a reveal asks of its viewport.
@@ -191,6 +278,7 @@ impl Transition for Event<'_> {
             }
             Event::Cancel => { requests.keeps.clear(); requests.reveals.clear(); }
             Event::Destination => requests.reveals.clear(),
+            Event::Stop { viewport } => requests.reveals.retain(|r| r.viewport != viewport),
         }
         Effects::none()
     }
@@ -234,9 +322,12 @@ where G: Fn(&str) -> bool, A: Fn(&str) -> bool, M: Fn(&Reveal) -> bool {
 }
 
 impl RuntimeCore {
-    /// Resolve reveals and destinations against the tree from the update that requested them.
+    /// Resolve stops, reveals and destinations against the tree from the update that requested them.
     pub(in crate::runtime) fn finish_scroll_requests(&mut self, app: &mut dyn AppDriver, tx: &mut Tx, follow: bool) {
         let destination = !tx.scroll_bottom.is_empty() || !tx.scroll_pages.is_empty() || !tx.scroll_offsets.is_empty();
+        let stops = !tx.scroll_stops.is_empty();
+        if tx.scroll_to.is_empty() && !destination && !stops && !follow { return; }
+        if stops { self.stop_scrolls(std::mem::take(&mut tx.scroll_stops)); }
         if tx.scroll_to.is_empty() && !destination && !follow { return; }
         self.drop_scroll_holds();
         for r in tx.scroll_to.drain(..) { self.reveal_row(app, &r, tx.commit.snaps()); }

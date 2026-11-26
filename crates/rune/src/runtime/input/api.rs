@@ -6,7 +6,8 @@ use std::path::PathBuf;
 
 use super::*;
 #[cfg(test)]
-use crate::file_dialog::FileDialogResult;
+#[cfg(test)]
+use crate::file_dialog::DialogOutcome;
 use crate::file_dialog::{FileDialogError, FileDialogKind, FileDialogOptions};
 #[cfg(any(test, target_arch = "wasm32"))]
 use crate::popup_menu::Show;
@@ -35,8 +36,31 @@ impl<S: 'static> Runtime<S> {
     pub(crate) fn set_window_pixels(&mut self, pixels: Option<(i32, i32)>) { self.core_mut().set_window_pixels(pixels); }
     #[inline(always)]
     pub(crate) fn window_moved(&mut self, dx: f32, dy: f32) { self.core_mut().window_moved(dx, dy); }
+    /// Cancel any active pointer capture, drag or hover: ends a held drag with a cancelled
+    /// [`Phase::Up`] ([`Drag::cancelled`]), clears
+    /// press, secondary, tint, touch-hold, drag-out and autoscroll state, and leaves hover.
+    ///
+    /// ```
+    /// # use rune::{Cx, Drag, El, Env, Phase, Runtime, col, el};
+    /// # #[derive(Default)] struct S { phases: Vec<(Phase, bool)> }
+    /// # fn view(_: &S, _: &mut Cx<S>) -> El {
+    /// #     col().size(200.0, 100.0).child(
+    /// #         el().key("tile").size(100.0, 60.0)
+    /// #             .on_drag(|s: &mut S, d: &mut Drag, _| s.phases.push((d.phase, d.cancelled()))),
+    /// #     )
+    /// # }
+    /// let mut rt = Runtime::new(S::default(), view, (200.0, 100.0), Env::new(true, 1.0));
+    /// rt.frame(0.0);
+    /// let (x, y) = rt.find("tile").unwrap();
+    /// rt.pointer_down(x, y);
+    /// rt.pointer_move(x + 12.0, y);
+    /// rt.cancel_pointer();
+    /// rt.frame(0.0);
+    /// assert!(!rt.pressing());
+    /// assert_eq!(rt.state.phases.last(), Some(&(Phase::Up, true)));
+    /// ```
     #[inline(always)]
-    pub(crate) fn cancel_pointer(&mut self) { self.core_mut().cancel_pointer(); }
+    pub fn cancel_pointer(&mut self) { self.core_mut().cancel_pointer(); }
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     #[inline(always)]
     pub(crate) fn disarm_drag_out(&mut self) { self.core_mut().disarm_drag_out(); }
@@ -66,6 +90,46 @@ impl<S: 'static> Runtime<S> {
     pub fn pressing(&self) -> bool { self.core().pressing() }
     #[inline(always)]
     pub fn pointer(&self) -> Option<(f32, f32)> { self.core().pointer() }
+    /// Whether an element in this runtime currently holds pointer lock
+    /// ([`El::pointer_lock`](crate::El::pointer_lock)).
+    ///
+    /// ```
+    /// # use rune::{Cx, El, Env, Runtime, el};
+    /// # fn view(_: &(), _: &mut Cx<()>) -> El {
+    /// #     el().key("view").size(200.0, 200.0).pointer_lock(|_: &mut (), _, _| {})
+    /// # }
+    /// let mut rt = Runtime::new((), view, (200.0, 200.0), Env::new(true, 1.0));
+    /// rt.frame(0.0);
+    /// assert!(!rt.pointer_locked());
+    /// rt.pointer_down(100.0, 100.0);
+    /// assert!(rt.pointer_locked());
+    /// ```
+    #[inline(always)]
+    pub fn pointer_locked(&self) -> bool { self.core().pointer_locked() }
+
+    /// Feeds a relative mouse-motion delta `(dx, dy)` in points (right and down positive) while
+    /// pointer lock is held. Dropped when nothing holds pointer lock or when the delta is zero
+    /// or non-finite; consecutive deltas before a frame coalesce into one handler call.
+    ///
+    /// ```
+    /// # use rune::{Cx, El, Env, Runtime, el};
+    /// # fn view_cam(_: &[f32; 2], _: &mut Cx<[f32; 2]>) -> El {
+    /// #     el().key("view").size(200.0, 200.0)
+    /// #         .pointer_lock(|s: &mut [f32; 2], [dx, dy], _| { s[0] += dx; s[1] += dy; })
+    /// # }
+    /// let mut rt = Runtime::new([0.0f32; 2], view_cam, (200.0, 200.0), Env::new(true, 1.0));
+    /// rt.frame(0.0);
+    /// rt.pointer_down(100.0, 100.0);
+    /// rt.pointer_motion(12.0, -3.0);
+    /// rt.pointer_motion(0.5, 0.0);
+    /// rt.frame(0.0);
+    /// assert_eq!(rt.state, [12.5, -3.0]);
+    /// ```
+    #[inline(always)]
+    pub fn pointer_motion(&mut self, dx: f32, dy: f32) { self.core_mut().pointer_motion(dx, dy); }
+
+    #[inline(always)]
+    pub(crate) fn set_pointer_lock_supported(&mut self, supported: bool) { self.core_mut().set_pointer_lock_supported(supported); }
     #[inline(always)]
     pub fn hit_regions(&self) -> &[[f32; 4]] { self.core().hit_regions() }
     #[inline(always)]
@@ -73,11 +137,14 @@ impl<S: 'static> Runtime<S> {
     #[inline(always)]
     pub fn wheel(&mut self, x: f32, y: f32, dy: f32) { self.core_mut().wheel(x, y, dy); }
     #[inline(always)]
-    pub fn set_wheel_glide(&mut self, on: bool) { self.core_mut().set_wheel_glide(on); }
+    pub fn set_wheel_glide(&mut self, on: bool) { self.core_mut().scroll.set_wheel_glide(on); }
     #[inline(always)]
     pub fn fling(&mut self, x: f32, y: f32, velocity: f32) { self.core_mut().fling(x, y, velocity); }
     #[inline(always)]
     pub fn has_pending_input(&self) -> bool { self.core().has_pending_input() }
+    #[cfg(test)]
+    #[inline(always)]
+    pub(crate) fn has_input_waiting(&self) -> bool { self.core().has_input_waiting() }
 
     #[inline(always)]
     pub fn secondary_down(&mut self, x: f32, y: f32) { self.core_mut().secondary_down(x, y); }
@@ -104,7 +171,7 @@ impl<S: 'static> Runtime<S> {
     #[inline(always)]
     pub fn smart_magnify(&mut self, x: f32, y: f32) { self.core_mut().smart_magnify(x, y); }
     #[inline(always)]
-    pub(crate) fn pinch_wheel(&mut self, x: f32, y: f32, dy: f32) -> bool { self.core_mut().pinch_wheel(x, y, dy) }
+    pub(crate) fn pinch_wheel(&mut self, x: f32, y: f32, dy: f32, ticks: Option<f32>) -> bool { self.core_mut().pinch_wheel(x, y, dy, ticks) }
     #[inline(always)]
     pub fn button_down(&mut self, x: f32, y: f32, button: PointerButton) {
         let (core, mut app) = self.split_mut();
@@ -163,6 +230,7 @@ impl<S: 'static> Runtime<S> {
     pub fn paste(&mut self, text: impl Into<String>) { self.core_mut().paste(text.into()); }
     #[inline(always)]
     pub fn paste_content(&mut self, content: crate::ClipboardContent) { self.core_mut().paste_content(content); }
+    #[cfg(any(test, target_vendor = "apple"))]
     #[inline(always)]
     pub(crate) fn accepts_paste(&self) -> bool { self.core().accepts_paste() }
     #[cfg(test)]
@@ -184,10 +252,94 @@ impl<S: 'static> Runtime<S> {
     #[inline(always)]
     pub fn modifier_keys(&self) -> bool { self.core().modifier_keys() }
 
+    /// Opt into hardware media transport keys ([`Key::Media`](crate::Key::Media)), matching
+    /// [`App::media_keys`](crate::App::media_keys). Off by default so apps without it receive
+    /// no media key events.
+    ///
+    /// ```
+    /// # use rune::{Cx, El, Env, Key, KeyEvent, MediaKey, Runtime, el};
+    /// # fn view(_: &bool, _: &mut Cx<bool>) -> El { el().size(100.0, 100.0) }
+    /// let mut rt = Runtime::new(false, view, (100.0, 100.0), Env::new(true, 1.0));
+    /// rt.set_media_keys(true);
+    /// rt.on_key = Some(|playing, ev, _| {
+    ///     if ev.key == Key::Media(MediaKey::PlayPause) { *playing = !*playing; return true; }
+    ///     false
+    /// });
+    /// rt.frame(0.0);
+    /// rt.key(KeyEvent::from(Key::Media(MediaKey::PlayPause)));
+    /// rt.frame(0.0);
+    /// assert!(rt.state);
+    /// ```
+    #[inline(always)]
+    pub fn set_media_keys(&mut self, enabled: bool) { self.core_mut().set_media_keys(enabled); }
+
+    /// Whether hardware media transport keys ([`Key::Media`](crate::Key::Media)) are enabled
+    /// for this runtime.
+    ///
+    /// ```
+    /// # use rune::{Env, Runtime, el};
+    /// let mut rt = Runtime::new((), |_, _| el(), (100.0, 100.0), Env::new(true, 1.0));
+    /// assert!(!rt.media_keys());
+    /// rt.set_media_keys(true);
+    /// assert!(rt.media_keys());
+    /// ```
+    #[inline(always)]
+    pub fn media_keys(&self) -> bool { self.core().media_keys() }
+
+    /// Queue a key press carrying its physical key code ([`Tx::physical_key`](crate::Tx::physical_key))
+    /// and unmodified layout character ([`Tx::key_base`](crate::Tx::key_base)), as a window host
+    /// delivers a key press. Use [`Self::physical_key_input`] to also send auto-repeat or release
+    /// physical events.
+    ///
+    /// ```
+    /// # use rune::{Cx, El, Env, Key, KeyEvent, Keybind, Mods, PhysicalKeyCode, Runtime, col};
+    /// # fn view(_: &bool, _: &mut Cx<bool>) -> El { col().size(100.0, 100.0) }
+    /// let mut rt = Runtime::new(false, view, (100.0, 100.0), Env::new(true, 1.0));
+    /// rt.on_key = Some(|matched, ev, tx| {
+    ///     *matched = Keybind::new("j").matches_tx(ev, tx);
+    ///     true
+    /// });
+    /// rt.frame(0.0);
+    /// rt.key_with(
+    ///     KeyEvent { key: Key::Text("о".into()), mods: Mods::default() },
+    ///     PhysicalKeyCode::KeyJ,
+    ///     Some('j'),
+    /// );
+    /// rt.frame(0.0);
+    /// assert!(rt.state);
+    /// ```
+    #[inline(always)]
+    pub fn key_with(&mut self, event: KeyEvent, physical: crate::PhysicalKeyCode, base: Option<char>) {
+        let input = PhysicalInput::Key { key: physical, mods: event.mods, pressed: true, repeat: false, text: None, consumed_mods: Default::default() };
+        self.physical_key_input(input, event, base);
+    }
+
     #[inline(always)]
     pub fn physical_input(&mut self, event: PhysicalInput) { self.core_mut().physical_input(event); }
+
+    /// Queue a physical keyboard event paired with its logical [`KeyEvent`] and unmodified layout
+    /// character ([`Tx::key_base`](crate::Tx::key_base)), as a native host delivers presses,
+    /// repeats and releases. Focused [`El::on_physical_input`](crate::El::on_physical_input)
+    /// handlers see `event` first; if unconsumed, `key` routes to key handlers (or `on_key_up`
+    /// when `pressed` is false) with `tx.physical_key()` and `tx.key_base()` set.
+    ///
+    /// ```
+    /// # use rune::{Cx, El, Env, Key, KeyEvent, Mods, PhysicalInput, PhysicalKeyCode, Runtime, col};
+    /// # fn view(_: &bool, _: &mut Cx<bool>) -> El { col().size(100.0, 100.0) }
+    /// let mut rt = Runtime::new(false, view, (100.0, 100.0), Env::new(true, 1.0));
+    /// rt.on_key = Some(|repeated, _, tx| { *repeated = tx.key_repeat(); true });
+    /// rt.frame(0.0);
+    /// let mods = Mods::default();
+    /// rt.physical_key_input(
+    ///     PhysicalInput::Key { key: PhysicalKeyCode::KeyJ, mods, pressed: true, repeat: true, text: None, consumed_mods: Default::default() },
+    ///     KeyEvent { key: Key::Text("j".into()), mods },
+    ///     Some('j'),
+    /// );
+    /// rt.frame(0.0);
+    /// assert!(rt.state);
+    /// ```
     #[inline(always)]
-    pub(crate) fn physical_key_input(&mut self, event: PhysicalInput, key: KeyEvent, base: Option<char>) {
+    pub fn physical_key_input(&mut self, event: PhysicalInput, key: KeyEvent, base: Option<char>) {
         let (core, mut app) = self.split_mut();
         core.physical_key_input(&mut app, event, key, base);
     }
@@ -246,13 +398,43 @@ impl<S: 'static> Runtime<S> {
     pub fn set_native_titlebar_band(&mut self, points: f32) { self.core_mut().set_native_titlebar_band(points); }
     #[inline(always)]
     pub fn take_titlebar_action(&mut self) -> Option<TitlebarAction> { self.core_mut().take_titlebar_action() }
+    /// A window resize edge requested by the press just delivered on an
+    /// [`El::window_resize`](crate::El::window_resize) region. The shell must act on it
+    /// before returning from that press event.
+    ///
+    /// ```no_run
+    /// # fn handle(rt: &mut rune::Runtime<()>, window: &winit::window::Window) {
+    /// if let Some(edge) = rt.take_resize_action() {
+    ///     let _ = window.drag_resize_window(edge.into());
+    /// }
+    /// # }
+    /// ```
+    #[inline(always)]
+    pub fn take_resize_action(&mut self) -> Option<crate::ResizeEdge> { self.core_mut().take_resize_action() }
     #[inline(always)]
     pub fn set_chrome_insets(&mut self, insets: crate::ChromeInsets) { self.core_mut().set_chrome_insets(insets); }
     #[inline(always)]
     pub fn chrome_insets(&self) -> crate::ChromeInsets { self.core().chrome_insets() }
+    /// Sets the safe-area insets `[top, right, bottom, left]` in logical points reported by
+    /// [`Cx::safe_area`](crate::Cx::safe_area) and added to [`El::on_edge_drag`](crate::El::on_edge_drag)
+    /// bands (for example, forwarding `UIView.safeAreaInsets` from an embedded iOS `LayerHost`
+    /// or `WindowInsets` on Android). Negative and non-finite values clamp to `0.0`.
+    ///
+    /// ```
+    /// # use rune::{Cx, El, Env, Runtime, el};
+    /// # fn view(_: &[f32; 4], cx: &mut Cx<[f32; 4]>) -> El { let _ = cx.safe_area(); el() }
+    /// let mut rt = Runtime::new([0.0; 4], view, (390.0, 844.0), Env::new(true, 1.0));
+    /// rt.set_safe_area([47.0, 0.0, 34.0, 0.0]);
+    /// rt.frame(0.0);
+    /// ```
+    #[inline(always)]
+    pub fn set_safe_area(&mut self, insets: [f32; 4]) -> bool { self.core_mut().set_safe_area(insets) }
     #[cfg(test)]
     #[inline(always)]
     pub(crate) fn set_caption(&mut self, caption: Option<crate::titlebar::Caption>) { self.core_mut().set_caption(caption); }
+    #[cfg(test)]
+    #[inline(always)]
+    pub(crate) fn set_window_menu_trigger(&mut self, trigger: WindowMenuTrigger) { self.core_mut().set_window_menu_trigger(trigger); }
     #[inline(always)]
     pub(crate) fn headless_chrome(&mut self, chrome: crate::Chrome, titlebar: Option<crate::Titlebar>, borderless: bool) -> crate::Chrome {
         self.core_mut().headless_chrome(chrome, titlebar, borderless)
@@ -262,7 +444,7 @@ impl<S: 'static> Runtime<S> {
     pub(crate) fn take_toggle_maximized(&mut self) -> bool { self.core_mut().take_toggle_maximized() }
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     #[inline(always)]
-    pub(crate) fn take_toggle_full_screen(&mut self) -> bool { self.core_mut().take_toggle_full_screen() }
+    pub(crate) fn take_full_screen_request(&mut self) -> Option<crate::el::FullScreenRequest> { self.core_mut().take_full_screen_request() }
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     #[inline(always)]
     pub(crate) fn take_window_menu(&mut self) -> Option<WindowMenu> { self.core_mut().take_window_menu() }
@@ -298,18 +480,41 @@ impl<S: 'static> Runtime<S> {
 
     #[inline(always)]
     pub fn file_dialog(&self) -> Option<(FileDialogKind, &FileDialogOptions)> { self.core().file_dialog() }
+    /// True when the pending file dialog allows selecting multiple files ([`Tx::open_files`]).
+    ///
+    /// ```no_run
+    /// # fn check(rt: &rune::Runtime<()>) {
+    /// assert!(rt.file_dialog_multiple());
+    /// # }
+    /// ```
+    #[inline(always)]
+    pub fn file_dialog_multiple(&self) -> bool { self.core().file_dialog_multiple() }
     #[inline(always)]
     pub fn resolve_file_dialog(&mut self, path: Option<PathBuf>) -> Result<(), FileDialogError> {
         self.core_mut().resolve_file_dialog(path)
     }
+    /// Answers the open file dialog as if the user chose `paths`, or cancelled with `None`.
+    /// For a single-file dialog, the first path (if any) is delivered. Its callback runs on
+    /// the next frame. For tests and headless drivers; native dialogs answer themselves.
+    ///
+    /// ```no_run
+    /// # fn answer(rt: &mut rune::Runtime<()>) {
+    /// rt.resolve_file_dialog_files(Some(vec!["/a.csv".into(), "/b.csv".into()])).unwrap();
+    /// rt.frame(1.0 / 60.0);
+    /// # }
+    /// ```
+    #[inline(always)]
+    pub fn resolve_file_dialog_files(&mut self, paths: Option<Vec<PathBuf>>) -> Result<(), FileDialogError> {
+        self.core_mut().resolve_file_dialog_files(paths)
+    }
     #[cfg(test)]
     #[inline(always)]
-    pub(crate) fn take_file_dialog(&mut self) -> Option<(u64, FileDialogKind, FileDialogOptions)> {
+    pub(crate) fn take_file_dialog(&mut self) -> Option<(u64, FileDialogKind, bool, FileDialogOptions)> {
         self.core_mut().take_file_dialog()
     }
     #[cfg(test)]
     #[inline(always)]
-    pub(crate) fn answer_file_dialog(&mut self, id: u64, result: FileDialogResult) {
+    pub(crate) fn answer_file_dialog(&mut self, id: u64, result: DialogOutcome) {
         self.core_mut().answer_file_dialog(id, result);
     }
     #[inline(always)]

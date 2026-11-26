@@ -10,10 +10,22 @@
 //! The app owns an [`ImageZoom`] and hands [`Preview`] a lens to it. While a glide runs it asks
 //! for frames: call [`ImageZoom::poll`] from the app's poll.
 //!
-//! ```ignore
+//! ```
+//! # use rune::{Pixels, el};
+//! # use rune_kit::{ImageZoom, Kit, Preview};
+//! # struct Photo(Pixels);
+//! # impl Photo { fn size(&self) -> [f32; 2] { [100.0, 100.0] } fn pixels(&self) -> &Pixels { &self.0 } }
+//! # struct App { zoom: ImageZoom, viewing: Option<usize> }
+//! # let s = App { zoom: ImageZoom::new(), viewing: Some(0) };
+//! # let image = Photo(Pixels::new());
+//! # let kit = Kit::neutral(true);
+//! # let window = [800.0, 600.0];
+//! # let reduced_motion = false;
+//! # let _ =
 //! Preview::new(|s: &mut App| &mut s.zoom, image.size(), el().pixels(image.pixels()))
-//!     .on_close(|s: &mut App, tx| s.viewing = None)
-//!     .build(&s.zoom, &kit, window)
+//!     .on_close(|s: &mut App, _tx| s.viewing = None)
+//!     .build(&s.zoom, &kit, window, reduced_motion)
+//! # ;
 //! ```
 
 pub mod gesture;
@@ -220,7 +232,9 @@ impl ImageZoom {
 
     fn magnify(&mut self, e: rune::MagnifyEvent, tx: &mut Tx) -> bool {
         let v = self.view();
-        let factor = math::wheel_zoom_factor(-100.0 * (1.0 + e.delta).max(0.01).ln());
+        // A browser's `deltaY`: Ctrl + wheel's own, or what Chromium makes of a macOS pinch.
+        let delta_y = if e.wheel { -e.delta * 200.0 } else { -100.0 * (1.0 + e.delta).max(0.01).ln() };
+        let factor = math::wheel_zoom_factor(delta_y);
         let to = math::zoom_at(v, v.scale * factor, self.centred([e.x, e.y]), &self.bounds.get());
         self.follow(to, tx);
         true
@@ -250,8 +264,9 @@ impl ImageZoom {
     }
 }
 
-type Lens<S> = fn(&mut S) -> &mut ImageZoom;
+type Lens<S> = Rc<dyn for<'a> Fn(&'a mut S) -> &'a mut ImageZoom>;
 type OnClose<S> = Rc<dyn Fn(&mut S, &mut Tx)>;
+type OnKey<S> = Rc<dyn Fn(&mut S, &KeyEvent, &mut Tx) -> bool>;
 
 trait PreviewBind {
     fn body(&self, e: El) -> El;
@@ -265,51 +280,56 @@ trait PreviewBind {
 struct PreviewHandlers<S> {
     lens: Lens<S>,
     close: Option<OnClose<S>>,
+    key: Option<OnKey<S>>,
 }
 
 impl<S: 'static> PreviewBind for PreviewHandlers<S> {
     fn body(&self, e: El) -> El {
-        let (lens, close) = (self.lens, self.close.clone());
+        let (drag_lens, wheel_lens, magnify_lens, close) = (self.lens.clone(), self.lens.clone(), self.lens.clone(), self.close.clone());
         let mut e = e
             .on_drag(move |s: &mut S, d: &mut Drag, tx: &mut Tx| {
-                if lens(s).press(d, true, tx) && let Some(c) = &close { c(s, tx); }
+                if drag_lens(s).press(d, true, tx) && let Some(c) = &close { c(s, tx); }
             })
-            .on_wheel(move |s: &mut S, ev, tx| lens(s).wheel(ev, tx));
+            .on_wheel(move |s: &mut S, ev, tx| wheel_lens(s).wheel(ev, tx));
         if cfg!(target_os = "macos") {
-            e = e.on_magnify(move |s: &mut S, ev, tx| lens(s).magnify(ev, tx));
+            e = e.on_magnify(move |s: &mut S, ev, tx| magnify_lens(s).magnify(ev, tx));
         }
         e
     }
 
     fn root(&self, e: El) -> El {
-        let lens = self.lens;
+        let (modal_lens, drag_lens, key_lens) = (self.lens.clone(), self.lens.clone(), self.lens.clone());
         let (dismiss, close, key_close) = (self.close.clone(), self.close.clone(), self.close.clone());
+        let first = self.key.clone();
         e.modal_tx(false, move |s: &mut S, tx: &mut Tx| {
-            if lens(s).owns_escape() { lens(s).fit(tx) } else if let Some(c) = &dismiss { c(s, tx) }
+            if modal_lens(s).owns_escape() { modal_lens(s).fit(tx) } else if let Some(c) = &dismiss { c(s, tx) }
         })
         .on_drag(move |s: &mut S, d: &mut Drag, tx: &mut Tx| {
-            if lens(s).press(d, false, tx) && let Some(c) = &close { c(s, tx); }
+            if drag_lens(s).press(d, false, tx) && let Some(c) = &close { c(s, tx); }
         })
         .on_wheel(|_: &mut S, _, _: &mut Tx| true)
-        .on_key(move |s: &mut S, ev: &KeyEvent, tx: &mut Tx| match lens(s).key(ev, tx) {
-            Some(true) => { if let Some(c) = &key_close { c(s, tx); } true }
-            Some(false) => true,
-            None => false,
+        .on_key(move |s: &mut S, ev: &KeyEvent, tx: &mut Tx| {
+            if first.as_ref().is_some_and(|f| f(s, ev, tx)) { return true; }
+            match key_lens(s).key(ev, tx) {
+                Some(true) => { if let Some(c) = &key_close { c(s, tx); } true }
+                Some(false) => true,
+                None => false,
+            }
         })
     }
 
     fn zoom_out(&self, b: IconButton) -> IconButton {
-        let lens = self.lens;
+        let lens = self.lens.clone();
         b.on_press_tx(move |s: &mut S, tx: &mut Tx| lens(s).zoom_out(tx))
     }
 
     fn zoom_in(&self, b: IconButton) -> IconButton {
-        let lens = self.lens;
+        let lens = self.lens.clone();
         b.on_press_tx(move |s: &mut S, tx: &mut Tx| lens(s).zoom_in(tx))
     }
 
     fn fit(&self, b: Button) -> Button {
-        let lens = self.lens;
+        let lens = self.lens.clone();
         b.on_press_tx(move |s: &mut S, tx: &mut Tx| lens(s).fit(tx))
     }
 
@@ -326,6 +346,7 @@ struct PreviewCore {
     labels: [String; 4],
     format: fn(u32) -> String,
     controls: Option<rune::Transition>,
+    pan_cursors: bool,
 }
 
 impl PreviewCore {
@@ -337,6 +358,7 @@ impl PreviewCore {
             labels: ["Zoom out".into(), "Zoom to fit".into(), "Zoom in".into(), "Close".into()],
             format: |n| format!("{n}%"),
             controls: None,
+            pan_cursors: true,
         }
     }
 
@@ -352,9 +374,10 @@ impl PreviewCore {
         if zoom.zoomed() {
             // A zoomed image fades out across the padding instead of being cut at the edge; a
             // fitted one never reaches it.
-            body_el = body_el
-                .clip_fade_linear(PAD, PAD, PAD, PAD)
-                .cursor(if zoom.dragging() { Cursor::Grabbing } else { Cursor::Grab });
+            body_el = body_el.clip_fade_linear(PAD, PAD, PAD, PAD);
+            if self.pan_cursors {
+                body_el = body_el.cursor(if zoom.dragging() { Cursor::Grabbing } else { Cursor::Grab });
+            }
         }
         // The preview holds focus, so its keys reach it before the app's (which zoom the window
         // on the same shortcuts) wherever the pointer pressed.
@@ -403,8 +426,8 @@ pub struct Preview<S> {
 impl<S: 'static> Preview<S> {
     /// `image` (the app's element drawing the picture, with its key and shared-element id) is
     /// placed and sized here; `natural` is its size in pixels.
-    pub fn new(lens: Lens<S>, natural: [f32; 2], image: El) -> Preview<S> {
-        Preview { core: PreviewCore::new(natural, image), handlers: PreviewHandlers { lens, close: None } }
+    pub fn new(lens: impl for<'a> Fn(&'a mut S) -> &'a mut ImageZoom + 'static, natural: [f32; 2], image: El) -> Preview<S> {
+        Preview { core: PreviewCore::new(natural, image), handlers: PreviewHandlers { lens: Rc::new(lens), close: None, key: None } }
     }
 
     /// How the zoom bar comes and goes (as the image flies, or with the scrim).
@@ -415,6 +438,14 @@ impl<S: 'static> Preview<S> {
 
     pub fn on_close(mut self, f: impl Fn(&mut S, &mut Tx) + 'static) -> Self {
         self.handlers.close = Some(Rc::new(f));
+        self
+    }
+
+    /// Handle a key before the preview's own (the zoom keys and Escape). Return true to consume
+    /// it. The preview is a modal, so a handler around it never hears its keys: this is how an
+    /// app adds its own, such as arrows that step through a gallery.
+    pub fn on_key(mut self, f: impl Fn(&mut S, &KeyEvent, &mut Tx) -> bool + 'static) -> Self {
+        self.handlers.key = Some(Rc::new(f));
         self
     }
 
@@ -433,6 +464,14 @@ impl<S: 'static> Preview<S> {
     /// How the level reads, from a whole percentage (`141%` unless set).
     pub fn format_level(mut self, f: fn(u32) -> String) -> Self {
         self.core.format = f;
+        self
+    }
+
+    /// Whether a zoomed image shows the open hand, and the closed one while it is dragged (CSS
+    /// `grab` and `grabbing`). On unless set; off, the preview sets no cursor, so the arrow
+    /// shows, as over a fitted image. Dragging pans either way.
+    pub fn pan_cursors(mut self, on: bool) -> Self {
+        self.core.pan_cursors = on;
         self
     }
 

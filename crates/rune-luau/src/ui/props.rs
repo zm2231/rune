@@ -6,6 +6,8 @@
 //! `onPress`), text (`size`, `weight`, `color`) and list props (`count`, `renderRow`); colours are
 //! palette names or `ui.hex(...)`.
 
+#![allow(unsafe_code)]
+
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 use std::rc::Rc;
@@ -13,6 +15,9 @@ use std::rc::Rc;
 use mlua::ffi;
 use rune::{Align, Color, El, ScrollSpec, TextStyle};
 
+use super::motion::{self, Presence};
+use super::values::{Size, finite, non_neg, non_neg_int, numbers, parse_size, pos_int, positive, role, xy_pair};
+pub(crate) use super::values::{Value, format_num, name, push_num, read};
 use super::{Attach, Callback, Env};
 
 macro_rules! atoms {
@@ -98,6 +103,7 @@ atoms! {
     OnVisibleRows = "onVisibleRows",
     OnHover = "onHover",
     OnMiddlePress = "onMiddlePress",
+    OnScroll = "onScroll",
     HoverTransition = "hoverTransition",
     HoverGroup = "hoverGroup",
     HoverGroupColor = "hoverGroupColor",
@@ -109,11 +115,33 @@ atoms! {
     Focusable = "focusable",
     Disabled = "disabled",
     HelpSide = "helpSide",
+    HelpOpen = "helpOpen",
     FadeOut = "fadeOut",
     Dir = "dir",
+    Cursor = "cursor",
+    MaxLines = "maxLines",
+    Matched = "matched",
+    MatchedCrop = "matchedCrop",
+    PressScale = "pressScale",
+    Scale = "scale",
+    Rotate = "rotate",
+    Origin = "origin",
+    Offset = "offset",
+    Outline = "outline",
+    OutlineWidth = "outlineWidth",
+    Raise = "raise",
+    Cols = "cols",
+    Aspect = "aspect",
+    Enter = "enter",
+    Exit = "exit",
+    Layout = "layout",
 }
 
 /// Every prop name the built-in nodes read.
+///
+/// ```
+/// assert!(rune_luau::prop_names().any(|name| name == "maxLines"));
+/// ```
 pub fn prop_names() -> impl Iterator<Item = &'static str> {
     NAMES.iter().map(|(n, _)| *n)
 }
@@ -130,36 +158,6 @@ pub(crate) unsafe extern "C-unwind" fn useratom(_: *mut ffi::lua_State, s: *cons
     // SAFETY: Luau passes the new string's bytes and length.
     let bytes = unsafe { std::slice::from_raw_parts(s.cast::<u8>(), len) };
     by_name(bytes).map_or(-1, |a| a as i16)
-}
-
-/// A prop value on the stack. Strings borrow the Lua string, which the table keeps alive.
-#[derive(Clone, Copy)]
-pub(crate) enum Value<'a> {
-    Nil,
-    Bool(bool),
-    Num(f64),
-    Str(&'a str),
-    Func,
-    Other(&'static str),
-}
-
-/// Reads stack slot `idx`.
-pub(crate) unsafe fn read<'a>(state: *mut ffi::lua_State, idx: c_int) -> Value<'a> {
-    // SAFETY: the caller passes a valid slot; strings stay alive while their table is on the stack.
-    unsafe {
-        match ffi::lua_type(state, idx) {
-            ffi::LUA_TNIL => Value::Nil,
-            ffi::LUA_TBOOLEAN => Value::Bool(ffi::lua_toboolean(state, idx) != 0),
-            ffi::LUA_TNUMBER => Value::Num(ffi::lua_tonumberx(state, idx, std::ptr::null_mut())),
-            ffi::LUA_TSTRING => {
-                let mut len = 0;
-                let p = ffi::lua_tolstring(state, idx, &mut len);
-                Value::Str(std::str::from_utf8(std::slice::from_raw_parts(p.cast::<u8>(), len)).unwrap_or(""))
-            }
-            ffi::LUA_TFUNCTION => Value::Func,
-            t => Value::Other(CStr::from_ptr(ffi::lua_typename(state, t)).to_str().unwrap_or("value")),
-        }
-    }
 }
 
 /// The key at stack slot `idx` as an atom, or its text when it isn't a prop name.
@@ -179,11 +177,13 @@ pub(crate) unsafe fn key_atom<'a>(state: *mut ffi::lua_State, idx: c_int) -> Res
     }
 }
 
-/// A size prop: points, or the parent's whole side.
-#[derive(Clone, Copy)]
-pub(crate) enum Size {
-    Points(f32),
-    Full,
+/// `clip`: soft rectangular clip (`clip = true`) or rounded clip (`clip = radius`).
+#[derive(Clone, Copy, Default)]
+enum Clip {
+    #[default]
+    None,
+    Soft,
+    Rounded(f32),
 }
 
 /// Padding sides a prop set on its own (`pt`, `px`, ...), which `pad` leaves alone.
@@ -202,6 +202,7 @@ pub(crate) struct Props {
     pub(crate) key: Option<String>,
     pub(crate) on_hover: Option<Rc<Callback>>,
     pub(crate) on_middle_press: Option<Rc<Callback>>,
+    pub(crate) on_scroll: Option<Rc<Callback>>,
     pad: Option<f32>,
     sides: u8,
     role: Option<&'static str>,
@@ -217,11 +218,20 @@ pub(crate) struct Props {
     fade_out: bool,
     single_line: bool,
     wrap: bool,
+    max_lines: Option<usize>,
+    matched_crop: bool,
     selectable: bool,
     text_align: Option<Align>,
     border: (Option<f32>, Option<Color>),
+    outline: (Option<f32>, Option<Color>),
+    raise: bool,
+    clip: Clip,
     pub(crate) scroll: Option<(bool, bool)>,
     stick_bottom: bool,
+    /// `enter`, `exit` and `layout`, dropped under reduced motion except an `enter` or `exit` of `none`.
+    enter: Option<Presence>,
+    exit: Option<Presence>,
+    layout: bool,
     /// A prop whose effect depends on more than its value and the colours (`shadow`): the node
     /// can't be a template.
     pub(crate) uncacheable: bool,
@@ -234,6 +244,7 @@ impl Props {
             key: None,
             on_hover: None,
             on_middle_press: None,
+            on_scroll: None,
             pad: None,
             sides: 0,
             role: None,
@@ -248,21 +259,30 @@ impl Props {
             fade_out: false,
             single_line: false,
             wrap: false,
+            max_lines: None,
+            matched_crop: false,
             selectable: false,
             text_align: None,
             border: (None, None),
+            outline: (None, None),
+            raise: false,
+            clip: Clip::None,
             scroll: None,
             stick_bottom: false,
+            enter: None,
+            exit: None,
+            layout: false,
             uncacheable: false,
         }
     }
 
-    /// Applies what waited for the whole table: the press, middle-click and hover handlers (`press`
-    /// is the node's `onPress`), then the props that depend on others, the text style and the key.
+    /// Applies what waited for the whole table: the press, middle-click, hover and scroll handlers
+    /// (`press` is the node's `onPress`), then the props that depend on others, the text style and
+    /// the key.
     pub(crate) fn finish(self, e: &mut El, env: &Env, is_text: bool, press: Option<Rc<Callback>>, attach: &'static Attach) {
         let press = press.filter(|_| !self.disabled);
         let middle = self.on_middle_press.filter(|_| !self.disabled);
-        let key: Option<Rc<str>> = (press.is_some() || middle.is_some() || self.on_hover.is_some()).then(|| self.key.as_deref().map(Into::into)).flatten();
+        let key: Option<Rc<str>> = (press.is_some() || middle.is_some() || self.on_hover.is_some() || self.on_scroll.is_some()).then(|| self.key.as_deref().map(Into::into)).flatten();
         if let Some(cb) = press {
             (attach.press)(e, cb, key.clone(), Rc::new([]));
             // Kobalte's `Menu.Trigger` opens on a mouse's `pointerdown`; keys and taps on the click.
@@ -274,7 +294,7 @@ impl Props {
             with(e, |e| (attach.middle)(e, cb, key.clone()));
         }
         if let Some(cb) = self.on_hover {
-            with(e, |e| (attach.hover)(e, cb, key));
+            with(e, |e| (attach.hover)(e, cb, key.clone()));
         }
         match (self.pad, self.sides) {
             (Some(p), 0) => _ = e.set_padding(p),
@@ -326,6 +346,9 @@ impl Props {
             if self.wrap {
                 e.set_wrap();
             }
+            if let Some(lines) = self.max_lines {
+                with(e, |e| e.max_lines(lines));
+            }
             if self.selectable {
                 e.set_selectable(true);
             }
@@ -335,9 +358,28 @@ impl Props {
         } else if let Some(c) = self.color {
             e.set_color(c);
         }
+        if self.matched_crop {
+            with(e, El::matched_crop);
+        }
         if self.border != (None, None) {
             let c = self.border.1.unwrap_or_else(|| env.color("separator").unwrap_or(Color::TRANSPARENT));
             e.set_border(self.border.0.unwrap_or(1.0), c);
+        }
+        if self.outline != (None, None) {
+            let c = self.outline.1.unwrap_or_else(|| env.color("separator").unwrap_or(Color::TRANSPARENT));
+            with(e, |e| e.outline(self.outline.0.unwrap_or(1.0), 0.0, c));
+        }
+        if self.raise {
+            with(e, El::raise);
+        }
+        with(e, |e| motion::apply(e, self.enter, self.exit, env.reduced_motion));
+        if self.layout && !env.reduced_motion {
+            with(e, El::animate_layout);
+        }
+        match self.clip {
+            Clip::None => {}
+            Clip::Soft => _ = e.set_clip_soft(0.0),
+            Clip::Rounded(r) => with(e, |e| e.clip_rounded(r)),
         }
         match self.scroll {
             Some((true, true)) => e.set_scroll_xy(),
@@ -345,6 +387,11 @@ impl Props {
             Some((false, _)) => e.set_scroll(ScrollSpec { stick_bottom: self.stick_bottom }),
             None => e,
         };
+        if let Some(cb) = self.on_scroll
+            && self.scroll.is_some()
+        {
+            with(e, |e| (attach.scroll)(e, cb, key));
+        }
         if let Some(k) = self.key {
             e.set_key(k);
         }
@@ -368,11 +415,6 @@ impl Props {
             other => Err(format!("{name} must be a color token or ui.hex(...), got {}", self::name(other))),
         };
         let string = |v| as_str(atom, v);
-        let size = |v: Value<'_>| match v {
-            Value::Num(n) => Ok(Size::Points(n as f32)),
-            Value::Str("full") => Ok(Size::Full),
-            other => Err(format!("{name} must be a number or \"full\", got {}", self::name(other))),
-        };
         match atom {
             Atom::Key => {
                 self.key = Some(match v {
@@ -381,15 +423,17 @@ impl Props {
                 })
             }
             Atom::W => {
-                match size(v)? {
+                match parse_size(name, v)? {
                     Size::Points(n) => e.set_w(n),
                     Size::Full => e.set_w_full(),
+                    Size::Frac(f) => e.set_w_frac(f),
                 };
             }
             Atom::H => {
-                match size(v)? {
+                match parse_size(name, v)? {
                     Size::Points(n) => e.set_h(n),
                     Size::Full => e.set_h_full(),
+                    Size::Frac(f) => e.set_h_frac(f),
                 };
             }
             Atom::MinW => _ = e.set_min_w(num(v)?),
@@ -485,9 +529,13 @@ impl Props {
             Atom::BorderWidth => self.border.0 = Some(num(v)?),
             Atom::Radius => _ = e.set_radius(num(v)?),
             Atom::Clip => {
-                if flag(v)? {
-                    e.set_clip_soft(0.0);
-                }
+                self.clip = match v {
+                    Value::Bool(true) => Clip::Soft,
+                    Value::Bool(false) | Value::Nil => Clip::None,
+                    Value::Num(n) if n.is_finite() && n >= 0.0 => Clip::Rounded(n as f32),
+                    Value::Num(n) => return Err(format!("clip radius must be a non-negative finite number, got {n}")),
+                    other => return Err(format!("clip must be a boolean or number, got {}", self::name(other))),
+                };
             }
             Atom::ScrollY | Atom::ScrollX => {
                 if flag(v)? {
@@ -557,6 +605,12 @@ impl Props {
                     with(e, |e| e.help_side(side));
                 }
             }
+            // A Copy button's "Copied" held up after the press (`El::help_open`).
+            Atom::HelpOpen => {
+                if flag(v)? {
+                    with(e, |e| e.help_open(true));
+                }
+            }
             Atom::FadeOut => self.fade_out = flag(v)?,
             // HTML's `dir`: `ltr` or `rtl` lays the subtree out that way whatever the window's
             // direction, `auto` takes a text's first strong direction.
@@ -569,8 +623,80 @@ impl Props {
                 };
                 with(e, |e| e.dir(dir));
             }
+            // CSS `cursor`, by its CSS name: the pointer's shape over the node and over what is
+            // inside it that sets none.
+            Atom::Cursor => {
+                let cursor = match string(v)? {
+                    "default" => rune::Cursor::Default,
+                    "pointer" => rune::Cursor::Pointer,
+                    "text" => rune::Cursor::Text,
+                    "grab" => rune::Cursor::Grab,
+                    "grabbing" => rune::Cursor::Grabbing,
+                    "not-allowed" => rune::Cursor::NotAllowed,
+                    "move" => rune::Cursor::Move,
+                    "col-resize" => rune::Cursor::ResizeColumn,
+                    "row-resize" => rune::Cursor::ResizeRow,
+                    "ew-resize" => rune::Cursor::ResizeEw,
+                    "ns-resize" => rune::Cursor::ResizeNs,
+                    "nwse-resize" => rune::Cursor::ResizeNwse,
+                    "nesw-resize" => rune::Cursor::ResizeNesw,
+                    "n-resize" => rune::Cursor::ResizeN,
+                    "e-resize" => rune::Cursor::ResizeE,
+                    "s-resize" => rune::Cursor::ResizeS,
+                    "w-resize" => rune::Cursor::ResizeW,
+                    "alias" => rune::Cursor::Alias,
+                    "copy" => rune::Cursor::Copy,
+                    "crosshair" => rune::Cursor::Crosshair,
+                    "cell" => rune::Cursor::Cell,
+                    "zoom-in" => rune::Cursor::ZoomIn,
+                    "zoom-out" => rune::Cursor::ZoomOut,
+                    s => return Err(format!("unknown cursor {s}")),
+                };
+                with(e, |e| e.cursor(cursor));
+            }
+            Atom::MaxLines => self.max_lines = Some(non_neg_int(name, v)?),
+            Atom::Matched => {
+                let s = string(v)?;
+                if s.is_empty() {
+                    return Err("matched must be a non-empty string".into());
+                }
+                with(e, |e| e.matched(s));
+            }
+            Atom::MatchedCrop => self.matched_crop = flag(v)?,
+            Atom::PressScale => {
+                let n = positive(name, v)?;
+                with(e, |e| e.press_scale(n));
+            }
+            Atom::Scale => {
+                let n = non_neg(name, v)?;
+                with(e, |e| e.scale(n));
+            }
+            Atom::Rotate => {
+                let deg = finite(name, v)?;
+                with(e, |e| e.rotate(deg.to_radians()));
+            }
+            Atom::Outline => self.outline.1 = Some(color(v)?),
+            Atom::OutlineWidth => self.outline.0 = Some(non_neg(name, v)?),
+            Atom::Raise => self.raise = flag(v)?,
+            Atom::Cols => {
+                let n = pos_int(name, v)?;
+                with(e, |e| e.equal_columns(n));
+            }
+            Atom::Aspect => _ = e.set_aspect_ratio(positive(name, v)?),
+            Atom::Enter | Atom::Exit => {
+                let side = match v {
+                    Value::Nil => None,
+                    v => Some(motion::parse(string(v)?, atom == Atom::Exit)?),
+                };
+                if atom == Atom::Exit {
+                    self.exit = side;
+                } else {
+                    self.enter = side;
+                }
+            }
+            Atom::Layout => self.layout = flag(v)?,
             // Tables, read off the stack by `decode_at`.
-            Atom::Corners | Atom::Pin => return Err(format!("{name} must be a table, got {}", self::name(v))),
+            Atom::Corners | Atom::Pin | Atom::Origin | Atom::Offset => return Err(format!("{name} must be a table, got {}", self::name(v))),
             Atom::LineHeight => self.text = self.text.lh(num(v)?),
             Atom::Tracking => self.text = self.text.tracking(num(v)?),
             Atom::Mono => {
@@ -600,20 +726,20 @@ impl Props {
                 })
             }
             // Read by the node that takes them; elsewhere they mean nothing.
-            Atom::OnPress | Atom::OnHover | Atom::OnMiddlePress | Atom::Count | Atom::EstimatedRowHeight | Atom::Version | Atom::RenderRow | Atom::RowKey | Atom::RowVersions | Atom::OnVisibleRows => {
-                env.warn_once(format!("{name} has no effect on this node"));
+            Atom::OnPress | Atom::OnHover | Atom::OnMiddlePress | Atom::OnScroll | Atom::Count | Atom::EstimatedRowHeight | Atom::Version | Atom::RenderRow | Atom::RowKey | Atom::RowVersions | Atom::OnVisibleRows => {
+                super::unknown_prop(env, None, name)?;
             }
         }
         Ok(())
     }
 
     /// Decodes the prop whose value is at stack slot `idx` onto `e`, reading the table-valued
-    /// ones (`corners`, `pin`) off the stack.
+    /// ones (`corners`, `pin`, `origin`, `offset`) off the stack.
     pub(crate) unsafe fn decode_at(&mut self, e: &mut El, state: *mut ffi::lua_State, atom: Atom, idx: c_int, env: &Env, is_text: bool) -> Result<(), String> {
         // SAFETY: the caller passes a valid slot.
         let v = unsafe { read(state, idx) };
         match (atom, v) {
-            (Atom::Corners | Atom::Pin, Value::Nil) => Ok(()),
+            (Atom::Corners | Atom::Pin | Atom::Origin | Atom::Offset, Value::Nil) => Ok(()),
             (Atom::Corners, Value::Other("table")) => {
                 // SAFETY: slot `idx` holds a table.
                 let r = unsafe { numbers::<4>(state, idx, &[]) };
@@ -624,6 +750,18 @@ impl Props {
                 // SAFETY: slot `idx` holds a table.
                 let [l, t, r, b] = unsafe { numbers::<4>(state, idx, &["left", "top", "right", "bottom"]) };
                 e.set_pin(l, t, r, b);
+                Ok(())
+            }
+            (Atom::Origin, Value::Other("table")) => {
+                // SAFETY: slot `idx` holds a table.
+                let [x, y] = unsafe { xy_pair(state, idx, "origin", [0.5, 0.5]) }?;
+                with(e, |e| e.origin(x, y));
+                Ok(())
+            }
+            (Atom::Offset, Value::Other("table")) => {
+                // SAFETY: slot `idx` holds a table.
+                let [x, y] = unsafe { xy_pair(state, idx, "offset", [0.0, 0.0]) }?;
+                with(e, |e| e.offset(x, y));
                 Ok(())
             }
             _ => self.decode(e, atom, v, env, is_text),
@@ -638,29 +776,6 @@ fn with(e: &mut El, f: impl FnOnce(El) -> El) {
     *e = f(taken);
 }
 
-/// `N` numbers from the table at `idx`: by name when `names` are given, else items `1..=N`.
-unsafe fn numbers<const N: usize>(state: *mut ffi::lua_State, idx: c_int, names: &[&str]) -> [Option<f32>; N] {
-    let mut out = [None; N];
-    // SAFETY: `idx` is a table; each lookup pushes one value, popped right after.
-    unsafe {
-        let idx = ffi::lua_absindex(state, idx);
-        for (i, slot) in out.iter_mut().enumerate() {
-            let kind = match names.get(i) {
-                Some(name) => {
-                    ffi::lua_pushlstring(state, name.as_ptr().cast(), name.len());
-                    ffi::lua_rawget(state, idx)
-                }
-                None => ffi::lua_rawgeti(state, idx, i as ffi::lua_Integer + 1),
-            };
-            if kind == ffi::LUA_TNUMBER {
-                *slot = Some(ffi::lua_tonumberx(state, -1, std::ptr::null_mut()) as f32);
-            }
-            ffi::lua_settop(state, -2);
-        }
-    }
-    out
-}
-
 fn as_str(atom: Atom, v: Value<'_>) -> Result<&str, String> {
     match v {
         Value::Str(s) => Ok(s),
@@ -668,47 +783,6 @@ fn as_str(atom: Atom, v: Value<'_>) -> Result<&str, String> {
     }
 }
 
-fn role(s: &str) -> Option<&'static str> {
-    Some(match s {
-        "none" => "none",
-        "group" => "group",
-        "region" => "region",
-        "button" => "button",
-        "link" => "link",
-        "switch" => "switch",
-        "checkbox" => "checkbox",
-        "radio" => "radio",
-        "tab" => "tab",
-        "list" => "list",
-        "listitem" => "listitem",
-        "heading" => "heading",
-        "img" => "img",
-        "status" => "status",
-        "alert" => "alert",
-        _ => return None,
-    })
-}
-
-pub(crate) fn name(v: Value<'_>) -> &'static str {
-    match v {
-        Value::Nil => "nil",
-        Value::Bool(_) => "boolean",
-        Value::Num(_) => "number",
-        Value::Str(_) => "string",
-        Value::Func => "function",
-        Value::Other(t) => t,
-    }
-}
-
-/// A number as Luau prints it: `3`, not `3.0`.
-pub(crate) fn format_num(n: f64) -> String {
-    let mut s = String::new();
-    push_num(&mut s, n);
-    s
-}
-
-/// [`format_num`] onto the end of `out`.
-pub(crate) fn push_num(out: &mut String, n: f64) {
-    use std::fmt::Write;
-    let _ = if n.fract() == 0.0 && n.abs() < 1e15 { write!(out, "{}", n as i64) } else { write!(out, "{n}") };
-}
+#[cfg(test)]
+#[path = "props_tests.rs"]
+mod tests;

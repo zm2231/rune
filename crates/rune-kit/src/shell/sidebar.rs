@@ -383,7 +383,7 @@ impl SidebarRow {
     }
     /// A second line under the label, smaller and fainter than it (11 point `caption` in
     /// `text_faint`, under a medium-weight 13 point label). The row's accessible name is then
-    /// "Label, Subtitle". Give the row the height for it (default [`TWO_LINE_ROW_HEIGHT`]).
+    /// "Label, Subtitle". Give the row the height for it (default `TWO_LINE_ROW_HEIGHT`).
     pub fn subtitle(mut self, s: impl Into<String>) -> Self {
         self.subtitle = Some(s.into());
         self
@@ -416,7 +416,7 @@ impl SidebarRow {
         self.select_only = true;
         self
     }
-    /// The row's height (default [`ROW_HEIGHT`], or [`TWO_LINE_ROW_HEIGHT`] with a subtitle).
+    /// The row's height (default [`ROW_HEIGHT`], or `TWO_LINE_ROW_HEIGHT` with a subtitle).
     pub fn height(mut self, points: f32) -> Self {
         self.height = Some(points.max(1.0));
         self
@@ -468,28 +468,71 @@ impl SidebarRow {
     }
     /// Drags the row to a new place among the list's `count` rows, of which it is row `index`.
     /// It lifts above its neighbours and follows the pointer, and they step aside on springs.
-    /// A drop calls `drop(s, from, to)` to move the item; Escape, or the window losing focus,
-    /// puts it back, and so does the pointer moving on when the row never hears its release
-    /// (it unmounted mid-drag). `access` finds the [`Reorder`] in the app's state. A press that
-    /// doesn't move is still a select.
+    /// A drop calls `drop(s, from, to)` to move the item; Escape, the window losing focus, or
+    /// releasing outside [`Reorder::cancel_outside_x`] puts it back, and so does the pointer
+    /// moving on when the row never hears its release (it unmounted mid-drag). `access` finds
+    /// the [`Reorder`] in the app's state. A press that doesn't move is still a select.
+    ///
+    /// Use [`Self::reorder_tx`] when the drop callback also needs [`Tx`].
     pub fn reorder<S: 'static>(
         self,
         state: &Reorder,
         index: usize,
         count: usize,
-        access: fn(&mut S) -> &mut Reorder,
+        access: impl for<'a> Fn(&'a mut S) -> &'a mut Reorder + 'static,
         drop: impl Fn(&mut S, usize, usize) + 'static,
     ) -> Self {
+        self.reorder_tx(state, index, count, access, move |s, from, to, _| drop(s, from, to))
+    }
+    /// Like [`Self::reorder`], but passes the commit's [`Tx`] to `drop` so the handler can
+    /// control motion (`tx.instant()`), announce the move (`tx.announce(..)`), or schedule
+    /// follow-up work.
+    ///
+    /// ```
+    /// use rune::Tx;
+    /// use rune_kit::shell::{Reorder, ReorderLanding, SidebarRow};
+    ///
+    /// struct App {
+    ///     items: Vec<String>,
+    ///     reorder: Reorder,
+    /// }
+    ///
+    /// fn row_builder(s: &App, i: usize) -> SidebarRow {
+    ///     SidebarRow::new(&s.items[i]).reorder_tx(
+    ///         &s.reorder,
+    ///         i,
+    ///         s.items.len(),
+    ///         |s: &mut App| &mut s.reorder,
+    ///         |s: &mut App, from, to, tx: &mut Tx| {
+    ///             let item = s.items.remove(from);
+    ///             s.items.insert(to, item);
+    ///             tx.instant();
+    ///         },
+    ///     )
+    /// }
+    /// # let app = App { items: vec!["A".into()], reorder: Reorder::new().landing(ReorderLanding::HalfRow) };
+    /// # let _ = row_builder(&app, 0);
+    /// ```
+    pub fn reorder_tx<S: 'static>(
+        self,
+        state: &Reorder,
+        index: usize,
+        count: usize,
+        access: impl for<'a> Fn(&'a mut S) -> &'a mut Reorder + 'static,
+        drop: impl Fn(&mut S, usize, usize, &mut Tx) + 'static,
+    ) -> Self {
         let held = state.held();
+        let access = std::rc::Rc::new(access);
         let bind = Box::new(move |mut e: El| {
             // While a row is held, every row hears where the pointer goes: a move its drag never
             // hears means the release was lost (the row unmounted, or a modal took the pointer).
             if held {
-                e = e.on_pointer_move_local(move |s: &mut S, p, tx: &mut Tx| reorder_pointer(access(s), p, tx));
+                let pointer_access = access.clone();
+                e = e.on_pointer_move_local(move |s: &mut S, p, tx: &mut Tx| reorder_pointer(pointer_access(s), p, tx));
             }
             e.on_drag(move |s: &mut S, d: &mut Drag, tx: &mut Tx| {
                 if let Some((from, to)) = reorder_drag(access(s), index, count, d, tx) {
-                    drop(s, from, to);
+                    drop(s, from, to, tx);
                 }
             })
         });
@@ -501,7 +544,7 @@ impl SidebarRow {
     pub fn renaming<S: 'static>(
         self,
         edit: &TextEdit,
-        access: fn(&mut S) -> &mut TextEdit,
+        access: impl for<'a> Fn(&'a mut S) -> &'a mut TextEdit + 'static,
         commit: impl Fn(&mut S, &mut Tx) + 'static,
         cancel: impl Fn(&mut S, &mut Tx) + 'static,
     ) -> Self {
@@ -674,9 +717,14 @@ fn reorder_drag(r: &mut Reorder, index: usize, count: usize, d: &Drag, tx: &mut 
         Phase::Move => {
             // The rows it passes spring aside; it follows the pointer exactly.
             tx.animated();
-            r.drag(index, count, d.window_point(), d.dy, d.h);
+            r.drag(index, count, d.window_point(), d.dx, d.dy, d.h);
             None
         }
-        Phase::Up => r.end(d.cancelled()),
+        Phase::Up => {
+            if !d.cancelled() && r.dragging().is_some() {
+                r.drag(index, count, d.window_point(), d.dx, d.dy, d.h);
+            }
+            r.end(d.cancelled())
+        }
     }
 }

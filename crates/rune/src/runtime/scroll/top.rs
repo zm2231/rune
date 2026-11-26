@@ -44,7 +44,7 @@ impl RuntimeCore {
         self.drop_scroll_holds();
         let glide = (!self.reduced_motion).then_some(crate::tok::motion::GLIDE);
         let mut jumps = Vec::new();
-        self.send_viewport(i, (None, Some(0.0)), glide, &mut jumps);
+        self.send_viewport(i, (None, Some(0.0)), glide, crate::ScrollSource::Programmatic, &mut jumps);
         self.land_jumps(app, jumps, &[]);
         self.scroll.requests.step(requests::Event::Destination);
         true
@@ -53,7 +53,7 @@ impl RuntimeCore {
     /// The viewport a tap on the status bar scrolls: of the vertical viewports at the first
     /// point down the centre line that has one, the outermost whose content overflows.
     pub(super) fn main_viewport(&self) -> Option<usize> {
-        let top = self.host.safe_area.over(self.zoom())[0];
+        let top = self.safe_area()[0] / self.zoom();
         let nodes = &self.tree.nodes;
         let vertical = |i: usize| nodes[i].scroll.is_some() && nodes[i].scroll_axes.y() && !self.subtree_exiting(i) && self.allowed(i);
         let innermost = line(self.viewport, top).find_map(|(x, y)| (0..nodes.len()).rev().find(|&i| vertical(i) && self.node_contains(i, x, y)))?;

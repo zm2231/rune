@@ -7,12 +7,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mlua::{LightUserData, Value};
-use rune::time::Instant;
 use rune::{Cx, El, Tx};
 use rustc_hash::FxHashSet;
 
 use crate::card::{error_card, row_error};
 use crate::options::ScriptOptions;
+use crate::scroll::{PendingScroll, ScrollState};
 use crate::sources::{Compiled, Sources};
 use crate::task::{self, Sched};
 use crate::ui::host::HostNode;
@@ -64,7 +64,10 @@ pub struct Reload {
 /// A hosted Luau script: one VM. Keep it in the window's state and call [`Script::poll`] from
 /// `AppSpec::poll` and [`Script::view`] from the view.
 ///
-/// ```ignore
+/// ```
+/// # use rune::{Cx, El, Tx};
+/// # use rune_luau::Script;
+/// # struct State { script: Script }
 /// fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool { s.script.poll(now, tx) }
 /// fn view(s: &State, cx: &mut Cx<State>) -> El { s.script.view(cx) }
 /// ```
@@ -83,6 +86,7 @@ pub(crate) struct Inner {
     pub(crate) version: Cell<u64>,
     pub(crate) salt: Cell<u64>,
     pub(crate) dark: Cell<bool>,
+    pub(crate) reduced_motion: Cell<bool>,
     pub(crate) clock: Cell<f64>,
     /// The earliest task deadline on the frame clock, or infinity.
     deadline: Cell<f64>,
@@ -91,6 +95,8 @@ pub(crate) struct Inner {
     warned: Rc<RefCell<FxHashSet<String>>>,
     nodes: Rc<[HostNode]>,
     pub(crate) shared: Arc<Shared>,
+    /// Bounded per-viewport `onScroll` deduplication and coalesced pending queue.
+    scroll: RefCell<ScrollState>,
     /// A VM base built ahead of the next reload ([`Script::prewarm`]).
     spare: RefCell<Option<Base>>,
     #[cfg(all(feature = "watch", not(target_arch = "wasm32")))]
@@ -118,6 +124,7 @@ impl Script {
             version: Cell::new(1),
             salt: Cell::new(1),
             dark: Cell::new(true),
+            reduced_motion: Cell::new(false),
             clock: Cell::new(0.0),
             deadline: Cell::new(f64::INFINITY),
             metrics: Cell::new(Metrics::default()),
@@ -125,6 +132,7 @@ impl Script {
             warned: Rc::default(),
             nodes,
             shared: Arc::default(),
+            scroll: RefCell::new(ScrollState::default()),
             spare: RefCell::new(None),
             #[cfg(all(feature = "watch", not(target_arch = "wasm32")))]
             watch: RefCell::new(None),
@@ -165,10 +173,14 @@ impl Script {
     pub fn surface<S: 'static>(&self, cx: &Cx<S>, name: &str) -> El {
         let i = &self.inner;
         let dark = cx.system_dark();
+        let reduced = cx.is_reduced_motion();
         i.dark.set(dark);
+        if i.reduced_motion.replace(reduced) != reduced {
+            i.salt.set(i.salt.get().wrapping_add(1));
+        }
         // The surface's root is keyed by its memo id, whatever key the script gave it.
         let id = format!("{}{name}", i.prefix);
-        rune::memo::memo_with_hash(id.clone(), mix(i.version.get(), i.salt.get()), || i.render::<S>(name, dark).key(id))
+        rune::memo::memo_with_hash(id.clone(), mix(mix(i.version.get(), i.salt.get()), u64::from(reduced)), || i.render::<S>(name, dark).key(id))
     }
 
     /// Runs the surface's render function now, outside any memo: the cost of a rebuild.
@@ -179,7 +191,7 @@ impl Script {
     /// Recompiles from `sources` and swaps the VM. `saveHotState()` from the old VM is passed to
     /// `loadHotState(state)` in the new one. A compile or start error keeps the old VM running.
     pub fn reload(&self, sources: Sources) -> Result<Reload, ScriptError> {
-        let start = Instant::now();
+        let start = rune::time::now();
         let compiled = sources.compile().inspect_err(|e| self.inner.log(LogLevel::Error, &e.message))?;
         let compile = start.elapsed();
         let mut report = self.inner.swap(compiled).inspect_err(|e| self.inner.log(LogLevel::Error, &e.message))?;
@@ -189,7 +201,7 @@ impl Script {
         Ok(report)
     }
 
-    /// Fires the signal the host made with [`Host::signal`] as `name`.
+    /// Fires the signal the host made with [`crate::Host::signal`] as `name`.
     pub fn fire(&self, name: &str, args: impl IntoIterator<Item = Data>) -> bool {
         let args: Vec<Data> = args.into_iter().collect();
         let fired = self.inner.enter(None, |vm| Ok(vm.fire(name, args)?));
@@ -259,7 +271,7 @@ impl Script {
         self.inner.sources.borrow().clone()
     }
 
-    /// The Luau VM, for host bindings beyond [`Host`]. Changes here don't survive a reload.
+    /// The Luau VM, for host bindings beyond [`crate::Host`]. Changes here don't survive a reload.
     pub fn with_lua<R>(&self, f: impl FnOnce(&mlua::Lua) -> R) -> Option<R> {
         self.inner.vm().map(|vm| f(&vm.lua))
     }
@@ -300,7 +312,7 @@ impl Inner {
     pub(crate) fn timed<R>(&self, vm: &Vm, f: impl FnOnce(&Vm) -> R) -> R {
         vm.collect();
         let _armed = watchdog::arm(self.options.time_limit);
-        let start = Instant::now();
+        let start = rune::time::now();
         let out = f(vm);
         let mut m = self.metrics.get();
         m.vm_calls += 1;
@@ -364,6 +376,39 @@ impl Inner {
         }
     }
 
+    /// Enqueues a scroll report for `path` when `(offset, max)` differs from the last delivered
+    /// snapshot, coalescing multiple moves per viewport before the next `poll`.
+    pub(crate) fn queue_scroll(&self, path: &str, cb: &Rc<Callback>, key: Option<&Rc<str>>, at: rune::ScrollPos) {
+        if self.vm().is_none_or(|vm| vm.id != cb.vm) {
+            return;
+        }
+        if self.scroll.borrow_mut().queue(path, cb, key, at) {
+            self.shared.wake();
+        }
+    }
+
+    fn deliver_scroll(&self, vm: &Vm, pending: Vec<(Box<str>, PendingScroll)>, tx: &mut Tx) -> bool {
+        let mut delivered = false;
+        for (path, item) in pending {
+            if item.cb.vm != vm.id {
+                continue;
+            }
+            self.scroll.borrow_mut().record_last(path, item.snap);
+            let event = Event {
+                kind: "scroll",
+                key: item.key.as_deref(),
+                mods: None,
+                rows: None,
+                entered: None,
+                scroll: Some(item.pos),
+                fields: Rc::new([]),
+            };
+            self.handle(&item.cb, event, Some(tx));
+            delivered = true;
+        }
+        delivered
+    }
+
     fn poll(&self, now: f64, tx: &mut Tx) -> bool {
         self.clock.set(now);
         #[cfg(all(feature = "watch", not(target_arch = "wasm32")))]
@@ -371,17 +416,37 @@ impl Inner {
         #[cfg(not(all(feature = "watch", not(target_arch = "wasm32"))))]
         let reloaded = false;
         let arrived = self.shared.take_dirty();
-        if !arrived && now < self.deadline.get() {
+        let pending_scroll = self.scroll.borrow_mut().take_pending();
+        let task_due = arrived || now >= self.deadline.get();
+        if !task_due && pending_scroll.is_empty() {
+            if let Some(vm) = self.vm()
+                && let Some(mut s) = vm.lua.app_data_mut::<Sched>()
+            {
+                s.set_clock(now);
+            }
             return reloaded;
         }
         let Some(vm) = self.vm() else { return reloaded };
-        let resumed = self.timed(&vm, |vm| task::poll(&vm.lua, now));
-        self.settle(&vm, Some(tx));
-        if resumed == 0 {
-            // Nothing ran: the version needn't have moved.
-            self.version.set(self.version.get().wrapping_sub(1));
-        }
-        reloaded || resumed > 0
+        let scrolled = if pending_scroll.is_empty() {
+            false
+        } else {
+            if let Some(mut s) = vm.lua.app_data_mut::<Sched>() {
+                s.set_clock(now);
+            }
+            self.deliver_scroll(&vm, pending_scroll, tx)
+        };
+        let resumed = if task_due {
+            let resumed = self.timed(&vm, |vm| task::poll(&vm.lua, now));
+            self.settle(&vm, Some(tx));
+            if resumed == 0 {
+                // Nothing ran: the version needn't have moved.
+                self.version.set(self.version.get().wrapping_sub(1));
+            }
+            resumed
+        } else {
+            0
+        };
+        reloaded || scrolled || resumed > 0
     }
 
     /// Runs a handler as a task with its `UiEvent`, so it may wait.
@@ -400,7 +465,7 @@ impl Inner {
 
     pub(crate) fn reload_from_card(&self, _tx: &mut Tx) {
         let sources = self.sources.borrow().clone();
-        let start = Instant::now();
+        let start = rune::time::now();
         let swapped = sources.compile().and_then(|c| {
             let compile = start.elapsed();
             self.swap(c).map(|r| Reload { compile, ..r })
@@ -429,7 +494,7 @@ impl Inner {
     /// Starts a VM from `compiled`, carrying hot state over from the running one, and swaps it
     /// in. On error the running VM stays.
     pub(crate) fn swap(&self, compiled: Compiled) -> Result<Reload, ScriptError> {
-        let start = Instant::now();
+        let start = rune::time::now();
         let old = self.vm();
         let saved = old.as_ref().and_then(|vm| {
             let save = vm.export("saveHotState")?;
@@ -451,6 +516,7 @@ impl Inner {
         *self.vm.borrow_mut() = Some(Rc::new(vm));
         *self.failed.borrow_mut() = None;
         self.warned.borrow_mut().clear();
+        self.scroll.borrow_mut().clear();
         self.salt.set(self.salt.get().wrapping_add(1));
         if let Some(vm) = self.vm() {
             self.settle(&vm, None);
@@ -477,7 +543,7 @@ impl Inner {
         }
     }
 
-    pub(crate) fn env(&self, vm: &Vm, dark: bool) -> Rc<Env> {
+    pub(crate) fn env(&self, vm: &Vm, dark: bool, reduced_motion: bool) -> Rc<Env> {
         Rc::new(Env {
             script: self.weak.clone(),
             vm: vm.id,
@@ -485,6 +551,7 @@ impl Inner {
             salt: self.salt.get(),
             version: self.version.get(),
             dark,
+            reduced_motion,
             memo_failed: Cell::new(false),
             palette: self.options.palette.clone(),
             shadows: self.options.shadows.clone(),
@@ -510,10 +577,12 @@ impl Inner {
         let Some(render) = vm.export(name) else {
             return card(&format!("init.luau exports no {name} function"));
         };
-        let env = self.env(&vm, dark);
+        let reduced_motion = self.reduced_motion.get();
+        let env = self.env(&vm, dark, reduced_motion);
         let built = with_frame(attach, env.clone(), || {
             self.timed(&vm, |vm| {
                 vm.view.raw_set("dark", dark)?;
+                vm.view.raw_set("reducedMotion", reduced_motion)?;
                 let out = render.call::<Value>(vm.view.clone())?;
                 take_root(out)
             })
@@ -538,7 +607,7 @@ impl Inner {
 
     pub(crate) fn row<S: 'static>(&self, spec: &Spec, i: usize) -> El {
         let Some(vm) = self.vm().filter(|vm| vm.id == spec.render.vm) else { return rune::el() };
-        let env = self.env(&vm, self.dark.get());
+        let env = self.env(&vm, self.dark.get(), self.reduced_motion.get());
         let r = spec.render.func.r;
         let built = with_frame(attach::<S>(), env, || {
             self.timed(&vm, |vm| {
@@ -578,3 +647,7 @@ pub(crate) fn take_root(out: Value) -> mlua::Result<El> {
         other => Err(mlua::Error::runtime(format!("a render function must return a ui node, not a {}", other.type_name()))),
     }
 }
+
+#[cfg(test)]
+#[path = "script_tests.rs"]
+mod tests;

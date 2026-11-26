@@ -7,9 +7,11 @@
 //! copied after that ([`Templates`]).
 
 pub(crate) mod host;
+pub(crate) mod motion;
 pub(crate) mod nodes;
 pub(crate) mod props;
 pub(crate) mod rows;
+pub(crate) mod values;
 pub(crate) mod view;
 
 use std::cell::{Cell, RefCell};
@@ -72,6 +74,21 @@ pub(crate) struct Callback {
     pub(crate) script: Weak<Inner>,
 }
 
+/// A prop a node doesn't have (a typo, or one wished for: `autofocus` on a button did nothing,
+/// rune-desktop #664): an error in debug builds, so it can't pass unseen, and a warning once per
+/// script in release, where the node still draws without it.
+pub(crate) fn unknown_prop(env: &Env, node: Option<&str>, name: &str) -> Result<(), String> {
+    let message = match node {
+        Some(node) => format!("ui.{node}: unknown prop `{name}`"),
+        None => format!("unknown prop `{name}`"),
+    };
+    if cfg!(debug_assertions) {
+        return Err(message);
+    }
+    env.warn_once(format!("{message} (ignored)"));
+    Ok(())
+}
+
 /// What a render needs from its script.
 pub(crate) struct Env {
     pub(crate) script: Weak<Inner>,
@@ -82,6 +99,7 @@ pub(crate) struct Env {
     /// The script's version: it moves whenever script code runs.
     pub(crate) version: u64,
     pub(crate) dark: bool,
+    pub(crate) reduced_motion: bool,
     /// A `view:Memo` build failed this render, even if the script caught the error.
     pub(crate) memo_failed: Cell<bool>,
     pub(crate) palette: Palette,
@@ -120,8 +138,9 @@ pub(crate) struct Template {
     /// The node before its props were finished, and those props, for props laid over it.
     under: El,
     props: props::Props,
-    /// The appearance and colours it was decoded with.
+    /// The appearance, motion setting and colours it was decoded with.
     dark: bool,
+    reduced_motion: bool,
     colors: Vec<(Box<str>, Color)>,
     /// The render it last held in: a render checks its colours once.
     checked: Cell<u64>,
@@ -143,7 +162,7 @@ impl Templates {
     pub(crate) fn get(&self, key: (usize, u8), env: &Env, layered: bool) -> Option<Reuse> {
         let t = self.0.get(&key)?;
         if t.checked.get() != env.render {
-            let holds = t.dark == env.dark && t.colors.iter().all(|(name, c)| env.resolve(name).ok() == Some(*c));
+            let holds = t.dark == env.dark && t.reduced_motion == env.reduced_motion && t.colors.iter().all(|(name, c)| env.resolve(name).ok() == Some(*c));
             if !holds {
                 return None;
             }
@@ -154,7 +173,7 @@ impl Templates {
 
     /// Keeps a node built from the frozen table at stack slot `idx` as `key`'s template: `under`
     /// with its pending `props`, and `el`, the two finished.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, unsafe_code)]
     pub(crate) unsafe fn put(&mut self, state: *mut ffi::lua_State, idx: c_int, key: (usize, u8), env: &Env, el: El, under: El, props: props::Props, colors: Vec<(Box<str>, Color)>) {
         if self.0.len() >= TEMPLATES {
             self.0.clear();
@@ -162,7 +181,7 @@ impl Templates {
         // SAFETY: the caller passes the props table's slot.
         let r = unsafe { ffi::lua_ref(state, idx) };
         let table = LuaRef { r, garbage: env.garbage.clone() };
-        self.0.insert(key, Template { el, under, props, dark: env.dark, colors, checked: Cell::new(env.render), _table: table });
+        self.0.insert(key, Template { el, under, props, dark: env.dark, reduced_motion: env.reduced_motion, colors, checked: Cell::new(env.render), _table: table });
     }
 }
 
@@ -175,6 +194,8 @@ pub(crate) struct Attach {
     pub(crate) middle: fn(El, Rc<Callback>, Option<Rc<str>>) -> El,
     /// Runs the callback as the pointer enters and leaves, with a `hover` event.
     pub(crate) hover: fn(El, Rc<Callback>, Option<Rc<str>>) -> El,
+    /// Queues coalesced scroll reports for delivery on the next `Script::poll`.
+    pub(crate) scroll: fn(El, Rc<Callback>, Option<Rc<str>>) -> El,
     pub(crate) rows: fn(El, rows::Spec) -> El,
     pub(crate) reload: fn(El, Weak<Inner>) -> El,
 }
@@ -183,17 +204,21 @@ pub(crate) struct Attach {
 pub(crate) type Fields = Rc<[(&'static str, crate::Data)]>;
 
 pub(crate) fn attach<S: 'static>() -> &'static Attach {
-    const { &Attach { press: press::<S>, middle: middle::<S>, hover: hover::<S>, rows: rows::attach::<S>, reload: reload::<S> } }
+    const { &Attach { press: press::<S>, middle: middle::<S>, hover: hover::<S>, scroll, rows: rows::attach::<S>, reload: reload::<S> } }
 }
 
 fn press<S: 'static>(el: &mut El, cb: Rc<Callback>, key: Option<Rc<str>>, fields: Fields) {
-    el.set_on_press_tx(move |s: &mut S, tx| {
-        if let Some(script) = cb.script.upgrade() {
-            let mods = tx.mods();
-            let event = Event { fields: fields.clone(), ..Event::press(key.as_deref(), mods.shift, mods.alt, mods.cmd) };
-            script.around_write(s, Some(tx), |tx| script.handle(&cb, event, tx));
-        }
-    });
+    el.set_on_press_tx(move |s: &mut S, tx| run_press(s, tx, &cb, key.as_deref(), &fields));
+}
+
+/// Runs `cb` as a `press` of the node keyed `key`, with the modifier keys held now and `fields`
+/// added to its event.
+pub(crate) fn run_press<S: 'static>(s: &mut S, tx: &mut rune::Tx, cb: &Rc<Callback>, key: Option<&str>, fields: &Fields) {
+    if let Some(script) = cb.script.upgrade() {
+        let mods = tx.mods();
+        let event = Event { fields: fields.clone(), ..Event::press(key, mods.shift, mods.alt, mods.cmd) };
+        script.around_write(s, Some(tx), |tx| script.handle(cb, event, tx));
+    }
 }
 
 /// `onMiddlePress`: a middle click on the node (`El::on_middle_press`), as a `middle-press` event
@@ -211,9 +236,24 @@ fn middle<S: 'static>(el: El, cb: Rc<Callback>, key: Option<Rc<str>>) -> El {
 fn hover<S: 'static>(el: El, cb: Rc<Callback>, key: Option<Rc<str>>) -> El {
     el.on_hover_change(move |s: &mut S, on: bool, tx: &mut rune::Tx| {
         if let Some(script) = cb.script.upgrade() {
-            let event = Event { kind: "hover", key: key.as_deref(), mods: None, rows: None, entered: Some(on), fields: Rc::new([]) };
+            let event = Event { kind: "hover", key: key.as_deref(), mods: None, rows: None, entered: Some(on), scroll: None, fields: Rc::new([]) };
             script.around_write(s, Some(tx), |tx| script.handle(&cb, event, tx));
         }
+    })
+}
+
+/// `onScroll`: binds to the viewport's resolved tree path so coalesced scroll reports survive
+/// re-renders without re-firing unchanged offsets.
+fn scroll(el: El, cb: Rc<Callback>, key: Option<Rc<str>>) -> El {
+    el.bind_path(move |path, patch| {
+        let path: Rc<str> = path.into();
+        let cb = cb.clone();
+        let key = key.clone();
+        patch.on_scroll_offset(move |at| {
+            if let Some(script) = cb.script.upgrade() {
+                script.queue_scroll(&path, &cb, key.as_ref(), at);
+            }
+        });
     })
 }
 
@@ -224,16 +264,18 @@ pub(crate) struct Event<'a> {
     pub(crate) mods: Option<(bool, bool, bool)>,
     pub(crate) rows: Option<(usize, usize)>,
     pub(crate) entered: Option<bool>,
+    pub(crate) scroll: Option<rune::ScrollPos>,
     pub(crate) fields: Fields,
 }
 
 impl<'a> Event<'a> {
     pub(crate) fn press(key: Option<&'a str>, shift: bool, alt: bool, cmd: bool) -> Self {
-        Event { kind: "press", key, mods: Some((shift, alt, cmd)), rows: None, entered: None, fields: Rc::new([]) }
+        Event { kind: "press", key, mods: Some((shift, alt, cmd)), rows: None, entered: None, scroll: None, fields: Rc::new([]) }
     }
 
     pub(crate) fn to_table(&self, lua: &mlua::Lua) -> mlua::Result<mlua::Table> {
-        let t = lua.create_table_with_capacity(0, 6 + self.fields.len())?;
+        let cap = if self.scroll.is_some() { 7 } else { 6 } + self.fields.len();
+        let t = lua.create_table_with_capacity(0, cap)?;
         t.raw_set("kind", self.kind)?;
         if let Some(key) = self.key {
             t.raw_set("key", key)?;
@@ -249,6 +291,14 @@ impl<'a> Event<'a> {
         }
         if let Some(entered) = self.entered {
             t.raw_set("entered", entered)?;
+        }
+        if let Some(at) = self.scroll {
+            t.raw_set("x", at.offset[0])?;
+            t.raw_set("y", at.offset[1])?;
+            t.raw_set("maxX", at.max[0])?;
+            t.raw_set("maxY", at.max[1])?;
+            let fy = if at.max[1] > 0.0 && at.offset[1].is_finite() { (at.offset[1] / at.max[1]).clamp(0.0, 1.0) } else { 0.0 };
+            t.raw_set("fy", fy)?;
         }
         for (name, value) in self.fields.iter() {
             t.raw_set(*name, value.clone())?;
@@ -456,6 +506,7 @@ impl Env {
     }
 
     /// A registry reference to the function at stack slot `idx`.
+    #[allow(unsafe_code)]
     pub(crate) unsafe fn reference(&self, state: *mut ffi::lua_State, idx: c_int) -> Rc<Callback> {
         // SAFETY: the caller checked slot `idx` holds a function.
         let r = unsafe { ffi::lua_ref(state, idx) };
@@ -469,6 +520,7 @@ impl Env {
 
 /// Runs a C function body: its error becomes a Lua error once every Rust value it held is
 /// dropped, and a Rust panic becomes an error too, where the target can catch one.
+#[allow(unsafe_code)]
 pub(crate) unsafe fn guard(state: *mut ffi::lua_State, body: impl FnOnce() -> Result<c_int, String>) -> c_int {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
     let message = match result {

@@ -41,7 +41,7 @@ fn copy_out(encoder: &mut wgpu::CommandEncoder, from: &wgpu::Texture, to: &wgpu:
 
 fn read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Vec<u8> {
     let slice = buffer.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |r| r.expect("map readback"));
+    slice.map_async(wgpu::MapMode::Read, |_| {});
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     let out = slice.get_mapped_range().unwrap().to_vec();
     buffer.unmap();
@@ -271,19 +271,20 @@ fn immediates_match_wgpus_pixel_for_pixel() {
 }
 
 #[test]
+#[allow(unsafe_code)]
 fn a_frame_is_one_command_buffer_and_writes_land() {
     let (device, queue) = gpu();
     let target = texture(&device, wgpu::TextureFormat::Bgra8UnormSrgb, (64, 64), wgpu::TextureUsages::RENDER_ATTACHMENT);
     queue.submit([]);
-    assert_eq!(last(&device), 1, "a new texture's zeroing commits on the next submit");
+    assert_eq!(last(&device), 0, "a lazy-cleared render target queues no eager zeroing upload");
     let empty = device.create_command_encoder(&Default::default());
     queue.submit([empty.finish()]);
-    assert_eq!(last(&device), 1, "an empty encoder commits nothing");
+    assert_eq!(last(&device), 0, "an empty encoder commits nothing");
     let view = target.create_view(&Default::default());
     let mut encoder = device.create_command_encoder(&Default::default());
     drop(clear(&mut encoder, &view));
     queue.submit([encoder.finish()]);
-    assert_eq!(last(&device), 2);
+    assert_eq!(last(&device), 1);
     let staged = buffer(&device, 16, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST);
     queue.write_buffer(&staged, 4, &[1, 2, 3, 4]);
     queue.submit([]);
@@ -305,7 +306,7 @@ fn a_map_waits_for_the_work_before_it() {
     let index = queue.submit([encoder.finish()]);
     let mapped = Arc::new(AtomicBool::new(false));
     let flag = mapped.clone();
-    out.slice(..).map_async(wgpu::MapMode::Read, move |r| { r.unwrap(); flag.store(true, Ordering::SeqCst) });
+    out.slice(..).map_async(wgpu::MapMode::Read, move |r| { if r.is_ok() { flag.store(true, Ordering::SeqCst) } });
     assert!(!mapped.load(Ordering::SeqCst), "callbacks wait for a poll after their work");
     device.poll(wgpu::PollType::Wait { submission_index: Some(index), timeout: None }).unwrap();
     assert!(mapped.load(Ordering::SeqCst), "the callback runs once the work completed");
@@ -374,33 +375,29 @@ fn resources_stay_alive_until_command_buffer_completes() {
     let index = queue.submit([recorded]);
 
     let pending = sh.pending_cbs();
-    assert_eq!(pending.len(), 2, "upload and render command buffers are both tracked");
-    let (upload_cb, (render_val, render_cb)) = (pending[0].1.clone(), (pending[1].0, pending[1].1.clone()));
-    assert!(tex_weak.strong_count() > 0, "upload CB keeps the texture alive while gated");
+    assert_eq!(pending.len(), 1, "lazy-cleared render target tracks only the render command buffer");
+    let (render_val, render_cb) = (pending[0].0, pending[0].1.clone());
+    assert!(tex_weak.strong_count() > 0, "render CB keeps the texture alive while gated");
     assert!(view_weak.strong_count() > 0, "render CB keeps the view alive while gated");
 
     gate.setSignaledValue(1);
     // Spin through the window where the GPU event has signaled `render_val` before Metal marks the
-    // command buffers completed: neither resource may drop before its command buffer completes.
+    // command buffer completed: neither resource may drop before the command buffer completes.
     while sh.event.signaledValue() < render_val {
         std::hint::spin_loop();
     }
     for _ in 0..256 {
         sh.retire();
-        if tex_weak.strong_count() == 0 {
-            assert!(completed(&upload_cb), "texture dropped before upload CB reached Completed ({:?})", upload_cb.status());
-        }
-        if view_weak.strong_count() == 0 {
-            assert!(completed(&render_cb), "view dropped before render CB reached Completed ({:?})", render_cb.status());
+        if tex_weak.strong_count() == 0 || view_weak.strong_count() == 0 {
+            assert!(completed(&render_cb), "resource dropped before render CB reached Completed ({:?})", render_cb.status());
             break;
         }
         std::hint::spin_loop();
     }
     device.poll(wgpu::PollType::Wait { submission_index: Some(index), timeout: None }).unwrap();
-    assert!(completed(&upload_cb), "poll(Wait) left upload CB uncompleted: {:?}", upload_cb.status());
     assert!(completed(&render_cb), "poll(Wait) left render CB uncompleted: {:?}", render_cb.status());
-    assert_eq!(tex_weak.strong_count(), 0, "upload texture retired once upload CB completed");
-    assert_eq!(view_weak.strong_count(), 0, "render view retired once render CB completed");
+    assert_eq!(tex_weak.strong_count(), 0, "texture retired once render CB completed");
+    assert_eq!(view_weak.strong_count(), 0, "view retired once render CB completed");
     wait.waitUntilCompleted();
 }
 
@@ -486,4 +483,270 @@ fn adapters_are_the_ones_wgpu_picks() {
     }
     let count = |instance: &wgpu::Instance| pollster::block_on(instance.enumerate_adapters(wgpu::Backends::METAL)).len();
     assert_eq!(count(&ours), count(&theirs));
+}
+
+/// Any command buffer of a submission that fails loses a stock wgpu Metal device (the vendored
+/// wgpu-hal), not only the last: here the internal one that waits for an event nothing signals,
+/// which Metal times out after about 5 s, while the submission's own work completes.
+#[test]
+#[allow(unsafe_code)]
+fn a_failed_command_buffer_loses_a_stock_wgpu_metal_device() {
+    use objc2_metal::MTLDevice;
+    let (device, queue) = wgpu_metal();
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let into = heard.clone();
+    device.set_device_lost_callback(move |_, message| into.lock().unwrap().push(message));
+    // SAFETY: the hal device and queue are only read, to make an event and stage a wait on it.
+    let event = unsafe { device.as_hal::<wgpu::hal::api::Metal>() }.and_then(|d| d.raw_device().newSharedEvent()).expect("a Metal shared event");
+    // SAFETY: the hal queue is only read to stage a wait on `event`, which stays alive below.
+    unsafe { queue.as_hal::<wgpu::hal::api::Metal>() }.expect("a Metal queue").add_wait_event(event.clone(), 1);
+    queue.submit([device.create_command_encoder(&Default::default()).finish()]);
+    let deadline = rune_core::time::now() + std::time::Duration::from_secs(20);
+    while heard.lock().unwrap().is_empty() && rune_core::time::now() < deadline {
+        // wgpu 30 panics in `Device::poll` once the hal reports the device lost (gfx-rs/wgpu#10031).
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.poll(wgpu::PollType::Poll))).ok();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(heard.lock().unwrap().len(), 1, "the failed wait loses the device");
+    drop(event);
+}
+
+#[test]
+fn a_lost_device_tells_its_callback_once_even_one_set_after() {
+    let (device, _queue) = gpu();
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    shared(&device).lose("the GPU timed out".into());
+    let into = heard.clone();
+    device.set_device_lost_callback(move |reason, message| into.lock().unwrap().push((reason, message)));
+    shared(&device).lose("again".into());
+    assert_eq!(*heard.lock().unwrap(), [(wgpu::DeviceLostReason::Unknown, "the GPU timed out".to_owned())]);
+}
+
+/// Another queue's signal releases what a Rune encoder records after `wait_for_event`, and its
+/// `signal_event_on_finish` comes once that work finished: a copy the other queue then reads.
+#[test]
+#[allow(unsafe_code)]
+fn an_encoder_waits_for_and_signals_events_across_queues() {
+    use objc2_metal::{MTLBuffer, MTLCommandBuffer, MTLCommandQueue, MTLDevice, MTLEvent, MTLSharedEvent};
+    let (device, queue) = gpu();
+    let sh = shared(&device);
+    let other = sh.device.newCommandQueue().expect("a second Metal queue");
+    let (ready, read, seen) = (sh.device.newSharedEvent().unwrap(), sh.device.newSharedEvent().unwrap(), sh.device.newSharedEvent().unwrap());
+    fn event(e: &Obj<dyn MTLSharedEvent>) -> &ProtocolObject<dyn MTLEvent> { ProtocolObject::from_ref(&**e) }
+    let usage = wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ;
+    let src = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 16, usage, mapped_at_creation: false });
+    let dst = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 16, usage, mapped_at_creation: false });
+    queue.write_buffer(&src, 0, &[7; 16]);
+    let mut encoder = device.create_command_encoder(&Default::default());
+    assert!(wait_for_event(&mut encoder, event(&ready), 1));
+    encoder.copy_buffer_to_buffer(&src, 0, &dst, 0, 16);
+    assert!(signal_event_on_finish(&mut encoder, event(&read), 1));
+    queue.submit([encoder.finish()]);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(read.signaledValue(), 0, "held until the other queue signals");
+    // The other queue releases it, then waits for its signal before its own work.
+    let cb = other.commandBuffer().unwrap();
+    cb.encodeSignalEvent_value(event(&ready), 1);
+    cb.encodeWaitForEvent_value(event(&read), 1);
+    cb.encodeSignalEvent_value(event(&seen), 1);
+    cb.commit();
+    assert!(seen.waitUntilSignaledValue_timeoutMS(1, 2000), "the encoder's signal came");
+    let raw = dst.as_custom::<MetalBuffer>().unwrap().store.current();
+    // SAFETY: shared storage of 16 bytes, which the GPU finished writing (`read` reached 1).
+    let bytes = unsafe { std::slice::from_raw_parts(raw.raw.contents().as_ptr() as *const u8, 16) };
+    assert_eq!(bytes, [7; 16], "the signal came after the copy");
+}
+
+/// A stock wgpu encoder isn't this backend's: nothing is encoded.
+#[test]
+fn events_need_this_backends_encoder() {
+    use objc2_metal::{MTLDevice, MTLEvent};
+    let (device, _queue) = wgpu_metal();
+    let (ours, _q) = gpu();
+    let e = shared(&ours).device.newSharedEvent().unwrap();
+    let mut encoder = device.create_command_encoder(&Default::default());
+    assert!(!wait_for_event(&mut encoder, ProtocolObject::<dyn MTLEvent>::from_ref(&*e), 1));
+    assert!(!signal_event_on_finish(&mut encoder, ProtocolObject::<dyn MTLEvent>::from_ref(&*e), 1));
+}
+
+/// A command buffer that fails loses the device before anything sees its work retired: a thread
+/// that retires it and another that runs the callbacks hear the loss before the work-done callback.
+#[test]
+fn a_failed_command_buffer_is_heard_lost_before_its_work_is_done() {
+    use objc2_metal::{MTLCommandBuffer, MTLDevice, MTLEvent};
+    let (device, queue) = gpu();
+    let sh = shared(&device);
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let into = heard.clone();
+    device.set_device_lost_callback(move |_, _| into.lock().unwrap().push("lost"));
+    // A wait for an event nothing signals: Metal times it out after about 5 s, an error.
+    let never = sh.device.newSharedEvent().unwrap();
+    let cb = sh.command_buffer();
+    cb.encodeWaitForEvent_value(ProtocolObject::<dyn MTLEvent>::from_ref(&*never), 1);
+    sh.commit(cb);
+    let into = heard.clone();
+    queue.on_submitted_work_done(move || into.lock().unwrap().push("done"));
+    let (_, failing) = sh.pending_cbs().pop().expect("tracked");
+    failing.waitUntilCompleted();
+    assert_eq!(failing.status(), objc2_metal::MTLCommandBufferStatus::Error);
+    // One thread takes it off (its loss set in that lock), then another runs the callbacks first.
+    assert!(sh.retire_one());
+    assert!(sh.lost.lock().message.is_some(), "lost as it retires");
+    sh.retire();
+    assert_eq!(*heard.lock().unwrap(), ["lost", "done"]);
+}
+
+/// Mappings that complete after a loss fail, as WebGPU says (their data can't be right): one asked
+/// before the failed work retired and one asked after; work-done callbacks still run, after the loss.
+#[test]
+fn mappings_fail_once_the_device_is_lost() {
+    use objc2_metal::{MTLCommandBuffer, MTLDevice, MTLEvent};
+    let (device, queue) = gpu();
+    let sh = shared(&device);
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let into = heard.clone();
+    device.set_device_lost_callback(move |_, _| into.lock().unwrap().push("lost".to_owned()));
+    let buffer = |label| device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: 16, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+    let (before, after) = (buffer("before"), buffer("after"));
+    // A wait for an event nothing signals: Metal times it out after about 5 s, an error.
+    let never = sh.device.newSharedEvent().unwrap();
+    let cb = sh.command_buffer();
+    cb.encodeWaitForEvent_value(ProtocolObject::<dyn MTLEvent>::from_ref(&*never), 1);
+    sh.commit(cb);
+    let map = |b: &wgpu::Buffer, name: &'static str| {
+        let into = heard.clone();
+        b.slice(..).map_async(wgpu::MapMode::Read, move |r| into.lock().unwrap().push(format!("{name} {}", if r.is_ok() { "mapped" } else { "failed" })));
+    };
+    map(&before, "before");
+    let into = heard.clone();
+    queue.on_submitted_work_done(move || into.lock().unwrap().push("done".to_owned()));
+    let (_, failing) = sh.pending_cbs().pop().expect("tracked");
+    failing.waitUntilCompleted();
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    map(&after, "after");
+    assert_eq!(*heard.lock().unwrap(), ["lost", "before failed", "done", "after failed"]);
+}
+
+/// `Device::destroy` marks the native Metal device lost once with `DeviceLostReason::Destroyed`,
+/// fires the device-lost callback (including one registered after `destroy`), and fails buffer
+/// mappings as WebGPU specifies.
+#[test]
+fn destroying_a_device_loses_it_with_destroyed_reason_once_and_fails_mappings() {
+    let (device, _queue) = gpu();
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let into = heard.clone();
+    device.set_device_lost_callback(move |reason, message| into.lock().unwrap().push((reason, message)));
+    device.destroy();
+    device.destroy();
+    assert_eq!(
+        *heard.lock().unwrap(),
+        [(wgpu::DeviceLostReason::Destroyed, "Device was destroyed.".to_owned())]
+    );
+
+    let late = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let into = late.clone();
+    device.set_device_lost_callback(move |reason, message| into.lock().unwrap().push((reason, message)));
+    assert_eq!(
+        *late.lock().unwrap(),
+        [(wgpu::DeviceLostReason::Destroyed, "Device was destroyed.".to_owned())]
+    );
+
+    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("after-destroy"),
+        size: 16,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mapped = Arc::new(std::sync::Mutex::new(None));
+    let out = mapped.clone();
+    buf.slice(..).map_async(wgpu::MapMode::Read, move |r| *out.lock().unwrap() = Some(r.is_ok()));
+    assert_eq!(*mapped.lock().unwrap(), Some(false), "mappings on a destroyed device must fail");
+}
+
+/// Reconfiguring a `MetalSurface` (resize or pixel-format change) must preserve the layer's
+/// existing `colorspace` across `setPixelFormat`, keeping both a tagged sRGB layer and an
+/// untagged (`None` / unmanaged) layer intact.
+#[allow(unsafe_code)]
+#[test]
+fn metal_surface_configure_preserves_layer_colorspace() {
+    use objc2_metal::MTLPixelFormat;
+    use objc2_quartz_core::CAMetalLayer;
+    let layer = CAMetalLayer::new();
+    // Seed the layer with the 8-bit default colorspace (`setPixelFormat` sets it on macOS).
+    layer.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
+    let tagged = layer.colorspace();
+    let instance = super::instance();
+    let target = wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(Retained::as_ptr(&layer) as *mut std::ffi::c_void);
+    // SAFETY: `layer` outlives `surface`.
+    let surface = unsafe { instance.create_surface_unsafe(target) }.expect("MetalSurface");
+    let adapter = pollster::block_on(instance.request_adapter(&Default::default())).expect("MetalAdapter");
+    let (device, _queue) = pollster::block_on(adapter.request_device(&Default::default())).expect("MetalDevice");
+    let mut config = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format: wgpu::TextureFormat::Bgra8Unorm,
+        width: 64,
+        height: 32,
+        present_mode: wgpu::PresentMode::Fifo,
+        desired_maximum_frame_latency: 2,
+        alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+        view_formats: vec![],
+        color_space: wgpu::SurfaceColorSpace::Auto,
+    };
+
+    // Tagged layer keeps its colorspace across size and format changes.
+    layer.setColorspace(tagged.as_deref());
+    surface.configure(&device, &config);
+    assert_eq!(layer.colorspace().is_some(), tagged.is_some());
+    config.width = 128;
+    config.height = 64;
+    config.format = wgpu::TextureFormat::Bgra8UnormSrgb;
+    surface.configure(&device, &config);
+    assert_eq!(layer.colorspace().is_some(), tagged.is_some());
+
+    // Untagged (Unmanaged) layer stays `None` across size and pixel-format changes.
+    layer.setColorspace(None);
+    assert!(layer.colorspace().is_none());
+    config.width = 96;
+    config.height = 48;
+    config.format = wgpu::TextureFormat::Bgra8Unorm;
+    surface.configure(&device, &config);
+    assert!(layer.colorspace().is_none(), "configure must not re-tag an unmanaged layer");
+    config.format = wgpu::TextureFormat::Bgra8UnormSrgb;
+    surface.configure(&device, &config);
+    assert!(layer.colorspace().is_none(), "sRGB format configure must not re-tag an unmanaged layer");
+    drop(surface);
+}
+/// Configuring a standalone off-screen `CAMetalLayer` (never attached to any window or view)
+/// translates `desired_maximum_frame_latency` into `CAMetalLayer.maximumDrawableCount`
+/// (`1` -> 2 drawables, `2` -> 3 drawables, clamped to `2..=3`).
+#[allow(unsafe_code)]
+#[test]
+fn metal_surface_configure_sets_maximum_drawable_count_from_frame_latency() {
+    use objc2_quartz_core::CAMetalLayer;
+    let layer = CAMetalLayer::new();
+    assert!(layer.superlayer().is_none(), "off-screen layer is never attached to a window");
+    let instance = super::instance();
+    let target = wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(Retained::as_ptr(&layer) as *mut std::ffi::c_void);
+    // SAFETY: `layer` outlives `surface`.
+    let surface = unsafe { instance.create_surface_unsafe(target) }.expect("MetalSurface");
+    let adapter = pollster::block_on(instance.request_adapter(&Default::default())).expect("MetalAdapter");
+    let (device, _queue) = pollster::block_on(adapter.request_device(&Default::default())).expect("MetalDevice");
+    let mut config = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format: wgpu::TextureFormat::Bgra8Unorm,
+        width: 64,
+        height: 32,
+        present_mode: wgpu::PresentMode::Fifo,
+        desired_maximum_frame_latency: 2,
+        alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+        view_formats: vec![],
+        color_space: wgpu::SurfaceColorSpace::Auto,
+    };
+
+    for (latency, expected_drawables) in [(2, 3), (1, 2), (0, 2), (4, 3)] {
+        config.desired_maximum_frame_latency = latency;
+        surface.configure(&device, &config);
+        assert_eq!(layer.maximumDrawableCount(), expected_drawables, "latency {latency}");
+    }
+    drop(surface);
 }

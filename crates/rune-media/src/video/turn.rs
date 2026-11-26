@@ -15,8 +15,9 @@ pub(super) trait Port {
     /// A finished poster load and the attempt it answers, keeping its frame for
     /// [`show_poster`](Self::show_poster).
     fn take_poster(&mut self) -> Option<(Attempt, Result<Meta, String>)>;
-    /// Puts the kept frame on the surface, if there is one and a surface to take it.
-    fn show_poster(&mut self, next_id: &mut dyn FnMut() -> u64) -> Result<(), String>;
+    /// Puts the kept frame on the surface, if there is one and a surface to take it. Returns
+    /// the shown picture's presentation timestamp when one was pushed.
+    fn show_poster(&mut self, next_id: &mut dyn FnMut() -> u64) -> Result<Option<f64>, String>;
     fn ask_poster(&mut self, at: f64, attempt: Attempt);
     /// Returns when the player was made.
     fn make_player(&mut self) -> Result<Instant, String>;
@@ -29,7 +30,16 @@ pub(super) trait Port {
     fn alive(&self) -> bool;
     fn set_muted(&mut self, muted: bool);
     fn set_volume(&mut self, volume: f32);
-    fn seek_to(&mut self, at: f64);
+    fn set_output_device(&mut self, uid: Option<&str>);
+    fn seek_to(&mut self, at: f64, exact: bool);
+    /// Starts a zero-tolerance seek to the presented frame's exact native timestamp before
+    /// stepping by `frames`, delivering `Event::SnapDone { attempt, finished }` when done.
+    /// Returns `false` when native stepping is unavailable (or no native frame timestamp is known),
+    /// so the caller falls back to an exact seek immediately.
+    fn snap_for_step(&mut self, attempt: Attempt, frames: i32) -> bool;
+    /// Steps by `frames` video pictures when the native item supports it; returns `false` to fall
+    /// back to an exact `seek_to`.
+    fn step_by(&mut self, frames: i32) -> bool;
     fn set_rate(&mut self, rate: f32);
     fn restart(&mut self, rate: f32);
     /// The item time for this frame, and the new frame's item time if one reached the surface.
@@ -57,11 +67,13 @@ pub(super) fn carry(c: &mut Control, port: &mut impl Port, effects: Effects<Effe
         match effect {
             Effect::Placeholder => {}
             Effect::AskPoster(at, attempt) => port.ask_poster(at, attempt),
-            Effect::ShowPoster => {
-                if let Err(e) = port.show_poster(&mut || c.next_frame_id()) {
-                    c.fail(e);
+            Effect::ShowPoster => match port.show_poster(&mut || c.next_frame_id()) {
+                Ok(Some(shown)) => {
+                    step(c, Event::PosterShown { shown });
                 }
-            }
+                Ok(None) => {}
+                Err(e) => c.fail(e),
+            },
             Effect::MakePlayer => match port.make_player() {
                 Ok(created) => {
                     step(c, Event::PlayerMade { created });
@@ -73,7 +85,20 @@ pub(super) fn carry(c: &mut Control, port: &mut impl Port, effects: Effects<Effe
             Effect::ReadFacts => c.open(Ok(port.item_facts())),
             Effect::SetMuted(muted) => port.set_muted(muted),
             Effect::SetVolume(volume) => port.set_volume(volume),
-            Effect::SeekTo(at) => port.seek_to(at),
+            Effect::SetOutputDevice => port.set_output_device(c.output_device.as_deref()),
+            Effect::SeekTo { at, exact } => port.seek_to(at, exact),
+            Effect::SnapForStep { attempt, frames } => {
+                if !port.snap_for_step(attempt, frames) {
+                    send(c, port, Event::SnapDone { attempt, finished: false });
+                }
+            }
+            Effect::StepBy { frames, fallback } => {
+                if port.step_by(frames) {
+                    step(c, Event::Stepped);
+                } else {
+                    port.seek_to(fallback, true);
+                }
+            }
             Effect::SetRate(rate) => port.set_rate(rate),
             Effect::Restart(rate) => port.restart(rate),
         }
@@ -89,6 +114,13 @@ fn send(c: &mut Control, port: &mut impl Port, event: Event) {
 pub(super) fn reconcile(c: &mut Control, port: &mut impl Port, now: Instant) {
     if port.alive() {
         send(c, port, Event::Reconcile { now });
+    }
+}
+
+/// A snap-before-step seek completed (or was interrupted) on the main thread.
+pub(super) fn snap_done(c: &mut Control, port: &mut impl Port, attempt: Attempt, finished: bool) {
+    if port.alive() {
+        send(c, port, Event::SnapDone { attempt, finished });
     }
 }
 
@@ -132,19 +164,23 @@ pub(super) fn turn(c: &mut Control, port: &mut impl Port, now: Instant) -> Turn 
     reconcile(c, port, now);
     match (c.kind, c.stage.ready()) {
         (Kind::Video, true) => {
-            let (item_time, landed) = port.frame(&mut || c.next_frame_id());
-            match landed {
-                Ok(Some(shown)) => {
-                    step(c, Event::Framed { shown });
+            // While snapping to the already-shown frame before stepping, do not pull or present
+            // pixel buffers so the snap cannot flash a frame or clear the step early.
+            if !c.stage.snapping() {
+                let (item_time, landed) = port.frame(&mut || c.next_frame_id());
+                match landed {
+                    Ok(Some(shown)) => {
+                        step(c, Event::Framed { shown });
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        c.fail(e);
+                        send(c, port, Event::Release);
+                        return Turn::Idle;
+                    }
                 }
-                Ok(None) => {}
-                Err(e) => {
-                    c.fail(e);
-                    send(c, port, Event::Release);
-                    return Turn::Idle;
-                }
+                follow(c, port, Some(item_time), now);
             }
-            follow(c, port, Some(item_time), now);
         }
         (Kind::Video, false) => {}
         (Kind::Audio, false) => return Turn::Loading,

@@ -100,10 +100,12 @@ fn atlas_bytes(atlas: &ImageAtlas) -> usize {
 /// from its pixels.
 #[test]
 fn a_trim_frees_the_image_pages_the_last_frame_showed_nothing_from() {
-    let (icon, photo) = (image(7, 64), image(9, 4096));
+    // The photo outgrows a shelf page, so it takes one of its own, and fits the smallest texture
+    // side any GPU device here may cap the atlas at.
+    let (icon, photo) = (image(7, 64), image(9, 2048));
     let mut atlas = ImageAtlas::default();
     let placed = atlas.place(&icon, [64.0; 2]).unwrap();
-    atlas.place(&photo, [4096.0; 2]).unwrap();
+    atlas.place(&photo, [2048.0; 2]).unwrap();
     atlas.end_frame();
     let both = atlas_bytes(&atlas);
 
@@ -173,17 +175,17 @@ fn a_trim_during_a_text_flight_changes_no_frame_of_it() {
         rt.frame(0.0);
         rt.key(KeyEvent { key: crate::edit::Key::Enter, mods: Default::default() });
         for _ in 0..3 { rt.frame(1.0 / 120.0); }
-        assert_eq!(rt.motion.flights.len(), 1);
+        assert_eq!(rt.motion.flights().len(), 1);
         rt
     }).collect();
     let (plain, mut trimmed) = (runs.pop().unwrap(), runs.pop().unwrap());
     let mut plain = plain;
     trimmed.trim_memory();
-    assert_eq!(trimmed.motion.flights.len(), 1);
+    assert_eq!(trimmed.motion.flights().len(), 1);
     for frame in 0..360 {
         trimmed.frame(1.0 / 120.0);
         plain.frame(1.0 / 120.0);
         assert!(bytemuck::cast_slice::<_, u8>(&trimmed.instances) == bytemuck::cast_slice::<_, u8>(&plain.instances), "frame {frame}");
     }
-    assert!(trimmed.motion.flights.is_empty(), "the flight landed");
+    assert!(trimmed.motion.flights().is_empty(), "the flight landed");
 }

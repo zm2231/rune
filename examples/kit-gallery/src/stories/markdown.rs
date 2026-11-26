@@ -510,6 +510,27 @@ pub(super) fn markdown_mermaid_plan_zoomed(g: &G, k: &Kit, o: &mut Vec<El>) -> E
     col().w(680.0).origin(0.0, 0.0).scale(3.0).child(markdown_mermaid_plan(g, k, o))
 }
 
+/// A 210-node, 209-edge (419-item) flowchart that falls back at the default 400-item cap and
+/// renders via [`MarkdownStyle::diagram_max_items`].
+pub(super) fn markdown_mermaid_large(s: &G, k: &Kit, _: &mut Vec<El>) -> El {
+    let raised = s.picked("md-mermaid-cap", "1000") == "1000";
+    let mut md = String::from("```mermaid\nflowchart TD\n");
+    for i in 0..209 {
+        md.push_str(&format!("  N{i}[Step {i}] --> N{}[Step {}]\n", i + 1, i + 1));
+    }
+    md.push_str("```\n");
+    let mut style = MarkdownStyle::from_kit(k).diagram_max_width(680.0);
+    if raised {
+        style = style.diagram_max_items(1_000);
+    }
+    let label = if raised { "Cap: 1,000 (click for default 400)" } else { "Cap: 400 default (click for 1,000)" };
+    col().w(680.0).gap(12.0)
+        .child(Button::new(label).on_press(move |s: &mut G| {
+            s.pick.insert("md-mermaid-cap".into(), if raised { "400" } else { "1000" }.into());
+        }).build(k).key("toggle-cap"))
+        .child(Markdown::new(md).style(style).build(k))
+}
+
 /// A table without an outline, with a dimmed header and figures that line up, and a diff whose
 /// line text is tinted too.
 const TABLE_STYLES: &str = "| Field | Compared |\n|---|---|\n| title | yes |\n| updatedAt | yes |\n| draft cursor | no |\n\n| Build | Files | Time | Size |\n|:--|--:|--:|--:|\n| debug | 1,204 | 41.8 s | 118.4 MB |\n| release | 1,204 | 71.0 s | 31.1 MB |\n| perf | 1,211 | 69.6 s | 33.7 MB |\n\n```diff\n@@ -3,3 +3,3 @@ fields:\n   title: compared\n-  draft: compared\n+  draft: ignored\n```\n";
@@ -590,6 +611,57 @@ jobs:
 
 pub(super) fn markdown_code(_: &G, k: &Kit, _: &mut Vec<El>) -> El {
     col().w(620.0).child(Markdown::new(CODE).build(k))
+}
+
+/// Editorial prose measure, accent-tinted inline code, tighter margins, and square code/diff cards.
+const STYLED_MARKDOWN: &str = r#"# Editorial measure
+
+Top-level paragraphs stay capped at a comfortable reading width (`prose_width`) while wide fences and tables use the full column. Ordinary `inline_code_text` picks up the accent tint, whereas [`linked_code`](https://rune.dev) keeps its link colour.
+
+## Margins and square fences
+
+- Lists and nested code stay inside the prose measure.
+- Tighter `paragraph_margin`, `heading_margin`, `list_margin`, `quote_margin` and `rule_margin` pull related sections closer.
+
+> Quoted remarks also follow the prose cap while full-bleed blocks below span the column.
+
+---
+
+```rust
+pub fn render(style: &MarkdownStyle, src: &str) -> El {
+    Markdown::new(src).style(style.clone()).build(&Kit::neutral(false))
+}
+```
+
+```diff
+@@ -1,3 +1,3 @@
+-let style = MarkdownStyle::from_kit(k);
++let style = MarkdownStyle::from_kit(k).prose_width(440.0).code_block_radius(0.0);
+```
+
+| Option | Effect | Scope |
+|---|---|---|
+| `prose_width(440.0)` | Caps top-level prose measure | Paragraphs, headings, lists, quotes |
+| `inline_code_text(ink)` | Colours inline code glyphs | Plain inline code chips |
+| `code_block_radius(0.0)` | Square corners on cards | Fenced code and diff blocks |
+"#;
+
+pub(super) fn markdown_styled(_: &G, k: &Kit, _: &mut Vec<El>) -> El {
+    let ink = k.c.text_accent;
+    let style = MarkdownStyle::from_kit(k)
+        .prose_width(440.0)
+        .inline_code_bg(ink.alpha(0.12))
+        .inline_code_text(ink)
+        .paragraph_margin(0.0, 10.0)
+        .heading_margin(1, 16.0, 8.0)
+        .heading_margin(2, 16.0, 6.0)
+        .list_margin(4.0, 8.0)
+        .quote_margin(10.0, 10.0)
+        .rule_margin(16.0, 16.0)
+        .image_margin(12.0, 12.0)
+        .code_block_radius(0.0)
+        .table_full_width(true);
+    col().w(680.0).child(Markdown::new(STYLED_MARKDOWN).style(style).on_link(|_: &mut G, _| {}).build(k))
 }
 
 pub(super) fn markdown_walkthrough(_: &G, k: &Kit, _: &mut Vec<El>) -> El {
@@ -694,4 +766,50 @@ fn next_drawn_line(src: &str, from: usize) -> usize {
         }
     }
     if src[at..].split_inclusive('\n').all(quiet) { src.len() } else { at }
+}
+
+/// Narrow column comparing default overflow vs `wrap_anywhere(true)` and custom `diff_frame` headers.
+const WRAP_SAMPLE: &str = concat!(
+    "### LongTokenHeading_0123456789abcdef0123456789abcdef\n\n",
+    "Token: https://example.org/artifacts/sha256_9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\n\n",
+    "```rust\nlet digest = \"sha256_9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\";\n```\n\n",
+    "| Key | Digest |\n|---|---|\n| sha | 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 |\n",
+);
+
+const DIFF_FRAME_SAMPLE: &str = concat!(
+    "```diff\n@@ -1,2 +1,2 @@\n-let wrap = false;\n+let wrap = true;\n```\n\n",
+    "```rust\nlet view = Markdown::new(src).wrap_anywhere(true).build(&kit);\n```\n\n",
+    "```patch\n-old_name()\n+new_name()\n```\n",
+);
+
+pub(super) fn markdown_wrap_and_frames(_: &G, k: &Kit, _: &mut Vec<El>) -> El {
+    let c = &k.c;
+    let style = MarkdownStyle::from_kit(k).table_min_column(80.0);
+    let panel = |label: &str, wrap: bool| {
+        col().w(240.0).gap(6.0)
+            .child(caption(k, label))
+            .child(col().w_full().padding(10.0).radius(k.radius.md).fill(c.layer_01).border(1.0, c.border_weak).clip_soft(k.radius.md)
+                .child(Markdown::new(WRAP_SAMPLE).style(style.clone()).wrap_anywhere(wrap).build(k)))
+    };
+    let (hdr_font, weak, kit) = (k.ty.small_medium, c.text_weak, k.clone());
+    let framed = Markdown::new(DIFF_FRAME_SAMPLE)
+        .code_frame(move |card, cf| {
+            let lang = cf.language.unwrap_or("text");
+            col().key(format!("code-{}", cf.index)).w_full().gap(4.0)
+                .child(text(format!("Code #{} ({lang})", cf.index + 1)).font(hdr_font).color(weak))
+                .child(card)
+        })
+        .diff_frame(move |card, df| {
+            let patch = df.source.to_owned();
+            let lines = df.source.lines().count();
+            let hdr = row().w_full().center_y().justify_between()
+                .child(text(format!("Diff #{} · {lines} lines", df.index + 1)).font(kit.ty.small_medium).color(kit.c.text_base))
+                .child(Button::new("Copy patch").variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
+                    .on_press_tx(move |_: &mut G, tx: &mut Tx| tx.copy(&patch)).build(&kit).key(format!("copy-diff-{}", df.index)));
+            col().key(format!("diff-{}", df.index)).w_full().gap(4.0).child(hdr).child(card)
+        })
+        .build(k);
+    col().w(500.0).gap(16.0)
+        .child(row().gap(16.0).child(panel("Default (clips overflow)", false)).child(panel("wrap_anywhere(true)", true)))
+        .child(col().w_full().gap(6.0).child(caption(k, "Custom diff_frame + independent code_frame")).child(framed))
 }

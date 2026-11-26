@@ -18,19 +18,58 @@ pub(in crate::runtime) struct Reuse {
     pub(in crate::runtime) read_moved: bool,
     /// The blend mode the last commit built its view in; theme colours resolve per mode.
     pub(in crate::runtime) srgb: Option<bool>,
+    /// Authored unclamped styles of `anchored_fit` overlays clamped on the last commit, keyed by
+    /// node index; empty when no overlay was clamped.
+    pub(in crate::runtime) above_fit_styles: Vec<(usize, CompactStyle)>,
 }
 
 impl Reuse {
     /// Records what the commit just applied was built with.
-    pub(in crate::runtime) fn built(&mut self, scale: f32, srgb: bool) {
+    pub(in crate::runtime) fn built(&mut self, scale: f32, srgb: bool, above_fit_styles: Vec<(usize, CompactStyle)>) {
         self.scale = scale;
         self.srgb = Some(srgb);
+        self.read_moved = false;
+        self.above_fit_styles = above_fit_styles;
     }
 }
 
-/// The root's size in a viewport; a window that fits its content takes its natural height.
-pub(in crate::runtime) fn root_size(viewport: (f32, f32), fit_height: bool) -> Size<Dimension> {
-    Size { width: length(viewport.0), height: if fit_height { auto() } else { length(viewport.1) } }
+/// Applies fixed viewport dimensions or content-sizing `auto()` + `(min, max)` bounds to the
+/// root node's Taffy style. Fitted axes preserve explicit pixel lengths on the root while
+/// turning `Auto` / `Percent` (e.g. `.w_full()`) into `auto()`, and apply `max_size` so
+/// wrapping text wraps at `max_w` instead of laying out on one unbounded line.
+pub(in crate::runtime) fn apply_root_sizing(
+    style: &mut CompactStyle,
+    viewport: (f32, f32),
+    sizing: crate::ContentSizing,
+    limits: crate::overlay::sizing::SizeLimits,
+) {
+    use taffy::util::MaybeResolve;
+    let fit_dim = |d: Dimension| {
+        if d.is_auto() || d.maybe_resolve(None, |_, _| 0.0).is_none() { auto() } else { d }
+    };
+    let width = if sizing.fits_width() { fit_dim(style.size().width) } else { length(viewport.0) };
+    let height = if sizing.fits_height() { fit_dim(style.size().height) } else { length(viewport.1) };
+    style.set_size(Size { width, height });
+    if let Some((min_w, min_h)) = limits.0 {
+        if sizing.fits_width() && min_w.is_finite() && min_w > 0.0 {
+            let v = style.min_size().width.maybe_resolve(None, |_, _| 0.0).map_or(min_w, |c| c.max(min_w));
+            style.set_min_width(LengthPercentageAuto::length(v));
+        }
+        if sizing.fits_height() && min_h.is_finite() && min_h > 0.0 {
+            let v = style.min_size().height.maybe_resolve(None, |_, _| 0.0).map_or(min_h, |c| c.max(min_h));
+            style.set_min_height(LengthPercentageAuto::length(v));
+        }
+    }
+    if let Some((max_w, max_h)) = limits.1 {
+        if sizing.fits_width() && max_w.is_finite() && max_w > 0.0 {
+            let v = style.max_size().width.maybe_resolve(None, |_, _| 0.0).map_or(max_w, |c| c.min(max_w));
+            style.set_max_width(LengthPercentageAuto::length(v));
+        }
+        if sizing.fits_height() && max_h.is_finite() && max_h > 0.0 {
+            let v = style.max_size().height.maybe_resolve(None, |_, _| 0.0).map_or(max_h, |c| c.min(max_h));
+            style.set_max_height(LengthPercentageAuto::length(v));
+        }
+    }
 }
 
 /// Whether a commit can lay `n` out again as it is. Layout rewrites the styles of
@@ -59,16 +98,17 @@ impl RuntimeCore {
     /// the last commit built it, checked here once for both.
     pub(in crate::runtime) fn commit_kind(&self, tx: &Tx) -> CommitKind {
         let unchanged = self.commit.state_unchanged && !tx.commit.lands() && !self.commit.reuse.read_moved
-            && self.commit.reuse.scale == self.env.scale && self.commit.reuse.srgb == Some(self.paint.srgb_blend)
+            && self.commit.reuse.scale == self.env.scale && self.commit.reuse.srgb == Some(self.paint.srgb_blend())
             && !self.tree.has_playground && !self.patch_pending()
             // Exiting nodes left the layout tree.
             && self.commit.layout.live_count() == self.tree.nodes.len();
         if !unchanged { return CommitKind::Rebuild; }
         if self.commit.relayout {
-            // The nodes it built are all there, in the layout tree's order.
-            return if self.tree.nodes.iter().all(reusable) { CommitKind::Relayout } else { CommitKind::Rebuild };
+            // `aspect_fit` elements and clamped `anchored_fit` overlays restore their authored
+            // styles before `solve`; only a picture whose decoded aspect changed needs a rebuild.
+            return if pixel_aspects_unchanged(&self.tree) { CommitKind::Relayout } else { CommitKind::Rebuild };
         }
-        if self.virtual_only() { CommitKind::Remount } else { CommitKind::Rebuild }
+        if self.commit.virtual_only(&self.tree, self.frame.has_hot(), self.checking_live_only()) { CommitKind::Remount } else { CommitKind::Rebuild }
     }
 
     /// Measures a commit: lays the last tree out again when only the viewport changed since it
@@ -81,10 +121,11 @@ impl RuntimeCore {
             let reads = self.commit.layout_seen.reads.clone();
             let caret_read = self.edit.caret_watch;
             let selection = self.selection_by_path();
-            let mut m = self.measurement(app, true);
+            let prev_above_fit = self.commit.reuse.above_fit_styles.clone();
+            let (mut m, text) = self.measurement(app, true);
             m.layout_reads = reads;
             m.caret_read = caret_read;
-            return match m.relayout() {
+            return match m.relayout(text, &prev_above_fit) {
                 Some(measured) => Measured { selection, ..measured },
                 None => {
                     self.refresh_layout_seen();
@@ -93,15 +134,15 @@ impl RuntimeCore {
             };
         }
         if kind == CommitKind::Remount {
-            let _blend = crate::theme::scope(self.paint.srgb_blend);
+            let _blend = crate::theme::scope(self.paint.srgb_blend());
             let _bars = crate::platform::scroll_bars::scope(self.host.scroll_bars.state, self.host.scroll_bars.runtime_id);
             let reads = self.commit.layout_seen.reads.clone();
             let caret_read = self.edit.caret_watch;
             let selection = self.selection_by_path();
-            let mut m = self.measurement(app, true);
+            let (mut m, text) = self.measurement(app, true);
             m.layout_reads = reads;
             m.caret_read = caret_read;
-            return match m.remount_virtuals() {
+            return match m.remount_virtuals(text) {
                 commit::remount::RemountOutcome::Measured(measured) => Measured { selection, ..measured },
                 commit::remount::RemountOutcome::Retry => {
                     self.refresh_layout_seen();
@@ -113,7 +154,11 @@ impl RuntimeCore {
                 }
             };
         }
-        self.refresh_layout_seen();
+        // A full view rebuild resets any stalled virtual_items fill so fresh app state can fill.
+        self.commit.virtual_items.reset_fill();
+        // A first commit has no layout to refresh from: its view is given the last launch's
+        // rects when the app kept them (`layout_seed`).
+        if !self.seed_layout_reads() { self.refresh_layout_seen(); }
         self.measure(app, tx)
     }
 }
@@ -121,7 +166,7 @@ impl RuntimeCore {
 impl Measurement<'_> {
     /// Lays the last commit's nodes out again at the viewport, in its layout tree. None when a
     /// virtual list's window has to move, which only the view can build.
-    fn relayout(mut self) -> Option<Measured> {
+    fn relayout(mut self, text: &mut TextSystem, prev_above_fit: &[(usize, CompactStyle)]) -> Option<Measured> {
         self.anchor_virtuals();
         let len = self.nodes.len();
         let mut taffy = std::mem::replace(self.layout, LayoutEngine::with_capacity(0));
@@ -135,12 +180,16 @@ impl Measurement<'_> {
                 let kept = slot.text_layout.take().filter(|l| matches!(l, TextLayout::Paragraphs(_)));
                 let mut copy = Node { elided: None, virtual_mount: false, text_layout: kept, epoch: crate::runtime::paint_keep::next_epoch(), ..slot.clone() };
                 copy.clear_run_layout();
+                copy.clear_tabular_layout();
                 nodes.push(copy);
             } else {
                 let stub = Node::moved_stub(slot);
                 let mut n = std::mem::replace(slot, stub);
-                n.text_layout = None;
-                n.elided = None;
+                if !n.text.as_ref().is_some_and(|t| t.cold.live.is_some()) {
+                    n.text_layout = None;
+                    n.elided = None;
+                    n.clear_tabular_layout();
+                }
                 n.clear_run_layout();
                 n.virtual_mount = false;
                 nodes.push(n);
@@ -153,8 +202,31 @@ impl Measurement<'_> {
         self.memo.split_scratch = split;
         let root = nodes[0].taffy;
         let mut style = taffy.style(root).clone();
-        style.set_size(root_size(self.viewport, self.fit_height));
+        apply_root_sizing(&mut style, self.viewport, self.content_sizing, self.content_limits);
         taffy.set_style_and_mark_ancestors(root, style, std::iter::empty());
+        // Restore authored unclamped styles on fitted anchored overlays and room styles on
+        // `aspect_fit` elements so `solve` re-fits both against the new viewport.
+        for (i, orig) in prev_above_fit {
+            if let Some(n) = nodes.get(*i) {
+                taffy.set_style_and_mark_ancestors(
+                    n.taffy,
+                    orig.clone(),
+                    std::iter::successors(n.parent, |&p| nodes[p].parent).map(|p| nodes[p].taffy),
+                );
+            }
+        }
+        for i in 0..nodes.len() {
+            if let Some(fit) = nodes[i].cold.get().and_then(|c| c.aspect_fit.as_deref()) {
+                let parent_row = nodes[i].parent.is_some_and(|p| {
+                    matches!(taffy.style(nodes[p].taffy).flex_direction(), FlexDirection::Row | FlexDirection::RowReverse)
+                });
+                taffy.set_style_and_mark_ancestors(
+                    nodes[i].taffy,
+                    fit_room(&fit.1, parent_row),
+                    std::iter::successors(nodes[i].parent, |&p| nodes[p].parent).map(|p| nodes[p].taffy),
+                );
+            }
+        }
         // As flattening does: secure leaves don't keep a measurement.
         for n in nodes.iter().filter(|n| n.text.as_ref().is_some_and(|t| t.redacted)) {
             taffy.mark_dirty_and_ancestors(
@@ -162,7 +234,7 @@ impl Measurement<'_> {
                 std::iter::successors(n.parent, |&p| nodes[p].parent).map(|p| nodes[p].taffy),
             );
         }
-        let (layout, mut nodes) = self.solve(taffy, root, nodes);
+        let (layout, mut nodes, above_fit_styles) = self.solve(text, taffy, root, nodes, &reused);
         if self.measure_virtuals(&nodes, false) || self.windows_move() {
             memo_reuse::restore_moved_nodes(self.nodes, &mut nodes, &reused, &[]);
             reused.clear();
@@ -183,11 +255,13 @@ impl Measurement<'_> {
             defaults: self.defaults.clone(),
             titlebar: self.titlebar,
             caret_read: self.caret_read,
+            wm_state_read: None,
             layout_reads: self.layout_reads,
             memo_flattened: None,
             memo_reused: reused,
             taken_paths: Vec::new(),
             selection: Vec::new(),
+            above_fit_styles,
         })
     }
 
@@ -199,7 +273,7 @@ impl Measurement<'_> {
             let sticky = || self.nodes.iter().find(|n| n.path == v.scroll_path).and_then(|n| n.scroll).is_some_and(|s| s.stick_bottom);
             let held = scroll.map_or_else(sticky, |s| s.pinned());
             let (offset, pinned) = v.locate(scroll.map_or(0.0, |s| s.offset as f32), held);
-            v.anchor = if pinned || v.passed() { None } else { v.first_visible(offset.min(v.max_offset()), |_| true) };
+            v.anchor = if pinned || v.passed() || v.no_anchor { None } else { v.first_visible(offset.min(v.max_offset()), |_| true) };
         }
     }
 
@@ -224,19 +298,31 @@ impl Measurement<'_> {
                 let (offset, pinned) = v.at(s.offset as f32, s.pinned());
                 v.needs_window(offset, pinned) || v.spare(offset, pinned) > v.viewport
             })
-        })
+        }) || self.virtual_items.iter().any(|(path, c)| c.wants_window(path, self.focused))
     }
 
     /// Lays `nodes` out from `root_id` at the viewport, places them, and lays out their text.
-    pub(in crate::runtime) fn solve(&mut self, mut taffy: LayoutEngine, root_id: SlotId, mut nodes: Vec<Node>) -> (LayoutEngine, Vec<Node>) {
+    pub(in crate::runtime) fn solve(&mut self, text: &mut TextSystem, mut taffy: LayoutEngine, root_id: SlotId, mut nodes: Vec<Node>, reused: &[memo_reuse::ReusedSpan]) -> (LayoutEngine, Vec<Node>, Vec<(usize, CompactStyle)>) {
         let scale = self.env.scale;
         let room = Size {
-            width: AvailableSpace::Definite(self.viewport.0),
-            height: if self.fit_height { AvailableSpace::MaxContent } else { AvailableSpace::Definite(self.viewport.1) },
+            width: if self.content_sizing.fits_width() { AvailableSpace::MaxContent } else { AvailableSpace::Definite(self.viewport.0) },
+            height: if self.content_sizing.fits_height() { AvailableSpace::MaxContent } else { AvailableSpace::Definite(self.viewport.1) },
         };
         {
             let _layout_time = crate::frame::profile::Scope::new(crate::frame::profile::Phase::Layout);
-            compute_layout(&mut taffy, root_id, room, &nodes, &mut self.text, scale);
+            compute_layout(&mut taffy, root_id, room, &nodes, text, scale);
+            if self.content_sizing.fits_width()
+                && let Some((max_w, _)) = self.content_limits.1
+                && max_w.is_finite()
+                && max_w > 0.0
+                && taffy.box_layout(root_id).size().width >= max_w - 0.5
+            {
+                let mut style = taffy.style(root_id).clone();
+                style.set_width(length(max_w));
+                taffy.set_style_and_mark_ancestors(root_id, style, std::iter::empty());
+                let wrapped_room = Size { width: AvailableSpace::Definite(max_w), ..room };
+                compute_layout(&mut taffy, root_id, wrapped_room, &nodes, text, scale);
+            }
             // `aspect_fit` elements laid out filling their room; fix each at the largest box
             // at its ratio inside it and lay out again, so siblings and alignment follow.
             let mut refit = false;
@@ -251,24 +337,77 @@ impl Measurement<'_> {
                     refit = true;
                 }
             }
-            if refit { compute_layout(&mut taffy, root_id, room, &nodes, &mut self.text, scale); }
+            if refit { compute_layout(&mut taffy, root_id, room, &nodes, text, scale); }
         }
         self.stats.layout_nodes = nodes.len();
         #[cfg(debug_assertions)]
         layout_diagnostics::collapsed_scrolls(&taffy, &nodes);
 
         self.place(&taffy, &mut nodes);
-        if self.fit_anchored(&mut taffy, &nodes) {
-            compute_layout(&mut taffy, root_id, room, &nodes, &mut self.text, scale);
+        let mut above_fit_styles = Vec::new();
+        if self.fit_anchored(&mut taffy, &nodes, &mut above_fit_styles) {
+            compute_layout(&mut taffy, root_id, room, &nodes, text, scale);
             self.place(&taffy, &mut nodes);
         }
-        for n in nodes.iter_mut().filter(|n| n.text.is_some()) {
-            let w = (taffy.box_layout(n.taffy).w - n.inset[0] - n.inset[2]).max(0.0);
-            lay_out_text(&mut self.text, n, w, scale);
+        let mut span_idx = 0usize;
+        for i in 0..nodes.len() {
+            let Some(spec) = nodes[i].text.as_deref() else { continue };
+            let w = (taffy.box_layout(nodes[i].taffy).w - nodes[i].inset[0] - nodes[i].inset[2]).max(0.0);
+            if spec.cold.live.is_some() {
+                while span_idx < reused.len() && reused[span_idx].new_start + reused[span_idx].len <= i {
+                    span_idx += 1;
+                }
+                let reused_old = reused
+                    .get(span_idx)
+                    .filter(|s| i >= s.new_start && i < s.new_start + s.len)
+                    .and_then(|s| self.nodes.get(s.old_start + (i - s.new_start)));
+                let width_sensitive = spec.wrap || spec.truncate || spec.max_lines > 0;
+                let kept_valid = nodes[i].text_layout.is_some()
+                    && reused_old.is_some_and(|old| {
+                        !width_sensitive || (old.local.w - old.inset[0] - old.inset[2]).max(0.0) == w
+                    });
+                if kept_valid {
+                    if nodes[i].text.as_ref().is_some_and(|t| !t.cold.inline_boxes.is_empty()) {
+                        inline::place_inline_children(&mut taffy, text, &mut nodes, i, scale);
+                    }
+                    continue;
+                }
+                if nodes[i].cold.get().is_some_and(|c| c.live_text_seen.is_some()) {
+                    lay_out_text_inner(text, &mut nodes[i], w, scale, true);
+                    nodes[i].epoch = crate::runtime::paint_keep::next_epoch();
+                    if nodes[i].text.as_ref().is_some_and(|t| !t.cold.inline_boxes.is_empty()) {
+                        inline::place_inline_children(&mut taffy, text, &mut nodes, i, scale);
+                    }
+                    continue;
+                }
+                if reused_old.is_some() {
+                    nodes[i].epoch = crate::runtime::paint_keep::next_epoch();
+                }
+            }
+            lay_out_text(text, &mut nodes[i], w, scale);
+            if nodes[i].text.as_ref().is_some_and(|t| !t.cold.inline_boxes.is_empty()) {
+                inline::place_inline_children(&mut taffy, text, &mut nodes, i, scale);
+            }
         }
 
-        (taffy, nodes)
+        (taffy, nodes, above_fit_styles)
     }
+}
+
+/// Whether every picture sizing a side from its pixels still has the ratio its Taffy style or
+/// measure key was built with, so a viewport resize can relayout without flattening again.
+fn pixel_aspects_unchanged(tree: &types::TreeState) -> bool {
+    if !tree.aspect_snap.is_empty() {
+        return false;
+    }
+    if !tree.has_pixel_aspect {
+        return true;
+    }
+    tree.nodes.iter().all(|n| {
+        n.cold.get().and_then(|c| c.pixel_aspect).is_none_or(|r| {
+            n.vis.pixels.as_ref().is_some_and(|p| flatten::pixel_ratio(p) == r)
+        })
+    })
 }
 
 /// Partitions the moved nodes of a `relayout` pass into disjoint subtree [`ReusedSpan`]s so
@@ -279,7 +418,7 @@ fn build_relayout_spans(
     nodes: &[Node],
     virtuals: &HashMap<String, crate::el::virtual_list::VirtualList>,
     path_ids: &HashMap<String, NodeId>,
-    node_index: &HashMap<NodeId, usize>,
+    node_index: &NodeIndex,
     split: &mut Vec<bool>,
     out: &mut Vec<memo_reuse::ReusedSpan>,
 ) {
@@ -343,11 +482,23 @@ fn build_relayout_spans(
 /// Lays `n`'s text out again at the width it was laid out at.
 pub(in crate::runtime) fn lay_out_text_in_place(text: &mut TextSystem, n: &mut Node, scale: f32) {
     let w = (n.local.w - n.inset[0] - n.inset[2]).max(0.0);
-    lay_out_text(text, n, w, scale);
+    lay_out_text_inner(text, n, w, scale, false);
+}
+
+/// Lays a wrapped, truncated, or line-clamped `live_text` node out at its existing content
+/// width without inserting per-tick layouts or elisions into the shared commit caches.
+pub(in crate::runtime) fn lay_out_live_text_in_place(text: &mut TextSystem, n: &mut Node, scale: f32) {
+    let w = (n.local.w - n.inset[0] - n.inset[2]).max(0.0);
+    lay_out_text_inner(text, n, w, scale, true);
 }
 
 /// Lays `n`'s text out at its content width `w`.
 pub(in crate::runtime) fn lay_out_text(text: &mut TextSystem, n: &mut Node, w: f32, scale: f32) {
+    lay_out_text_inner(text, n, w, scale, false);
+}
+
+fn lay_out_text_inner(text: &mut TextSystem, n: &mut Node, w: f32, scale: f32, live: bool) {
+    n.clear_tabular_layout();
     let Some(spec) = &n.text else { return };
     // A cell of a run draws from the run's layout (and keeps it cached) instead of its own.
     let run = spec.cold.advance_in.as_ref().map(|(run, at)| (text.run_layout(run, spec.style, scale), *at));
@@ -359,19 +510,25 @@ pub(in crate::runtime) fn lay_out_text(text: &mut TextSystem, n: &mut Node, w: f
     let wrap = spec.wrap.then_some(w * scale + super::text_layout::FIT_SLACK);
     // A by-paragraph field keeps what its last layout (still on it) shares with this one.
     let is_input = n.input.is_some();
-    let mut layout = match text.layout_text(&spec.as_text_input(scale, is_input), is_input, scale, wrap, line_alignment(spec), n.text_layout.as_ref()) {
-        TextLayout::Single(l) => l,
-        TextLayout::Paragraphs(mut p) => {
-            text.prepare_highlights(&mut p, &spec.cold.highlights);
-            n.text_layout = Some(TextLayout::Paragraphs(p));
-            n.elided = None;
-            return;
+    let mut layout = if live {
+        text.layout_live_spec(&spec.as_text_input(scale, false), scale, wrap, line_alignment(spec))
+    } else {
+        match text.layout_text(&spec.as_text_input(scale, is_input), is_input, scale, wrap, line_alignment(spec), n.text_layout.as_ref()) {
+            TextLayout::Single(l) => l,
+            TextLayout::Paragraphs(mut p) => {
+                text.prepare_highlights(&mut p, &spec.cold.highlights);
+                n.text_layout = Some(TextLayout::Paragraphs(p));
+                n.elided = None;
+                return;
+            }
         }
     };
     let mut elided = None;
-    if spec.truncate && layout.full_width() > w * scale + 0.5 {
-        let (cut, e) = truncated(text, spec, scale, w * scale);
-        (layout, elided) = (cut, Some(e));
+    let trunc_w = layout.get(0).map_or(layout.full_width(), |l| l.metrics().indent + l.metrics().advance);
+    if spec.truncate && trunc_w > w * scale + 0.5 {
+        if let Some((cut, e)) = truncated(text, spec, scale, w * scale) {
+            (layout, elided) = (cut, Some(e));
+        }
     } else if let Some((cut, e)) = clamped(text, spec, scale, w * scale, &layout) {
         (layout, elided) = (cut, Some(e));
     }

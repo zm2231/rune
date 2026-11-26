@@ -1,7 +1,7 @@
 //! Adapter to the production renderer. No copied WGSL or substitute GPU pipeline.
 use crate::{Primitive, Scene};
 use rune::{
-    render::{Gpu, Instance, OFFSCREEN_FORMAT, Offscreen, Renderer},
+    render::{Gpu, Instance, OFFSCREEN_FORMAT_LINEAR, Offscreen, Renderer},
     text::{ATLAS_SIZE, TextSystem},
 };
 
@@ -33,7 +33,10 @@ impl From<&Primitive> for Instance {
     fn from(p: &Primitive) -> Self {
         let mut instance = Self {
             rect: p.rect,
-            radii: p.radii,
+            // `Scene` carries one grayscale R8 glyph atlas and no outline store; clear legacy
+            // non-zero `radii` and `params[2]` on glyphs so Windfoil never routes them to
+            // `outline_glyph`, `lcd_mask`, or secondary atlas pages.
+            radii: if p.params[1] == 2.0 { [0.0; 4] } else { p.radii },
             fill: p.fill,
             border: if p.params[1] == 8.0 {
                 let [a, x, y] = p.turn.unwrap_or([0.0; 3]);
@@ -41,7 +44,7 @@ impl From<&Primitive> for Instance {
             } else {
                 p.border
             },
-            params: p.params,
+            params: if p.params[1] == 2.0 { [p.params[0], p.params[1], 0.0, p.params[3]] } else { p.params },
             uv: p.uv,
             clip: p.clip,
             fade: rune::render::pack_fade(p.fade, p.fade_origin.unwrap_or(p.clip), p.clip),
@@ -55,6 +58,29 @@ impl From<&Primitive> for Instance {
     }
 }
 
+/// Default per-channel tolerance for a single draw and for exact-blending composites.
+pub const DEFAULT_TOLERANCE: u8 = 2;
+
+/// `(backend, pci_vendor_id, composite_tolerance)` entries measured on hardware whose fixed-function
+/// sRGB ROP pre-quantizes linear fragment output to 8 bits before blending.
+///
+/// Direct3D 11.3 Functional Specification §17.5 permits fixed-point render target blending at
+/// output-format precision (8 bits). On NVIDIA under DX12, four to five overlapping translucent
+/// draws into `Rgba8UnormSrgb` accumulate up to 3 LSB against the CPU oracle, whereas AMD Radeon
+/// DX12, WARP DX12, and Apple M4 Pro / Metal stay within 2 LSB. Single draws stay within 2 LSB on
+/// every measured adapter. NVIDIA under Vulkan is not measured and stays at 2 until measured.
+const MEASURED_COMPOSITE_TOLERANCE: [(wgpu::Backend, u32, u8); 1] =
+    [(wgpu::Backend::Dx12, 0x10DE, 3)];
+
+/// Composite per-channel tolerance for `info`: 3 for NVIDIA under DX12 (vendor `0x10DE`), and 2
+/// everywhere else. Single-primitive checks always stay at [`DEFAULT_TOLERANCE`] (2).
+pub fn composite_tolerance(info: &wgpu::AdapterInfo) -> u8 {
+    MEASURED_COMPOSITE_TOLERANCE
+        .iter()
+        .find(|&&(backend, vendor, _)| backend == info.backend && vendor == info.vendor)
+        .map_or(DEFAULT_TOLERANCE, |&(_, _, tol)| tol)
+}
+
 pub struct GpuRenderer {
     gpu: Gpu,
     renderer: Renderer,
@@ -62,17 +88,65 @@ pub struct GpuRenderer {
 }
 impl Default for GpuRenderer {
     fn default() -> Self {
-        let gpu = Gpu::new(Gpu::instance(), None);
-        eprintln!("reference adapter: {:?}", gpu.adapter.get_info());
-        let renderer = Renderer::new(&gpu.device, OFFSCREEN_FORMAT);
+        Self::from_gpu(Gpu::new(Gpu::instance(), None))
+    }
+}
+impl GpuRenderer {
+    fn from_gpu(gpu: Gpu) -> Self {
+        let info = gpu.adapter.get_info();
+        let composite_tol = composite_tolerance(&info);
+        eprintln!(
+            "reference adapter: {} ({:?}, vendor=0x{:04x}) single_tolerance={DEFAULT_TOLERANCE} composite_tolerance={composite_tol}",
+            info.name, info.backend, info.vendor
+        );
+        let mut renderer = Renderer::new(&gpu.device, OFFSCREEN_FORMAT_LINEAR);
+        renderer.set_srgb_blend(false);
         Self {
             gpu,
             renderer,
             text: TextSystem::default(),
         }
     }
-}
-impl GpuRenderer {
+
+    /// Creates a GPU reference renderer, returning an error instead of panicking when no GPU
+    /// adapter or device can be initialized.
+    ///
+    /// ```no_run
+    /// use rune_ref::gpu::GpuRenderer;
+    ///
+    /// let _gpu = GpuRenderer::try_new()?;
+    /// # Ok::<(), String>(())
+    /// ```
+    pub fn try_new() -> Result<Self, String> {
+        Gpu::try_new(Gpu::instance(), None).map(Self::from_gpu)
+    }
+
+    /// Like [`Self::try_new`], for tests: returns `None` (printing the standard skip line) when
+    /// no adapter exists and `RUNE_ALLOW_NO_GPU=1` is set; panics otherwise.
+    #[doc(hidden)]
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn test_new() -> Option<Self> {
+        Gpu::test_headless().map(Self::from_gpu)
+    }
+
+    pub fn adapter_info(&self) -> wgpu::AdapterInfo {
+        self.gpu.adapter.get_info()
+    }
+
+    pub fn composite_tolerance(&self) -> u8 {
+        composite_tolerance(&self.adapter_info())
+    }
+
+    /// Tolerance for `scene`: [`DEFAULT_TOLERANCE`] (2) for a single draw, and
+    /// [`Self::composite_tolerance`] when several draws can blend into a pixel.
+    pub fn scene_tolerance(&self, scene: &Scene) -> u8 {
+        if scene.primitives.len() > 1 {
+            self.composite_tolerance()
+        } else {
+            DEFAULT_TOLERANCE
+        }
+    }
+
     pub fn render(&mut self, scene: &Scene) -> Vec<u8> {
         scene.validate().expect("valid differential scene");
         let atlas = &mut self.text.atlas;
@@ -92,7 +166,7 @@ impl GpuRenderer {
             &instances,
             (scene.width, scene.height),
         );
-        let target = Offscreen::new(&self.gpu.device, scene.width, scene.height);
+        let target = Offscreen::with_format(&self.gpu.device, scene.width, scene.height, OFFSCREEN_FORMAT_LINEAR);
         let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
         self.renderer.draw(&mut encoder, &target.view, scene.clear);
         target.copy(&mut encoder);
@@ -123,7 +197,12 @@ pub fn text_run(scene: &mut Scene, seed: u64) {
             p.uv[1] += 960.0;
         }
     }
-    for y in 0..scene.atlas.height.min(32) as usize {
+    let copy_rows = scene.atlas.height.min(32) as usize;
+    let need_bytes = (960 + copy_rows) * ATLAS_SIZE as usize;
+    if text.atlas.data.len() < need_bytes {
+        text.atlas.data.resize(need_bytes, 0);
+    }
+    for y in 0..copy_rows {
         let n = scene.atlas.width.min(32) as usize;
         let start = (y + 960) * ATLAS_SIZE as usize + 960;
         text.atlas.data[start..start + n].copy_from_slice(
@@ -148,9 +227,10 @@ pub fn text_run(scene: &mut Scene, seed: u64) {
             clip_radii: None,
         });
     }
+    let atlas_height = (text.atlas.data.len() / ATLAS_SIZE as usize) as u32;
     scene.atlas = crate::Atlas {
         width: ATLAS_SIZE,
-        height: ATLAS_SIZE,
+        height: atlas_height,
         data: text.atlas.data,
     };
 }

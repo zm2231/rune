@@ -55,6 +55,69 @@ fn buttons_read_their_label_tooltip_shortcut_and_state() {
     assert_eq!(rt.state.presses, 12, "assistive click, pointer and Space reach the same handlers");
 }
 
+#[test]
+fn button_with_show_shortcut_keeps_accessibility_tree_clean() {
+    fn view(_: &App, _: &mut Cx<App>) -> El {
+        let k = kit();
+        col()
+            .gap(8.0)
+            .child(
+                Button::new("Save")
+                    .help("Write the file to disk")
+                    .shortcut("F5")
+                    .show_shortcut()
+                    .on_press(|s: &mut App| s.presses += 1)
+                    .build(&k)
+                    .key("save-inline"),
+            )
+            .child(
+                Button::new("Commit")
+                    .shortcut("cmd+s")
+                    .show_shortcut()
+                    .build(&k)
+                    .key("commit-inline"),
+            )
+            .child(
+                Button::new("Unavailable")
+                    .shortcut("F5")
+                    .show_shortcut()
+                    .disabled(true)
+                    .on_press(|s: &mut App| s.presses += 100)
+                    .build(&k)
+                    .key("off-inline"),
+            )
+    }
+
+    let mut rt = mount(App::default(), view);
+    let tree = rt.accessibility_json();
+
+    let save = node(&tree, "save-inline");
+    assert_eq!(said(save), ("button", "Save"));
+    assert_eq!(save["description"], "Write the file to disk");
+    assert_eq!(save["shortcut"], "F5");
+    assert!(can(save, "click") && can(save, "focus"));
+    assert!(save["children"].is_null(), "inline shortcut is hidden from assistive technology: {save}");
+
+    let expected_cmd_s = if cfg!(target_os = "macos") { "⌘S" } else { "Super+S" };
+    let commit = node(&tree, "commit-inline");
+    assert_eq!(said(commit), ("button", "Commit"));
+    assert_eq!(commit["shortcut"], expected_cmd_s);
+    assert!(commit["children"].is_null(), "inline accelerator is hidden from assistive technology: {commit}");
+
+    let off = node(&tree, "off-inline");
+    assert_eq!(said(off), ("button", "Unavailable"));
+    assert_eq!(off["shortcut"], "F5");
+    assert!(has(off, "disabled") && actions(off).is_empty());
+    assert!(off["children"].is_null());
+
+    assert!(act(&mut rt, "save-inline", Action::Click));
+    tap(&mut rt, "save-inline");
+    assert!(act(&mut rt, "save-inline", Action::Focus));
+    press_key(&mut rt, Key::Text(" ".into()));
+    assert!(!act(&mut rt, "off-inline", Action::Click));
+    assert_eq!(rt.state.presses, 3);
+}
+
 fn toggles(s: &App, _: &mut Cx<App>) -> El {
     let k = kit();
     col()
@@ -199,6 +262,61 @@ fn status_and_progress_read_their_text_and_fraction() {
     assert_eq!(node(&tree, "upload")["value"], "100%");
 }
 
+fn sliders(s: &App, _: &mut Cx<App>) -> El {
+    let k = kit();
+    col()
+        .gap(12.0)
+        .child(
+            Slider::new("volume", s.level * 100.0)
+                .range(0.0..=100.0)
+                .step(5.0)
+                .label("Volume")
+                .value_text(format!("{:.0}%", s.level * 100.0))
+                .on_change(|s: &mut App, v, _| s.level = v / 100.0)
+                .build(&k),
+        )
+        .child(
+            Slider::new("speed", s.level)
+                .label("Speed")
+                .hide_label()
+                .disabled(true)
+                .build(&k),
+        )
+}
+
+#[test]
+fn sliders_read_range_value_and_step_by_any_input() {
+    use rune::accesskit::ActionData;
+    let mut rt = mount(App::default(), sliders);
+    let tree = rt.accessibility_json();
+    let vol = node(&tree, "volume");
+    assert_eq!((said(vol), vol["value"].as_str()), (("slider", "Volume"), Some("40%")));
+    assert_eq!(vol["range"], serde_json::json!([40.0, 0.0, 100.0, 5.0]));
+    assert!(can(vol, "focus") && can(vol, "increment") && can(vol, "decrement") && can(vol, "set-value"));
+    assert!(vol["children"].is_null(), "decorative slider parts stay hidden: {vol}");
+    let speed = node(&tree, "speed");
+    assert_eq!(said(speed), ("slider", "Speed"), "a hidden label still names it");
+    assert!(has(speed, "disabled") && actions(speed).is_empty());
+    no_echo(&tree);
+
+    assert!(act(&mut rt, "volume", Action::Increment));
+    assert!((rt.state.level - 0.45).abs() < 1e-4);
+    assert!(act(&mut rt, "volume", Action::Decrement));
+    assert!((rt.state.level - 0.40).abs() < 1e-4);
+    assert!(rt.accessibility_action("volume", Action::SetValue, Some(ActionData::NumericValue(73.0))));
+    settle(&mut rt);
+    assert!((rt.state.level - 0.75).abs() < 1e-4, "SetValue snaps to step 5: {}", rt.state.level);
+    assert_eq!(node(&rt.accessibility_json(), "volume")["value"], "75%");
+    assert!(act(&mut rt, "volume", Action::Focus));
+    press_key(&mut rt, Key::Right);
+    assert!((rt.state.level - 0.80).abs() < 1e-4);
+    press_key(&mut rt, Key::Home);
+    assert_eq!(rt.state.level, 0.0);
+    press_key(&mut rt, Key::End);
+    assert_eq!(rt.state.level, 1.0);
+    assert!(!act(&mut rt, "speed", Action::Increment), "disabled slider takes no assistive action");
+}
+
 fn fields(s: &App, _: &mut Cx<App>) -> El {
     let k = kit();
     col()
@@ -244,6 +362,174 @@ fn fields_name_their_editor_and_describe_their_help_and_errors() {
     assert_eq!(node(node(&rt.accessibility_json(), "search"), "input")["value"], "Ada");
 }
 
+#[test]
+fn kit_fields_attach_description_to_their_inner_editor_node() {
+    fn view(s: &App, _: &mut Cx<App>) -> El {
+        let k = kit();
+        col()
+            .gap(8.0)
+            .child(
+                TextInput::new(&s.edit)
+                    .label("Filename")
+                    .description("Name is taken")
+                    .on_edit(|s: &mut App| &mut s.edit)
+                    .build(&k)
+                    .key("ti"),
+            )
+            .child(
+                TextArea::new(&s.edit)
+                    .label("Notes")
+                    .description("Markdown supported")
+                    .on_edit(|s: &mut App| &mut s.edit)
+                    .build(&k)
+                    .key("ta"),
+            )
+            .child(
+                TextField::new("Alias", &s.edit)
+                    .description("Lowercase letters only")
+                    .on_edit(|s: &mut App| &mut s.edit)
+                    .build(&k)
+                    .key("tf-desc"),
+            )
+            .child(
+                TextField::new("Slug", &s.edit)
+                    .description("Lowercase letters only")
+                    .error("Already in use")
+                    .on_edit(|s: &mut App| &mut s.edit)
+                    .build(&k)
+                    .key("tf-both"),
+            )
+            .child(
+                TextField::new("Path", &s.edit)
+                    .description("Must be relative.")
+                    .error("Starts with /")
+                    .on_edit(|s: &mut App| &mut s.edit)
+                    .build(&k)
+                    .key("tf-period"),
+            )
+            .child(
+                TextField::new("Empty", &s.edit)
+                    .description("")
+                    .error("Required")
+                    .on_edit(|s: &mut App| &mut s.edit)
+                    .build(&k)
+                    .key("tf-empty-desc"),
+            )
+            .child(
+                TextArea::new(&s.edit)
+                    .label("الملاحظات")
+                    .description("أدخل التفاصيل هنا")
+                    .on_edit(|s: &mut App| &mut s.edit)
+                    .build(&k)
+                    .key("ta-rtl"),
+            )
+    }
+
+    let rt = mount(App::default(), view);
+    let tree = rt.accessibility_json();
+
+    for (outer_key, expected_role, expected_desc) in [
+        ("ti", "text-input", "Name is taken"),
+        ("ta", "multiline-text-input", "Markdown supported"),
+        ("tf-desc", "text-input", "Lowercase letters only"),
+        ("tf-both", "text-input", "Lowercase letters only. Already in use"),
+        ("tf-period", "text-input", "Must be relative. Starts with /"),
+        ("tf-empty-desc", "text-input", "Required"),
+        ("ta-rtl", "multiline-text-input", "أدخل التفاصيل هنا"),
+    ] {
+        let outer = node(&tree, outer_key);
+        assert!(
+            outer["description"].is_null(),
+            "{outer_key}: description must not land on outer wrapper: {outer}"
+        );
+        let inner = node(outer, "input");
+        assert_eq!(inner["role"], expected_role, "{outer_key}: inner role");
+        assert_eq!(
+            inner["description"].as_str(),
+            Some(expected_desc),
+            "{outer_key}: description on inner editor"
+        );
+    }
+}
+
+#[test]
+fn textarea_plain_trailing_and_scroll_bar_accessibility() {
+    fn view(s: &App, _: &mut Cx<App>) -> El {
+        let k = kit();
+        col()
+            .gap(8.0)
+            .child(
+                TextArea::new(&s.edit)
+                    .label("Composer")
+                    .description("Shift+Enter for a newline")
+                    .plain()
+                    .auto_grow(1, 3)
+                    .scroll_bar(true)
+                    .trailing(
+                        Button::new("Send")
+                            .control_size(ControlSize::Small)
+                            .on_press(|s: &mut App| s.presses += 1)
+                            .build(&k)
+                            .key("send"),
+                    )
+                    .on_edit(|s: &mut App| &mut s.edit)
+                    .build(&k)
+                    .key("composer"),
+            )
+            .child(
+                TextArea::new(&s.edit)
+                    .label("Invalid plain")
+                    .plain()
+                    .invalid(true)
+                    .build(&k)
+                    .key("invalid-plain"),
+            )
+            .child(
+                TextArea::new(&s.edit)
+                    .label("Disabled plain")
+                    .plain()
+                    .disabled(true)
+                    .build(&k)
+                    .key("disabled-plain"),
+            )
+    }
+
+    let mut rt = mount(App::default(), view);
+    let tree = rt.accessibility_json();
+
+    let composer = node(&tree, "composer");
+    let input = node(composer, "input");
+    assert_eq!(said(input), ("multiline-text-input", "Composer"));
+    assert_eq!(input["description"], "Shift+Enter for a newline");
+    assert!(can(input, "focus") && can(input, "set-value"));
+    let send = node(composer, "send");
+    assert_eq!(said(send), ("button", "Send"));
+    assert!(can(send, "click") && can(send, "focus"));
+    assert!(with_role(&tree, "scroll-bar").is_empty(), "decorative scroll bar stays hidden from a11y");
+
+    let invalid = node(node(&tree, "invalid-plain"), "input");
+    assert!(has(invalid, "invalid"), "invalid plain TextArea reports invalid state: {invalid}");
+    let disabled = node(node(&tree, "disabled-plain"), "input");
+    assert!(has(disabled, "disabled") && !can(disabled, "set-value"));
+
+    // Web accessibility mirror exposes the trailing Send button and omits the decorative scroll bar.
+    let mirror: Vec<serde_json::Value> = serde_json::from_str(&rt.a11y_json()).unwrap();
+    assert!(
+        mirror.iter().any(|v| v["t"] == "Send" && v["k"] == "button"),
+        "web mirror exposes trailing Send button: {mirror:?}"
+    );
+    assert!(
+        !mirror.iter().any(|v| v["p"].as_str().is_some_and(|p| p.contains("scroll-bar"))),
+        "web mirror omits decorative scroll bar: {mirror:?}"
+    );
+
+    // Assistive click activates the trailing Send button independently of the editor.
+    assert!(act(&mut rt, "send", Action::Click));
+    assert_eq!(rt.state.presses, 1);
+    assert!(act(&mut rt, "send", Action::Focus));
+    assert_eq!(focused(&rt.accessibility_json()).as_deref(), Some("send"));
+}
+
 fn recorder(s: &App, _: &mut Cx<App>) -> El {
     let k = kit();
     col()
@@ -269,4 +555,147 @@ fn a_shortcut_recorder_reads_its_name_keys_and_recording() {
     let show = node(&show, "show");
     assert_eq!(show["value"], "Press shortcut");
     assert!(show["description"].as_str().is_some_and(|d| d.contains("Escape")));
+}
+
+#[test]
+fn segmented_control_tabs_icons_descriptions_and_controls() {
+    use rune::{Direction, el, text};
+
+    fn tabs(s: &App, _: &mut Cx<App>) -> El {
+        let k = kit();
+        let sel = s.picked.unwrap_or(0);
+        col()
+            .gap(8.0)
+            .child(
+                SegmentedControl::new(&["General", "Network", "Security"], Some(sel))
+                    .label("Settings sections")
+                    .icons(&[Some(k.glyph.search), Some(k.glyph.copy), Some(k.glyph.lock)])
+                    .trailing(1, el().size(6.0, 6.0).radius(3.0).fill(k.c.danger.fg).a11y_hidden())
+                    .help(0, "General")
+                    .shortcut(0, "cmd+1")
+                    .help(1, "Network status")
+                    .shortcut(1, "F2")
+                    .description(1, "2 connection errors")
+                    .help(2, "Locked by policy")
+                    .segment_state(2, State::Disabled)
+                    .controls(0, "settings-panel")
+                    .controls(1, "settings-panel")
+                    .controls(2, "settings-panel")
+                    .as_tabs()
+                    .on_pick(|s: &mut App, i, _| s.picked = Some(i))
+                    .build(&k)
+                    .key("sections"),
+            )
+            .child(
+                col()
+                    .key("settings-panel")
+                    .role("tabpanel")
+                    .label("Settings detail")
+                    .child(text(format!("Panel {sel}"))),
+            )
+            .child(
+                SegmentedControl::new(&["", "Notes"], Some(0))
+                    .label("Quick switcher")
+                    .icons(&[Some(k.glyph.search), Some(k.glyph.copy)])
+                    .help(0, "Search")
+                    .shortcut(0, "F3")
+                    .help(1, "Show inline notes")
+                    .build(&k)
+                    .key("quick"),
+            )
+            .child(
+                rune::row()
+                    .dir(Direction::Rtl)
+                    .child(
+                        SegmentedControl::new(&["الأول", "الثاني"], Some(sel.min(1)))
+                            .label("تبويبات")
+                            .as_tabs()
+                            .on_pick(|s: &mut App, i, _| s.picked = Some(i))
+                            .build(&k)
+                            .key("rtl-tabs"),
+                    ),
+            )
+    }
+
+    let mut rt = mount(App { picked: Some(0), ..App::default() }, tabs);
+    let tree = rt.accessibility_json();
+
+    // Root switches to tab-list with horizontal orientation and setSize.
+    let sections = node(&tree, "sections");
+    assert_eq!(said(sections), ("tab-list", "Settings sections"));
+    assert_eq!(sections["orientation"], "horizontal");
+    assert_eq!(sections["setSize"], 3);
+
+    let cmd1 = if cfg!(target_os = "macos") { "⌘1" } else { "Super+1" };
+    let tab0 = node(sections, "segment0");
+    assert_eq!(said(tab0), ("tab", "General"));
+    assert!(has(tab0, "selected") && !has(tab0, "checked") && !has(tab0, "unchecked"), "tab uses selected: {tab0}");
+    assert_eq!(tab0["position"], 1);
+    assert_eq!(tab0["shortcut"], cmd1);
+    assert!(tab0["description"].is_null(), "help matching label does not echo as description: {tab0}");
+    assert_eq!(tab0["controls"], serde_json::json!(["settings-panel"]));
+    assert!(can(tab0, "click") && can(tab0, "focus"));
+
+    let tab1 = node(sections, "segment1");
+    assert_eq!(said(tab1), ("tab", "Network"));
+    assert!(!has(tab1, "selected") && !has(tab1, "checked"));
+    assert_eq!(tab1["position"], 2);
+    assert_eq!(tab1["shortcut"], "F2");
+    assert_eq!(tab1["description"], "2 connection errors", "explicit description overrides tooltip text");
+    assert_eq!(tab1["controls"], serde_json::json!(["settings-panel"]));
+
+    let tab2 = node(sections, "segment2");
+    assert_eq!(said(tab2), ("tab", "Security"));
+    assert!(has(tab2, "disabled") && actions(tab2).is_empty());
+    assert_eq!(tab2["description"], "Locked by policy");
+    assert_eq!(tab2["controls"], serde_json::json!(["settings-panel"]));
+
+    // Icon-only segment uses help as its accessible name without echoing it as description;
+    // labelled segment whose help differs from its label uses help as description.
+    let quick = node(&tree, "quick");
+    assert_eq!(said(quick), ("radio-group", "Quick switcher"));
+    assert!(quick["orientation"].is_null(), "radiogroup leaves orientation unset");
+    let q0 = node(quick, "segment0");
+    assert_eq!(said(q0), ("radio-button", "Search"));
+    assert!(q0["description"].is_null(), "help naming an icon-only segment is not echoed: {q0}");
+    assert_eq!(q0["shortcut"], "F3");
+    let q1 = node(quick, "segment1");
+    assert_eq!(said(q1), ("radio-button", "Notes"));
+    assert_eq!(q1["description"], "Show inline notes");
+
+    assert!(with_role(&tree, "image").is_empty(), "decorative segment icons stay out of the tree");
+    no_echo(&tree);
+
+    // Web accessibility mirror exposes tablist orientation, tab roles, aria-selected, description, and controls.
+    let mirror: Vec<serde_json::Value> = serde_json::from_str(&rt.a11y_json()).unwrap();
+    let m_list = mirror.iter().find(|v| v["o"] == "tablist" && v["t"] == "Settings sections").expect("mirrored tablist");
+    assert_eq!(m_list["or"], "horizontal");
+    let m_tab0 = mirror.iter().find(|v| v["o"] == "tab" && v["t"] == "General").expect("mirrored tab0");
+    assert_eq!(m_tab0["se"], true);
+    assert_eq!(m_tab0["ct"], "settings-panel");
+    let m_tab1 = mirror.iter().find(|v| v["o"] == "tab" && v["t"] == "Network").expect("mirrored tab1");
+    assert_eq!(m_tab1["se"], false);
+    assert_eq!(m_tab1["d"], "2 connection errors");
+    assert_eq!(m_tab1["ct"], "settings-panel");
+    let m_tab2 = mirror.iter().find(|v| v["o"] == "tab" && v["t"] == "Security").expect("mirrored tab2");
+    assert_eq!(m_tab2["dis"], true);
+    let m_icon_only = mirror.iter().find(|v| v["o"] == "radio" && v["t"] == "Search").expect("mirrored icon-only radio");
+    assert!(m_icon_only["d"].is_null(), "icon-only radio does not echo help in web mirror: {m_icon_only}");
+
+    // Keyboard and assistive navigation in tab mode: arrows move selection and skip disabled tabs.
+    assert!(act(&mut rt, "sections/segment0", Action::Focus) || act(&mut rt, "segment0", Action::Focus));
+    press_key(&mut rt, Key::Right);
+    assert_eq!(rt.state.picked, Some(1));
+    assert!(has(node(node(&rt.accessibility_json(), "sections"), "segment1"), "selected"));
+    press_key(&mut rt, Key::Right);
+    assert_eq!(rt.state.picked, Some(0), "Right skips disabled tab and wraps to first");
+    assert!(!act(&mut rt, "segment2", Action::Click), "disabled tab rejects assistive click");
+    tap(&mut rt, "segment1");
+    assert_eq!(rt.state.picked, Some(1));
+
+    // RTL tablist: Left moves forward from first tab to second tab.
+    rt.update(|s, tx| { s.picked = Some(0); tx.focus("rtl-tabs", true); });
+    settle(&mut rt);
+    press_key(&mut rt, Key::Left);
+    assert_eq!(rt.state.picked, Some(1), "RTL tablist moves forward on Left arrow");
 }

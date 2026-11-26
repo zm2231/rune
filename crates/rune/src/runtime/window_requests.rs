@@ -10,24 +10,38 @@ pub(crate) struct HostState {
     pub(in crate::runtime) zoom: zoom::Zoom,
     pub(in crate::runtime) titlebar: titlebar::Titlebar,
     pub(in crate::runtime) titlebar_inset: f32,
-    /// What [`Cx::safe_area`] reports, in the window's points.
-    pub(in crate::runtime) safe_area: system_settings::SafeArea,
     /// What [`Cx::system_text_scale`] reports: the system's text size setting.
     pub(in crate::runtime) system_text_scale: f32,
+    pub(in crate::runtime) maximized: bool,
+    pub(in crate::runtime) full_screen: bool,
+    /// Confirmed OS-active whole-window backdrop reported by [`Cx::window_backdrop`].
+    pub(in crate::runtime) window_backdrop: crate::WindowBackdrop,
+    /// Bitmask of non-`None` `WindowBackdrop` variants currently supported by the active host
+    /// surface and OS/compositor, reported by [`Cx::window_backdrop_supported`].
+    pub(in crate::runtime) window_backdrop_supported: u8,
+    /// Active renderer backing this window or overlay, reported by [`Cx::renderer_kind`].
+    pub(in crate::runtime) renderer_kind: crate::RendererKind,
+    /// When `true` on a transparent window, `clear_color()` clears to an opaque theme-matched
+    /// fallback so a requested backdrop that could not activate never opens a transparent hole.
+    pub(in crate::runtime) backdrop_opaque_fallback: bool,
     pub(in crate::runtime) system_reduced_motion: bool,
     pub(in crate::runtime) system_accent: crate::SystemAccent,
     /// What [`Cx::system_contrast`] reports.
-    pub(crate) system_contrast: Option<crate::SystemContrast>,
+    pub(in crate::runtime) system_contrast: Option<crate::SystemContrast>,
     /// What [`Cx::system_increased_contrast`] reports.
-    pub(crate) system_increased_contrast: bool,
+    pub(in crate::runtime) system_increased_contrast: bool,
     pub(in crate::runtime) scroll_bars: system_settings::ScrollBarHost,
+    /// Preferred languages set via `Runtime::set_languages` or browser `languagechange` (`None`: lazy OS query).
+    pub(in crate::runtime) system_languages: Option<Rc<[String]>>,
+    /// Incremented whenever `system_languages` changes, so memos rebuild without querying the OS.
+    pub(in crate::runtime) languages_gen: u64,
     pub(crate) native_overlay: bool,
     /// The window or overlay surface's frame counts, published by its host.
     pub(crate) surface_stats: Option<std::sync::Arc<std::sync::Mutex<crate::SurfaceStats>>>,
     /// `App::dev_stats`.
     pub(crate) app_stats: Option<fn() -> String>,
     /// The window's content top-left in global screen points, as its host last saw it.
-    pub(in crate::runtime) window_origin: (f32, f32),
+    window_origin: (f32, f32),
     /// The window's content top-left in desktop pixels, as its host last saw it (`Drag::screen_point`).
     pub(in crate::runtime) window_pixels: Option<(i32, i32)>,
     pub(in crate::runtime) window_focused: Option<bool>,
@@ -37,31 +51,80 @@ pub(crate) struct HostState {
     pub(crate) window_frame: Option<crate::window::frame::FrameRequest>,
     /// The window's title (`Tx::set_title`), from `AppSpec`'s.
     pub(crate) window_title: Title,
-    /// The window's height follows the root's natural height (`App::fit_content_height`).
-    pub(crate) fit_height: bool,
+    /// Per-window native color scheme requested via `Tx::set_color_scheme`, taken by the host.
+    pub(crate) window_color_scheme: Option<crate::ColorScheme>,
+    /// Per-window system backdrop requested via `Tx::set_window_backdrop`, taken by the host.
+    pub(crate) window_backdrop_request: Option<crate::WindowBackdrop>,
+    /// macOS document path (`MacWindowOptions::represented_file`, `Tx::set_represented_file`).
+    pub(crate) represented_file: Latched<Option<std::path::PathBuf>>,
+    /// macOS document edited dot (`MacWindowOptions::document_edited`, `Tx::set_document_edited`).
+    pub(crate) document_edited: Latched<bool>,
+    /// How the root fits its content (`App::fit_content_height` sets `ContentSizing::FitHeight`;
+    /// `ConfiguredOverlay::sizing` / `fit_content_height` sets any `ContentSizing` mode).
+    pub(crate) content_sizing: crate::ContentSizing,
+    /// Optional root `(min_size, max_size)` bounds in window points for content-sized overlays.
+    pub(crate) content_limits: crate::overlay::sizing::SizeLimits,
     /// The height a window that fits its content last asked for, and the frame its move
     /// starts with. The host takes the hold as it starts the move.
     pub(crate) fit: FitWindow,
+    /// The content's `(width, height)` a content-sized native overlay asked for, apart from
+    /// `window_frame` (`Tx::resize_window`, which overlays ignore). Its host takes it.
+    pub(crate) overlay_fit: Option<(f32, f32)>,
+    /// A user-initiated close request (`Tx::request_user_close`) waiting for the host's
+    /// `close_requested` gate.
+    pub(crate) user_close_request: bool,
     /// A handler or `update` asked to minimize the window (`Tx::minimize`); the shell takes it,
     /// after a show the same turn asked for (`window::Minimize`).
     pub(crate) minimize: crate::window::Minimize,
     /// Links handlers asked to open that this runtime left unopened (`Runtime::take_url_requests`).
-    pub(crate) url_requests: Vec<String>,
+    url_requests: Vec<String>,
+    /// Local paths handlers asked to open or reveal that this runtime left unopened (`Runtime::take_path_requests`).
+    path_requests: Vec<crate::open_path::PathRequest>,
+    /// Schemes `AppHandle::register_url_scheme` asked to claim that this runtime left alone (`Runtime::take_url_scheme_requests`).
+    url_scheme_requests: Vec<String>,
     /// True when attached to a live window, overlay or web canvas, not a headless or scripted run.
     pub(crate) open_urls_natively: bool,
     /// Pop-up menus asked for (`Tx::popup_menu`) and not yet answered, oldest first.
-    pub(crate) popups: popup_dispatch::Popups,
+    pub(in crate::runtime) popups: popup_dispatch::Popups,
+    /// Lifecycle state of the in-window fallback pop-up menu delivered to `App::on_popup_menu`.
+    pub(in crate::runtime) popup_fallback: popup_fallback::PopupFallbackState,
+    /// Monotonic token tagging each opened fallback pop-up menu.
+    pub(in crate::runtime) popup_fallback_seq: u64,
+    /// Test-only seam forcing `App::on_popup_menu` even where `popup_menu_supported()` is true.
+    #[cfg(test)]
+    pub(crate) force_popup_menu_fallback: bool,
+    /// Pending text-field menu delivered to `App::on_field_menu`, awaiting `Tx::resolve_field_menu`.
+    pub(in crate::runtime) field_menu_fallback: Option<Box<crate::runtime::field_menu::PendingFieldMenu>>,
+    /// Monotonic token tagging each opened fallback field menu so a deferred pick never matches a newer menu.
+    pub(in crate::runtime) field_menu_seq: u64,
+    /// `Tx::resolve_field_menu(Some(id))` deferred until after the frame's commit unmounts a closing modal.
+    pub(in crate::runtime) deferred_field_menu_pick: Option<(u64, String)>,
+    /// Test-only seam forcing `App::on_field_menu` even where `popup_menu_supported()` is true.
+    #[cfg(test)]
+    pub(crate) force_field_menu_fallback: bool,
     /// The file dialog asked for (`Tx::open_file`, `Tx::save_file`) and not yet answered.
-    pub(crate) file_dialog: crate::file_dialog::DialogState,
+    pub(in crate::runtime) file_dialog: crate::file_dialog::DialogState,
     /// File dialog callbacks, by id, until their answer runs.
     pub(in crate::runtime) file_dialog_answers: Vec<(u64, crate::file_dialog::AnswerFn)>,
     pub(in crate::runtime) next_file_dialog: u64,
     /// `Tx::announce`'s last words, for the accessibility tree's live region.
     pub(crate) announcement: crate::a11y::Announcement,
+    /// `Tx::haptic` requests waiting for `Runtime::take_haptics`.
+    pub(crate) haptics: crate::haptics::Haptics,
     /// The accessibility tree, while an assistive client listens (`a11y/tree.rs`).
-    pub(in crate::runtime) a11y: Option<Box<a11y_tree::A11yTree>>,
+    pub(in crate::runtime) a11y: Option<Box<crate::a11y::tree::A11yTree>>,
     /// The band of a taller document the window draws (`App::web_document`).
-    pub(crate) page: Option<web_page::Page>,
+    pub(in crate::runtime) page: Option<web_page::Page>,
+    pub(in crate::runtime) wm_state: crate::WindowManagerState,
+    /// Whether the last committed view read `Cx::decoration_mode`, `Cx::tiled_edges`, or `Cx::window_actions`.
+    pub(in crate::runtime) wm_state_read: bool,
+    /// Host-supplied safe-area insets `[top, right, bottom, left]` in logical points
+    /// (`Runtime::set_safe_area`); `None` falls back to browser insets on wasm32 or `[0.0; 4]`.
+    pub(in crate::runtime) safe_area: Option<[f32; 4]>,
+    /// Visible vertical band `(top, bottom)` of the host's visual viewport in window points when
+    /// smaller than the layout viewport (e.g. an on-screen keyboard under `resizes-visual`), or
+    /// `None` when the full layout viewport is visible.
+    pub(in crate::runtime) visual_viewport_y: Option<(f32, f32)>,
 }
 
 impl HostState {
@@ -73,13 +136,20 @@ impl HostState {
             zoom: zoom::Zoom { k: 1.0, window: viewport, window_scale: env.scale },
             titlebar: Default::default(),
             titlebar_inset: 0.0,
-            safe_area: Default::default(),
             system_text_scale: 1.0,
+            maximized: false,
+            full_screen: false,
+            window_backdrop: crate::WindowBackdrop::None,
+            window_backdrop_supported: 0,
+            renderer_kind: crate::RendererKind::Gpu,
+            backdrop_opaque_fallback: false,
             system_reduced_motion: false,
             system_accent: crate::SystemAccent::DEFAULT,
             system_contrast: None,
             system_increased_contrast: false,
             scroll_bars: Default::default(),
+            system_languages: None,
+            languages_gen: 0,
             native_overlay: false,
             surface_stats: None,
             app_stats: None,
@@ -89,19 +159,193 @@ impl HostState {
             window_resting: false,
             window_frame: None,
             window_title: Default::default(),
-            fit_height: false,
+            window_color_scheme: None,
+            window_backdrop_request: None,
+            represented_file: Default::default(),
+            document_edited: Default::default(),
+            content_sizing: crate::ContentSizing::Fixed,
+            content_limits: (None, None),
             fit: Default::default(),
+            overlay_fit: None,
+            user_close_request: false,
             minimize: Default::default(),
             url_requests: Vec::new(),
+            path_requests: Vec::new(),
+            url_scheme_requests: Vec::new(),
             open_urls_natively: false,
             popups: Default::default(),
+            popup_fallback: Default::default(),
+            popup_fallback_seq: 0,
+            #[cfg(test)]
+            force_popup_menu_fallback: false,
+            field_menu_fallback: None,
+            field_menu_seq: 0,
+            deferred_field_menu_pick: None,
+            #[cfg(test)]
+            force_field_menu_fallback: false,
             file_dialog: Default::default(),
             file_dialog_answers: Vec::new(),
             next_file_dialog: 0,
             announcement: Default::default(),
+            haptics: Default::default(),
             a11y: None,
             page: None,
+            wm_state: crate::WindowManagerState::default(),
+            wm_state_read: false,
+            safe_area: None,
+            visual_viewport_y: None,
         }
+    }
+
+    #[inline]
+    pub(super) fn window_origin(&self) -> (f32, f32) {
+        self.window_origin
+    }
+
+    /// Updates the cached global screen origin; returns true when it changed.
+    #[inline]
+    pub(super) fn set_window_origin(&mut self, origin: (f32, f32)) -> bool {
+        if self.window_origin == origin { return false; }
+        self.window_origin = origin;
+        true
+    }
+
+    /// Takes the links handlers asked to open that this runtime didn't open: all of them in a
+    /// headless run or test, none in a window. Each was already checked.
+    #[inline]
+    pub(crate) fn take_url_requests(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.url_requests)
+    }
+
+    #[inline]
+    pub(crate) fn push_url_request(&mut self, url: String) {
+        self.url_requests.push(url);
+    }
+
+    /// Takes the schemes `AppHandle::register_url_scheme` asked to claim that this runtime
+    /// didn't claim: all of them in a headless run or test, none in a window.
+    #[inline]
+    pub(crate) fn take_url_scheme_requests(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.url_scheme_requests)
+    }
+
+    #[inline]
+    pub(crate) fn push_url_scheme_request(&mut self, scheme: String) {
+        self.url_scheme_requests.push(scheme);
+    }
+
+    /// Takes the local path requests handlers asked to open or reveal that this runtime didn't
+    /// execute natively: all of them in a headless run or test, none in a window.
+    #[inline]
+    pub(crate) fn take_path_requests(&mut self) -> Vec<crate::open_path::PathRequest> {
+        std::mem::take(&mut self.path_requests)
+    }
+
+    #[inline]
+    pub(crate) fn push_path_request(&mut self, request: crate::open_path::PathRequest) {
+        self.path_requests.push(request);
+    }
+
+    #[inline]
+    pub(crate) fn a11y(&self) -> Option<&crate::a11y::tree::A11yTree> {
+        self.a11y.as_deref()
+    }
+
+    #[inline]
+    pub(crate) fn a11y_mut(&mut self) -> Option<&mut crate::a11y::tree::A11yTree> {
+        self.a11y.as_deref_mut()
+    }
+
+    #[inline]
+    pub(crate) fn a11y_or_insert(&mut self) -> &mut crate::a11y::tree::A11yTree {
+        self.a11y.get_or_insert_with(Default::default)
+    }
+
+    #[inline]
+    pub(crate) fn a11y_deactivate(&mut self) {
+        self.a11y = None;
+    }
+
+    #[cfg(test)]
+    #[inline]
+    pub(crate) fn popup_is_open(&self) -> bool {
+        self.popups.is_open()
+    }
+
+    #[inline]
+    pub(super) fn clear_titlebar(&mut self) {
+        self.titlebar.clear();
+    }
+
+    #[inline]
+    pub(crate) fn set_app_stats(&mut self, stats: Option<fn() -> String>) {
+        self.app_stats = stats;
+    }
+
+    /// Asks the window for the content's new height, on this commit's spring. The first
+    /// commit, a viewport change and `Tx::instant` jump.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn fit_window(
+        &mut self,
+        size: (f32, f32),
+        viewport: (f32, f32),
+        scale: f32,
+        reduced_motion: bool,
+        headless: bool,
+        tx: &Tx,
+        first: bool,
+    ) {
+        // An overlay resizes through its host in window points at `window_scale`, matching
+        // `measure_content` and `OverlayCore::canvas_size` under `Cx::zoom`.
+        if self.native_overlay {
+            let w = if self.content_sizing.fits_width() { self.content_height_from(size.0) } else { self.zoom.window.0 };
+            let h = if self.content_sizing.fits_height() { self.content_height_from(size.1) } else { self.zoom.window.1 };
+            let next = (w, h);
+            if next == self.zoom.window { return; }
+            self.overlay_fit = Some(next);
+            return;
+        }
+        if !self.content_sizing.fits_height() { return; }
+        let height = size.1.ceil_to(scale).max(1.0);
+        if !self.fit.ask(height, viewport.1) { return; }
+        let jump = first || tx.commit.snaps() || tx.relayout || reduced_motion;
+        // Only a macOS window and headless runs move the frame on a spring.
+        if !jump && self.window_resting && (cfg!(target_os = "macos") || headless) { self.fit.hold = FitHold::Asked; }
+        let request = crate::window::frame::FrameRequest {
+            size: Some((viewport.0, height)), animate: !jump,
+            spring: (!jump).then(|| tx.motion.map_or(crate::tok::motion::DEFAULT, MotionSource::spring)), center: false,
+            resize_drag: None,
+        };
+        self.window_frame = Some(self.window_frame.unwrap_or_default().merge(request));
+    }
+
+    #[inline]
+    pub(super) fn content_height_from(&self, view_height: f32) -> f32 {
+        (view_height * self.zoom.k).ceil_to(self.zoom.window_scale).max(1.0)
+    }
+
+    #[inline]
+    pub(crate) fn set_fit_height(&mut self, on: bool) {
+        self.content_sizing = if on { crate::ContentSizing::FitHeight } else { crate::ContentSizing::Fixed };
+    }
+
+    #[inline]
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) const fn fit_height(&self) -> bool {
+        matches!(self.content_sizing, crate::ContentSizing::FitHeight)
+    }
+
+    /// Someone resized a window that fits its content (not a page's band) to `height`: it
+    /// goes back to the content's height.
+    #[inline]
+    pub(super) fn fit_resized(&mut self, height: f32, current_height: f32) -> bool {
+        self.content_sizing.fits_height() && !self.native_overlay && self.page.is_none() && self.window_resting && self.fit.resized(height, current_height)
+    }
+
+    /// Whether this frame holds its motion for the window (see [`FitHold`]).
+    #[inline]
+    pub(super) fn fit_frame_holds(&mut self) -> bool {
+        self.fit.frame_holds()
     }
 }
 
@@ -166,6 +410,83 @@ impl Title {
     }
 }
 
+/// A latched host-window property seeded from creation options and updated by `Tx`.
+/// Deduplicates repeated sets to the currently applied value, cancels a pending change if a
+/// later `Tx` reverts back to the applied value before the host takes it, and retains the
+/// latest value across native window recreation.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Latched<T> {
+    #[default]
+    Unset,
+    /// Value already applied to the native window (or seeded at creation).
+    Applied(T),
+    /// Value updated via `Tx` that differs from `applied` and awaits `Host::shell`.
+    Pending { applied: Option<T>, next: T },
+}
+
+enum LatchedEvent<T> {
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    Seed(T),
+    Set(T),
+    TakeChange,
+    MarkApplied,
+}
+
+impl<T: PartialEq> Latched<T> {
+    /// Seeds the initial creation-time value before any `Tx` update runs.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) fn seed(&mut self, value: T) {
+        *self = std::mem::take(self).step(LatchedEvent::Seed(value)).0;
+    }
+
+    /// Latches a new requested value from `Tx`.
+    pub(crate) fn set(&mut self, value: T) {
+        *self = std::mem::take(self).step(LatchedEvent::Set(value)).0;
+    }
+
+    /// Returns the latest value (applied or pending) for native creation/recreation.
+    #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+    pub(crate) fn current(&self) -> Option<&T> {
+        match self {
+            Latched::Unset => None,
+            Latched::Applied(v) | Latched::Pending { next: v, .. } => Some(v),
+        }
+    }
+
+    /// Marks the current value as already applied to a freshly created native window.
+    #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+    pub(crate) fn mark_applied(&mut self) {
+        *self = std::mem::take(self).step(LatchedEvent::MarkApplied).0;
+    }
+
+    /// Takes a pending change for the host to apply, transitioning it to `Applied`.
+    pub(crate) fn take_change(&mut self) -> Option<&T> {
+        let (next, changed) = std::mem::take(self).step(LatchedEvent::TakeChange);
+        *self = next;
+        if !changed { return None; }
+        match &*self {
+            Latched::Applied(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    fn step(self, event: LatchedEvent<T>) -> (Self, bool) {
+        match (self, event) {
+            (Latched::Unset, LatchedEvent::Seed(v)) => (Latched::Applied(v), false),
+            (state, LatchedEvent::Seed(_)) => (state, false),
+            (Latched::Unset, LatchedEvent::Set(v)) => (Latched::Pending { applied: None, next: v }, false),
+            (Latched::Applied(a), LatchedEvent::Set(v)) if a == v => (Latched::Applied(a), false),
+            (Latched::Applied(a), LatchedEvent::Set(v)) => (Latched::Pending { applied: Some(a), next: v }, false),
+            (Latched::Pending { applied: Some(a), .. }, LatchedEvent::Set(v)) if a == v => (Latched::Applied(a), false),
+            (Latched::Pending { applied, .. }, LatchedEvent::Set(v)) => (Latched::Pending { applied, next: v }, false),
+            (Latched::Pending { next, .. }, LatchedEvent::TakeChange) => (Latched::Applied(next), true),
+            (state, LatchedEvent::TakeChange) => (state, false),
+            (Latched::Pending { next, .. }, LatchedEvent::MarkApplied) => (Latched::Applied(next), false),
+            (state, LatchedEvent::MarkApplied) => (state, false),
+        }
+    }
+}
+
 /// A window that fits its content (`App::fit_content_height`): the height it last asked the
 /// window for, and the frame its move starts with.
 #[derive(Debug, Default)]
@@ -222,17 +543,9 @@ impl FitWindow {
 impl RuntimeCore {
     /// Asks the window for the content's new height, on this commit's spring. The first
     /// commit, a viewport change and `Tx::instant` jump.
-    pub(super) fn fit_window(&mut self, height: f32, tx: &Tx, first: bool) {
-        let height = height.ceil_to(self.env.scale).max(1.0);
-        if !self.host.fit.ask(height, self.viewport.1) { return; }
-        let jump = first || tx.commit.snaps() || tx.relayout || self.reduced_motion;
-        // Only a macOS window and headless runs move the frame on a spring.
-        if !jump && self.host.window_resting && (cfg!(target_os = "macos") || self.wall_start.is_none()) { self.host.fit.hold = FitHold::Asked; }
-        let request = crate::window::frame::FrameRequest {
-            size: Some((self.viewport.0, height)), animate: !jump,
-            spring: (!jump).then(|| tx.motion.map_or(crate::tok::motion::DEFAULT, MotionSource::spring)), center: false,
-        };
-        self.host.window_frame = Some(self.host.window_frame.unwrap_or_default().merge(request));
+    #[inline]
+    pub(super) fn fit_window(&mut self, size: (f32, f32), tx: &Tx, first: bool) {
+        self.host.fit_window(size, self.viewport, self.env.scale, self.reduced_motion, self.wall_start.is_none(), tx, first);
     }
 
     /// The root's natural height at the current width, in window points (the view's times its
@@ -242,17 +555,52 @@ impl RuntimeCore {
         let measured = self.measure_pass(app, &Tx::default(), false);
         let height = measured.nodes.first().map_or(self.viewport.1, |root| root.local.h);
         self.discard_measured(measured);
-        (height * self.host.zoom.k).ceil_to(self.host.zoom.window_scale).max(1.0)
+        self.host.content_height_from(height)
+    }
+
+    /// The root's natural `(width, height)` in window points (view points times `Cx::zoom`),
+    /// measured without committing or firing `apply`, `on_layout`, `on_ready`, `poll`, or timers.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn measure_content(&mut self, app: &dyn ViewDriver) -> (f32, f32) {
+        let measured = self.measure_pass(app, &Tx::default(), false);
+        let zoom = measured.zoom;
+        let size = measured.nodes.first().map_or(self.viewport, |root| (root.local.w, root.local.h));
+        self.discard_measured(measured);
+        (size.0 * zoom, size.1 * zoom)
+    }
+
+    /// The last committed root element's target `(width, height)` in window points from Taffy
+    /// layout (not interpolated spring rects).
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn committed_content_size(&self) -> Option<(f32, f32)> {
+        let root = self.tree.nodes.first()?;
+        Some((root.local.w * self.host.zoom.k, root.local.h * self.host.zoom.k))
     }
 
     /// Someone resized a window that fits its content (not a page's band) to `height`: it
     /// goes back to the content's height.
+    #[inline]
     pub(super) fn fit_resized(&mut self, height: f32) -> bool {
-        self.host.fit_height && self.host.page.is_none() && self.host.window_resting && self.host.fit.resized(height, self.viewport.1)
+        self.host.fit_resized(height, self.viewport.1)
     }
 
     /// Whether this frame holds its motion for the window (see [`FitHold`]).
-    pub(super) fn fit_frame_holds(&mut self) -> bool { self.host.fit.frame_holds() }
+    #[inline]
+    pub(super) fn fit_frame_holds(&mut self) -> bool {
+        self.host.fit_frame_holds()
+    }
+
+    /// Takes a pending user-initiated close request (`Tx::request_user_close`).
+    #[inline]
+    pub(crate) fn take_user_close_request(&mut self) -> bool {
+        std::mem::take(&mut self.host.user_close_request)
+    }
+
+    /// Whether a user-initiated close request is pending for the host.
+    #[inline]
+    pub(crate) fn has_user_close_request(&self) -> bool {
+        self.host.user_close_request
+    }
 }
 
 #[cfg(test)]

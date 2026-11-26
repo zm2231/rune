@@ -13,6 +13,8 @@
 //! and their content as a separate `El` that the view mounts at the root with [`root`], so it
 //! draws above later siblings and escapes clipping ancestors.
 
+#![forbid(unsafe_code)]
+
 mod budget;
 mod containers;
 mod controls;
@@ -24,6 +26,8 @@ pub mod line_selection;
 mod list_nav;
 #[cfg(feature = "markdown")]
 pub mod markdown;
+#[cfg(feature = "math")]
+pub mod math;
 #[cfg(feature = "mermaid")]
 pub mod mermaid;
 #[cfg(feature = "markdown")]
@@ -35,6 +39,7 @@ pub mod shell;
 pub mod syntax;
 mod tokens;
 mod tree;
+pub mod zoom_pan;
 
 pub use containers::accordion::Accordion;
 pub use containers::accordion::AccordionItem;
@@ -61,13 +66,17 @@ pub use controls::actions::ButtonVariant;
 pub use controls::actions::IconButton;
 pub use controls::actions::IconButtonVariant;
 pub use controls::checkbox::Checkbox;
+pub use controls::color_picker::ColorPicker;
+pub use controls::color_picker::Hsv;
 pub use controls::field::Field;
 pub use controls::radio::RadioGroup;
 pub use controls::radio::RadioItem;
+pub use controls::radio::RadioSurface;
 pub use controls::segmented::SegmentedControl;
 pub use controls::shortcut_recorder::ShortcutRecorder;
 pub use controls::shortcut_recorder::ShortcutRecorderState;
 pub use controls::shortcut_recorder::shortcut_error_message;
+pub use controls::slider::Slider;
 pub use controls::switch::Switch;
 pub use controls::text_input::TextArea;
 pub use controls::text_input::TextField;
@@ -87,6 +96,8 @@ pub use markdown::CodeFrame;
 #[cfg(feature = "mermaid")]
 pub use markdown::DiagramFrame;
 #[cfg(feature = "markdown")]
+pub use markdown::DiffFrame;
+#[cfg(feature = "markdown")]
 pub use markdown::Highlight;
 #[cfg(feature = "markdown")]
 pub use markdown::ImageFrame;
@@ -105,11 +116,11 @@ pub use overlays::combobox::ComboboxOption;
 pub use overlays::combobox::ComboboxPhase;
 pub use overlays::combobox::ComboboxState;
 pub use overlays::dialog::Dialog;
+pub use overlays::hover_card::HoverCard;
 pub use overlays::menu::Menu;
 pub use overlays::menu::MenuEntry;
 pub use overlays::menu::MenuItem;
 pub use overlays::menu::context_menu;
-pub use overlays::overlay::HoverCard;
 pub use overlays::overlay::Placement;
 pub use overlays::overlay::Popover;
 pub use overlays::overlay::Tooltip;
@@ -118,6 +129,7 @@ pub use overlays::overlay::TooltipStyle;
 pub use overlays::overlay::body_text;
 pub use overlays::overlay::overlay_text;
 pub use overlays::overlay::scrim;
+pub use overlays::overlay::scrim_tx;
 pub use overlays::popover;
 pub use overlays::popup_list::PopupItem;
 pub use overlays::popup_list::PopupList;
@@ -139,6 +151,8 @@ pub use scroll_bar::ScrollBarStyle;
 pub use scroll_bar::scroll_bar;
 pub use shell::Page;
 pub use shell::PaneState;
+pub use shell::Reorder;
+pub use shell::ReorderLanding;
 pub use shell::Sidebar;
 pub use shell::SidebarHeader;
 pub use shell::SidebarRow;
@@ -158,6 +172,23 @@ pub use tokens::kit::Palette;
 pub use tokens::kit::Radius;
 pub use tokens::kit::StateColors;
 pub use tokens::kit::Type;
+pub use tokens::metrics::ButtonMetrics;
+pub use tokens::metrics::BySize;
+pub use tokens::metrics::CheckboxColors;
+pub use tokens::metrics::DialogMetrics;
+pub use tokens::metrics::FieldMetrics;
+pub use tokens::metrics::KeybindMetrics;
+pub use tokens::metrics::MenuMetrics;
+pub use tokens::metrics::Metrics;
+pub use tokens::metrics::PopoverMetrics;
+pub use tokens::metrics::PopupRowMetrics;
+pub use tokens::metrics::ProgressMetrics;
+pub use tokens::metrics::SegmentedMetrics;
+pub use tokens::metrics::SelectMetrics;
+pub use tokens::metrics::StandardSwitchMetrics;
+pub use tokens::metrics::SwitchLook;
+pub use tokens::metrics::SwitchMetrics;
+pub use tokens::metrics::TextAreaMetrics;
 pub use tokens::palette::PaletteFocus;
 pub use tokens::palette::PaletteSeed;
 pub use tree::FileNode;
@@ -170,6 +201,8 @@ pub use tree::TreeRow;
 pub use tree::TreeStyle;
 pub use tree::file_icon;
 pub use tree::natural_cmp;
+pub use zoom_pan::Canvas;
+pub use zoom_pan::ZoomPan;
 
 use rune::{Color, El, Shadow, Tx};
 
@@ -255,7 +288,7 @@ pub(crate) fn over(top: Color, bottom: Color) -> Color {
 }
 
 /// Mounts overlays above `base`: `base` fills the window and each overlay follows it in paint
-/// and hit order. Place popover/menu/select/tooltip contents and toast regions here.
+/// and hit order. Place dialog/popover/menu/select/tooltip contents and toast regions here.
 pub fn root(base: El, overlays: impl IntoIterator<Item = El>) -> El {
     let within = base.hover_within_curves();
     let root = rune::el().key("kit-root").w_full().h_full().child(base.w_full().h_full()).children(overlays);

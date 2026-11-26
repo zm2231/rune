@@ -6,6 +6,10 @@ use super::*;
 mod blocks;
 mod code;
 mod inline;
+mod source_copy;
+
+pub(super) use code::code_overflows_at;
+pub(super) use source_copy::source_copy;
 
 pub(super) struct Renderer {
     pub(super) s: MarkdownStyle,
@@ -14,6 +18,8 @@ pub(super) struct Renderer {
     pub(super) streaming: bool,
     pub(super) on_link: Option<LinkWire>,
     pub(super) on_link_secondary: Option<LinkWire>,
+    pub(super) on_link_hover: Option<LinkWire>,
+    pub(super) link_menu: bool,
     pub(super) link_look: Option<LinkLook>,
     pub(super) link_help: Option<LinkHelp>,
     pub(super) on_task: Option<TaskWire>,
@@ -24,12 +30,18 @@ pub(super) struct Renderer {
     pub(super) selectable: bool,
     /// `Markdown::scroll_wide`.
     pub(super) scroll_wide: bool,
+    /// `Markdown::wrap_anywhere`.
+    pub(super) wrap_anywhere: bool,
+    /// `Markdown::hard_breaks`.
+    pub(super) hard_breaks: bool,
     /// `Markdown::dir_tentative`.
     pub(super) tentative: Option<rune::Direction>,
     pub(super) highlighter: Highlighter,
     pub(super) sources: Rc<[Source]>,
     /// The next of `sources`, advanced at each [`Block::Code`] in document order.
     pub(super) next_source: Cell<usize>,
+    /// The next diff fence index, advanced at each [`Block::Diff`] in document order.
+    pub(super) next_diff: Cell<usize>,
     pub(super) tasks: Rc<[Option<(bool, usize)>]>,
     /// The next of `tasks`, advanced at each list item in document order.
     pub(super) next_task: Cell<usize>,
@@ -39,10 +51,14 @@ pub(super) struct Renderer {
     pub(super) diagram_frame: Option<FrameWire>,
     /// `Markdown::code_frame`.
     pub(super) code_frame: Option<CodeWire>,
+    /// `Markdown::diff_frame`.
+    pub(super) diff_frame: Option<DiffFrameFn>,
     /// `Markdown::quote_frame`.
     pub(super) quote_frame: Option<QuoteWire>,
     /// `Markdown::link_favicon`.
     pub(super) link_favicon: Option<link_icon::FaviconWire>,
+    /// `Markdown::emoji`.
+    pub(super) emoji: Option<emoji::EmojiWire>,
     /// `Markdown::images` and `Markdown::on_image`.
     pub(super) images: Option<image::ImageWire>,
     pub(super) on_image: Option<image::ImagePress>,
@@ -98,30 +114,6 @@ pub(super) fn rendered_keys(n: usize, keys: &[String]) -> Vec<String> {
     (0..n).map(|i| if keys.is_empty() { format!("b{i}") } else { block_key(i, keys, &mut used) }).collect()
 }
 
-/// [`Markdown::copy_source`]: the source of the top-level blocks (keyed `names`, starting at
-/// `starts`) that `sel` touches, `None` for part of one block.
-pub(super) fn source_copy(src: &str, starts: &[usize], names: &[String], sel: &rune::TextSelection) -> Option<String> {
-    // The longest key that is the path or its first segments: an app's key may hold a `/`.
-    let block_of = |path: &str| names.iter().enumerate()
-        .filter(|(_, k)| path == k.as_str() || path.strip_prefix(k.as_str()).is_some_and(|rest| rest.starts_with('/')))
-        .max_by_key(|(_, k)| k.len()).map(|(b, _)| b);
-    let mut touched: Option<(usize, usize)> = None;
-    for t in sel.texts().iter().filter(|t| t.is_selected()) {
-        let Some(b) = block_of(t.path()) else { continue };
-        touched = Some(touched.map_or((b, b), |(first, _)| (first, b)));
-    }
-    let (first, last) = touched?;
-    if first == last && !sel.texts().iter().filter(|t| block_of(t.path()) == Some(first)).all(|t| t.is_whole() || t.is_empty()) {
-        return None;
-    }
-    if (first == 0 && last + 1 >= starts.len()) || sel.texts().iter().all(|t| t.is_whole() || t.is_empty()) {
-        return Some(src.to_owned());
-    }
-    let start = *starts.get(first)?;
-    let end = starts.get(last + 1).copied().unwrap_or(src.len());
-    Some(src.get(start..end)?.trim_end().to_owned())
-}
-
 fn block_key(i: usize, keys: &[String], used: &mut Vec<String>) -> String {
     if let Some(k) = keys.get(i).filter(|k| !k.is_empty() && !used.iter().any(|u| u == *k)) {
         used.push(k.clone());
@@ -143,16 +135,17 @@ fn block_key(i: usize, keys: &[String], used: &mut Vec<String>) -> String {
 /// (margin-top, margin-bottom) per block, collapsed like CSS margins.
 pub(super) fn margins(b: &Block, s: &MarkdownStyle) -> (f32, f32) {
     match b {
-        Block::Para(_) => (0.0, 12.0),
-        Block::Heading(1, _) => (28.0, 12.0),
-        Block::Heading(2, _) => (24.0, 10.0),
-        Block::Heading(..) => (20.0, 8.0),
+        Block::Para(_) => (s.paragraph_margin[0], s.paragraph_margin[1]),
+        Block::Heading(level, _) => {
+            let [top, bottom] = s.heading_margin[usize::from((*level).clamp(1, 4) - 1)];
+            (top, bottom)
+        }
         Block::Code { .. } | Block::Diff(_) | Block::Mermaid(_) => (s.code_margin[0], s.code_margin[1]),
-        Block::List { .. } => (8.0, 12.0),
-        Block::Quote(_) => (16.0, 16.0),
-        Block::Rule => (32.0, 32.0),
+        Block::List { .. } => (s.block_margin[0][0], s.block_margin[0][1]),
+        Block::Quote(_) => (s.block_margin[1][0], s.block_margin[1][1]),
+        Block::Rule => (s.block_margin[2][0], s.block_margin[2][1]),
         Block::Table(_) => (s.table_margin[0], s.table_margin[1]),
-        Block::Image { .. } => (24.0, 24.0),
+        Block::Image { .. } => (s.image_margin[0], s.image_margin[1]),
     }
 }
 

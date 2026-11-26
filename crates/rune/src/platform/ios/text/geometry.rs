@@ -6,7 +6,7 @@
 
 use std::ops::Range;
 
-use crate::runtime::a11y_text::Line;
+use crate::a11y::text::Line;
 
 /// The focused field's lines, top to bottom, in the view's points. Offsets are bytes of the
 /// field's text.

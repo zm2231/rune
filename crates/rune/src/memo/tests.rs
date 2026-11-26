@@ -61,7 +61,7 @@ fn an_unchanged_version_reuses_the_subtree_and_a_new_version_or_theme_builds() {
     rt.set_viewport((200.0, 200.0), 2.0);
     rt.frame(1.0 / 60.0);
     assert_eq!(BUILDS.get(), 4, "a scale change builds");
-    rt.commit.memo.clear();
+    rt.commit.clear_memo();
     commit(&mut rt);
     assert_eq!(BUILDS.get(), 5, "a cleared cache (hot patch, tunables) builds");
     assert!(rt.elements().iter().any(|e| e.key.as_deref() == Some("button")), "tools see reused nodes");
@@ -70,7 +70,7 @@ fn an_unchanged_version_reuses_the_subtree_and_a_new_version_or_theme_builds() {
 #[test]
 fn a_view_panicking_inside_a_memo_leaves_no_scope_for_the_next_build() {
     let panicked = std::panic::catch_unwind(|| {
-        let _scope = enter(MemoCache::default(), Env::new(true, 1.0), crate::SystemAccent::DEFAULT, false, true, [0; 9], None, LayoutRects::default());
+        let _scope = enter(MemoCache::default(), Env::new(true, 1.0), crate::SystemAccent::DEFAULT, false, 0, true, [0; 5], None, LayoutRects::default());
         memo("outer", 0, || memo("inner", 0, || panic!("view panicked")))
     });
     assert!(panicked.is_err());
@@ -119,6 +119,51 @@ fn an_id_used_twice_in_one_build_builds_both() {
     let texts: Vec<_> = rt.elements().into_iter().filter_map(|e| e.text).collect();
     assert_eq!(texts, ["a", "b"]);
     assert_eq!(BUILDS.get(), 3, "the first is reused, the duplicate builds each time");
+}
+
+#[test]
+fn a_colliding_memo_still_propagates_reads_to_its_enclosing_memo() {
+    struct State { width: f32, ticks: u32 }
+    fn view(s: &State, cx: &mut Cx<State>) -> El {
+        col().size(300.0, 300.0).children([
+            el().key("probe").w(s.width).h(10.0),
+            memo("outer", 0, || {
+                col().children([
+                    col().key("a").child(memo("dup", 0, || col().child(text("first").key("t1")))),
+                    col().key("b").child(memo("dup", 0, || {
+                        let w = cx.layout_size("probe").map_or(-1.0, |sz| sz[0]);
+                        col().child(text(format!("w {w}")).key("t2"))
+                    })),
+                ])
+            }),
+            text(format!("tick {}", s.ticks)).key("tick"),
+        ])
+    }
+    let mut rt = Runtime::new(State { width: 80.0, ticks: 0 }, view, (300.0, 300.0), Env::default());
+    rt.frame(0.0);
+    let t2 = |rt: &Runtime<State>| rt.elements().into_iter().find(|e| e.key.as_deref() == Some("t2")).and_then(|e| e.text);
+    assert_eq!(t2(&rt).as_deref(), Some("w 80"));
+    rt.state.width = 140.0;
+    commit(&mut rt);
+    assert_eq!(t2(&rt).as_deref(), Some("w 140"), "reads made inside an uncached colliding memo propagate to the enclosing memo");
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn as_next_build_reuses_same_memo_id_without_collision_warning() {
+    crate::tooling::perf_warn::take_log();
+    fn view(_: &(), _: &mut Cx<()>) -> El {
+        let first = memo("step-id", 0, || text("a"));
+        let second = as_next_build(|| memo("step-id", 0, || text("b")));
+        col().children([col().key("a").child(first), col().key("b").child(second)])
+    }
+    let mut rt = Runtime::new((), view, (200.0, 200.0), Env::default());
+    rt.frame(0.0);
+    let log: Vec<_> = crate::tooling::perf_warn::take_log()
+        .into_iter()
+        .filter(|m| m.contains("step-id"))
+        .collect();
+    assert!(log.is_empty(), "as_next_build advances pass so reusing the same id does not collide: {log:?}");
 }
 
 struct Rows {
@@ -368,17 +413,50 @@ fn cached_unkeyed_siblings_keep_index_paths_and_leave_no_key_warnings() {
     }
     BUILDS.set(0);
     let mut rt = Runtime::new(0u32, view, (200.0, 200.0), Env::new(true, 1.0));
-    rt.commit.key_warnings = Some(Vec::new());
+    rt.commit.enable_key_warnings();
     rt.frame(0.0);
     assert_eq!(BUILDS.get(), 3);
-    assert!(rt.commit.key_warnings.as_ref().unwrap().is_empty(), "{:?}", rt.commit.key_warnings);
+    assert!(rt.commit.key_warnings().unwrap().is_empty(), "{:?}", rt.commit.key_warnings());
     let paths: Vec<_> = rt.elements().into_iter().map(|e| e.path).collect();
     assert_eq!(paths, vec!["#0", "#0/#0", "#0/#1", "#0/named"]);
 
     rt.update(|t, _| *t += 1);
     rt.frame(1.0 / 120.0);
     assert_eq!(BUILDS.get(), 3, "reused all three cached subtrees");
-    assert!(rt.commit.key_warnings.as_ref().unwrap().is_empty());
+    assert!(rt.commit.key_warnings().unwrap().is_empty());
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn region_debug_check_redacts_secure_text() {
+    struct State {
+        secret: &'static str,
+        tick: u32,
+    }
+    fn view(s: &State, _: &mut Cx<State>) -> El {
+        let _ = s.tick;
+        let secret = s.secret;
+        region("sec-region-redaction-test", move || {
+            text(secret).secure()
+        })
+    }
+    let mut rt = Runtime::new(
+        State { secret: "alpha-region-secret", tick: 0 },
+        view,
+        (200.0, 100.0),
+        Env::new(true, 1.0),
+    );
+    rt.frame(0.0);
+    rt.update(|s, _| {
+        s.secret = "beta-region-secret";
+        s.tick += 1;
+    });
+    rt.frame(1.0 / 60.0);
+    let warnings = region_warnings();
+    assert!(
+        warnings.iter().all(|w| !w.contains("alpha-region-secret") && !w.contains("beta-region-secret")),
+        "region debug warnings leaked secure text: {warnings:?}"
+    );
 }
 
 /// `cargo test -p rune --profile perf --lib memo_build_time -- --ignored --nocapture`
@@ -394,7 +472,7 @@ fn memo_build_time() {
                 commit(&mut rt);
             }
             let frames = 300;
-            let start = std::time::Instant::now();
+            let start = crate::time::now();
             for _ in 0..frames {
                 rt.state.tick += 1;
                 commit(&mut rt);

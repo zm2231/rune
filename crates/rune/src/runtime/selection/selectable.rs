@@ -21,6 +21,8 @@ use std::ops::Range;
 /// Chromium on Windows and Linux doesn't.
 const SECONDARY_SELECTS_WORD: bool = cfg!(target_os = "macos");
 
+#[path = "caret_browse/mod.rs"]
+pub(crate) mod caret_browse;
 #[path = "copy_html.rs"]
 mod copy_html;
 #[path = "copy_join.rs"]
@@ -105,11 +107,21 @@ pub(crate) fn unit_at(text: &str, i: usize, unit: Unit) -> (usize, usize) {
 
 /// Where each of `text`'s words ends, in order, the last at `text.len()`: ICU4X's dictionaries
 /// natively, the browser's (`Intl.Segmenter`) in a page and Windows' own (`icu.dll`) on Windows,
-/// which link none.
+/// which link none, with Chromium's tailoring (`foo.bar` is three words).
 fn word_ends(text: &str) -> impl Iterator<Item = usize> {
-    rune_text::segmenter::words(text).into_iter()
+    rune_text::segmenter::word_ends(text).into_iter()
 }
 
+/// A double-click's word on Windows takes the spaces after it along, as Chromium's does there
+/// (`select_trailing_whitespace_enabled`, measured on official OpenCode Desktop 2.4.0: `aaa bbb`
+/// selects `aaa `, `trail  ` selects `trail  `); a line break stays out, and a drag from it
+/// extends by plain words. Elsewhere the word as it is.
+pub(crate) fn with_trailing_space(text: &str, (a, b): (usize, usize)) -> (usize, usize) {
+    if !cfg!(target_os = "windows") || b > text.len() || text[a..b].trim().is_empty() {
+        return (a, b);
+    }
+    (a, text.len() - text[b..].trim_start_matches([' ', '\t']).len())
+}
 /// The selection a drag from unit range `origin` to unit range `at` makes: (anchor, focus).
 pub(crate) fn extend(origin: (usize, usize), at: (usize, usize)) -> (usize, usize) {
     if at.0 < origin.0 { (origin.1, at.0) } else { (origin.0, at.1.max(origin.1)) }
@@ -204,13 +216,51 @@ fn dist_x(r: [f32; 4], x: f32) -> f32 { (r[0] - x).max(x - r[2]).max(0.0) }
 /// key, so a keyed text keeps its selection when a sibling shifts an unkeyed ancestor's index.
 pub(in crate::runtime) fn same_keyed_path(a: &str, b: &str) -> bool {
     fn split(p: &str) -> Option<(&str, &str)> {
-        let last_key = p.rmatch_indices('/').find(|&(i, _)| !p[i + 1..].starts_with('#'))
-            .map_or_else(|| (!p.starts_with('#')).then_some(0), |(i, _)| Some(i + 1))?;
-        let end = last_key + p[last_key..].find('/').unwrap_or(p.len() - last_key);
+        let seg_end = |start: usize| start + p[start..].find('/').unwrap_or(p.len() - start);
+        let end = p.rmatch_indices('/').find_map(|(i, _)| {
+            let end = seg_end(i + 1);
+            (!element_path::is_unkeyed_segment(&p[i + 1..end])).then_some(end)
+        }).or_else(|| {
+            let end = seg_end(0);
+            (!element_path::is_unkeyed_segment(&p[..end])).then_some(end)
+        })?;
         Some((&p[..end], &p[end..]))
     }
     let (Some((ka, ta)), Some((kb, tb))) = (split(a), split(b)) else { return false };
-    ta == tb && ka.split('/').filter(|s| !s.starts_with('#')).eq(kb.split('/').filter(|s| !s.starts_with('#')))
+    ta == tb && ka.split('/').filter(|s| !element_path::is_unkeyed_segment(s))
+        .eq(kb.split('/').filter(|s| !element_path::is_unkeyed_segment(s)))
+}
+
+impl caret::TextInputState {
+    /// With nothing selected the basis reads ends of 0: nothing that compares it can change its
+    /// answer, since any selection made since differs in its path.
+    pub(super) fn same_selection_basis(&self, commits: u64, from: &Basis) -> bool {
+        let phase = &self.selectable.phase;
+        let sel = phase.selection();
+        from.0 == commits
+            && from.1.as_deref() == sel.map(|s| s.path.as_str())
+            && from.2 == sel.map_or(0, |s| s.anchor)
+            && from.3 == sel.map_or(0, |s| s.focus)
+            && from.4.as_deref() == sel.and_then(|s| s.far.as_ref()).map(|f| f.path.as_str())
+            && from.5 == phase.dragging()
+    }
+
+    pub(super) fn selection_basis(&self, commits: u64) -> Basis {
+        let phase = &self.selectable.phase;
+        let sel = phase.selection();
+        (commits, sel.map(|s| s.path.clone()), sel.map_or(0, |s| s.anchor), sel.map_or(0, |s| s.focus),
+            sel.and_then(|s| s.far.as_ref()).map(|f| f.path.clone()), phase.dragging())
+    }
+
+    pub(super) fn cached_selection_snapshot(&self, commits: u64) -> Option<Option<Rc<TextSelection>>> {
+        let cache = self.sel_snapshot.borrow();
+        cache.as_ref().filter(|s| self.same_selection_basis(commits, &s.from)).map(|s| s.selection.clone())
+    }
+
+    pub(super) fn cache_selection_snapshot(&self, commits: u64, selection: Option<Rc<TextSelection>>) {
+        let from = self.selection_basis(commits);
+        *self.sel_snapshot.borrow_mut() = Some(Snapshot { from, selection });
+    }
 }
 
 impl RuntimeCore {
@@ -219,7 +269,7 @@ impl RuntimeCore {
         n.input.is_none() && n.text.as_ref().is_some_and(|t| t.selectable && !t.redacted)
     }
 
-    pub(in crate::runtime) fn live(&self, path: &str) -> Option<usize> {
+    pub(crate) fn live(&self, path: &str) -> Option<usize> {
         (0..self.tree.nodes.len()).find(|&i| self.tree.nodes[i].path == path && !self.subtree_exiting(i) && self.allowed(i))
     }
 
@@ -353,49 +403,27 @@ impl RuntimeCore {
         let ranges = self.selection_ranges();
         if ranges.is_empty() { return None; }
         let texts = ranges.iter().map(|&(i, a, b)| self.selected_piece(i, a..b, None)).collect();
-        Some(TextSelection { texts, text: self.joined(&ranges), backward: self.selection_backward() })
+        Some(TextSelection { texts, text: self.joined(&ranges), backward: self.selection_backward(), truncated: false })
     }
 
     /// [`Runtime::selection`] for a handler's `Tx`, kept until a commit or the selection changes.
     pub(in crate::runtime) fn selection_snapshot(&self, app: &dyn ViewDriver) -> Option<Rc<TextSelection>> {
         self.edit.selectable.phase.selection()?;
-        {
-            let cache = self.edit.sel_snapshot.borrow();
-            if let Some(s) = cache.as_ref().filter(|s| self.same_from(&s.from)) { return s.selection.clone(); }
+        if let Some(cached) = self.edit.cached_selection_snapshot(self.commit.commits) {
+            return cached;
         }
-        let from = self.selection_from();
         let selection = self.selection(app).map(Rc::new);
-        *self.edit.sel_snapshot.borrow_mut() = Some(Snapshot { from, selection: selection.clone() });
+        self.edit.cache_selection_snapshot(self.commit.commits, selection.clone());
         selection
-    }
-
-    /// With nothing selected the basis reads ends of 0: nothing that compares it can change its
-    /// answer, since any selection made since differs in its path.
-    fn same_from(&self, from: &Basis) -> bool {
-        let phase = &self.edit.selectable.phase;
-        let sel = phase.selection();
-        from.0 == self.commit.commits
-            && from.1.as_deref() == sel.map(|s| s.path.as_str())
-            && from.2 == sel.map_or(0, |s| s.anchor)
-            && from.3 == sel.map_or(0, |s| s.focus)
-            && from.4.as_deref() == sel.and_then(|s| s.far.as_ref()).map(|f| f.path.as_str())
-            && from.5 == phase.dragging()
-    }
-
-    fn selection_from(&self) -> Basis {
-        let phase = &self.edit.selectable.phase;
-        let sel = phase.selection();
-        (self.commit.commits, sel.map(|s| s.path.clone()), sel.map_or(0, |s| s.anchor), sel.map_or(0, |s| s.focus),
-            sel.and_then(|s| s.far.as_ref()).map(|f| f.path.clone()), phase.dragging())
     }
 
     /// The `El::on_selection_change` calls owed since the last check: each element whose part
     /// of the selection changed, started or cleared.
     pub(in crate::runtime) fn selection_changes(&mut self, app: &dyn ViewDriver) -> Vec<Action> {
-        if self.edit.sel_heard.from.as_ref().is_some_and(|f| self.same_from(f)) { return Vec::new(); }
+        if self.edit.sel_heard.from.as_ref().is_some_and(|f| self.edit.same_selection_basis(self.commit.commits, f)) { return Vec::new(); }
         // A release is heard by whoever holds the selection, though it didn't change.
         let released = self.edit.sel_heard.from.as_ref().is_some_and(|f| f.5 && !self.edit.selectable.phase.dragging());
-        self.edit.sel_heard.from = Some(self.selection_from());
+        self.edit.sel_heard.from = Some(self.edit.selection_basis(self.commit.commits));
         if self.edit.sel_heard.by_path.is_empty() && !self.tree.nodes.iter().any(|n| n.handlers.get().is_some_and(|h| h.on_selection_change.is_some())) {
             return Vec::new();
         }
@@ -434,6 +462,7 @@ impl RuntimeCore {
                     Rc::ptr_eq(a, b)
                         || (a.text == b.text
                             && a.backward == b.backward
+                            && a.truncated == b.truncated
                             && a.texts.len() == b.texts.len()
                             && a.texts.iter().zip(&b.texts).all(|(x, y)| {
                                 x.key == y.key
@@ -493,7 +522,7 @@ impl RuntimeCore {
                 .filter(|&j| match g { Some(g) => self.group_of(j) == Some(g), None => j == first })
                 .map(|j| self.selected_piece(j, range_in(&ranges, j).map_or(0..0, |(a, b)| a..b), Some(p)))
                 .collect();
-            if let Some(text) = f(&TextSelection { texts, text: drawn.clone(), backward: self.selection_backward() }) { return Some(text); }
+            if let Some(text) = f(&TextSelection { texts, text: drawn.clone(), backward: self.selection_backward(), truncated: false }) { return Some(text); }
         }
         (!drawn.is_empty()).then_some(drawn)
     }
@@ -527,7 +556,7 @@ impl RuntimeCore {
 
     /// The held press is selecting text by dragging, and has selected some.
     pub(in crate::runtime) fn selected_by_drag(&self) -> bool {
-        self.edit.selectable.phase.dragging() && self.pointer.press.held().is_some_and(|h| h.moved) && (!self.selection_ranges().is_empty() || self.has_nonempty_selection())
+        self.edit.selectable.phase.dragging() && self.pointer.press_held().is_some_and(|h| h.moved) && (!self.selection_ranges().is_empty() || self.has_nonempty_selection())
     }
 
     pub(in crate::runtime) fn clear_text_selection(&mut self) {
@@ -537,7 +566,10 @@ impl RuntimeCore {
     /// Steps the selection's phase and carries out what it asks for.
     pub(in crate::runtime) fn select_step(&mut self, event: phase::Event<'_>) {
         // Only the held press's own drag keeps the list scrolling at its edge.
-        if !matches!(event, phase::Event::Drag { .. }) { self.stop_edge_scroll(); }
+        if !matches!(event, phase::Event::Drag { .. }) { self.edit.stop_edge_scroll(); }
+        self.edit.selectable.goal_x = None;
+        self.edit.selectable.affinity = parley::Affinity::Downstream;
+        self.cancel_pending_caret();
         let effects = phase::step(&mut self.edit.selectable.phase, event);
         self.carry_select(effects);
     }
@@ -552,7 +584,7 @@ impl RuntimeCore {
     }
 
     /// Byte offset of node `i`'s text under window point (x, y), where it was drawn this frame.
-    fn text_index_at(&self, i: usize, x: f32, y: f32) -> Option<usize> {
+    pub(in crate::runtime) fn text_index_at(&self, i: usize, x: f32, y: f32) -> Option<usize> {
         let n = &self.tree.nodes[i];
         let (spec, flow) = (n.text.as_ref()?, n.text_layout.as_ref()?.view());
         let s = self.env.scale;
@@ -611,35 +643,11 @@ impl RuntimeCore {
         (v[0] < v[2] && v[1] < v[3]).then_some(v)
     }
 
-    /// A primary press on `target` (None: on nothing). On selectable text away from its links it
-    /// starts a selection: one click places it, two select a word, three a paragraph, and Shift
-    /// extends the current one, into another text of its selection group too. Anywhere else it
-    /// clears the selection.
-    pub(in crate::runtime) fn selection_down(&mut self, target: Option<usize>, x: f32, y: f32) {
-        use virtual_selection::EndRef;
-        let Some(i) = target.filter(|&i| self.is_selectable(i) && self.link_at(i, x, y).is_none()) else {
-            self.clear_text_selection();
-            self.edit.selectable.presses.clear();
-            return;
-        };
-        let Some(at) = self.text_index_at(i, x, y) else { return };
-        let path = self.tree.nodes[i].path.clone();
-        let content = self.content_of(i).to_owned();
-        let now = self.now_clock();
-        let clicks = self.edit.selectable.presses.press(&path, now, (x, y), self.double_click_interval).min(3);
-        let i_end = EndRef::Mounted(i);
-        let holder = self.selection_holder_end().filter(|&h| h == i_end || self.end_same_group(h, i_end));
-        match holder {
-            // Keep the anchor; the focus follows the pointer from here.
-            Some(h) if clicks == 1 && self.edit.selectable.shift => {
-                self.select_step(phase::Event::Extend { focus: at, far: (h != i_end).then(|| phase::Far::new(path, content)) });
-            }
-            _ => {
-                let unit = match clicks { 1 => Unit::Char, 2 => Unit::Word, _ => Unit::Paragraph };
-                let origin = self.unit_in(i, at, unit);
-                self.select_step(phase::Event::Press { path, content, unit, origin });
-            }
-        }
+    /// Snapshot of an in-progress text selection drag's endpoints, used to detect whether a
+    /// pointer move changed the painted selection.
+    pub(in crate::runtime) fn selection_drag_snapshot(&self) -> Option<(usize, usize, Option<String>)> {
+        let phase::Phase::Dragging { selection, .. } = &self.edit.selectable.phase else { return None };
+        Some((selection.anchor, selection.focus, selection.far.as_ref().map(|f| f.path.clone())))
     }
 
     /// The held press moved: extend the selection it started to the pointer, by its unit, into
@@ -647,9 +655,18 @@ impl RuntimeCore {
     /// clickable row), so this follows the selection's own text.
     pub(in crate::runtime) fn selection_drag(&mut self, x: f32, y: f32) {
         use virtual_selection::EndRef;
-        let phase::Phase::Dragging { unit, selection } = &self.edit.selectable.phase else { return };
-        let (unit, origin) = (*unit, selection.origin);
-        let Some(h) = self.selection_holder_end() else { self.clear_text_selection(); return };
+        let Some((selection, unit, armed)) = self.edit.selectable.phase.drag_selection() else { return };
+        if armed == Some(true)
+            && !self.pointer.press_held().is_some_and(|h| h.moved && h.hit != crate::runtime::capture::Hit::Cancelled)
+        {
+            return;
+        }
+        let (origin, armed_path) = (selection.origin, armed.is_some().then(|| selection.path.clone()));
+        let h = match armed_path {
+            Some(path) => self.live(&path).filter(|&i| self.is_selectable(i)).map(EndRef::Mounted),
+            None => self.selection_holder_end(),
+        };
+        let Some(h) = h else { self.clear_text_selection(); return };
         let g = self.end_group_path(h).and_then(|gp| self.live(gp));
         let Some((j, at)) = (match (g, h) {
             (Some(g), _) => self.group_point(g, h, x, y),
@@ -717,12 +734,16 @@ impl RuntimeCore {
         }
         let text = self.copy_text(app);
         let html = text.as_ref().and_then(|_| self.copy_html());
-        let mut copy = crate::PopupItem::new("copy", crate::labels::label(crate::Label::Copy)).enabled(text.is_some());
-        // The primary modifier, as the copy key handler takes it: ⌘C on macOS, Ctrl+C elsewhere.
-        if let Ok(shortcut) = "mod+c".parse::<crate::Shortcut>() { copy = copy.key_equivalent(shortcut); }
+        let Some(menu) = link_menu::build_context_menu(link_menu::ContextMenuTarget {
+            has_link: false,
+            has_on_link: false,
+            image: None,
+            selectable: true,
+            copy_enabled: text.is_some(),
+        }) else { return false };
         log_event!(self, "selection menu {path}");
         self.host.popups.push_back(crate::popup_menu::Request {
-            menu: crate::PopupMenu::new().item(copy),
+            menu,
             anchor: crate::PopupAnchor::Point(x, y),
             on_pick: Box::new(move |_, picked, tx| {
                 if picked == Some("copy") && let Some(text) = text {
@@ -738,7 +759,7 @@ impl RuntimeCore {
     }
 }
 
-#[path = "../virtual/selection.rs"]
+#[path = "../virtual_list/selection.rs"]
 pub(crate) mod virtual_selection;
 #[cfg(test)]
 #[path = "../virtual_selection_tests.rs"]
@@ -758,6 +779,28 @@ mod tests {
         assert_eq!(unit_at(s, 5, Unit::Paragraph), (0, 21), "a paragraph takes its line break");
         assert_eq!(unit_at(s, 23, Unit::Paragraph), (21, s.len()));
         assert_eq!(unit_at("", 0, Unit::Word), (0, 0));
+    }
+
+    #[test]
+    fn words_break_as_chromium_breaks_them() {
+        // A full stop or colon between letters ends a word; between digits, and an apostrophe, don't.
+        let s = "foo.bar_baz qux";
+        assert_eq!(unit_at(s, 1, Unit::Word), (0, 3));
+        assert_eq!(unit_at(s, 3, Unit::Word), (3, 4));
+        assert_eq!(unit_at(s, 6, Unit::Word), (4, 11));
+        assert_eq!(unit_at("a:b c", 0, Unit::Word), (0, 1));
+        assert_eq!(unit_at("1,000.50 x", 2, Unit::Word), (0, 8));
+        assert_eq!(unit_at("can't stop", 1, Unit::Word), (0, 5));
+        assert_eq!(unit_at("user@example.com", 7, Unit::Word), (5, 12));
+    }
+
+    #[test]
+    fn a_double_click_word_takes_its_trailing_spaces_on_windows() {
+        let win = cfg!(target_os = "windows");
+        assert_eq!(super::with_trailing_space("aaa bbb", (0, 3)), if win { (0, 4) } else { (0, 3) });
+        assert_eq!(super::with_trailing_space("trail  ", (0, 5)), if win { (0, 7) } else { (0, 5) });
+        assert_eq!(super::with_trailing_space("end\nnext", (0, 3)), (0, 3), "a line break stays out");
+        assert_eq!(super::with_trailing_space("a  b", (1, 3)), (1, 3), "a run of spaces takes nothing more");
     }
 
     #[test]

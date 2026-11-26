@@ -1,6 +1,8 @@
 //! Work for the main thread from anywhere: the main dispatch queue, which a window's event
 //! loop drains on macOS and UIKit's run loop on iOS.
 
+#![allow(unsafe_code)]
+
 use std::ffi::c_void;
 
 #[link(name = "System", kind = "dylib")]

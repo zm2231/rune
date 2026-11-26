@@ -8,6 +8,7 @@ pub(super) mod app_ime;
 pub(super) mod autoscroll;
 pub(super) mod capture;
 pub(super) mod drop;
+pub(super) mod edge_drag;
 pub(crate) mod field_menu;
 pub(super) mod file_dialog;
 pub(super) mod focus;
@@ -24,11 +25,14 @@ pub(super) mod modal_focus;
 pub(super) mod modifier_keys;
 pub(super) mod physical;
 pub(super) mod pointer;
+pub(super) mod pointer_lock;
 pub(super) mod popup;
+pub(super) mod popup_fallback;
 pub(super) mod press_repeat;
 pub(super) mod press_run;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 pub(super) mod primary_selection;
 pub(super) mod secondary;
 pub(super) mod titlebar;
 pub(super) mod touch;
+pub(super) mod touch_machine;

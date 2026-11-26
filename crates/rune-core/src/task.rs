@@ -3,9 +3,9 @@
 //! has no threads, the main thread runs it from a task after the current event, so it never runs
 //! inside a frame.
 //!
-//! On the web the work can wait without blocking the page: after [`start_runners`] (called from
+//! On the web the work can wait without blocking the page: after `start_runners` (called from
 //! a `#[wasm_bindgen(jspi)]` export), it runs on a few JS Promise Integration fibers, and
-//! [`wait`] suspends the fiber on a promise (a `fetch`, a timer) while frames and input carry on.
+//! `wait` suspends the fiber on a promise (a `fetch`, a timer) while frames and input carry on.
 //! So blocking code written for a thread (a request, a [`sleep`]) runs unchanged and costs the
 //! page nothing while it waits.
 
@@ -31,7 +31,7 @@ static TIDY: OnceLock<fn()> = OnceLock::new();
 /// own long-lived threads call [`idle`]. Threads in an app that never sets a hook arm no tidy
 /// timer. The first call wins.
 pub fn on_idle(tidy: fn()) {
-    let _ = TIDY.set(tidy);
+    TIDY.set(tidy).ok();
 }
 
 /// Runs what [`on_idle`] set, on this thread: for a thread of the app's own that has waited
@@ -144,14 +144,14 @@ pub fn serve<T: Send + 'static>(
             let mut tidy = Tidy::new();
             loop {
                 // Without a hook, or before the first message and after a tidy, wait untimed.
-                let got = match tidy.wait(crate::time::Instant::now()) {
+                let got = match tidy.wait(crate::time::now()) {
                     Some(wait) => rx.recv_timeout(wait),
                     None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
                 };
                 let message = match got {
                     Ok(message) => message,
                     Err(RecvTimeoutError::Timeout) => {
-                        if tidy.take_due(crate::time::Instant::now()) {
+                        if tidy.take_due(crate::time::now()) {
                             idle();
                         }
                         continue;
@@ -161,7 +161,7 @@ pub fn serve<T: Send + 'static>(
                 if each(message).is_break() {
                     return;
                 }
-                tidy = tidy.on_work(crate::time::Instant::now());
+                tidy = tidy.on_work(crate::time::now());
             }
         }).map(drop)
     }

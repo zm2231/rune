@@ -7,7 +7,7 @@ fn shortcut(accelerator: &str) -> Shortcut { accelerator.parse().unwrap() }
 /// An item with `accelerator` as its shortcut, its id its title.
 fn item(id: &str, accelerator: &str) -> MenuItem<()> { MenuItem::new(id, |_, _| {}).key_equivalent(shortcut(accelerator)) }
 
-fn d(item: MenuItem<()>) -> Description { item.description }
+fn d(item: MenuItem<()>) -> Description { item.split(&mut Vec::new()) }
 
 /// The key event a press of `accelerator`'s chord makes.
 fn press(accelerator: &str) -> KeyEvent {
@@ -17,7 +17,7 @@ fn press(accelerator: &str) -> KeyEvent {
 }
 
 fn found<'a>(items: &'a [Description], accelerator: &str, menu_bar: bool) -> Option<&'a str> {
-    chord_item(items, &press(accelerator), menu_bar).map(|d| d.id.as_str())
+    chord_item(items, &press(accelerator), menu_bar).map(|d| d.meta.id.as_str())
 }
 
 #[test]

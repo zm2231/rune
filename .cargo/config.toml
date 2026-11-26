@@ -7,6 +7,26 @@ linker = "rust-lld"
 [target.aarch64-pc-windows-msvc]
 linker = "rust-lld"
 
+# Opt-in local developer shortcuts (default-members fast paths and wasm/webgl checks).
+[alias]
+lint = "clippy --lib --bins --tests"
+lint-all = "clippy --workspace --all-targets"
+lint-wasm = "clippy -p rune --no-default-features --target wasm32-unknown-unknown --no-deps -- -A clippy::all -A clippy::unwrap_used -A clippy::expect_used -A clippy::todo -D clippy::disallowed_methods -D clippy::disallowed_types -D warnings"
+lint-webgl = "clippy -p rune --no-default-features --features webgl --target wasm32-unknown-unknown --no-deps -- -A clippy::all -A clippy::unwrap_used -A clippy::expect_used -A clippy::todo -D clippy::disallowed_methods -D clippy::disallowed_types -D warnings"
+check-wasm = "check -p rune --no-default-features --target wasm32-unknown-unknown"
+check-webgl = "check -p rune --no-default-features --features webgl --target wasm32-unknown-unknown"
+check-hot = "check -p rune --features hot --tests"
+check-gpu-tests = "check -p rune -p rune-gpu -p rune-light --features rune/test-gpu-counters,rune-gpu/test-gpu-counters,rune-light/test-gpu-counters --tests"
+check-win-material = "check -p rune --features windows-system-material --tests"
+check-linux-noop = "check -p rune --features rune/test-gpu-counters,rune-gpu/test-gpu-counters,rune/test-gpu-noop --tests"
+test-fast = "test -p rune -p rune-mermaid -p rune-kit --features rune-kit/markdown,rune-kit/mermaid"
+
+# Panic on any PaintKeep debug self-check mismatch in this repository's own cargo runs
+# (unit, integration, rune-kit, and CI tests). Non-forced so RUNE_PAINT_KEEP_STRICT=0 in the
+# caller's environment overrides it; Cargo does not apply this file to downstream apps.
+[env]
+RUNE_PAINT_KEEP_STRICT = "1"
+
 # The deployment target of an iOS build of this workspace. Rune's Metal backend
 # writes MSL 3.0, which needs iOS 16. Without a deployment target rustc links a
 # debug device build for iOS 10, which fails on ___chkstk_darwin from blake3's
@@ -17,5 +37,4 @@ linker = "rust-lld"
 # that would take a platform from it, so every other target builds as before.
 # A value already in the environment wins. An app that depends on Rune does
 # not inherit this file: it sets its own (see IOS.md).
-[env]
 IPHONEOS_DEPLOYMENT_TARGET = "16.0"

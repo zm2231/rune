@@ -1,9 +1,11 @@
 //! Buffers, textures, views and samplers.
 
+#![allow(unsafe_code)]
+
 use std::ops::Range;
 use std::ptr::NonNull;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
 
 use objc2_foundation::NSRange;
 #[cfg(debug_assertions)]
@@ -11,12 +13,13 @@ use objc2_foundation::NSString;
 #[cfg(debug_assertions)]
 use objc2_metal::MTLResource;
 use objc2_metal::{
-    MTLBuffer, MTLCompareFunction, MTLDevice, MTLPixelFormat, MTLResourceOptions, MTLSamplerAddressMode, MTLSamplerBorderColor,
+    MTLBuffer, MTLCompareFunction, MTLDevice, MTLGPUFamily, MTLPixelFormat, MTLResourceOptions, MTLSamplerAddressMode, MTLSamplerBorderColor,
     MTLSamplerDescriptor, MTLSamplerMinMagFilter, MTLSamplerMipFilter, MTLSamplerState, MTLStorageMode, MTLTexture, MTLTextureDescriptor,
     MTLTextureType, MTLTextureUsage,
 };
 use wgpu::custom::*;
 
+use crate::lazy_init::{LazyInit, SubresourceRange};
 use super::store::Store;
 use super::{Obj, Owner, Shared, send_sync};
 
@@ -91,6 +94,13 @@ pub(crate) struct TextureRaw {
     pub(super) layers: u32,
     pub(super) mips: u32,
     pub(super) drawable: bool,
+    /// Allocated with `MTLStorageMode::Shared` (zeroed on CPU, never blit-zeroed).
+    shared_storage: bool,
+    /// Active encoders and in-flight command buffers referencing this texture; `Some` iff
+    /// allocated as `MTLStorageMode::Shared` with `COPY_DST` for CPU `replaceRegion` uploads.
+    pub(super) uses: Option<Arc<AtomicUsize>>,
+    /// Per-(mip, layer) lazy zero-init state for Private `RENDER_ATTACHMENT` textures.
+    pub(super) lazy_init: Option<LazyInit>,
     /// What keeps a texture this backend didn't make valid (`texture_from_raw`).
     owner: Option<Owner>,
     #[allow(dead_code, reason = "held, never read")]
@@ -100,12 +110,19 @@ pub(crate) struct TextureRaw {
 #[derive(Debug)]
 pub(crate) struct MetalTexture {
     pub(super) raw: Arc<TextureRaw>,
+    pub(super) shared: Option<Arc<Shared>>,
 }
 
 #[derive(Debug)]
 pub(crate) struct ViewRaw {
     pub(super) raw: Obj<dyn MTLTexture>,
     pub(super) drawable: bool,
+    /// Its texture's in-flight usage counter, when the texture uses `MTLStorageMode::Shared`.
+    pub(super) uses: Option<Arc<AtomicUsize>>,
+    /// Parent texture when it uses lazy render-pass zeroing; `None` for Shared/eager textures.
+    pub(super) texture: Option<Arc<TextureRaw>>,
+    /// Mip and array-layer subresources exposed by this view.
+    pub(super) range: SubresourceRange,
     /// Its texture's owner, which bind groups and passes that use the view keep.
     pub(super) owner: Option<Owner>,
 }
@@ -221,8 +238,14 @@ impl BufferInterface for MetalBuffer {
 
 impl BufferMappedRangeInterface for MappedRange {
     fn len(&self) -> usize { self.len }
-    unsafe fn read_slice(&self) -> &[u8] { unsafe { std::slice::from_raw_parts(self.at.as_ptr(), self.len) } }
+    unsafe fn read_slice(&self) -> &[u8] {
+        // SAFETY: `self.at..self.at + self.len` was bounds-checked against the shared `MTLBuffer`
+        // in `BufferRaw::range`, and the caller guarantees the buffer stays mapped with no concurrent writes.
+        unsafe { std::slice::from_raw_parts(self.at.as_ptr(), self.len) }
+    }
     unsafe fn write_slice(&mut self) -> wgpu::WriteOnly<'_, [u8]> {
+        // SAFETY: `self.at..self.at + self.len` was bounds-checked against the shared `MTLBuffer`
+        // in `BufferRaw::range`, and the caller guarantees exclusive mutable access while mapped.
         unsafe { std::slice::from_raw_parts_mut(self.at.as_ptr(), self.len) }.into()
     }
 }
@@ -242,7 +265,21 @@ fn texture_type(dimension: wgpu::TextureViewDimension) -> MTLTextureType {
 impl TextureRaw {
     /// A drawable's texture, which a surface hands out for one frame.
     pub(super) fn drawable(raw: Obj<dyn MTLTexture>, format: wgpu::TextureFormat) -> Self {
-        TextureRaw { raw, format, dimension: wgpu::TextureDimension::D2, layers: 1, mips: 1, drawable: true, owner: None, live: None }
+        TextureRaw { raw, format, dimension: wgpu::TextureDimension::D2, layers: 1, mips: 1, drawable: true,
+            shared_storage: false, uses: None, lazy_init: None, owner: None, live: None }
+    }
+
+    pub(super) fn is_shared(&self) -> bool { self.shared_storage }
+
+    pub(super) fn is_lazy(&self) -> bool { self.lazy_init.is_some() }
+
+    /// Whether this texture uses shared storage with CPU writes and has no active encoder or
+    /// in-flight GPU reference; retires completed command buffers once if needed.
+    pub(super) fn is_idle(&self, shared: &Shared) -> bool {
+        let Some(uses) = &self.uses else { return false };
+        if uses.load(Ordering::Acquire) == 0 { return true }
+        shared.retire();
+        uses.load(Ordering::Acquire) == 0
     }
 
     fn view_dimension(&self) -> wgpu::TextureViewDimension {
@@ -256,23 +293,52 @@ impl TextureRaw {
 }
 
 impl MetalTexture {
-    pub(crate) fn new(device: &Obj<dyn MTLDevice>, desc: &wgpu::TextureDescriptor<'_>, live: Live) -> Self {
+    pub(crate) fn new(shared: &Arc<Shared>, desc: &wgpu::TextureDescriptor<'_>, live: Live) -> Self {
         if desc.sample_count != 1 { super::unsupported!("multisampled textures") }
         let layers = if desc.dimension == wgpu::TextureDimension::D3 { 1 } else { desc.size.depth_or_array_layers };
-        let raw = TextureRaw { raw: device_texture(device, desc, layers), format: desc.format, dimension: desc.dimension, layers,
-            mips: desc.mip_level_count, drawable: false, owner: None, live: Some(live) };
-        MetalTexture { raw: Arc::new(raw) }
+        let (mtl, is_shared) = device_texture(&shared.device, desc, layers);
+        let uses = (is_shared && desc.usage.contains(wgpu::TextureUsages::COPY_DST)).then(|| Arc::new(AtomicUsize::new(0)));
+        let lazy_init = lazy_clear_texture(desc, is_shared).then(|| LazyInit::new(desc.mip_level_count, layers));
+        let raw = TextureRaw { raw: mtl, format: desc.format, dimension: desc.dimension, layers,
+            mips: desc.mip_level_count, drawable: false, shared_storage: is_shared, uses, lazy_init, owner: None, live: Some(live) };
+        MetalTexture { raw: Arc::new(raw), shared: Some(shared.clone()) }
     }
 
     /// Over `raw`, a texture made elsewhere that matches `desc`, kept valid by `owner`.
     pub(crate) fn from_raw(raw: Obj<dyn MTLTexture>, desc: &wgpu::TextureDescriptor<'_>, owner: Owner) -> Self {
         let raw = TextureRaw { raw, format: desc.format, dimension: desc.dimension, layers: desc.size.depth_or_array_layers,
-            mips: desc.mip_level_count, drawable: false, owner: Some(owner), live: None };
-        MetalTexture { raw: Arc::new(raw) }
+            mips: desc.mip_level_count, drawable: false, shared_storage: false, uses: None, lazy_init: None, owner: Some(owner), live: None };
+        MetalTexture { raw: Arc::new(raw), shared: None }
     }
 }
 
-fn device_texture(device: &Obj<dyn MTLDevice>, desc: &wgpu::TextureDescriptor<'_>, layers: u32) -> Obj<dyn MTLTexture> {
+/// CPU-written or read-only sampled textures on Apple Silicon use `MTLStorageMode::Shared` so
+/// creation zeroes on the CPU and idle updates write via `replaceRegion` without a blit encoder.
+/// `supportsFamily(Apple1)` excludes Intel iGPUs (which report `hasUnifiedMemory()` but reject
+/// shared textures).
+fn shared_texture(device: &Obj<dyn MTLDevice>, desc: &wgpu::TextureDescriptor<'_>) -> bool {
+    use wgpu::TextureUsages as U;
+    device.supportsFamily(MTLGPUFamily::Apple1)
+        && desc.sample_count == 1
+        && !desc.format.is_depth_stencil_format()
+        && desc.format.block_copy_size(None).is_some()
+        && desc.format.block_dimensions() == (1, 1)
+        && desc.usage.intersects(U::COPY_DST | U::TEXTURE_BINDING)
+        && !desc.usage.intersects(U::RENDER_ATTACHMENT | U::STORAGE_BINDING | U::COPY_SRC)
+}
+
+/// Single-sample 2D color-renderable `Private` textures with `RENDER_ATTACHMENT` skip eager
+/// `zero_texture` blits and clear lazily via render-pass load actions or clear-only passes.
+fn lazy_clear_texture(desc: &wgpu::TextureDescriptor<'_>, is_shared: bool) -> bool {
+    !is_shared
+        && desc.dimension == wgpu::TextureDimension::D2
+        && desc.sample_count == 1
+        && !desc.format.is_depth_stencil_format()
+        && desc.format.block_copy_size(None).is_some()
+        && desc.usage.contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+}
+
+fn device_texture(device: &Obj<dyn MTLDevice>, desc: &wgpu::TextureDescriptor<'_>, layers: u32) -> (Obj<dyn MTLTexture>, bool) {
     use wgpu::TextureUsages as U;
     let d = MTLTextureDescriptor::new();
     let kind = match desc.dimension {
@@ -297,11 +363,12 @@ fn device_texture(device: &Obj<dyn MTLDevice>, desc: &wgpu::TextureDescriptor<'_
     if desc.usage.contains(U::RENDER_ATTACHMENT) { usage |= MTLTextureUsage::RenderTarget; }
     if desc.view_formats.iter().any(|f| *f != desc.format) { usage |= MTLTextureUsage::PixelFormatView; }
     d.setUsage(usage);
-    d.setStorageMode(MTLStorageMode::Private);
+    let shared = shared_texture(device, desc);
+    d.setStorageMode(if shared { MTLStorageMode::Shared } else { MTLStorageMode::Private });
     let raw = device.newTextureWithDescriptor(&d).expect("a Metal texture");
     #[cfg(debug_assertions)]
     if let Some(label) = desc.label { raw.setLabel(Some(&NSString::from_str(label))); }
-    raw
+    (raw, shared)
 }
 
 impl TextureInterface for MetalTexture {
@@ -329,7 +396,9 @@ impl TextureInterface for MetalTexture {
             }
             view
         };
-        DispatchTextureView::custom(MetalView { raw: Arc::new(ViewRaw { raw, drawable: t.drawable, owner: t.owner.clone() }) })
+        let texture = t.is_lazy().then(|| self.raw.clone());
+        let range = SubresourceRange { base_mip: desc.base_mip_level, mips, base_layer: desc.base_array_layer, layers };
+        DispatchTextureView::custom(MetalView { raw: Arc::new(ViewRaw { raw, drawable: t.drawable, uses: t.uses.clone(), texture, range, owner: t.owner.clone() }) })
     }
     fn destroy(&self) {}
 }

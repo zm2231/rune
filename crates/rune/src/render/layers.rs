@@ -7,6 +7,7 @@ use std::ops::Range;
 
 mod plan;
 pub(super) use plan::is_scissor_clip;
+#[cfg(not(target_arch = "wasm32"))]
 mod trim;
 use plan::{Describe, Disposition, Held, Kept, Layer, Move, Planned, Planner, Pools};
 
@@ -55,7 +56,7 @@ pub(super) struct Layers {
     /// kept for the next layer of their size: opening a menu or a popover again makes no texture.
     spare: Vec<Target>,
     stack: Vec<usize>,
-    pipelines: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
+    pub(super) pipelines: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
     pub additive: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>,
     pub blur: Option<layer_blur::Pipeline>,
     viewport: (u32, u32),
@@ -88,6 +89,7 @@ impl Layers {
         })
     }
 
+
     /// Kept textures get the budget left after this frame's visible caches.
     fn trim_retained(&mut self, active_bytes: u64) {
         let available = self.cache_budget.saturating_sub(active_bytes);
@@ -113,6 +115,21 @@ impl Layers {
             let oldest = self.spare.iter().enumerate().min_by_key(|(_, t)| t.last_used).unwrap().0;
             bytes -= Renderer::target_bytes(&self.spare.swap_remove(oldest));
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn clear_images(&mut self) {
+        for t in self.targets.iter_mut().flatten().chain(&mut self.retained).chain(&mut self.spare) {
+            t.images.clear();
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
+    pub(super) fn clear_all(&mut self) {
+        self.plan.clear();
+        self.targets.clear();
+        self.retained.clear();
+        self.spare.clear();
     }
 
     /// Test-only: notes the peak of the bytes this frame holds live, targets and blur scratches
@@ -276,15 +293,50 @@ impl Renderer {
         ONCE.call_once(|| procwatch::alloc::sites::contribute("rune-gpu", || POOLS.lock().unwrap_or_else(|e| e.into_inner()).clone()));
     }
 
+    /// Where this frame's pooled backdrop copies sit in the window and their size, in device
+    /// pixels. An effect that reads what is below it reads a copy of the whole target, at the
+    /// target's own size. Blurs alone read only their regions: the copies hold those, in whole
+    /// steps so a region that grows or moves by a few pixels makes no texture, and a texture
+    /// stays while it holds them and isn't four times their area. (A frosted pill in a
+    /// 2560x1440 window keeps kilobytes where two copies of the window were 43 MB.)
+    pub(super) fn backdrop_frame(&self, (vw, vh): (u32, u32)) -> ([u32; 2], [u32; 2]) {
+        let mut reads: Option<[u32; 4]> = None;
+        for (_, i) in &self.effects {
+            let rect = if i.kind() == Some(Kind::BackdropBlur) {
+                let Some(plan) = backdrop_blur::plan_region(i, (vw, vh)) else { continue };
+                let r = plan.region;
+                [r[0].floor().max(0.0) as u32, r[1].floor().max(0.0) as u32, (r[2].ceil().max(0.0) as u32).min(vw), (r[3].ceil().max(0.0) as u32).min(vh)]
+            } else if i.params[0] != 0.0 {
+                return ([0, 0], [vw.max(1), vh.max(1)]);
+            } else {
+                continue;
+            };
+            reads = Some(match reads {
+                Some(b) => [b[0].min(rect[0]), b[1].min(rect[1]), b[2].max(rect[2]), b[3].max(rect[3])],
+                None => rect,
+            });
+        }
+        let b = reads.unwrap_or([0, 0, 1, 1]);
+        let need = [b[2].saturating_sub(b[0]), b[3].saturating_sub(b[1])].map(|v| v.max(1).next_multiple_of(pass::BACKDROP_STEP));
+        let area = |s: [u32; 2]| s[0] as u64 * s[1] as u64;
+        let size = match self.backdrops.iter().find(|bd| bd.format == self.format).map(|bd| [bd.texture.width(), bd.texture.height()]) {
+            Some(have) if have[0] >= need[0] && have[1] >= need[1] && area(have) <= 4 * area(need) => have,
+            _ => need,
+        };
+        ([b[0], b[1]], size)
+    }
     /// What a window at rest gives back (`window::rest`): every spare target (the first menu,
     /// hover or session after it makes its own again, within a frame's run-to-run spread on an
-    /// Iris Xe), cache textures no layer drew last frame, and the backdrop copies and blur pyramid
-    /// when the last frame read none. With `all`, also the scratch targets of this screen's
-    /// layers and its backdrop copies, which its next frame makes again (a few ms on an integrated GPU). It keeps the
+    /// Iris Xe), cache textures no layer drew last frame, GPU textures of image atlas pages that
+    /// `ImageAtlas::rest` already freed, and the backdrop copies and blur pyramid when the last
+    /// frame read none. With `all`, also the scratch targets of this screen's layers, every image
+    /// atlas texture (recreated from `ImageAtlas` on the next `upload_images`), and its backdrop
+    /// copies, which its next frame makes again (a few ms on an integrated GPU). It keeps the
     /// textures of caches on screen, which the last frame's instances name instead of their
     /// contents, and takes the ones it drops out of `resident`, so their next frame paints them.
     /// What no submission still uses is freed here; the rest when the device next polls.
-    pub(crate) fn give_back(&mut self, all: bool, resident: &mut std::collections::HashMap<u64, u64>) {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn give_back(&mut self, all: bool, resident: &mut std::collections::HashMap<u64, u64>, images: &ImageAtlas) {
         for t in self.layers.retained.drain(..) {
             if let Some((node, _)) = t.cache { resident.remove(&node); }
         }
@@ -293,6 +345,9 @@ impl Renderer {
             for slot in &mut self.layers.targets {
                 if slot.as_ref().is_some_and(|t| t.cache.is_none()) { *slot = None; }
             }
+            self.clear_images();
+        } else {
+            self.prune_images(images);
         }
         // The backdrop copies (one full-window texture per target format) and the blur pyramid:
         // out of sight, or when the last frame read none (a session's jump button had blurred
@@ -301,14 +356,30 @@ impl Renderer {
             self.backdrops.clear();
             if let Some(blur) = &mut self.backdrop_blur { blur.give_back(); }
         }
+        if !all {
+            self.uploads.trim_oversized();
+        }
         #[cfg(all(feature = "alloc-sites", not(target_arch = "wasm32")))]
         self.report_pools();
     }
 
     /// Frees the staging chunks kept for reuse (`window::rest`, out of sight only: the next
     /// frame's uploads would make new ones).
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn trim_uploads(&self) {
         self.uploads.trim();
+    }
+
+    /// Whether any recyclable oversized (> 4 MiB) upload chunks are in flight on the GPU.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn has_oversized_uploads_in_flight(&self) -> bool {
+        self.uploads.has_oversized_in_flight()
+    }
+
+    /// Test-only: number of spare layer targets currently parked for reuse.
+    #[cfg(test)]
+    pub(crate) fn spare_layers(&self) -> usize {
+        self.layers.spare.len()
     }
 
     pub(super) fn sync_resident_caches(&self, out: &mut std::collections::HashMap<u64, u64>) {
@@ -622,6 +693,19 @@ impl Renderer {
         }
     }
 
+    /// Pre-checks the lazy layer pipelines (`Isolation`, `PlusLighter`, `LayerBlur`) that
+    /// `instances` require without acquiring a canvas texture or encoding a GPU frame.
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn precheck_layer_features(&mut self, device: &wgpu::Device, instances: &[Instance]) {
+        let (isolation, plus_lighter, blur) = needed_layer_features(instances);
+        if !isolation && !plus_lighter && !blur && !self.breakers.checking() { return; }
+        self.check_features(device, |feature| match feature {
+            breaker::Feature::Isolation => isolation,
+            breaker::Feature::PlusLighter => plus_lighter,
+            breaker::Feature::LayerBlur => blur,
+        });
+    }
+
     /// Builds and checks the pipelines this frame's layers need (`breaker`), and plans the frame
     /// without the ones the device refused or hasn't taken yet: a dissolve as source-over, a blur
     /// unblurred. Whether layers can isolate; when they can't, each group draws in its parent.
@@ -672,9 +756,23 @@ impl Renderer {
     }
 
     pub(super) fn add_layer_format(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
-        if !self.layers.pipelines.iter().any(|(f, _)| *f == format) {
-            self.layers.pipelines.push((format, Self::pipeline(device, &self.layout, &self.shader, format, "vs", Blend::SourceOver)));
-        }
+        if self.layers.pipelines.iter().any(|(f, _)| *f == format) { return; }
+        // With the standard `"vs"` vertex entry, the layer composite pipeline for `format` is
+        // identical to the renderer's own main or `extra` uber pipeline; clone instead of
+        // compiling a duplicate.
+        let pipeline = if self.vertex_entry == "vs" {
+            if format == self.format {
+                Some(self.pipeline.clone())
+            } else {
+                self.extra.iter().find(|(f, _)| *f == format).map(|(_, p)| p.clone())
+            }
+        } else {
+            None
+        };
+        let pipeline = pipeline.unwrap_or_else(|| {
+            Self::pipeline(device, &self.layout, &self.shader, format, "vs", Blend::SourceOver)
+        });
+        self.layers.pipelines.push((format, pipeline));
     }
 
     fn layer_target(&self, mut layer: Option<usize>) -> Option<usize> {
@@ -876,4 +974,43 @@ impl Renderer {
         }
         self.draw_with_effects(pass, format, cursor..range.end, target, hook);
     }
+}
+
+/// Scans `instances` for visible layer scopes that require `Feature::Isolation`,
+/// `Feature::PlusLighter`, or `Feature::LayerBlur`, matching `prepare_layers` / `isolates`.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(super) fn needed_layer_features(instances: &[Instance]) -> (bool, bool, bool) {
+    let (mut isolation, mut plus_lighter, mut blur) = (false, false, false);
+    let mut stack: Vec<(bool, bool)> = Vec::new();
+    for i in instances {
+        match i.kind() {
+            Some(Kind::Layer) => {
+                let (parent_hidden, parent_additive) = stack.last().copied().unwrap_or((false, false));
+                let opacity = i.fill[3].clamp(0.0, 1.0);
+                let hidden = parent_hidden || opacity == 0.0;
+                let additive = i.params[0] == 1.0;
+                stack.push((hidden, additive));
+                if !hidden {
+                    let sigma = layer_blur::sigma(i.params[2]);
+                    let cache = i.params[3] == 1.0;
+                    let turn = i.border[1] != 0.0;
+                    let hole = if cache { [0.0; 4] } else { i.radii };
+                    plus_lighter |= additive;
+                    blur |= sigma > 0.0;
+                    isolation |= cache
+                        || opacity != 1.0
+                        || additive
+                        || parent_additive
+                        || sigma > 0.0
+                        || i.fade[3] != 0
+                        || i.clip != NO_CLIP
+                        || turn
+                        || hole[3] != 0.0;
+                }
+            }
+            Some(Kind::LayerEnd) => { stack.pop(); }
+            _ => {}
+        }
+    }
+    (isolation, plus_lighter, blur)
 }

@@ -8,6 +8,8 @@ use std::sync::{Arc, Mutex, Weak};
 use crate::machine::{Attempt, Seq};
 use crate::{App, AppHandle, Shortcut, Tx, app::Shared};
 
+#[cfg(any(test, target_os = "macos"))]
+mod bar_wait;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
@@ -24,14 +26,16 @@ pub(crate) use ios::{build as build_ios_menus, keys_first, perform as perform_io
 mod key_equivalent;
 #[cfg(test)]
 mod key_equivalent_tests;
+#[cfg(test)]
+mod tests;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod standard;
 #[cfg(target_os = "macos")]
 mod standard_macos;
 #[cfg(target_os = "macos")]
-pub(crate) use default_macos::{ensure as ensure_default_menu, promote as promote_default_menu, set_layout_direction};
+pub(crate) use default_macos::set_layout_direction;
 #[cfg(target_os = "macos")]
-pub(crate) use standard_macos::{adopt as adopt_standard_view, install as install_standard_menus};
+pub(crate) use standard_macos::{adopt as adopt_standard_view, install as install_standard_menus, settle as settle_standard_menus};
 #[cfg(target_os = "macos")]
 pub(crate) use key_equivalent::set_key_equivalent;
 
@@ -43,7 +47,7 @@ enum Location { App, Named(String), Dock }
 type Sink = Arc<dyn Fn(&str) + Send + Sync>;
 
 #[derive(Clone)]
-struct Description {
+struct ItemMeta {
     id: String,
     title: String,
     location: Location,
@@ -52,48 +56,218 @@ struct Description {
     keys_first: bool,
     enabled: bool,
     checked: bool,
-    separator: bool,
+    alternate: bool,
+    replaces_about: bool,
+}
+
+impl ItemMeta {
+    fn new(title: String) -> Self {
+        Self {
+            id: title.clone(),
+            title,
+            location: Location::App,
+            after: None,
+            equivalent: None,
+            keys_first: false,
+            enabled: true,
+            checked: false,
+            alternate: false,
+            replaces_about: false,
+        }
+    }
+}
+
+#[derive(Clone)]
+enum EntryKind {
+    Action,
+    Separator,
+    Submenu(Vec<Description>),
+}
+
+#[derive(Clone)]
+struct Description {
+    meta: ItemMeta,
+    kind: EntryKind,
+}
+
+enum MenuAction<S> {
+    Fn(fn(&mut S, &mut Tx)),
+    Shared(Arc<dyn Fn(&mut S, &mut Tx) + Send + Sync>),
+}
+
+impl<S> Clone for MenuAction<S> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Fn(f) => Self::Fn(*f),
+            Self::Shared(f) => Self::Shared(Arc::clone(f)),
+        }
+    }
+}
+
+impl<S> MenuAction<S> {
+    fn call(&self, state: &mut S, tx: &mut Tx) {
+        match self {
+            Self::Fn(f) => f(state, tx),
+            Self::Shared(f) => f(state, tx),
+        }
+    }
+}
+
+enum ItemKind<S> {
+    Action(MenuAction<S>),
+    Separator,
+    Submenu(Vec<MenuItem<S>>),
+}
+
+impl<S> Clone for ItemKind<S> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Action(action) => Self::Action(action.clone()),
+            Self::Separator => Self::Separator,
+            Self::Submenu(children) => Self::Submenu(children.clone()),
+        }
+    }
 }
 
 /// A custom native item. Defaults to the app menu (after its About item, in the order given),
 /// enabled and unchecked, with its title as id.
-pub struct MenuItem<S> { description: Description, action: fn(&mut S, &mut Tx) }
-impl<S> Clone for MenuItem<S> {
-    fn clone(&self) -> Self { Self { description: self.description.clone(), action: self.action } }
+pub struct MenuItem<S> {
+    meta: ItemMeta,
+    kind: ItemKind<S>,
 }
+
+impl<S> Clone for MenuItem<S> {
+    fn clone(&self) -> Self {
+        Self { meta: self.meta.clone(), kind: self.kind.clone() }
+    }
+}
+
 impl<S> MenuItem<S> {
     pub fn new(title: impl Into<String>, action: fn(&mut S, &mut Tx)) -> Self {
-        let title = title.into();
-        Self { description: Description { id: title.clone(), title, location: Location::App, after: None,
-            equivalent: None, keys_first: false, enabled: true, checked: false, separator: false }, action }
+        Self { meta: ItemMeta::new(title.into()), kind: ItemKind::Action(MenuAction::Fn(action)) }
+    }
+    /// A menu item whose action is a closure capturing per-item data, such as an entry from a
+    /// dynamic list. Defaults to the app menu, enabled and unchecked, with its title as id.
+    /// The closure runs on the app thread whenever the item is picked. `MenuItem<S>` remains
+    /// `Clone`, `Send`, and `Sync` without requiring `S: Send + Sync`.
+    ///
+    /// ```no_run
+    /// # use rune::{App, AppSpec, MenuItem, el};
+    /// # struct State { selected: String }
+    /// let hosts = ["prod", "staging"];
+    /// let mut app = App::new(AppSpec::new("Demo", (400.0, 300.0), || State { selected: String::new() }, |_, _| el()));
+    /// for host in hosts {
+    ///     let name = host.to_owned();
+    ///     app = app.menu_item(
+    ///         MenuItem::with_action(host, move |s: &mut State, _| s.selected = name.clone())
+    ///             .id(format!("host-{host}"))
+    ///             .menu("Session"),
+    ///     );
+    /// }
+    /// ```
+    pub fn with_action(
+        title: impl Into<String>,
+        action: impl Fn(&mut S, &mut Tx) + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            meta: ItemMeta::new(title.into()),
+            kind: ItemKind::Action(MenuAction::Shared(Arc::new(action))),
+        }
+    }
+    /// A submenu holding child items (action items, separators, or nested submenus). Defaults
+    /// to the app menu, enabled and unchecked, with its title as id; place it in a top-level
+    /// menu with [`MenuItem::menu`], in the Dock menu with [`MenuItem::dock`], or nest it
+    /// inside another submenu. Child items inside a submenu cannot set `menu` or `dock` or use
+    /// [`MenuItem::about`]; disabling a submenu prevents any descendant item from firing.
+    ///
+    /// ```no_run
+    /// # use rune::{App, AppSpec, MenuItem, el};
+    /// # struct State { target: String }
+    /// let app = App::new(AppSpec::new("Demo", (400.0, 300.0), || State { target: String::new() }, |_, _| el()))
+    ///     .menu_item(
+    ///         MenuItem::submenu("Attach", [
+    ///             MenuItem::submenu("prod", [
+    ///                 MenuItem::with_action("main", |s: &mut State, _| s.target = "prod/main".into())
+    ///                     .id("attach-prod-main"),
+    ///             ]),
+    ///         ])
+    ///         .menu("Session"),
+    ///     );
+    /// ```
+    pub fn submenu(
+        title: impl Into<String>,
+        items: impl IntoIterator<Item = MenuItem<S>>,
+    ) -> Self {
+        Self {
+            meta: ItemMeta::new(title.into()),
+            kind: ItemKind::Submenu(items.into_iter().collect()),
+        }
+    }
+    /// Replace the macOS app menu's standard About item (`orderFrontStandardAboutPanel:`)
+    /// with this item at the top of the app menu. Enabled and unchecked, with its title as id.
+    /// At most one About replacement may appear in a menu snapshot, and it must stay in the
+    /// app menu (cannot be moved with `menu` or `dock`, placed with `after`, or marked
+    /// `alternate`). Clearing custom items restores AppKit's standard About item. Elsewhere
+    /// it behaves like a normal item in headless menus.
+    ///
+    /// ```no_run
+    /// # use rune::{App, AppSpec, MenuItem, el};
+    /// # struct State { about: bool }
+    /// let app = App::new(AppSpec::new("Demo", (400.0, 300.0), || State { about: false }, |_, _| el()))
+    ///     .menu_item(MenuItem::about("About Demo", |s: &mut State, _| s.about = true));
+    /// ```
+    pub fn about(title: impl Into<String>, action: fn(&mut S, &mut Tx)) -> Self {
+        let mut item = Self::new(title, action);
+        item.meta.replaces_about = true;
+        item
     }
     /// A separator line, placed with `menu` or `dock` like an item. It has no id or title,
     /// can't be fired, and needs no unique id.
     pub fn separator() -> Self {
-        let mut item = Self::new("", |_, _| {});
-        item.description.separator = true;
-        item
+        Self { meta: ItemMeta::new(String::new()), kind: ItemKind::Separator }
     }
-    pub fn id(mut self, id: impl Into<String>) -> Self { self.description.id = id.into(); self }
+    pub fn id(mut self, id: impl Into<String>) -> Self { self.meta.id = id.into(); self }
     /// Place this item in a named top-level menu. Existing native menus are reused. A menu
     /// Rune makes is titled with the app's `Label::Menu(name)`, so the name stays the same in
     /// every language (`rune::set_labels`).
-    pub fn menu(mut self, title: impl Into<String>) -> Self { self.description.location = Location::Named(title.into()); self }
-    pub fn dock(mut self) -> Self { self.description.location = Location::Dock; self }
+    pub fn menu(mut self, title: impl Into<String>) -> Self { self.meta.location = Location::Named(title.into()); self }
+    pub fn dock(mut self) -> Self { self.meta.location = Location::Dock; self }
     /// Place this item right after `anchor` in its menu: another of this app's items by id, or
     /// a native item by its AppKit action (`"paste:"`, `"selectAll:"`), as Electron's menu
     /// items name the item they follow. Items after the same anchor keep the order given. A
     /// menu without the anchor takes the item at its end, as without one.
-    pub fn after(mut self, anchor: impl Into<String>) -> Self { self.description.after = Some(anchor.into()); self }
-    pub fn key_equivalent(mut self, shortcut: Shortcut) -> Self { self.description.equivalent = Some(shortcut); self }
+    pub fn after(mut self, anchor: impl Into<String>) -> Self { self.meta.after = Some(anchor.into()); self }
+    pub fn key_equivalent(mut self, shortcut: Shortcut) -> Self { self.meta.equivalent = Some(shortcut); self }
     /// Let the window's own key handling see this item's key equivalent first. AppKit gives a
     /// menu equivalent to the menu before any view, so by default the item takes the chord
     /// even while a field, a modal or `on_key` wants it. With this, the press goes to the key
     /// window like any other key (the focused element, then modals, then `on_key`), and the
     /// item runs only if no handler takes it. Picking the item in the menu always runs it.
-    pub fn keys_first(mut self) -> Self { self.description.keys_first = true; self }
-    pub fn enabled(mut self, enabled: bool) -> Self { self.description.enabled = enabled; self }
-    pub fn checked(mut self, checked: bool) -> Self { self.description.checked = checked; self }
+    pub fn keys_first(mut self) -> Self { self.meta.keys_first = true; self }
+    pub fn enabled(mut self, enabled: bool) -> Self { self.meta.enabled = enabled; self }
+    pub fn checked(mut self, checked: bool) -> Self { self.meta.checked = checked; self }
+    /// macOS: the item before it in its menu shows this one in its place while the modifier this
+    /// one's key equivalent adds is held (Option, mostly), as AppKit's Close All stands behind
+    /// Close Window. Give it the same key with that modifier more. Elsewhere it is an item like
+    /// any other.
+    pub fn alternate(mut self) -> Self { self.meta.alternate = true; self }
+
+    /// Splits the tree into a non-generic `Description` and pre-order leaf actions matching
+    /// [`walk_leaves`].
+    fn split(self, actions: &mut Vec<MenuAction<S>>) -> Description {
+        let kind = match self.kind {
+            ItemKind::Action(action) => {
+                actions.push(action);
+                EntryKind::Action
+            }
+            ItemKind::Separator => EntryKind::Separator,
+            ItemKind::Submenu(items) => {
+                let children = items.into_iter().map(|child| child.split(actions)).collect();
+                EntryKind::Submenu(children)
+            }
+        };
+        Description { meta: self.meta, kind }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -186,7 +360,7 @@ impl HubCore {
 
 pub(crate) struct Hub<S> {
     core: Arc<HubCore>,
-    actions: Mutex<(u64, Vec<fn(&mut S, &mut Tx)>)>,
+    actions: Mutex<(u64, Vec<MenuAction<S>>)>,
 }
 
 impl<S> Default for Hub<S> {
@@ -197,18 +371,20 @@ impl<S> Default for Hub<S> {
 
 impl<S> Hub<S> {
     fn push(&self, item: MenuItem<S>) {
+        let mut new_actions = Vec::new();
+        let description = item.split(&mut new_actions);
         let mut state = self.core.state.lock().unwrap();
         let mut actions = self.actions.lock().unwrap();
         if actions.0 != state.clear_gen {
             actions.1.clear();
             actions.0 = state.clear_gen;
         }
-        state.descriptions.push(item.description);
-        actions.1.push(item.action);
+        state.descriptions.push(description);
+        actions.1.extend(new_actions);
         state.revision.next();
     }
 
-    fn set(&self, descriptions: Vec<Description>, new_actions: Vec<fn(&mut S, &mut Tx)>) -> Result<(), MenuError> {
+    fn set(&self, descriptions: Vec<Description>, new_actions: Vec<MenuAction<S>>) -> Result<(), MenuError> {
         let mut state = self.core.state.lock().unwrap();
         state.check_set(&descriptions)?;
         let mut actions = self.actions.lock().unwrap();
@@ -218,22 +394,64 @@ impl<S> Hub<S> {
         Ok(())
     }
 
-    fn resolve_action(&self, revision: Attempt, id: &str) -> Option<fn(&mut S, &mut Tx)> {
+    fn resolve_action(&self, revision: Attempt, id: &str) -> Option<MenuAction<S>> {
         let state = self.core.state.lock().unwrap();
         if !state.presence.running() || state.revision.current() != revision { return None; }
-        let index = lookup(&state, id).ok()?;
+        let (index, _) = lookup(&state, id).ok()?;
         let actions = self.actions.lock().unwrap();
-        (actions.0 == state.clear_gen).then(|| actions.1.get(index).copied()).flatten()
+        (actions.0 == state.clear_gen).then(|| actions.1.get(index).cloned()).flatten()
     }
 }
 
 fn validate(descriptions: &[Description]) -> Result<(), MenuError> {
     let mut ids = std::collections::HashSet::new();
+    let mut has_about = false;
+    validate_entries(descriptions, false, &mut ids, &mut has_about)
+}
+
+fn validate_entries<'a>(
+    descriptions: &'a [Description],
+    nested: bool,
+    ids: &mut std::collections::HashSet<&'a str>,
+    has_about: &mut bool,
+) -> Result<(), MenuError> {
     for d in descriptions {
-        if matches!(&d.location, Location::Named(title) if title.trim().is_empty()) { return Err(MenuError::Invalid("empty menu title".into())); }
-        if d.separator { continue; }
-        if d.id.trim().is_empty() || d.title.trim().is_empty() { return Err(MenuError::Invalid("empty id or title".into())); }
-        if !ids.insert(&d.id) { return Err(MenuError::Invalid(format!("duplicate id {}", d.id))); }
+        if nested {
+            if d.meta.location != Location::App {
+                return Err(MenuError::Invalid("submenu item cannot set menu or dock".into()));
+            }
+            if d.meta.replaces_about {
+                return Err(MenuError::Invalid("about item must be in the app menu".into()));
+            }
+        } else {
+            if matches!(&d.meta.location, Location::Named(title) if title.trim().is_empty()) {
+                return Err(MenuError::Invalid("empty menu title".into()));
+            }
+            if d.meta.replaces_about {
+                if d.meta.location != Location::App { return Err(MenuError::Invalid("about item must be in the app menu".into())); }
+                if d.meta.after.is_some() { return Err(MenuError::Invalid("about item cannot use after".into())); }
+                if d.meta.alternate { return Err(MenuError::Invalid("about item cannot be an alternate".into())); }
+                if *has_about { return Err(MenuError::Invalid("duplicate about item".into())); }
+                *has_about = true;
+            }
+        }
+        match &d.kind {
+            EntryKind::Separator => {}
+            EntryKind::Action => {
+                if d.meta.id.trim().is_empty() || d.meta.title.trim().is_empty() {
+                    return Err(MenuError::Invalid("empty id or title".into()));
+                }
+                if !ids.insert(d.meta.id.as_str()) {
+                    return Err(MenuError::Invalid(format!("duplicate id {}", d.meta.id)));
+                }
+            }
+            EntryKind::Submenu(children) => {
+                if d.meta.title.trim().is_empty() {
+                    return Err(MenuError::Invalid("empty submenu title".into()));
+                }
+                validate_entries(children, true, ids, has_about)?;
+            }
+        }
     }
     Ok(())
 }
@@ -256,7 +474,8 @@ impl<S: 'static> AppHandle<S> {
     /// the menus and standard items Rune made also take the app's current labels
     /// (`rune::set_labels`), so an app calls this again after its language changes.
     pub fn set_menu(&self, items: impl IntoIterator<Item = MenuItem<S>>) -> Result<(), MenuError> {
-        let (descriptions, actions): (Vec<_>, Vec<_>) = items.into_iter().map(|i| (i.description, i.action)).unzip();
+        let mut actions = Vec::new();
+        let descriptions: Vec<_> = items.into_iter().map(|i| i.split(&mut actions)).collect();
         self.shared.menus.set(descriptions, actions)?;
         self.shared.core.wake();
         Ok(())
@@ -267,18 +486,60 @@ impl<S: 'static> AppHandle<S> {
     }
 }
 
-fn lookup(state: &CoreState, selector: &str) -> Result<usize, MenuError> {
+struct LeafMatch<'a> {
+    index: usize,
+    id: &'a str,
+    enabled: bool,
+}
+
+fn walk_leaves<'a>(
+    entries: &'a [Description],
+    ancestors_enabled: bool,
+    next_index: &mut usize,
+    visit: &mut impl FnMut(usize, &'a Description, bool),
+) {
+    for d in entries {
+        match &d.kind {
+            EntryKind::Separator => {}
+            EntryKind::Action => {
+                let index = *next_index;
+                *next_index += 1;
+                visit(index, d, ancestors_enabled && d.meta.enabled);
+            }
+            EntryKind::Submenu(children) => {
+                walk_leaves(children, ancestors_enabled && d.meta.enabled, next_index, visit);
+            }
+        }
+    }
+}
+
+fn lookup(state: &CoreState, selector: &str) -> Result<(usize, String), MenuError> {
     if !state.presence.running() { return Err(MenuError::NotRunning); }
-    let items = state.descriptions.iter().enumerate().filter(|(_, d)| !d.separator);
-    let index = if let Some((index, _)) = items.clone().find(|(_, d)| d.id == selector) { index }
-    else {
-        let mut matches = items.filter(|(_, d)| d.title == selector);
-        let index = matches.next().ok_or_else(|| MenuError::UnknownItem(selector.into()))?.0;
-        if matches.next().is_some() { return Err(MenuError::AmbiguousTitle(selector.into())); }
-        index
+    let mut by_id: Option<LeafMatch<'_>> = None;
+    let mut by_title: Option<LeafMatch<'_>> = None;
+    let mut title_ambiguous = false;
+    let mut next_index = 0;
+    walk_leaves(&state.descriptions, true, &mut next_index, &mut |index, d, enabled| {
+        if by_id.is_none() && d.meta.id == selector {
+            by_id = Some(LeafMatch { index, id: &d.meta.id, enabled });
+        }
+        if d.meta.title == selector {
+            if by_title.is_some() {
+                title_ambiguous = true;
+            } else {
+                by_title = Some(LeafMatch { index, id: &d.meta.id, enabled });
+            }
+        }
+    });
+    let found = if let Some(found) = by_id {
+        found
+    } else if title_ambiguous {
+        return Err(MenuError::AmbiguousTitle(selector.into()));
+    } else {
+        by_title.ok_or_else(|| MenuError::UnknownItem(selector.into()))?
     };
-    if !state.descriptions[index].enabled { return Err(MenuError::Disabled(selector.into())); }
-    Ok(index)
+    if !found.enabled { return Err(MenuError::Disabled(selector.into())); }
+    Ok((found.index, found.id.to_owned()))
 }
 
 /// The window host, for a key press it maps to `key`: what to do if no handler takes it, when
@@ -289,6 +550,7 @@ pub(crate) fn set_jump_menu(list: &crate::jump_list::JumpList) {
     macos::set_jump_menu(list);
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn take_unhandled(key: Option<&crate::KeyEvent>) -> Option<crate::runtime::Unhandled> {
     #[cfg(target_os = "macos")]
     { key.and_then(standard_macos::take_unhandled) }
@@ -302,8 +564,7 @@ fn enqueue_core(core: &HubCore, dispatch: &dyn Fn(Attempt, String), selector: &s
     let state = core.state.lock().unwrap();
     let revision = state.revision.current();
     if expected.is_some_and(|r| r != revision) { return Ok(()); }
-    let index = lookup(&state, selector)?;
-    let id = state.descriptions[index].id.clone();
+    let (_, id) = lookup(&state, selector)?;
     drop(state);
     dispatch(revision, id);
     Ok(())
@@ -314,7 +575,7 @@ fn dispatch_typed<S: 'static>(shared: &Arc<Shared<S>>, revision: Attempt, id: St
     AppHandle { shared: shared.clone() }.update(move |s, tx| {
         let Some(shared) = weak.upgrade() else { return };
         if let Some(action) = shared.menus.resolve_action(revision, &id) {
-            action(s, tx);
+            action.call(s, tx);
         }
     });
 }
@@ -336,6 +597,69 @@ enum Bar {
 thread_local! {
     static BAR: std::cell::RefCell<Bar> = const { std::cell::RefCell::new(Bar::Free) };
     static NEXT_GUARD: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+    /// The launch's menu bar while it waits for the first window's first frame.
+    static BAR_WAIT: std::cell::Cell<bar_wait::BarWait> = const { std::cell::Cell::new(bar_wait::BarWait::new()) };
+}
+
+#[cfg(target_os = "macos")]
+fn bar_state<R>(f: impl FnOnce(&mut bar_wait::BarWait) -> R) -> R {
+    BAR_WAIT.with(|cell| {
+        let mut wait = cell.get();
+        let out = f(&mut wait);
+        cell.set(wait);
+        out
+    })
+}
+
+/// `default_macos::ensure`, once a launch's waiting menu bar is made: winit's default menu is
+/// the root it keeps.
+#[cfg(target_os = "macos")]
+pub(crate) fn ensure_default_menu(app: &objc2_app_kit::NSApplication) -> objc2::rc::Retained<objc2_app_kit::NSMenu> {
+    bar_ready();
+    default_macos::ensure(app)
+}
+
+/// `default_macos::promote`, once a launch's waiting menu bar is made.
+#[cfg(target_os = "macos")]
+pub(crate) fn promote_default_menu(app: &objc2_app_kit::NSApplication) {
+    bar_ready();
+    default_macos::promote(app);
+}
+
+/// The event loop starts a regular app with winit's default menu turned off: the menu bar is
+/// made once the first window's first frame is on its way (`bar_ready`).
+#[cfg(target_os = "macos")]
+pub(crate) fn bar_waits() {
+    bar_state(bar_wait::BarWait::begin);
+}
+
+/// The menu bar a launch left waiting, now: winit's default menu, then the standard items its
+/// window starts asked for. A window's own items follow as its guard drains. Called once the
+/// first window's first frame is on its way, at the end of a launch that drew none, and by
+/// whatever needs the menu bar before that (`ensure_default_menu`). True when this call made it.
+#[cfg(target_os = "macos")]
+pub(crate) fn bar_ready() -> bool {
+    let Some(owed) = bar_state(bar_wait::BarWait::end) else { return false };
+    winit::platform::macos::install_default_menu();
+    if let Some(opt_in) = owed.standard { standard_macos::install(opt_in); }
+    true
+}
+
+/// Lists `window` in the Window menu now, as AppKit does when a window is ordered in. The
+/// launch's first window was ordered in before its menu bar was made (`bar_ready`): AppKit
+/// would list it once the app is active, after the launch's later windows, where it was the
+/// first of the list.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+pub(crate) fn list_window(window: &winit::window::Window) {
+    let (Some(mtm), Some(window)) = (objc2::MainThreadMarker::new(), crate::platform::macos::ns_window(window)) else { return };
+    let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+    // SAFETY: main thread; the window and its title are retained across AppKit's own call for
+    // a window's item (it adds the item when the window has none).
+    unsafe {
+        if window.isExcludedFromWindowsMenu() { return; }
+        let _: () = objc2::msg_send![&*app, changeWindowsItem: &*window, title: &*window.title(), filename: false];
+    }
 }
 
 pub(crate) struct MenuGuard {
@@ -394,6 +718,7 @@ impl MenuGuard {
 
     /// This App's window took focus: its items take the menu bar, so they act in it. An App
     /// without items of its own leaves the bar to the one that has it.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn claim(&mut self) {
         #[cfg(target_os = "macos")]
         {
@@ -415,6 +740,9 @@ impl MenuGuard {
     }
 
     pub(crate) fn drain(&mut self) {
+        // A launch's menu bar waits for the first frame; this guard's items go in after it.
+        #[cfg(target_os = "macos")]
+        if bar_state(|wait| wait.waits()) { return; }
         let Some(core) = self.core.upgrade() else { return };
         let state = core.state.lock().unwrap();
         if matches!(self.placed, Placed::Synced(at) if at == state.revision.current()) { return; }
@@ -472,7 +800,7 @@ impl MenuGuard {
         });
         // The app's labels may have changed with its language since the menus were made.
         #[cfg(target_os = "macos")]
-        if !headless && let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
+        if !headless && let Some(mtm) = objc2::MainThreadMarker::new() {
             default_macos::relabel(&objc2_app_kit::NSApplication::sharedApplication(mtm));
         }
         self.placed = Placed::Synced(revision);
@@ -494,109 +822,11 @@ impl Drop for MenuGuard {
         ios::set(&[], Arc::new(|_: &str| {}));
         // The bar waits for the next window to take focus (`claim`).
         #[cfg(target_os = "macos")]
-        let _ = BAR.try_with(|bar| {
+        BAR.try_with(|bar| {
             let mut bar = bar.borrow_mut();
             if matches!(&*bar, Bar::Owned { guard, .. } if *guard == self.id) { *bar = Bar::Free; }
-        });
+        }).ok();
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{AppSpec, el};
-    fn app() -> App<Vec<u32>> { App::new(AppSpec::new("menu", (100.0, 100.0), Vec::new, |_, _| el())) }
-    fn item(id: &str) -> MenuItem<Vec<u32>> { MenuItem::new("Open Quick Panel", |s: &mut Vec<u32>, _| s.push(1)).id(id) }
-    fn drain(app: &App<Vec<u32>>, s: &mut Vec<u32>) {
-        for update in app.shared.take().updates { update(s, &mut Tx::default()); }
-    }
 
-    #[test]
-    fn title_and_id_dispatch_on_the_state_thread_with_reentrant_menu_updates() {
-        let app = app().menu_item(item("quick")).menu_item(MenuItem::new("Dock", |s: &mut Vec<u32>, tx| { s.push(2); tx.quit(); }).dock());
-        let _guard = MenuGuard::attach(&app.shared, true);
-        let handle = app.handle();
-        let shared = app.shared.clone();
-        std::thread::spawn(move || fire(&shared, "Open Quick Panel").unwrap()).join().unwrap();
-        let mut state = Vec::new();
-        assert!(state.is_empty());
-        drain(&app, &mut state);
-        assert_eq!(state, [1]);
-        fire(&app.shared, "quick").unwrap();
-        drain(&app, &mut state);
-        assert_eq!(state, [1, 1]);
-        let h = handle.clone();
-        handle.update(move |_, _| h.set_menu([item("replacement").checked(true)]).unwrap());
-        drain(&app, &mut state);
-        assert_eq!(app.shared.menus.core.state.lock().unwrap().descriptions[0].id, "replacement");
-    }
-
-    #[test]
-    fn replacement_disable_and_shutdown_cancel_stale_actions() {
-        let app = app().menu_item(item("quick"));
-        let guard = MenuGuard::attach(&app.shared, true);
-        let handle = app.handle();
-        fire(&app.shared, "quick").unwrap();
-        handle.set_menu([item("quick").enabled(false).checked(true)]).unwrap();
-        let mut state = Vec::new(); drain(&app, &mut state);
-        assert!(state.is_empty());
-        assert_eq!(fire(&app.shared, "quick"), Err(MenuError::Disabled("quick".into())));
-        assert!(app.shared.menus.core.state.lock().unwrap().descriptions[0].checked);
-        handle.set_menu([item("quick")]).unwrap();
-        fire(&app.shared, "quick").unwrap();
-        drop(guard); drain(&app, &mut state);
-        assert!(state.is_empty());
-        assert_eq!(fire(&app.shared, "quick"), Err(MenuError::NotRunning));
-    }
-
-    #[test]
-    fn validation_is_atomic_and_ambiguous_titles_require_ids() {
-        let app = app().menu_item(item("first")).menu_item(item("second").menu("Tools"));
-        let _guard = MenuGuard::attach(&app.shared, true);
-        assert_eq!(fire(&app.shared, "Open Quick Panel"), Err(MenuError::AmbiguousTitle("Open Quick Panel".into())));
-        assert!(fire(&app.shared, "first").is_ok());
-        assert!(matches!(app.handle().set_menu([item("duplicate"), item("duplicate")]), Err(MenuError::Invalid(_))));
-        assert_eq!(app.shared.menus.core.state.lock().unwrap().descriptions.len(), 2);
-        assert!(matches!(fire(&app.shared, "missing"), Err(MenuError::UnknownItem(_))));
-        let invalid = self::app().menu_item(item("same")).menu_item(item("same"));
-        let _guard = MenuGuard::attach(&invalid.shared, true);
-        assert!(matches!(invalid.handle().take_menu_errors().as_slice(), [MenuError::Invalid(_)]));
-        assert!(matches!(fire(&invalid.shared, "same"), Err(MenuError::UnknownItem(_))));
-    }
-
-    #[test]
-    fn separators_need_no_ids_and_never_fire() {
-        let file = |title: &str| MenuItem::new(title, |s: &mut Vec<u32>, _| s.push(3)).menu("File");
-        let app = app().menu_item(file("New")).menu_item(MenuItem::separator().menu("File"))
-            .menu_item(file("Close")).menu_item(MenuItem::separator().menu("File")).menu_item(MenuItem::separator().dock());
-        let _guard = MenuGuard::attach(&app.shared, true);
-        assert!(app.handle().take_menu_errors().is_empty());
-        assert_eq!(fire(&app.shared, ""), Err(MenuError::UnknownItem(String::new())));
-        fire(&app.shared, "Close").unwrap();
-        let mut state = Vec::new(); drain(&app, &mut state);
-        assert_eq!(state, [3]);
-        app.handle().set_menu([file("New"), MenuItem::separator().menu("File"), MenuItem::separator().menu("File")]).unwrap();
-        assert!(app.shared.menus.core.state.lock().unwrap().descriptions[1].separator);
-        assert!(matches!(app.handle().set_menu([MenuItem::separator().menu(" ")]), Err(MenuError::Invalid(_))));
-    }
-
-    #[test]
-    fn equivalent_and_non_send_state_remain_builder_compatible() {
-        fn send_sync<T: Send + Sync>() {}
-        send_sync::<AppHandle<std::rc::Rc<()>>>();
-        let shortcut: Shortcut = "cmd+shift+k".parse().unwrap();
-        let item = item("quick").key_equivalent(shortcut.clone());
-        assert_eq!(item.description.equivalent, Some(shortcut));
-        assert!(!item.description.keys_first && item.keys_first().description.keys_first);
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    #[test]
-    fn unsupported_native_platform_is_a_noop_but_headless_works() {
-        let app = app().menu_item(item("quick"));
-        let _guard = MenuGuard::attach(&app.shared, false);
-        assert_eq!(app.handle().take_menu_errors(), [MenuError::Unsupported]);
-        assert_eq!(app.handle().set_menu([item("other")]), Err(MenuError::Unsupported));
-        assert_eq!(app.shared.menus.core.state.lock().unwrap().descriptions[0].id, "quick");
-    }
-}

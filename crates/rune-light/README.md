@@ -56,14 +56,15 @@ target/perf/examples/light bench
 
 | Input | Form | Notes |
 |---|---|---|
-| Primitives | `&[Prim]`, device px, in draw order | Rune's instance rect and radii plus `z` (bottom, top, bevel width, bevel height), `gloss`/`roughness`, flags `OCCLUDER` / `EMISSIVE` / `RAISED`, emitted radiance, albedo. Painter's order decides which surface owns a pixel. |
+| Primitives | `&[Prim]`, device px, in draw order | Rune's instance rect and radii plus `z` (bottom, top, bevel width, bevel height), `gloss`/`roughness`, flags `OCCLUDER` / `EMISSIVE` / `RAISED` / `UNLIT` (`Prim::unlit`: its own pixels keep the designed colour, while an emitter still lights its neighbours), emitted radiance, albedo. Painter's order decides which surface owns a pixel. |
 | Lights | `&[Light]`, up to 8 | position + height, linear colour × intensity, source radius, range, optional torch cone (`spot`), `shafts`, `bulb`, `specular`, `softness`. Animate any field with Rune springs; fade a light out with `scaled(k)` (lights cool, never cut). |
 | UI colour | `base`: the frame without text (linear, filterable; Rgba16Float works) | Used as albedo. |
 | Text | `text`: glyphs only, premultiplied linear, transparent elsewhere | Lit like the surface beneath, clamped by `TextPolicy { floor, ceiling }`, so shadows never crush it and highlights never wash it out. `lit: 0` leaves text unlit. |
 | Settings | ambient, exposure, `TextPolicy`, `Option<Gi>`, contact AO, rim, background gloss, `time`, `seed` | |
 
-**Output:** the lit frame in `target`. If the target format isn't sRGB, the composite encodes sRGB itself and adds
-±1 LSB interleaved-gradient dither (a fixed per-pixel pattern, so nothing crawls between frames).
+**Output:** the lit frame in `target`. Float targets (`Rgba16Float`, `Rgba32Float`) receive linear light; other
+non-sRGB targets receive a manual sRGB encode plus ±1 LSB interleaved-gradient dither (a fixed per-pixel pattern, so
+nothing crawls between frames).
 
 **Guarantees**
 
@@ -124,7 +125,7 @@ All times in ms. The fast path (field + soft shadows for 4 lights) costs about 0
 (48 masked samples). GI costs ~2.3 ms at ⅛ resolution (320×200 probes, 5 cascades with the bilinear fix), and
 that cost doesn't change with the number of emitters. It's for hero moments, not every frame of every screen.
 
-The field pass is exact. Distances are clamped to 128 px, which is further than any tracer step, so each 16×16 tile
+The field pass is exact. Distances are clamped to 256 px, which is further than any tracer step, so each 16×16 tile
 culls primitives into workgroup memory first. That took it from 1.3 ms (brute force) to 0.07 ms.
 
 ## Verification

@@ -1,5 +1,5 @@
-//! Shared host frame sequencer: one definition of the order every native and tooling host
-//! drives a frame through.
+//! Shared host frame sequencer: one definition of the order every host (window, overlay, Apple
+//! layer, headless, virtual desktop, and web) drives a frame through.
 //!
 //! The sequence is governed by an explicit phase state machine ([`Phase`], [`Event`],
 //! [`Effect`], [`step`]) so every ordering invariant — acquiring a drawable before stepping on
@@ -26,8 +26,9 @@ pub(crate) enum Outcome {
     /// Acquisition, surface reconfiguration, or a forced miss ended the frame without presenting.
     Missed,
     /// Rendering could not prepare its target (e.g. a CPU-boot frame needs the GPU or lacked a
-    /// buffer) and deferred to the host's recovery path.
-    #[cfg(any(test, target_os = "windows"))]
+    /// buffer, or the web host rejected unsupported native surfaces) and deferred to the host's
+    /// recovery path.
+    #[cfg(any(test, target_os = "windows", target_os = "linux", target_arch = "wasm32"))]
     Aborted,
     /// A frame was drawn, submitted/presented, recorded on the clock and interaction tracker, and
     /// settled.
@@ -82,11 +83,15 @@ pub(crate) enum Acquire<D> {
 pub(crate) enum ReacquireReason {
     /// Native system materials (e.g. macOS visual effect views) turned on during the step; the
     /// host rebuilds with native materials enabled before re-acquiring.
-    #[cfg(any(test, target_os = "macos"))]
+    #[cfg(any(test, target_os = "macos", all(target_os = "windows", feature = "windows-system-material")))]
     NativeMaterials,
     /// A handler changed `Tx::set_srgb_blend`; the surface and renderer reconfigure for the new
     /// target format before re-acquiring.
     Reblend,
+    /// A content-sized overlay's committed layout changed height; resize, re-place, and
+    /// reconfigure its surface before re-acquiring so the new content presents in the same frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    ContentResize,
 }
 
 /// Result of [`FrameHost::post_step_check`].
@@ -99,13 +104,17 @@ pub(crate) enum PostStepCheck {
     /// Drop the current drawable and treat the frame as missed (used by diagnostic miss hooks).
     #[cfg(any(test, feature = "frame-profile"))]
     Missed(Missed),
+    /// Drop the current drawable without presenting or backing off (Wayland layer-shell
+    /// content resize waiting for the compositor's matching `configure`).
+    #[cfg(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))]
+    Hold,
 }
 
 /// Result of [`FrameHost::prepare_render`].
 #[derive(Debug)]
 pub(crate) enum RenderPrep<P> {
     Ready(P),
-    #[cfg(any(test, target_os = "windows"))]
+    #[cfg(any(test, target_os = "windows", target_os = "linux", target_arch = "wasm32"))]
     Abort,
 }
 
@@ -172,11 +181,13 @@ pub(crate) enum Event {
     PostStepReacquire(ReacquireReason),
     #[cfg(any(test, feature = "frame-profile"))]
     PostStepMissed(Missed),
+    #[cfg(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))]
+    PostStepHold,
     Reacquired,
     ReacquireMissed(Missed),
     Synced,
     Prepared,
-    #[cfg(any(test, target_os = "windows"))]
+    #[cfg(any(test, target_os = "windows", target_os = "linux", target_arch = "wasm32"))]
     PrepareAborted,
     Rendered,
     Presented,
@@ -198,6 +209,8 @@ pub(crate) enum Effect {
     DropAndReacquire(ReacquireReason),
     #[cfg(any(test, feature = "frame-profile"))]
     DropAndMiss(Missed),
+    #[cfg(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))]
+    DropAndHold,
     Missed { missed: Missed, stepped: bool },
     Sync,
     Prepare,
@@ -288,6 +301,11 @@ pub(crate) fn step(phase: &mut Phase, event: Event) -> Effects<Effect> {
             *phase = Phase::Done(Outcome::Missed);
             Effects::one(Effect::DropAndMiss(missed))
         }
+        #[cfg(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))]
+        (Phase::PostStepChecking { .. }, Event::PostStepHold) => {
+            *phase = Phase::Done(Outcome::Skipped);
+            Effects::one(Effect::DropAndHold)
+        }
         (Phase::Reacquiring { reacquired }, Event::Reacquired) => {
             *phase = Phase::PostStepChecking { reacquired };
             Effects::one(Effect::PostStepCheck)
@@ -304,7 +322,7 @@ pub(crate) fn step(phase: &mut Phase, event: Event) -> Effects<Effect> {
             *phase = Phase::Rendering;
             Effects::one(Effect::Render)
         }
-        #[cfg(any(test, target_os = "windows"))]
+        #[cfg(any(test, target_os = "windows", target_os = "linux", target_arch = "wasm32"))]
         (Phase::Preparing, Event::PrepareAborted) => {
             *phase = Phase::Done(Outcome::Aborted);
             Effects::none()
@@ -509,6 +527,8 @@ pub(crate) fn run<H: FrameHost>(host: &mut H) -> Outcome {
             PostStepCheck::Reacquire(reason) => Event::PostStepReacquire(reason),
             #[cfg(any(test, feature = "frame-profile"))]
             PostStepCheck::Missed(missed) => Event::PostStepMissed(missed),
+            #[cfg(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))]
+            PostStepCheck::Hold => Event::PostStepHold,
         };
         match step(&mut phase, event) {
             Effects::One(Effect::Sync) => break,
@@ -537,6 +557,11 @@ pub(crate) fn run<H: FrameHost>(host: &mut H) -> Outcome {
                 host.on_missed(missed, true);
                 return phase.outcome();
             }
+            #[cfg(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))]
+            Effects::One(Effect::DropAndHold) => {
+                drop(drawable);
+                return phase.outcome();
+            }
             _ => unreachable!(),
         }
     }
@@ -548,7 +573,7 @@ pub(crate) fn run<H: FrameHost>(host: &mut H) -> Outcome {
             let Effects::One(Effect::Render) = step(&mut phase, Event::Prepared) else { unreachable!() };
             prepared
         }
-        #[cfg(any(test, target_os = "windows"))]
+        #[cfg(any(test, target_os = "windows", target_os = "linux", target_arch = "wasm32"))]
         RenderPrep::Abort => {
             let Effects::None = step(&mut phase, Event::PrepareAborted) else { unreachable!() };
             return phase.outcome();
@@ -620,6 +645,7 @@ pub(crate) fn draw_ui(
     size: (u32, u32),
     clear: [f32; 4],
 ) {
+    renderer.set_fade_stops(rt.fade_stops());
     renderer.prepare_ui(&gpu.device, &gpu.queue, &mut rt.text.atlas, &rt.instances, size);
     renderer.draw(encoder, target, clear);
 }

@@ -6,20 +6,52 @@ use crate::text::FontSmoothing;
 
 impl RuntimeCore {
     /// Enable or disable gamma-space (sRGB) blending for translucent fills, shadows, blurs,
-    /// images and video, as `App::srgb_blend` does for a window. Every colour the next frame
-    /// builds, hover and press tints included, is premultiplied in sRGB encoding
-    /// (`Color::premul_srgb`). A runtime drawn by the app itself (`Runtime::with_text`, a
-    /// headless snapshot) then draws with `Renderer::set_srgb_blend(true)` into a non-sRGB
-    /// target (`format.remove_srgb_suffix()`), cleared to `clear_color()`.
+    /// images and video, as `App::srgb_blend` does for a window. On by default: every colour
+    /// built by the runtime, hover and press tints included, is premultiplied in sRGB encoding
+    /// (`Color::premul_srgb`) for a non-sRGB target (`OFFSCREEN_FORMAT`), cleared to
+    /// `clear_color()`. Pass `false` to blend in linear light into an `*Srgb` target
+    /// (`OFFSCREEN_FORMAT_LINEAR`) with `Renderer::set_srgb_blend(false)`.
     pub fn set_srgb_blend(&mut self, enabled: bool) {
-        if self.paint.srgb_blend != enabled {
-            self.paint.srgb_blend = enabled;
+        if self.paint.set_srgb_blend(enabled) {
             self.commit.dirty = true;
         }
     }
 
     pub fn srgb_blend(&self) -> bool {
-        self.paint.srgb_blend
+        self.paint.srgb_blend()
+    }
+
+    /// Set the maximum number of native `El::system_material` views this runtime admits per frame
+    /// (default [`crate::MAX_NATIVE_MATERIALS`], clamped to 64), as
+    /// [`App::max_native_materials`](crate::App::max_native_materials) does for a window. Visible
+    /// material elements past this limit draw their fallback fill and report
+    /// [`ElementInfo::material_fallback`](crate::ElementInfo::material_fallback).
+    pub fn set_max_native_materials(&mut self, max: usize) {
+        if self.paint.set_max_native_materials(max) {
+            self.commit.dirty = true;
+        }
+    }
+
+    /// Maximum number of native `El::system_material` views this runtime admits per frame.
+    pub fn max_native_materials(&self) -> usize {
+        self.paint.max_native_materials()
+    }
+
+    #[cfg_attr(
+        not(any(
+            all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")),
+            test
+        )),
+        allow(dead_code)
+    )]
+    pub(crate) fn set_wayland_blur_materials(&mut self, on: bool) {
+        if self.paint.set_wayland_blur_materials(on) {
+            self.commit.dirty = true;
+        }
+    }
+
+    pub fn fade_stops(&self) -> [f32; 2] {
+        self.tree.fade_stops
     }
 
     /// Rasterise and place glyphs in `mode` from the next frame, as `App::font_smoothing` does
@@ -37,7 +69,23 @@ impl RuntimeCore {
     }
 
     pub fn clear_color(&self) -> [f32; 4] {
-        if self.transparent { return [0.0; 4]; }
+        if self.transparent {
+            if !self.host.backdrop_opaque_fallback {
+                return [0.0; 4];
+            }
+            let root_fill = self.tree.nodes.get(self.app_root())
+                .map_or(Color::TRANSPARENT, |n| self.color(n.id, P_FILL, n.vis.fill));
+            let c = if root_fill.a >= 1.0 {
+                root_fill
+            } else {
+                crate::system_material::fallback_fill(Color::TRANSPARENT, self.env.system_dark)
+            };
+            return if self.paint.srgb_blend {
+                [srgb_encode(c.r), srgb_encode(c.g), srgb_encode(c.b), 1.0]
+            } else {
+                [c.r, c.g, c.b, 1.0]
+            };
+        }
         self.tree.nodes.get(self.app_root()).map_or([0.0, 0.0, 0.0, 1.0], |n| {
             let c = self.color(n.id, P_FILL, n.vis.fill);
             if self.paint.srgb_blend {

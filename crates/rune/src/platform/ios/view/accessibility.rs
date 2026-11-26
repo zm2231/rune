@@ -2,7 +2,7 @@
 //! the elements starts the runtime's tree, and what a reader does to an element goes to the
 //! runtime as the tree's action.
 
-use objc2::DefinedClass;
+use objc2::{DefinedClass, MainThreadOnly};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 
@@ -12,15 +12,15 @@ use super::RuneView;
 use crate::a11y::ios::Gesture;
 
 impl RuneView {
-    /// The view's elements, for a client that asks. The first ask starts the runtime's tree,
-    /// and the elements follow the frame it wakes.
     pub(super) fn accessibility_asked(&self) -> Retained<AnyObject> {
-        let (list, first) = self.ivars().accessibility.borrow_mut().elements();
-        if first {
-            self.with_surface(|surface| surface.accessibility_wanted());
+        if self.ivars().accessibility.borrow_mut().ask() {
+            let reading = self.with_surface(|surface| surface.accessibility_wanted()).flatten();
+            if let Some(reading) = reading {
+                self.ivars().accessibility.borrow_mut().answer(self.mtm(), self, reading);
+            }
             self.pace(Event::Wake);
         }
-        list
+        self.ivars().accessibility.borrow().list()
     }
 
     /// The text input, while the keyboard edits a field through it that is not a password.

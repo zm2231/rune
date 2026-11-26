@@ -356,3 +356,24 @@ fn typing_a_password_changes_its_dots_with_no_change_to_the_tree() {
     mirror.refresh();
     assert_eq!(value(&mirror), None);
 }
+
+#[test]
+fn a_first_ask_after_the_first_frame_reads_the_whole_screen_without_waiting_for_another() {
+    use crate::{AccessibilityLink, Cx, Env, Runtime, col, row, text};
+    let view = |_: &(), _: &mut Cx<()>| {
+        col().child(text("Inbox").role("heading"))
+            .child(row().key("send").role("button").focusable(true).on_press(|_: &mut ()| {}).child(text("Send")))
+    };
+    let mut rt = Runtime::new((), view, (400.0, 300.0), Env::new(true, 1.0));
+    rt.frame(0.0);
+    let mut link = AccessibilityLink::new();
+    let core = rt.core_mut();
+    link.activate();
+    link.receive(core, "Mail");
+    let mut mirror = Mirror::default();
+    mirror.apply(link.update(core).expect("the ask reads the last frame"));
+    assert_eq!(labels(&mirror), ["Inbox", "Send"]);
+    rt.frame(0.0);
+    let next = link.update(rt.core_mut()).map_or_else(Changes::default, |update| mirror.apply(update));
+    assert!(!next.layout, "the frame after the answer moves nothing");
+}

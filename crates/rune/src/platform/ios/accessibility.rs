@@ -279,9 +279,14 @@ impl Accessibility {
         unsafe { UIAccessibilityIsVoiceOverRunning() }
     }
 
-    /// The elements, and whether this is the first time anything asked for them.
-    pub(crate) fn elements(&mut self) -> (Retained<AnyObject>, bool) {
-        (self.list.clone(), !std::mem::replace(&mut self.asked, true))
+    pub(crate) fn ask(&mut self) -> bool {
+        !std::mem::replace(&mut self.asked, true)
+    }
+
+    pub(crate) fn list(&self) -> Retained<AnyObject> { self.list.clone() }
+
+    pub(crate) fn answer(&mut self, mtm: MainThreadMarker, host: &RuneView, reading: Reading) {
+        let _: Posts = self.apply(mtm, host, reading);
     }
 
     /// Whether a client asked for the elements yet.

@@ -3,7 +3,7 @@
 use super::*;
 use crate::status::error_handler;
 use std::cell::{Cell, RefCell};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, OnceLock, mpsc};
 
 type AuthDone = RcBlock<dyn Fn(Bool, *mut AnyObject)>;
 type AddDone = RcBlock<dyn Fn(*mut AnyObject)>;
@@ -47,7 +47,8 @@ extern "C" fn status(_: *mut AnyObject, _: Sel) -> isize {
 }
 
 fn settings_class() -> &'static AnyClass {
-    AnyClass::get(c"RuneNotifyFakeSettings").unwrap_or_else(|| {
+    static CLASS: OnceLock<&'static AnyClass> = OnceLock::new();
+    CLASS.get_or_init(|| {
         let mut b = ClassBuilder::new(c"RuneNotifyFakeSettings", class!(NSObject)).unwrap();
         // SAFETY: `status` matches the ABI of the `authorizationStatus` getter.
         unsafe { b.add_method(sel!(authorizationStatus), status as extern "C" fn(_, _) -> _) };
@@ -56,7 +57,8 @@ fn settings_class() -> &'static AnyClass {
 }
 
 fn fake_center() -> Retained<AnyObject> {
-    let class = AnyClass::get(c"RuneNotifyFakeCenter").unwrap_or_else(|| {
+    static CLASS: OnceLock<&'static AnyClass> = OnceLock::new();
+    let class = *CLASS.get_or_init(|| {
         let mut b = ClassBuilder::new(c"RuneNotifyFakeCenter", class!(NSObject)).unwrap();
         // SAFETY: each function matches the ABI and argument types of the selector it is added for.
         unsafe {
@@ -85,6 +87,18 @@ fn finish_adds() {
     for (_, done) in ADDED.with_borrow_mut(std::mem::take) {
         done.call((std::ptr::null_mut(),));
     }
+}
+
+static ERRORS: Mutex<()> = Mutex::new(());
+
+fn errors_during(run: impl FnOnce()) -> Vec<PostError> {
+    let _one_handler = ERRORS.lock().unwrap_or_else(|e| e.into_inner());
+    let got = Arc::new(Mutex::new(Vec::new()));
+    let sink = got.clone();
+    crate::on_post_error(move |e| sink.lock().unwrap().push(e));
+    run();
+    *error_handler().lock().unwrap() = None;
+    std::mem::take(&mut *got.lock().unwrap())
 }
 
 fn post(center: &Retained<AnyObject>, id: &str) {
@@ -125,27 +139,19 @@ fn a_remove_racing_the_add_takes_it_out_once_the_add_lands() {
 
 #[test]
 fn a_denied_or_failed_permission_request_reaches_on_post_error() {
-    let got = Arc::new(Mutex::new(Vec::new()));
-    let sink = got.clone();
-    crate::on_post_error(move |e| {
-        if e.id.starts_with("refused-") {
-            sink.lock().unwrap().push(e);
-        }
-    });
     let center = fake_center();
-    post(&center, "refused-1");
-    answer(false, std::ptr::null_mut());
-    post(&center, "refused-2");
-    // SAFETY: inside an autorelease pool; `errorWithDomain:code:userInfo:` takes a nil user info.
-    objc2::rc::autoreleasepool(|_| unsafe {
-        let error: *mut AnyObject = msg_send![class!(NSError), errorWithDomain: ns("UNErrorDomain"), code: 1isize, userInfo: std::ptr::null::<AnyObject>()];
-        answer(false, error);
+    let got = errors_during(|| {
+        post(&center, "refused-1");
+        answer(false, std::ptr::null_mut());
+        post(&center, "refused-2");
+        // SAFETY: inside an autorelease pool; `errorWithDomain:code:userInfo:` takes a nil user info.
+        objc2::rc::autoreleasepool(|_| unsafe {
+            let error: *mut AnyObject = msg_send![class!(NSError), errorWithDomain: ns("UNErrorDomain"), code: 1isize, userInfo: std::ptr::null::<AnyObject>()];
+            answer(false, error);
+        });
     });
-    *error_handler().lock().unwrap() = None;
-
-    let got = got.lock().unwrap();
     assert!(added().is_empty());
-    assert_eq!(got.len(), 2);
+    assert_eq!(got.len(), 2, "{got:?}");
     assert_eq!(got[0], PostError { id: "refused-1".into(), failure: Failure::Denied });
     assert_eq!(got[1].id, "refused-2");
     assert!(matches!(&got[1].failure, Failure::System(why) if why.contains("UNErrorDomain 1")), "{:?}", got[1]);
@@ -153,29 +159,23 @@ fn a_denied_or_failed_permission_request_reaches_on_post_error() {
 
 #[test]
 fn a_post_removed_or_posted_again_before_a_refusal_reports_nothing() {
-    let got = Arc::new(Mutex::new(Vec::new()));
-    let sink = got.clone();
-    crate::on_post_error(move |e| {
-        if e.id.starts_with("quiet-") {
-            sink.lock().unwrap().push(e);
-        }
-    });
     let center = fake_center();
-    post(&center, "quiet-1");
-    remove(&center, "quiet-1");
-    answer(false, std::ptr::null_mut());
-    post(&center, "quiet-2");
-    remove(&center, "quiet-2");
-    // SAFETY: inside an autorelease pool; `errorWithDomain:code:userInfo:` takes a nil user info.
-    objc2::rc::autoreleasepool(|_| unsafe {
-        let error: *mut AnyObject = msg_send![class!(NSError), errorWithDomain: ns("UNErrorDomain"), code: 1isize, userInfo: std::ptr::null::<AnyObject>()];
-        answer(false, error);
+    let got = errors_during(|| {
+        post(&center, "quiet-1");
+        remove(&center, "quiet-1");
+        answer(false, std::ptr::null_mut());
+        post(&center, "quiet-2");
+        remove(&center, "quiet-2");
+        // SAFETY: inside an autorelease pool; `errorWithDomain:code:userInfo:` takes a nil user info.
+        objc2::rc::autoreleasepool(|_| unsafe {
+            let error: *mut AnyObject = msg_send![class!(NSError), errorWithDomain: ns("UNErrorDomain"), code: 1isize, userInfo: std::ptr::null::<AnyObject>()];
+            answer(false, error);
+        });
+        post(&center, "quiet-3");
+        post(&center, "quiet-3");
+        answer(false, std::ptr::null_mut());
     });
-    post(&center, "quiet-3");
-    post(&center, "quiet-3");
-    answer(false, std::ptr::null_mut());
-    *error_handler().lock().unwrap() = None;
-    assert!(got.lock().unwrap().is_empty(), "{:?}", got.lock().unwrap());
+    assert!(got.is_empty(), "{got:?}");
     ASKED.with_borrow_mut(Vec::clear);
 }
 

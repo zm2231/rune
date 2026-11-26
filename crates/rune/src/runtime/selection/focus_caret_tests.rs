@@ -583,6 +583,8 @@ fn follow_caret_scrolls_focused_field_into_visual_viewport_above_keyboard() {
     let (_, caret) = caret_and_viewport(&rt, "vp", "lower");
     assert!(scroll_y(&rt, "vp") > 100.0, "scroll container moved down to reveal lower field: {}", scroll_y(&rt, "vp"));
     assert!(caret[1] >= 0.0 && caret[1] + caret[3] <= 362.5, "caret {caret:?} must sit inside visual viewport [0, 362]");
+    let field = rt.elements().into_iter().find(|e| e.key.as_deref() == Some("lower")).expect("lower").rect;
+    assert!(field[1] >= 0.0 && field[1] + field[3] <= 362.5, "the whole field {field:?} sits above the keyboard, not only its caret line");
 
     // Clearing the visual viewport band keeps focus and normal layout behavior.
     rt.core_mut().set_visual_viewport_y(None);

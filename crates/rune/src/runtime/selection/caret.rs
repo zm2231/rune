@@ -3,6 +3,8 @@
 //! is re-measured in the same commit when an edit moves it.
 use super::*;
 
+const FIELD_MARGIN: f32 = 8.0;
+
 /// Snapshot of a focused field's text and caret before an `El::on_input_key` handler runs.
 pub(in crate::runtime) struct CaretFollowCheck {
     path: String,
@@ -56,6 +58,7 @@ pub(crate) struct TextInputState {
     pub(in crate::runtime) caret_watch: bool,
     /// An edit ran this frame: keep the caret in its scroll viewport after the commit.
     pub(in crate::runtime) caret_follow: bool,
+    pub(in crate::runtime) follow_field: bool,
     /// Snapshot of the focused field before an `El::on_input_key` handler consumed a key; resolved
     /// against the committed tree so edits and caret moves follow the caret without calling
     /// `access` after a handler that may have removed the field.
@@ -103,6 +106,7 @@ impl TextInputState {
             caret: None,
             caret_watch: false,
             caret_follow: false,
+            follow_field: false,
             caret_follow_check: None,
             app_ime_comp: Default::default(),
             ime_option_as_alt: crate::OptionAsAlt::None,
@@ -280,8 +284,10 @@ impl RuntimeCore {
             self.reveal_row(app, &ScrollReveal::into_view(None, path), true);
             self.step_scroll(0.0);
         }
+        let whole = std::mem::take(&mut self.edit.follow_field);
         let Some(i) = self.caret_browse_focus_in(&self.tree.nodes).map(|(fi, _, _)| fi).or_else(|| self.focused_index()) else { return };
         if self.caret_rect(&self.tree.nodes, i).is_none() { return; }
+        let whole = whole && self.tree.nodes[i].input.is_some();
         let mut scrolled = false;
         for horizontal in [false, true] {
             let mut cur = Some(i);
@@ -290,7 +296,7 @@ impl RuntimeCore {
                 if !(self.tree.nodes[v].scroll.is_some() && self.tree.nodes[v].scroll_axes.has(horizontal)) {
                     continue;
                 }
-                let Some(r) = self.caret_rect(&self.tree.nodes, i) else { return };
+                let Some(mut r) = self.caret_rect(&self.tree.nodes, i) else { return };
                 let a = usize::from(!horizontal);
                 let mut start = scroll_offsets(&self.scroll.scrolls, &self.tree.nodes, v).fold(self.tree.nodes[v].target[a], |p, o| p - o[a]);
                 let mut end = start + (self.tree.nodes[v].target[a + 2] - self.tree.nodes[v].target[a]);
@@ -304,6 +310,14 @@ impl RuntimeCore {
                     }
                 }
                 let view = f64::from(end - start);
+                if whole && !horizontal {
+                    let t = sticky::anchored_target(&self.tree.nodes, &self.scroll.scrolls, i, self.viewport);
+                    let (top, height) = (t[1] + self.stack_row_dy(&self.tree.nodes, i) - FIELD_MARGIN, t[3] - t[1] + 2.0 * FIELD_MARGIN);
+                    if f64::from(height) <= view {
+                        r[1] = top;
+                        r[3] = height;
+                    }
+                }
                 let (at, len) = (f64::from(r[a] - start), f64::from(r[a + 2]));
                 let margin = f64::from(self.tree.nodes[v].scroll_edges.margin);
                 let delta = scroll_edge::reveal(0.0, at, len, view, margin);
@@ -346,6 +360,7 @@ impl RuntimeCore {
     #[cfg(any(target_arch = "wasm32", target_os = "ios", test))]
     pub(crate) fn request_caret_follow(&mut self) {
         self.edit.caret_follow = true;
+        self.edit.follow_field = true;
     }
 
     /// Promotes a pending `El::on_input_key` snapshot into `caret_follow` when the committed tree's

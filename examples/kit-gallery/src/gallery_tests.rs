@@ -569,3 +569,16 @@ fn overlay_default_metrics_match_explicit_kit_defaults() {
         }
     }
 }
+
+#[test]
+fn a_combobox_narrows_to_a_screen_narrower_than_its_width() {
+    let mut rt = build_app().headless_runtime((240.0, 480.0), rune::Env::new(true, 2.0));
+    let (_, setup) = stories::SCENES.iter().find(|(id, _)| *id == "rune-combobox--searchable").expect("searchable scene");
+    rt.update(|s, _| setup(s));
+    rt.frame(0.0);
+    let elements = rt.ios_accessibility_json();
+    let field = elements.as_array().into_iter().flatten().find(|e| e["label"] == "Model").expect("the combobox's field");
+    let frame: Vec<f64> = field["frame"].as_array().into_iter().flatten().filter_map(|v| v.as_f64()).collect();
+    assert_eq!(frame[0], 24.0);
+    assert_eq!(frame[2], 240.0 - 48.0, "the field fills the story's width inside its padding");
+}

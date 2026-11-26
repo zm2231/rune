@@ -1,0 +1,1 @@
+- **A field select or combobox narrows to its parent.** `Select::width` and `Combobox::width` (280 by default) are now the widest the field trigger grows: in a narrower parent, such as an iPhone at a large Dynamic Type size, it takes the parent's width instead of running past the screen's edge. In a parent at least that wide it is the same width as before.

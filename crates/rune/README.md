@@ -953,7 +953,10 @@ app.run();
   override the whole application with `AppHandle::set_color_scheme(ColorScheme)` (sets
   `NSApplication.appearance` on macOS so menus, open/save panels, traffic lights, system
   materials, and inheriting windows follow; updates every `ColorScheme::System` window on
-  Windows and Linux, including windows created or recreated later). Ignored on web and headless.
+  Windows and Linux, including windows created or recreated later). Overlays follow the app-wide
+  scheme too, or their own from `Tx::set_color_scheme` in their handlers: `Cx::system_dark`
+  reports it, and on macOS the overlay panel's `NSAppearance` matches. Ignored on web and
+  headless.
 - `App::standard_menus()` (macOS) adds the items every Mac app has: Edit with Undo ⌘Z, Redo ⇧⌘Z,
   Cut, Copy, Paste and Select All, and Window with Minimize ⌘M and Close ⌘W, all sent to the first
   responder. A regular app whose menu bar is still winit's default gets them without asking. An

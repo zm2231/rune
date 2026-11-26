@@ -159,6 +159,10 @@ impl AnyHost for OverlayHost {
 
     fn vanish(&mut self) { self.core.hide(&mut *self.app); }
 
+    fn apply_app_color_scheme(&mut self) {
+        self.core.app_scheme_changed(self.app.rt_mut(), crate::window::app_color_scheme());
+    }
+
     #[cfg(target_os = "macos")]
     fn stop_pacing(&mut self) {
         if let Some(pacing) = self.core.surface.live_mut().and_then(|l| l.pacing.as_mut()) {

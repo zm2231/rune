@@ -25,7 +25,9 @@
 //! `GLASS_PANEL_AT=x,y` places the flight window, in points from the primary display's top
 //! left (default `360,0`). The app quits after `GLASS_PANEL_SECONDS` when that is set.
 //! `GLASS_PANEL_POPOVER` asks for the popover material everywhere, and `GLASS_PANEL_MARK`
-//! draws a marker that tells the two windows apart in a recording.
+//! draws a marker that tells the two windows apart in a recording. `GLASS_PANEL_SCHEME=dark`
+//! or `light` sets the app's color scheme over the system's, and `cycle` steps through dark,
+//! light and system every three seconds.
 //!
 //! On iOS the screen is one view: the card flies over the tiles inside it, docks below the status
 //! bar, holds and flies again, and the Light or Dark button switches the view's appearance.
@@ -300,6 +302,20 @@ fn main() {
                 std::thread::sleep(Duration::from_millis(600));
             }
         });
+        let handle = app.handle();
+        match rune::env::var("GLASS_PANEL_SCHEME").as_deref() {
+            Some("dark") => handle.set_color_scheme(ColorScheme::Dark),
+            Some("light") => handle.set_color_scheme(ColorScheme::Light),
+            Some("cycle") => {
+                std::thread::spawn(move || {
+                    for scheme in [ColorScheme::Dark, ColorScheme::Light, ColorScheme::System].into_iter().cycle() {
+                        handle.set_color_scheme(scheme);
+                        std::thread::sleep(Duration::from_secs(3));
+                    }
+                });
+            }
+            _ => {}
+        }
         if let Ok(seconds) = rune::env::var("GLASS_PANEL_SECONDS").unwrap_or_default().parse::<f64>() {
             let handle = app.handle();
             std::thread::spawn(move || { std::thread::sleep(Duration::from_secs_f64(seconds)); handle.quit(); });

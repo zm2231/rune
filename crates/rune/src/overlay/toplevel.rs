@@ -29,8 +29,8 @@ impl OverlayCore {
                 return None;
             }
         };
-        self.dark = crate::platform::preferences::window_dark(&window, None);
-        app.rt_mut().set_system_dark(self.dark);
+        let system_dark = crate::platform::preferences::window_dark(&window, None);
+        self.adopt_system_dark(app.rt_mut(), system_dark);
         if self.cursor.is_none() { self.cursor = Some(crate::cursor::os::OsCursor::new()); }
         let input = self.options.input.resolved(self.interactive);
         window.set_cursor_hittest(input != OverlayInput::None).ok();

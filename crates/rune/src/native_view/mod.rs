@@ -2,10 +2,17 @@
 mod clips;
 #[cfg(test)]
 mod clips_tests;
+pub(crate) mod handoff;
+#[cfg(test)]
+mod handoff_tests;
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+pub(crate) mod headless;
 #[cfg(target_os = "ios")]
 pub(crate) mod ios;
 #[cfg(target_os = "macos")]
 pub(crate) mod macos;
+#[cfg(all(test, not(any(target_os = "macos", target_os = "ios"))))]
+mod tab_tests;
 #[cfg(test)]
 mod tests;
 
@@ -18,6 +25,12 @@ use rune_motion::NodeId;
 use winit::raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
 use crate::El;
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+use headless::Container;
+#[cfg(target_os = "ios")]
+use ios::Container;
+#[cfg(target_os = "macos")]
+use macos::Container;
 
 /// A platform view slot that an element hosts with [`El::native_view`]: an empty container
 /// view an app builds its own view into, which Rune keeps at the element's rect.
@@ -49,11 +62,9 @@ pub struct NativeViewId(u64);
 
 pub(crate) struct Slot {
     id: NativeViewId,
-    #[cfg(target_os = "macos")]
-    pub(crate) view: macos::Container,
-    #[cfg(target_os = "ios")]
-    pub(crate) view: ios::Container,
+    pub(crate) view: Container,
     pressed: Cell<bool>,
+    tabbed: Cell<Option<bool>>,
     wake: RefCell<Option<Arc<crate::live::Wake>>>,
 }
 
@@ -73,11 +84,9 @@ impl NativeView {
         let id = NativeViewId(NEXT.with(|n| { let id = n.get(); n.set(id + 1); id }));
         let slot = Rc::new(Slot {
             id,
-            #[cfg(target_os = "macos")]
-            view: macos::Container::new(),
-            #[cfg(target_os = "ios")]
-            view: ios::Container::new(),
+            view: Container::new(),
             pressed: Cell::new(false),
+            tabbed: Cell::new(None),
             wake: RefCell::new(None),
         });
         SLOTS.with(|s| {
@@ -94,28 +103,26 @@ impl NativeView {
     /// Whether the container is in a window: from the first frame that shows an element hosting
     /// it, which asks for one more frame so `poll` sees it. On macOS wry's `build_as_child`
     /// needs its parent in a window, so build there once this is true. False off macOS and iOS.
-    pub fn in_window(&self) -> bool {
-        #[cfg(any(target_os = "macos", target_os = "ios"))]
-        { self.slot.view.in_window() }
-        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
-        { false }
-    }
+    pub fn in_window(&self) -> bool { self.slot.view.in_window() }
 
     /// Gives the keyboard to the view built into the slot (its first subview), as a click into
     /// it would. Rune's own focus clears in the next frame. Does nothing off macOS and iOS.
     pub fn focus(&self) {
-        #[cfg(any(target_os = "macos", target_os = "ios"))]
         if self.slot.view.focus() { self.slot.press(); }
     }
 
     /// Whether the keyboard is in the view built into the slot: the window's first responder is
     /// the container or inside it. False off macOS and iOS.
-    pub fn has_focus(&self) -> bool {
-        #[cfg(any(target_os = "macos", target_os = "ios"))]
-        { self.slot.view.has_focus() }
-        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
-        { false }
-    }
+    pub fn has_focus(&self) -> bool { self.slot.view.has_focus() }
+
+    /// Tells Rune that Tab (Shift-Tab when `back`) ran past the last (first) element inside the
+    /// view built into the slot: in the next frame Rune's focus moves on to the element after
+    /// (before) the hosting element in its Tab order, and the keyboard comes back to Rune.
+    ///
+    /// AppKit views, `WKWebView` among them, and iOS views that pass an unused Tab up the
+    /// responder chain report this themselves. Call it for a view that keeps Tab to itself, for
+    /// example from a web page's own Tab listener on its last or first focusable element.
+    pub fn tabbed_out(&self, back: bool) { self.slot.tab_out(back); }
 }
 
 impl std::fmt::Debug for NativeView {
@@ -125,16 +132,18 @@ impl std::fmt::Debug for NativeView {
 }
 
 impl HasWindowHandle for NativeView {
-    fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
-        #[cfg(any(target_os = "macos", target_os = "ios"))]
-        { self.slot.view.window_handle() }
-        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
-        { Err(HandleError::NotSupported) }
-    }
+    fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> { self.slot.view.window_handle() }
 }
 
 impl Slot {
     pub(crate) fn take_pressed(&self) -> bool { self.pressed.replace(false) }
+
+    pub(crate) fn take_tabbed(&self) -> Option<bool> { self.tabbed.take() }
+
+    fn tab_out(&self, back: bool) {
+        self.tabbed.set(Some(back));
+        self.wake();
+    }
 
     pub(crate) fn listen(&self, wake: &Arc<crate::live::Wake>) {
         let mut held = self.wake.borrow_mut();
@@ -155,6 +164,20 @@ impl Slot {
 pub(crate) fn press_where(hit: impl Fn(&Slot) -> bool) {
     let slots: Vec<Rc<Slot>> = SLOTS.with(|s| s.borrow().values().filter_map(Weak::upgrade).collect());
     for slot in slots.iter().filter(|s| hit(s)) { slot.press(); }
+}
+
+#[cfg_attr(not(any(target_os = "macos", target_os = "ios")), allow(dead_code))]
+pub(crate) fn tabbed_out_where(back: bool, hit: impl Fn(&Slot) -> bool) {
+    let slots: Vec<Rc<Slot>> = SLOTS.with(|s| s.borrow().values().filter_map(Weak::upgrade).collect());
+    for slot in slots.iter().filter(|s| hit(s)) { slot.tab_out(back); }
+}
+
+#[cfg(any(test, target_os = "ios"))]
+pub(crate) fn tab_press(usage: isize, flags: isize) -> Option<bool> {
+    const TAB: isize = 0x2B;
+    const SHIFT: isize = 1 << 17;
+    const OTHERS: isize = (1 << 18) | (1 << 19) | (1 << 20);
+    (usage == TAB && flags & OTHERS == 0).then_some(flags & SHIFT != 0)
 }
 
 const A11Y_CLASS: &str = "\x1frune-native-view:";
@@ -192,8 +215,15 @@ impl El {
     ///
     /// Hidden while the element is unmounted, culled, clipped away, zero-sized or faded out; its
     /// alpha follows the element's opacity. A press inside the view gives it the keyboard and
-    /// clears Rune's focus; a press on Rune content takes the keyboard back. Tab doesn't yet move
-    /// between Rune elements and the hosted view: it stays inside the view.
+    /// clears Rune's focus; a press on Rune content takes the keyboard back.
+    ///
+    /// Tab: the element is a stop in Rune's Tab order once the app has built a view into the
+    /// slot. Tab onto it gives the view the keyboard and clears Rune's focus; on macOS a
+    /// `WKWebView` starts at its first element, or its last on Shift-Tab. When Tab runs past the
+    /// view's last element (Shift-Tab past its first), focus moves on to the next Rune element
+    /// (the previous one) and the keyboard comes back to Rune. On macOS this follows the
+    /// window's key view loop. On iOS a Tab the hosted view leaves unused hands focus back. A view
+    /// that keeps Tab to itself reports it with [`NativeView::tabbed_out`].
     ///
     /// In macOS windows and iOS views only; overlays don't host them, and elsewhere the element
     /// draws as an empty box, its rects still listed in

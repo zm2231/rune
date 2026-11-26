@@ -1,5 +1,6 @@
 //! A web page hosted in a scrolling Rune pane with `El::native_view`: the page tracks its card
-//! through scrolls, a spring collapse and window resizes. `cargo run -p native-view` on macOS;
+//! through scrolls, a spring collapse and window resizes. Tab moves from the sidebar into the
+//! page and back out. `cargo run -p native-view` on macOS;
 //! elsewhere the card lays out as an empty box. `-- --snap target/native-view.png` renders it
 //! headless.
 

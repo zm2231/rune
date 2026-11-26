@@ -30,17 +30,84 @@ fn class(name: &'static CStr, build: impl FnOnce(&mut ClassBuilder)) -> Option<&
     Some(builder.register())
 }
 
+thread_local! {
+    static ENTERING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+const BEFORE: &CStr = c"RuneNativeViewTabBefore";
+const AFTER: &CStr = c"RuneNativeViewTabAfter";
+
+fn is_stop(view: &AnyObject) -> bool {
+    let name = view.class().name();
+    name == BEFORE || name == AFTER
+}
+
+fn subviews(view: &AnyObject) -> Vec<Retained<AnyObject>> {
+    // SAFETY: NSView reads on the main thread; each subview is retained for the caller.
+    unsafe {
+        let subviews: *mut AnyObject = msg_send![view, subviews];
+        let Some(subviews) = subviews.as_ref() else { return Vec::new() };
+        let count: usize = msg_send![subviews, count];
+        (0..count).filter_map(|k| {
+            let sub: *mut AnyObject = msg_send![subviews, objectAtIndex: k];
+            Retained::retain(sub)
+        }).collect()
+    }
+}
+
+fn hosted(view: &AnyObject) -> Option<Retained<AnyObject>> {
+    subviews(view).into_iter().find(|v| !is_stop(v))
+}
+
 unsafe fn fill_subviews(view: &AnyObject) {
     // SAFETY: NSView calls on the main thread, from AppKit's own callbacks into the view.
     unsafe {
         let bounds: CGRect = msg_send![view, bounds];
-        let subviews: *mut AnyObject = msg_send![view, subviews];
-        let Some(subviews) = subviews.as_ref() else { return };
-        let count: usize = msg_send![subviews, count];
-        for k in 0..count {
-            let sub: *mut AnyObject = msg_send![subviews, objectAtIndex: k];
-            if let Some(sub) = sub.as_ref() { let _: () = msg_send![sub, setFrame: bounds]; }
+        for sub in subviews(view).iter().filter(|v| !is_stop(v)) { let _: () = msg_send![&**sub, setFrame: bounds]; }
+    }
+}
+
+fn stop_class(name: &'static CStr) -> Option<&'static AnyClass> {
+    unsafe extern "C-unwind" fn yes(_: &AnyObject, _: Sel) -> Bool { Bool::YES }
+    unsafe extern "C-unwind" fn no(_: &AnyObject, _: Sel) -> Bool { Bool::NO }
+    unsafe extern "C-unwind" fn miss(_: &AnyObject, _: Sel, _: CGPoint) -> *mut AnyObject { std::ptr::null_mut() }
+    unsafe extern "C-unwind" fn become_first(this: &AnyObject, _: Sel) -> Bool {
+        if ENTERING.get() { return Bool::YES; }
+        let back = this.class().name() == BEFORE;
+        super::tabbed_out_where(back, |slot| slot.view.contains(this));
+        Bool::YES
+    }
+    class(name, |b| {
+        // SAFETY: the signatures match -[NSResponder acceptsFirstResponder], -[NSView
+        // canBecomeKeyView], -[NSResponder becomeFirstResponder], -[NSView hitTest:] and
+        // -[NSAccessibility isAccessibilityElement].
+        unsafe {
+            b.add_method(sel!(acceptsFirstResponder), yes as unsafe extern "C-unwind" fn(_, _) -> _);
+            b.add_method(sel!(canBecomeKeyView), yes as unsafe extern "C-unwind" fn(_, _) -> _);
+            b.add_method(sel!(becomeFirstResponder), become_first as unsafe extern "C-unwind" fn(_, _) -> _);
+            b.add_method(sel!(hitTest:), miss as unsafe extern "C-unwind" fn(_, _, _) -> _);
+            b.add_method(sel!(isAccessibilityElement), no as unsafe extern "C-unwind" fn(_, _) -> _);
         }
+    })
+}
+
+unsafe fn link_key_views(container: &AnyObject) {
+    let Some(hosted) = hosted(container) else { return };
+    let stops = subviews(container);
+    let find = |name: &CStr| stops.iter().find(|v| v.class().name() == name).cloned();
+    let (Some(before), Some(after)) = (find(BEFORE), find(AFTER)) else { return };
+    // SAFETY: NSView key view links on the main thread, between views inside `container`.
+    unsafe {
+        let _: () = msg_send![&*before, setNextKeyView: &*hosted];
+        let mut last = hosted;
+        for _ in 0..256 {
+            let next: *mut AnyObject = msg_send![&*last, nextKeyView];
+            let Some(next) = next.as_ref() else { break };
+            let inside: bool = msg_send![next, isDescendantOf: container];
+            if !inside || is_stop(next) || std::ptr::eq(next, Retained::as_ptr(&last)) { break; }
+            last = objc2::Message::retain(next);
+        }
+        let _: () = msg_send![&*last, setNextKeyView: &*after];
     }
 }
 
@@ -51,7 +118,7 @@ fn container_class() -> Option<&'static AnyClass> {
     }
     unsafe extern "C-unwind" fn added(this: &AnyObject, _: Sel, _: *mut AnyObject) {
         // SAFETY: as above.
-        unsafe { fill_subviews(this) }
+        unsafe { fill_subviews(this); link_key_views(this) }
     }
     class(c"RuneNativeViewContainer", |b| {
         // SAFETY: the signatures match -[NSView resizeSubviewsWithOldSize:] and -[NSView didAddSubview:].
@@ -113,8 +180,13 @@ impl Container {
     pub(crate) fn new() -> Self {
         let view = make_view(container_class(), rect([0.0; 4]));
         if let Some(view) = &view {
-            // SAFETY: an NSView setter on the main thread.
-            unsafe { let _: () = msg_send![&**view, setAutoresizesSubviews: true]; }
+            // SAFETY: NSView setup on the main thread; the container retains its subviews.
+            unsafe {
+                let _: () = msg_send![&**view, setAutoresizesSubviews: true];
+                for name in [BEFORE, AFTER] {
+                    if let Some(stop) = make_view(stop_class(name), rect([0.0; 4])) { let _: () = msg_send![&**view, addSubview: &*stop]; }
+                }
+            }
         }
         Container { view }
     }
@@ -141,16 +213,61 @@ impl Container {
         !window.is_null()
     }
 
-    pub(crate) fn focus(&self) -> bool {
-        let Some(view) = self.view.as_deref() else { return false };
-        // SAFETY: NSView and NSWindow calls on the main thread.
+    fn window(&self) -> Option<Retained<AnyObject>> {
+        let view = self.view.as_deref()?;
+        // SAFETY: an NSView read on the main thread; the window is retained for the caller.
         unsafe {
             let window: *mut AnyObject = msg_send![view, window];
-            let Some(window) = window.as_ref() else { return false };
-            let subviews: *mut AnyObject = msg_send![view, subviews];
-            let first: *mut AnyObject = match subviews.as_ref() { Some(s) => msg_send![s, firstObject], None => std::ptr::null_mut() };
-            let target = first.as_ref().unwrap_or(view);
-            msg_send![window, makeFirstResponder: target]
+            Retained::retain(window)
+        }
+    }
+
+    pub(crate) fn focus(&self) -> bool {
+        let (Some(view), Some(window)) = (self.view.as_deref(), self.window()) else { return false };
+        let target = hosted(view);
+        // SAFETY: an NSWindow call on the main thread.
+        unsafe { msg_send![&*window, makeFirstResponder: target.as_deref().unwrap_or(view)] }
+    }
+
+    pub(crate) fn can_enter(&self) -> bool { self.in_window() && self.view.as_deref().and_then(hosted).is_some() }
+
+    pub(crate) fn enter(&self, back: bool) -> bool {
+        let (Some(view), Some(window)) = (self.view.as_deref(), self.window()) else { return false };
+        // SAFETY: key view links and NSWindow key view selection on the main thread. Selecting
+        // through the loop sets the window's key view selection direction, which a WKWebView
+        // reads to focus its first or last element.
+        unsafe {
+            link_key_views(view);
+            let stops = subviews(view);
+            let stop = stops.iter().find(|v| v.class().name() == if back { AFTER } else { BEFORE });
+            let Some(stop) = stop else { return false };
+            ENTERING.set(true);
+            if back {
+                let _: () = msg_send![&*window, selectKeyViewPrecedingView: &**stop];
+            } else {
+                let _: () = msg_send![&*window, selectKeyViewFollowingView: &**stop];
+            }
+            ENTERING.set(false);
+            let responder: *mut AnyObject = msg_send![&*window, firstResponder];
+            self.has_focus() && responder.as_ref().is_some_and(|r| !is_stop(r))
+        }
+    }
+
+    pub(crate) fn reclaim(&self) {
+        if !self.has_focus() { return; }
+        let (Some(view), Some(window)) = (self.view.as_deref(), self.window()) else { return };
+        // SAFETY: NSView reads and an NSWindow call on the main thread. The container sits in a
+        // clip view inside the root, whose superview is the window's Rune view.
+        unsafe {
+            let mut at: *mut AnyObject = msg_send![view, superview];
+            while let Some(v) = at.as_ref() {
+                if v.class().name() == c"RuneNativeViewRoot" {
+                    let rune: *mut AnyObject = msg_send![v, superview];
+                    if let Some(rune) = rune.as_ref() { let _: bool = msg_send![&*window, makeFirstResponder: rune]; }
+                    return;
+                }
+                at = msg_send![v, superview];
+            }
         }
     }
 

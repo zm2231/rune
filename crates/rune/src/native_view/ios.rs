@@ -16,11 +16,32 @@ fn rect(r: [f64; 4]) -> CGRect {
     CGRect { origin: CGPoint { x: r[0], y: r[1] }, size: CGSize { width: r[2], height: r[3] } }
 }
 
+fn view_class() -> &'static AnyClass { AnyClass::get(c"UIView").expect("UIKit is loaded") }
+
 fn class(name: &'static CStr, build: impl FnOnce(&mut ClassBuilder)) -> Option<&'static AnyClass> {
     if let Some(class) = AnyClass::get(name) { return Some(class); }
     let mut builder = ClassBuilder::new(name, AnyClass::get(c"UIView")?)?;
     build(&mut builder);
     Some(builder.register())
+}
+
+unsafe fn tab_presses(presses: &AnyObject) -> Option<bool> {
+    // SAFETY: `presses` is the `NSSet<UIPress *>` UIKit passes; a press's `key` is a `UIKey` or
+    // nil, whose properties have these types.
+    unsafe {
+        let all: Retained<AnyObject> = msg_send![presses, allObjects];
+        let count: usize = msg_send![&*all, count];
+        let mut back = None;
+        for index in 0..count {
+            let press: *mut AnyObject = msg_send![&*all, objectAtIndex: index];
+            let key: *mut AnyObject = msg_send![press, key];
+            let key = key.as_ref()?;
+            let usage: isize = msg_send![key, keyCode];
+            let flags: isize = msg_send![key, modifierFlags];
+            back = Some(super::tab_press(usage, flags)?);
+        }
+        back
+    }
 }
 
 unsafe fn fill_subviews(view: &AnyObject) {
@@ -46,11 +67,37 @@ fn container_class() -> Option<&'static AnyClass> {
         // SAFETY: as above.
         unsafe { fill_subviews(this) }
     }
+    unsafe extern "C-unwind" fn began(this: &AnyObject, _: Sel, presses: &AnyObject, event: *mut AnyObject) {
+        // SAFETY: UIKit calls this on the main thread with its own press set, passed on unchanged.
+        unsafe {
+            match tab_presses(presses) {
+                Some(back) => super::tabbed_out_where(back, |slot| slot.view.object().is_some_and(|v| std::ptr::eq(v, this))),
+                None => { let _: () = msg_send![super(this, view_class()), pressesBegan: presses, withEvent: event]; }
+            }
+        }
+    }
+    unsafe extern "C-unwind" fn ended(this: &AnyObject, _: Sel, presses: &AnyObject, event: *mut AnyObject) {
+        // SAFETY: as above.
+        unsafe {
+            if tab_presses(presses).is_none() { let _: () = msg_send![super(this, view_class()), pressesEnded: presses, withEvent: event]; }
+        }
+    }
+    unsafe extern "C-unwind" fn cancelled(this: &AnyObject, _: Sel, presses: &AnyObject, event: *mut AnyObject) {
+        // SAFETY: as above.
+        unsafe {
+            if tab_presses(presses).is_none() { let _: () = msg_send![super(this, view_class()), pressesCancelled: presses, withEvent: event]; }
+        }
+    }
     class(c"RuneNativeViewContainer", |b| {
-        // SAFETY: the signatures match -[UIView layoutSubviews] and -[UIView didAddSubview:].
+        // SAFETY: the signatures match -[UIView layoutSubviews], -[UIView didAddSubview:] and
+        // UIResponder's pressesBegan:withEvent:, pressesEnded:withEvent: and
+        // pressesCancelled:withEvent:.
         unsafe {
             b.add_method(sel!(layoutSubviews), layout as unsafe extern "C-unwind" fn(_, _));
             b.add_method(sel!(didAddSubview:), added as unsafe extern "C-unwind" fn(_, _, _));
+            b.add_method(sel!(pressesBegan:withEvent:), began as unsafe extern "C-unwind" fn(_, _, _, _));
+            b.add_method(sel!(pressesEnded:withEvent:), ended as unsafe extern "C-unwind" fn(_, _, _, _));
+            b.add_method(sel!(pressesCancelled:withEvent:), cancelled as unsafe extern "C-unwind" fn(_, _, _, _));
         }
     })
 }
@@ -128,14 +175,47 @@ impl Container {
         unsafe { msg_send![view, isDescendantOfView: container] }
     }
 
-    pub(crate) fn focus(&self) -> bool {
-        let Some(view) = self.view.as_deref() else { return false };
-        // SAFETY: UIView and UIResponder calls on the main thread.
+    fn hosted(&self) -> Option<Retained<AnyObject>> {
+        let view = self.view.as_deref()?;
+        // SAFETY: UIView reads on the main thread; the subview is retained for the caller.
         unsafe {
             let subviews: *mut AnyObject = msg_send![view, subviews];
-            let first: *mut AnyObject = match subviews.as_ref() { Some(s) => msg_send![s, firstObject], None => std::ptr::null_mut() };
-            let target = first.as_ref().unwrap_or(view);
-            msg_send![target, becomeFirstResponder]
+            let first: *mut AnyObject = msg_send![subviews.as_ref()?, firstObject];
+            Retained::retain(first)
+        }
+    }
+
+    pub(crate) fn focus(&self) -> bool {
+        let Some(view) = self.view.as_deref() else { return false };
+        let hosted = self.hosted();
+        // SAFETY: a UIResponder call on the main thread.
+        unsafe { msg_send![hosted.as_deref().unwrap_or(view), becomeFirstResponder] }
+    }
+
+    pub(crate) fn can_enter(&self) -> bool { self.in_window() && self.hosted().is_some() }
+
+    pub(crate) fn enter(&self, _back: bool) -> bool {
+        let Some(hosted) = self.hosted() else { return false };
+        // SAFETY: a UIResponder call on the main thread.
+        let _: bool = unsafe { msg_send![&*hosted, becomeFirstResponder] };
+        self.has_focus()
+    }
+
+    pub(crate) fn reclaim(&self) {
+        if !self.has_focus() { return; }
+        let Some(view) = self.view.as_deref() else { return };
+        // SAFETY: UIView reads and a UIResponder call on the main thread. The container sits in
+        // a clip view inside the root, whose superview is the Rune view.
+        unsafe {
+            let mut at: *mut AnyObject = msg_send![view, superview];
+            while let Some(v) = at.as_ref() {
+                if v.class().name() == c"RuneNativeViewRoot" {
+                    let rune: *mut AnyObject = msg_send![v, superview];
+                    if let Some(rune) = rune.as_ref() { let _: bool = msg_send![rune, becomeFirstResponder]; }
+                    return;
+                }
+                at = msg_send![v, superview];
+            }
         }
     }
 

@@ -83,6 +83,8 @@ pub(in crate::runtime) enum Action {
     /// press asked for it (none from the keyboard).
     FieldMenu(String, (f32, f32), Option<(f32, f32)>),
     Blur,
+    /// The keyboard moving between Rune and a hosted `El::native_view`.
+    NativeView(crate::native_view::handoff::Event),
     /// What assistive technology asked of an element (`a11y/actions.rs`).
     A11y(String, crate::a11y::actions::A11yAct),
 }
@@ -229,7 +231,7 @@ pub(in crate::runtime) fn action_path(action: &Action) -> Option<&str> {
 fn handler_name(action: &Action) -> &'static str {
     live_only_handler(action).unwrap_or(match action {
         Action::Physical(..) => "on_key",
-        Action::FocusControl(_) | Action::HoverFocus(_) | Action::Focus(..) | Action::Blur => "a focus change",
+        Action::FocusControl(_) | Action::HoverFocus(_) | Action::Focus(..) | Action::Blur | Action::NativeView(_) => "a focus change",
         Action::Dismiss(_) => "a modal's dismiss",
         Action::SecondaryRepost { .. } => "a modal's secondary repost",
         Action::AtBottom(..) => "on_at_bottom",
@@ -701,6 +703,7 @@ impl RuntimeCore {
                 self.set_focus(app, None, self.kbd.focus.keyboard());
                 true
             }
+            Action::NativeView(event) => self.native_view_event(app, event, &mut one),
             Action::A11y(path, act) => self.run_a11y(app, path, act, &mut one),
         };
         let live_only = std::mem::take(&mut one.live_only);

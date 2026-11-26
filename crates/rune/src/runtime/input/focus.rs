@@ -271,7 +271,7 @@ impl RuntimeCore {
         self.can_take_focus_in(&self.tree.nodes, i) && !self.tree.nodes[i].inert && !self.subtree_exiting(i) && node_shown(&self.tree.nodes, i)
     }
     /// Shown, sized, not exiting and not behind a modal.
-    pub(super) fn reachable(&self, i: usize) -> bool {
+    pub(in crate::runtime) fn reachable(&self, i: usize) -> bool {
         self.allowed(i) && !self.subtree_exiting(i) && node_shown(&self.tree.nodes, i)
     }
     /// Whether Return goes to focused element `i` rather than the default button: a focused
@@ -497,6 +497,7 @@ impl RuntimeCore {
     }
     fn set_focus_entry(&mut self, app: &mut dyn AppDriver, path: Option<String>, keyboard: bool, keep_entry: bool, sync_all: bool) -> bool {
         self.edit.on_input_focus_change(path.as_deref());
+        if path.is_some() { self.native_view_reclaim(); }
         let moved = self.kbd.focus.path() != path.as_deref();
         // A field left mid-composition keeps what it showed, as a browser's does (Tab the input
         // method let through, a click on another control, `Tx::focus`).

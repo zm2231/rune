@@ -303,6 +303,9 @@ pub(crate) struct KeyboardState {
     /// This commit's focus is a `Tx::return_focus` hand-back, which a modal opening in it
     /// doesn't take as where focus was.
     focus_returned: bool,
+    /// Whether Rune or a hosted `El::native_view` has the platform keyboard
+    /// (`native_view/handoff.rs`).
+    pub(in crate::runtime) hosted: crate::native_view::handoff::Keyboard,
 }
 
 impl KeyboardState {
@@ -329,6 +332,7 @@ impl KeyboardState {
             focus_request: None,
             focus_owed: None,
             focus_returned: false,
+            hosted: Default::default(),
             unmounted_focused: Vec::new(),
             modal_scope: None,
         }

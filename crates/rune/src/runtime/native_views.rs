@@ -1,5 +1,7 @@
 use super::*;
+use crate::native_view::handoff::{self, Effect, Event};
 use crate::native_view::{NativeViewDraw, Tag};
+use crate::runtime::input::action::Action;
 use crate::runtime::turn::intersect;
 
 impl RuntimeCore {
@@ -14,18 +16,66 @@ impl RuntimeCore {
                 if let Some(draw) = self.native_view_draw(i) { out.push(draw); }
             }
         }
-        let mut pressed = false;
+        let mut queued = false;
         for draw in &out {
-            if let Some(slot) = crate::native_view::slot(draw.view) {
-                slot.listen(self.frame.live.waker());
-                pressed |= slot.take_pressed();
+            let Some(slot) = crate::native_view::slot(draw.view) else { continue };
+            slot.listen(self.frame.live.waker());
+            if slot.take_pressed() {
+                self.frame.queue.push(Action::NativeView(Event::Pressed(draw.view)));
+                queued = true;
+            }
+            if let Some(back) = slot.take_tabbed() {
+                self.frame.queue.push(Action::NativeView(Event::TabbedOut { view: draw.view, back }));
+                queued = true;
             }
         }
         self.paint.native_views = out;
-        if pressed && self.kbd.focus.path().is_some() {
-            self.frame.queue.push(crate::runtime::input::action::Action::Blur);
-            self.frame.live.waker().notify();
+        if queued { self.frame.live.waker().notify(); }
+    }
+
+    pub(in crate::runtime) fn native_view_event(&mut self, app: &mut dyn AppDriver, event: Event, tx: &mut Tx) -> bool {
+        let mut ran = false;
+        for effect in handoff::step(&mut self.kbd.hosted, event) {
+            match effect {
+                Effect::Enter { view, back } => {
+                    if !crate::native_view::slot(view).is_some_and(|slot| slot.view.enter(back)) {
+                        return self.native_view_event(app, Event::Refused(view), tx);
+                    }
+                }
+                Effect::Blur => {
+                    if self.kbd.focus.path().is_some() {
+                        self.set_focus(app, None, self.kbd.focus.keyboard());
+                        ran = true;
+                    }
+                }
+                Effect::Continue { from, back } => ran |= self.tab_past_host(app, from, back, tx),
+                Effect::Reclaim(view) => {
+                    if let Some(slot) = crate::native_view::slot(view) { slot.view.reclaim(); }
+                }
+            }
         }
+        ran
+    }
+
+    pub(in crate::runtime) fn native_view_reclaim(&mut self) {
+        for effect in handoff::step(&mut self.kbd.hosted, Event::RuneFocused) {
+            if let Effect::Reclaim(view) = effect && let Some(slot) = crate::native_view::slot(view) { slot.view.reclaim(); }
+        }
+    }
+
+    pub(in crate::runtime) fn host_stops(&self) -> Vec<usize> {
+        let mut seen = Vec::new();
+        self.paint.native_views.iter()
+            .filter(|d| { let first = !seen.contains(&d.view); seen.push(d.view); first })
+            .filter(|d| crate::native_view::slot(d.view).is_some_and(|s| s.view.can_enter()))
+            .filter_map(|d| self.tree.nodes.iter().position(|n| n.id == d.id))
+            .filter(|&i| self.reachable(i))
+            .collect()
+    }
+
+    pub(in crate::runtime) fn host_of(&self, view: crate::NativeViewId) -> Option<usize> {
+        self.paint.native_views.iter().find(|d| d.view == view)
+            .and_then(|d| self.tree.nodes.iter().position(|n| n.id == d.id))
     }
 
     pub(crate) fn native_view_of(&self, i: usize) -> Option<crate::NativeViewId> {

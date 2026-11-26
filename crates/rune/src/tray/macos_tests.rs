@@ -281,7 +281,6 @@ fn callback_panic_is_caught_and_reentrant_menu_click_is_ignored() {
     target.handle_click(mtm, TrayClick::Primary);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
-    // Re-entrant click while the menu is open is ignored.
     let target_for_cb = target.clone();
     *fake.on_pop_up.borrow_mut() = Some(Box::new(move |_| {
         target_for_cb.handle_click(mtm, TrayClick::Secondary);

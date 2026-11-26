@@ -91,9 +91,7 @@ impl RuneView {
     }
 
     pub(crate) fn hide_menu(&self) {
-        let interaction = self.ivars().edit_menu.borrow().clone();
-        // SAFETY: `UIEditMenuInteraction`'s `dismissMenu` takes nothing.
-        if let Some(interaction) = interaction { unsafe { let _: () = msg_send![&*interaction, dismissMenu]; } }
+        self.menu_step(edit_menu::Event::Hide);
     }
 
     /// What the focused field's menu points at, where the keyboard's text input has it.
@@ -147,6 +145,11 @@ impl RuneView {
                 Effect::TimerAfter(attempt, delay) => {
                     let view = MainOnly(Weak::new(self));
                     after_main(delay, move || view.menu_left(attempt));
+                }
+                Effect::Dismiss => {
+                    let interaction = self.ivars().edit_menu.borrow().clone();
+                    // SAFETY: `UIEditMenuInteraction`'s `dismissMenu` takes nothing.
+                    if let Some(interaction) = interaction { unsafe { let _: () = msg_send![&*interaction, dismissMenu]; } }
                 }
             }
         }

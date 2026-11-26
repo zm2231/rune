@@ -1,0 +1,1 @@
+- **iOS: the edit menu goes away when the field is typed in or the content scrolls.** Typing, deleting or composing from the keyboard, a finger dragging the content, and a wheel or trackpad scroll each take down an open edit menu, as in UIKit's own fields. The runtime hears the menu was dismissed with nothing picked.

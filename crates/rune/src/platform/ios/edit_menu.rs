@@ -42,6 +42,7 @@ pub(crate) enum Event {
     Picked(Option<String>),
     /// The grace after a dismissal ran out.
     Timer(Attempt),
+    Hide,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -54,6 +55,7 @@ pub(crate) enum Effect {
     Answer(Option<String>),
     /// Feed `Event::Timer` with this attempt back after this many seconds.
     TimerAfter(Attempt, f64),
+    Dismiss,
 }
 
 /// One transition of the menu.
@@ -77,6 +79,11 @@ pub(crate) fn step(seq: &mut Seq, state: &mut State, event: Event) -> Effects<Ef
             let attempt = seq.next();
             *state = State::Leaving(attempt);
             Effects::one(Effect::TimerAfter(attempt, PICK_GRACE))
+        }
+        (State::Open { .. }, Event::Hide) => {
+            let attempt = seq.next();
+            *state = State::Leaving(attempt);
+            Effects::two(Effect::Dismiss, Effect::TimerAfter(attempt, PICK_GRACE))
         }
         (State::Open { .. } | State::Leaving(_), Event::Picked(id)) => {
             *state = State::Closed;

@@ -209,3 +209,15 @@ fn a_caret_a_gesture_moves_tells_the_keyboard_and_one_the_keyboard_moves_does_no
     assert_eq!(run(&mut doc, Event::Select(5..5)), [Effect::Select(5..5)]);
     assert_eq!(run(&mut doc, Event::Runtime(Snapshot::Field { text: "aHello world from Rune".into(), start: 0, selection: 5..5 })), []);
 }
+
+#[test]
+fn typing_deleting_and_composing_edit_the_text_and_moving_the_caret_does_not() {
+    let edits = |doc: &mut Document, event| doc.step(event).into_iter().any(|effect: Effect| effect.edits_text());
+    let mut doc = field("hello", 5..5);
+    assert!(edits(&mut doc, Event::Insert("x".into())));
+    assert!(edits(&mut doc, Event::DeleteBackward));
+    assert!(edits(&mut doc, Event::SetMarked { text: "に".into(), selection: 1..1 }));
+    assert!(edits(&mut doc, Event::Unmark));
+    assert!(!edits(&mut doc, Event::Select(1..1)));
+    assert!(!edits(&mut doc, Event::Place(2..2)));
+}

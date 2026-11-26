@@ -629,7 +629,9 @@ impl RuneTextInput {
     fn edit(&self, event: Event) {
         let effects = self.ivars().doc.borrow_mut().step(event);
         self.tell(effects.clone());
-        if let Some(host) = self.ivars().host.load() { host.text_edits(effects); }
+        let Some(host) = self.ivars().host.load() else { return };
+        if effects.clone().into_iter().any(|effect| effect.edits_text()) { host.hide_menu(); }
+        host.text_edits(effects);
     }
 
     fn tell(&self, effects: Effects<Effect>) {

@@ -93,6 +93,12 @@ pub(crate) enum Effect {
     SelectionChanged,
 }
 
+impl Effect {
+    pub(crate) fn edits_text(&self) -> bool {
+        matches!(self, Effect::Key(_) | Effect::Commit(_) | Effect::Preedit(..))
+    }
+}
+
 impl Document {
     /// The document as the keyboard sees it: the text with any marked text spliced in.
     pub(crate) fn string(&self) -> String {

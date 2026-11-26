@@ -79,6 +79,7 @@ impl RuneView {
             let _: () = msg_send![recognizer, setTranslation: CGPoint::new(0.0, 0.0), inView: self];
             (moved, msg_send![recognizer, velocityInView: self])
         };
+        self.hide_menu();
         self.with_surface(|surface| surface.scroll(phase, (x, y), (moved.x as f32, moved.y as f32), (velocity.x as f32, velocity.y as f32)));
         self.track(phase);
     }
@@ -286,6 +287,7 @@ impl RuneView {
         let left: Vec<_> = read.into_iter()
             .filter(|(id, at, _)| !input.as_ref().is_some_and(|input| input.touch(*id, phase, (at.x as f32, at.y as f32))))
             .collect();
+        if phase == TouchPhase::Moved && !left.is_empty() { self.hide_menu(); }
         self.with_surface(|surface| {
             for (id, at, time) in left { surface.touch(id, phase, at.x as f32, at.y as f32, time); }
         });

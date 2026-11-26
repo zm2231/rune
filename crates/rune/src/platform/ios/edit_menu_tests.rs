@@ -221,3 +221,15 @@ fn a_caret_with_no_menu_up_changes_nothing() {
     assert_eq!(run(&mut seq, &mut state, Event::Caret(CARET)), []);
     assert_eq!(state, State::Closed);
 }
+
+#[test]
+fn typing_or_scrolling_takes_the_menu_down_and_it_answers_nothing_after_the_grace() {
+    let (mut seq, mut state) = open_on_caret();
+    let effects = run(&mut seq, &mut state, Event::Hide);
+    let State::Leaving(attempt) = state else { panic!("{state:?}") };
+    assert_eq!(effects, [Effect::Dismiss, Effect::TimerAfter(attempt, PICK_GRACE)]);
+    assert_eq!(run(&mut seq, &mut state, Event::Dismissed), []);
+    assert_eq!(run(&mut seq, &mut state, Event::Hide), []);
+    assert_eq!(run(&mut seq, &mut state, Event::Timer(attempt)), [Effect::Answer(None)]);
+    assert_eq!(run(&mut seq, &mut state, Event::Hide), []);
+}

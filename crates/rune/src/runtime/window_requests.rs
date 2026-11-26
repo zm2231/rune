@@ -86,6 +86,9 @@ pub(crate) struct HostState {
     url_scheme_requests: Vec<String>,
     /// True when attached to a live window, overlay or web canvas, not a headless or scripted run.
     pub(crate) open_urls_natively: bool,
+    /// Links the system answers after they open (`RuntimeCore::answer_links_later`).
+    #[cfg(any(test, target_os = "ios"))]
+    pub(crate) late_links: Option<crate::open_url::later::Later>,
     /// Pop-up menus asked for (`Tx::popup_menu`) and not yet answered, oldest first.
     pub(in crate::runtime) popups: popup_dispatch::Popups,
     /// Lifecycle state of the in-window fallback pop-up menu delivered to `App::on_popup_menu`.
@@ -176,6 +179,8 @@ impl HostState {
             path_requests: Vec::new(),
             url_scheme_requests: Vec::new(),
             open_urls_natively: false,
+            #[cfg(any(test, target_os = "ios"))]
+            late_links: None,
             popups: Default::default(),
             popup_fallback: Default::default(),
             popup_fallback_seq: 0,

@@ -1,0 +1,1 @@
+- **iOS: `Tx::open_url_then` reports whether an app opened the link.** It used to report `Ok(())` as soon as the link was asked for; it now waits for UIKit's answer and reports `OpenUrlError::Failed` when no app took the link, on the frame after the system says.

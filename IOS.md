@@ -103,7 +103,8 @@ What works:
   the background and out of its window, and makes what went again when it next shows. An
   `on_rest` that changes what the view shows gets a frame at once when the view is in front. An
   app that embeds a `LayerHost` itself calls `LayerHost::trim_memory`.
-- **Links and files.** `Tx::open_url` opens a link in the app that owns its scheme.
+- **Links and files.** `Tx::open_url` opens a link in the app that owns its scheme, and
+  `Tx::open_url_then` hears whether one took it, on the frame after the system says.
   A file dialog opens in its options' `directory` when the system can show that folder.
   `Tx::open_file` shows the system's document picker and answers with a copy of the file.
   `Tx::open_folder` answers with the folder picked, and `Tx::save_file` asks for a folder and

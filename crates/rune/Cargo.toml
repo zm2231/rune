@@ -109,6 +109,9 @@ baseline-taffy = ["rune-taffy/baseline-taffy"]
 test-gpu-counters = ["wgpu/counters"]
 # GPU-free wgpu noop backend for Linux surface-failure and device-loss tests.
 test-gpu-noop = ["wgpu/noop"]
+# macOS: AppKit checks that need the process's main thread, run by the harness-free `tests/tray_macos.rs`
+# and `tests/native_menu_macos.rs` from their own `main`. Rune's own test builds turn it on.
+test-main-thread = []
 
 [dependencies]
 # The accessibility tree's types; the platform adapters below come with `accessibility`.
@@ -235,6 +238,8 @@ wgpu = { workspace = true, features = ["vulkan"] }
 blake3 = { workspace = true }
 
 [dev-dependencies]
+# Turns on `test-main-thread` for Rune's own tests.
+rune = { path = ".", features = ["test-main-thread"] }
 # The HLSL wgpu generates, for the precompiled uber shader (`render/dxbc_tests.rs`).
 log = "0.4"
 # WebGL2 GLSL ES 3.00 shader translation check (`render/webgl_shader_tests.rs`).
@@ -393,6 +398,10 @@ harness = false
 
 [[test]]
 name = "tray_macos"
+harness = false
+
+[[test]]
+name = "native_menu_macos"
 harness = false
 
 [lints]

@@ -770,6 +770,10 @@ impl Drop for Native {
     }
 }
 
+#[cfg(feature = "test-main-thread")]
+#[path = "main_thread_checks.rs"]
+pub mod main_thread_checks;
+
 #[cfg(test)]
 #[path = "macos_tests.rs"]
 mod tests;

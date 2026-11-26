@@ -23,7 +23,7 @@ use std::sync::Arc;
 mod native;
 #[cfg(target_os = "macos")]
 #[path = "tray/macos.rs"]
-mod native;
+pub(crate) mod native;
 #[cfg(target_os = "windows")]
 #[path = "tray/win32.rs"]
 mod native;

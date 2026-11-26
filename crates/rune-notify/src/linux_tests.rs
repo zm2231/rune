@@ -33,3 +33,31 @@ fn a_click_carries_the_posted_info_its_button_and_token() {
     assert_eq!(click.action(), Some("archive"));
     assert_eq!(click.activation_token(), Some("tok"));
 }
+
+#[test]
+fn hints_carry_the_sound_only_when_asked() {
+    let silent = hints_for(&Notification::new("m-1", "New mail"), None);
+    assert_eq!(silent.get("suppress-sound"), Some(&Value::from(true)));
+    assert!(!silent.contains_key("sound-name"));
+    let loud = hints_for(&Notification::new("m-1", "New mail").sound(true), Some("com.example.mail"));
+    assert_eq!(loud.get("sound-name"), Some(&Value::from("message-new-instant")));
+    assert!(!loud.contains_key("suppress-sound"));
+    assert_eq!(loud.get("desktop-entry"), Some(&Value::from("com.example.mail")));
+}
+
+#[test]
+fn the_first_image_attachment_is_the_image_path() {
+    let dir = std::env::temp_dir().join(format!("rune-notify-linux-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = dir.join("ping.wav");
+    let png = dir.join("a shot.png");
+    std::fs::write(&wav, b"RIFF\0\0\0\0WAVE").unwrap();
+    std::fs::write(&png, b"\x89PNG\r\n\x1a\n").unwrap();
+    let n = Notification::new("m-1", "New mail")
+        .attachment(crate::Attachment::file(&wav).unwrap())
+        .attachment(crate::Attachment::file(&png).unwrap());
+    let hints = hints_for(&n, None);
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(hints.get("image-path"), Some(&Value::from(file_uri(&png))));
+    assert!(!hints_for(&Notification::new("m-1", "New mail"), None).contains_key("image-path"));
+}

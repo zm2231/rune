@@ -29,6 +29,7 @@ members = [
     "themes/opencode",
     "examples/hello",
     "examples/ios-fields",
+    "examples/notify-threads",
     "examples/hello-floor",
     "examples/launch-floor",
     "examples/web-hello",

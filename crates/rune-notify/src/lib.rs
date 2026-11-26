@@ -1,8 +1,9 @@
 //! System notifications for Rune apps: post one with an id, title, body and string user info,
+//! in a thread with its kin, with a sound or without, and with an image, sound or video attached;
 //! take it back out of the system's list, and hear about clicks.
 //!
-//! - **macOS:** `UNUserNotificationCenter`. Only a bundled app can post (`available`); the first
-//!   post asks the person for permission, and posts are dropped until they allow it.
+//! - **macOS and iOS:** `UNUserNotificationCenter`. Only a bundled app can post (`available`);
+//!   the first post asks the person for permission, and posts are dropped until they allow it.
 //! - **Windows:** toast notifications (`Windows.UI.Notifications`) under the app's
 //!   `AppUserModelID`. `register` gives the process that identity, with a name and icon for its
 //!   toasts, or `adopt` takes one an installer registered without writing anything; nothing
@@ -19,17 +20,23 @@
 //!   `register` names the app and its desktop entry.
 //! - **Elsewhere:** `available` is false and every call does nothing.
 //!
-//! Notifications are silent: they never play a sound.
+//! Notifications are silent unless `Notification::sound` asks for one.
 
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod apple;
+mod attachment;
 #[cfg(target_os = "linux")]
 mod linux;
-#[cfg(target_os = "macos")]
-mod mac;
 #[cfg(target_os = "windows")]
 mod windows;
+
+pub use attachment::Attachment;
+pub use attachment::AttachmentError;
+pub use attachment::AttachmentKind;
+pub use attachment::attachment_limit;
 
 /// One notification to post, built with `Notification::new(id, title)`.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -38,20 +45,33 @@ pub struct Notification {
     title: String,
     body: String,
     info: Vec<(String, String)>,
-    #[cfg_attr(not(any(target_os = "linux", target_os = "macos", target_os = "windows")), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "windows")), allow(dead_code))]
     actions: Vec<Action>,
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "windows")), allow(dead_code))]
+    thread: Option<Thread>,
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "windows")), allow(dead_code))]
+    sound: bool,
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "windows")), allow(dead_code))]
+    attachments: Vec<Attachment>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "windows")), allow(dead_code))]
+struct Thread {
+    id: String,
+    title: String,
 }
 
 /// A button on a notification, or a text box with its send button.
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(not(any(target_os = "linux", target_os = "macos", target_os = "windows")), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "windows")), allow(dead_code))]
 enum Action {
     Button { id: String, label: String },
     Reply { id: String, placeholder: String, label: String },
 }
 
 /// The user-info key a click on a button carries its id under (`Click::action`).
-#[cfg_attr(not(any(target_os = "linux", target_os = "macos", target_os = "windows")), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "windows")), allow(dead_code))]
 const ACTION: &str = "rune.action";
 /// The prefix of the user-info keys a click carries a text box's words under (`Click::input`).
 const INPUT: &str = "rune.input.";
@@ -89,6 +109,42 @@ impl Notification {
     pub fn reply(mut self, id: impl Into<String>, placeholder: impl Into<String>, label: impl Into<String>) -> Self {
         self.actions.push(Action::Reply { id: id.into(), placeholder: placeholder.into(), label: label.into() });
         self
+    }
+
+    /// Groups this notification with the others posted under the same thread `id`, such as one
+    /// conversation's. macOS and iOS stack them under one entry in Notification Center
+    /// (`threadIdentifier`); Windows puts them under a header titled `title` in the notification
+    /// center (a click on the header comes back as a click on this notification). Linux has no
+    /// grouping in the notification spec, so servers show them as they show the app's others.
+    pub fn thread(mut self, id: impl Into<String>, title: impl Into<String>) -> Self {
+        self.thread = Some(Thread { id: id.into(), title: title.into() });
+        self
+    }
+
+    /// Plays the system's notification sound with this one; without it the notification is
+    /// silent. macOS and iOS ask for permission to play sounds with the first post, and play none
+    /// where the person turned sounds off for the app. Linux plays the `message-new-instant`
+    /// sound where the server plays sounds.
+    pub fn sound(mut self, on: bool) -> Self {
+        self.sound = on;
+        self
+    }
+
+    /// A file shown with the notification. macOS and iOS show every one (the first image as
+    /// the banner's thumbnail, larger when it is expanded), from a copy in the temp folder the
+    /// system moves into its own store, so the app's file stays where it is; an attachment that
+    /// can't be copied or that the system refuses is left out and the rest posts. Windows shows
+    /// the first image in the toast, and Linux hands the first image to the server as its
+    /// `image-path`: both read the file itself when the notification shows, so keep it until
+    /// then. Sounds and videos show on macOS and iOS only.
+    pub fn attachment(mut self, attachment: Attachment) -> Self {
+        self.attachments.push(attachment);
+        self
+    }
+
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+    fn image(&self) -> Option<&Attachment> {
+        self.attachments.iter().find(|a| a.kind() == AttachmentKind::Image)
     }
 }
 
@@ -210,14 +266,14 @@ fn handler() -> &'static Mutex<Option<Handler>> {
     HANDLER.get_or_init(|| Mutex::new(None))
 }
 
-#[cfg_attr(not(any(target_os = "linux", target_os = "macos", target_os = "windows")), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "windows")), allow(dead_code))]
 fn deliver(click: Click) {
     if let Some(f) = handler().lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         f(click);
     }
 }
 
-/// Whether this process can post: on macOS it runs from a `.app` bundle with a bundle
+/// Whether this process can post: on macOS and iOS it runs from a `.app` bundle with a bundle
 /// identifier; on Windows `register` gave it an identity; on Linux a notification server answers
 /// on the session bus.
 pub fn available() -> bool {
@@ -225,23 +281,23 @@ pub fn available() -> bool {
     {
         linux::available()
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
-        mac::bundled()
+        apple::bundled()
     }
     #[cfg(target_os = "windows")]
     {
         windows::registered()
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "windows")))]
     {
         false
     }
 }
 
-/// Posts `n` now (on macOS, asking for permission first if the person hasn't been asked).
+/// Posts `n` now (on macOS and iOS, asking for permission first if the person hasn't been asked).
 /// Returns false when the app can't post at all (not `available`), or Windows refused the toast.
-#[cfg_attr(not(any(target_os = "linux", target_os = "macos", target_os = "windows")), allow(unused_variables))]
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "windows")), allow(unused_variables))]
 pub fn post(n: &Notification) -> bool {
     if !available() {
         return false;
@@ -250,16 +306,16 @@ pub fn post(n: &Notification) -> bool {
     {
         linux::post(n)
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
-        mac::post(n.clone());
+        apple::post(n.clone());
         true
     }
     #[cfg(target_os = "windows")]
     {
         windows::post(n)
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "windows")))]
     {
         false
     }
@@ -273,8 +329,8 @@ pub fn remove(ids: &[&str]) {
     }
     #[cfg(target_os = "linux")]
     linux::remove(ids);
-    #[cfg(target_os = "macos")]
-    mac::remove(ids);
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    apple::remove(ids);
     #[cfg(target_os = "windows")]
     windows::remove(ids);
 }
@@ -296,15 +352,16 @@ pub fn click_from_url(url: &str) -> Option<Click> {
 
 /// Calls `f` for every click on one of the app's notifications, from any thread (wake the app's
 /// loop from it). macOS brings the app forward on a click; call `bring_to_front` for the window.
-/// Install it at launch: on macOS a click that launched the app arrives too. On Windows a click
+/// Install it at launch: on macOS and iOS a click that launched the app arrives too, and a
+/// notification posted while the app is in front shows as a banner. On Windows a click
 /// arrives while the process that posted the toast runs, unless the identity has an activation
 /// scheme: then every click comes as a link (`click_from_url`). On Linux a click arrives while
 /// the process that posted runs.
 pub fn on_click(f: impl Fn(Click) + Send + Sync + 'static) {
     *handler().lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(f));
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     if available() {
-        mac::install_delegate();
+        apple::install_delegate();
     }
 }
 
@@ -344,27 +401,29 @@ pub fn wait_activation(clsid: &str, timeout: std::time::Duration) -> Option<Clic
 }
 
 /// Whether the app is in front with one of its windows focused, the moment it matters to a
-/// notification: one that would show while the person is looking at the app is noise.
+/// notification: one that would show while the person is looking at the app is noise. On iOS,
+/// whether the app is active; call it on the main thread.
 pub fn app_focused() -> bool {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
-        mac::app_focused()
+        apple::app_focused()
     }
     #[cfg(target_os = "windows")]
     {
         windows::app_focused()
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
     {
         false
     }
 }
 
 /// Brings the app's main window forward and focuses it, restoring it if minimized (on macOS,
-/// out of the Dock). Call it on the main thread (from `poll`), say after a click.
+/// out of the Dock). Call it on the main thread (from `poll`), say after a click. iOS opens the
+/// app for a click itself, so there it does nothing.
 pub fn bring_to_front() {
     #[cfg(target_os = "macos")]
-    mac::bring_to_front();
+    apple::bring_to_front();
     #[cfg(target_os = "windows")]
     windows::bring_to_front();
 }

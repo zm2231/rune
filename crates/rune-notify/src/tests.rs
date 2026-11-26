@@ -33,16 +33,16 @@ fn a_click_reaches_the_handler_and_completes() {
         this
     }
     extern "C" fn identifier(_: *mut AnyObject, _: Sel) -> *mut AnyObject {
-        // SAFETY: invoked inside `did_receive`'s autorelease pool, so `mac::ns` returns an autoreleased `NSString`.
-        unsafe { mac::ns("n-7") }
+        // SAFETY: invoked inside `did_receive`'s autorelease pool, so `apple::ns` returns an autoreleased `NSString`.
+        unsafe { apple::ns("n-7") }
     }
     extern "C" fn user_info(_: *mut AnyObject, _: Sel) -> *mut AnyObject {
-        // SAFETY: invoked inside `did_receive`'s autorelease pool, so `mac::dictionary` returns an autoreleased `NSDictionary`.
-        unsafe { mac::dictionary(&[("session".into(), "ses_7".into()), ("server".into(), "http://127.0.0.1:4096".into())]) }
+        // SAFETY: invoked inside `did_receive`'s autorelease pool, so `apple::dictionary` returns an autoreleased `NSDictionary`.
+        unsafe { apple::dictionary(&[("session".into(), "ses_7".into()), ("server".into(), "http://127.0.0.1:4096".into())]) }
     }
     extern "C" fn action_identifier(_: *mut AnyObject, _: Sel) -> *mut AnyObject {
-        // SAFETY: invoked inside `did_receive`'s autorelease pool, so `mac::ns` returns an autoreleased `NSString`.
-        unsafe { mac::ns("com.apple.UNNotificationDefaultActionIdentifier") }
+        // SAFETY: invoked inside `did_receive`'s autorelease pool, so `apple::ns` returns an autoreleased `NSString`.
+        unsafe { apple::ns("com.apple.UNNotificationDefaultActionIdentifier") }
     }
 
     let fake = AnyClass::get(c"RuneMacFakeResponse").unwrap_or_else(|| {
@@ -69,7 +69,7 @@ fn a_click_reaches_the_handler_and_completes() {
     // `delegate`, and `&*done` match the delegate selector inside this autorelease pool.
     objc2::rc::autoreleasepool(|_| unsafe {
         let response: *mut AnyObject = msg_send![fake, new];
-        let delegate: *mut AnyObject = msg_send![mac::delegate_class(), new];
+        let delegate: *mut AnyObject = msg_send![apple::delegate_class(), new];
         let center: *mut AnyObject = std::ptr::null_mut();
         let _: () = msg_send![
             delegate,
@@ -88,12 +88,12 @@ fn a_click_reaches_the_handler_and_completes() {
     assert!(*completed.lock().unwrap(), "the completion handler runs");
 }
 
-/// Authorization requests include both alert and badge (so macOS does not hide the Dock badge set
-/// via `NSDockTile.badgeLabel`) and omit sound. Uses a stand-in center object so the test never
-/// touches `UNUserNotificationCenter` or asks the user for permission.
+/// Authorization requests alert, badge (so macOS does not hide the Dock badge set via
+/// `NSDockTile.badgeLabel`) and sound (which only `Notification::sound` plays). Uses a stand-in
+/// center object so the test never touches `UNUserNotificationCenter` or asks for permission.
 #[cfg(target_os = "macos")]
 #[test]
-fn authorization_requests_alert_and_badge_without_sound() {
+fn authorization_requests_alert_badge_and_sound() {
     use block2::{Block, RcBlock};
     use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
     use objc2::{class, msg_send, sel};
@@ -135,7 +135,7 @@ fn authorization_requests_alert_and_badge_without_sound() {
     // valid ObjC completion block invoked synchronously inside this autorelease pool.
     objc2::rc::autoreleasepool(|_| unsafe {
         let center: *mut AnyObject = msg_send![fake, new];
-        mac::request_authorization(center, &*done);
+        apple::request_authorization(center, &*done);
     });
 
     const UN_AUTH_BADGE: usize = 1 << 0;
@@ -145,6 +145,47 @@ fn authorization_requests_alert_and_badge_without_sound() {
     assert!(completed.load(Ordering::SeqCst), "the completion handler runs");
     assert_ne!(options & UN_AUTH_BADGE, 0, "must request UNAuthorizationOptionBadge so Dock badges stay visible");
     assert_ne!(options & UN_AUTH_ALERT, 0, "must request UNAuthorizationOptionAlert for banners");
-    assert_eq!(options & UN_AUTH_SOUND, 0, "must stay silent and omit UNAuthorizationOptionSound");
-    assert_eq!(options, UN_AUTH_BADGE | UN_AUTH_ALERT);
+    assert_eq!(options, UN_AUTH_BADGE | UN_AUTH_SOUND | UN_AUTH_ALERT);
+}
+
+
+#[cfg(target_os = "macos")]
+#[test]
+fn content_carries_the_thread_the_sound_and_a_copy_of_the_image() {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    const PNG: &[u8] = b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90\x77\x53\xde\x00\x00\x00\x0c\x49\x44\x41\x54\x78\xda\x63\xf8\xdf\xc0\x00\x00\x04\x01\x01\x80\xfb\xd7\xcb\xf1\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82";
+
+    let dir = std::env::temp_dir().join(format!("rune-notify-apple-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("shot.png");
+    std::fs::write(&png, PNG).unwrap();
+    let gone = dir.join("gone.png");
+    std::fs::write(&gone, PNG).unwrap();
+    let image = Attachment::file(&png).unwrap();
+    let vanished = Attachment::file(&gone).unwrap();
+    std::fs::remove_file(&gone).unwrap();
+    let n = Notification::new("n-1", "Done").thread("ses_1", "Fix the build").sound(true).attachment(vanished).attachment(image);
+    // SAFETY: inside an autorelease pool; each getter matches `UNNotificationContent`.
+    let (thread, sound, attached) = objc2::rc::autoreleasepool(|_| unsafe {
+        let content = apple::content(&n);
+        let thread = apple::string(msg_send![&*content, threadIdentifier]);
+        let sound: *mut AnyObject = msg_send![&*content, sound];
+        let attachments: *mut AnyObject = msg_send![&*content, attachments];
+        let count: usize = msg_send![attachments, count];
+        (thread, !sound.is_null(), count)
+    });
+    // SAFETY: as above.
+    let silent = objc2::rc::autoreleasepool(|_| unsafe {
+        let content = apple::content(&Notification::new("n-2", "Done"));
+        let sound: *mut AnyObject = msg_send![&*content, sound];
+        sound.is_null()
+    });
+    let original = std::fs::read(&png).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(thread.as_deref(), Some("ses_1"));
+    assert!(sound, "sound(true) sets the default sound");
+    assert!(silent, "a notification is silent by default");
+    assert_eq!(attached, 1, "the image attaches and the vanished file is left out");
+    assert_eq!(original, PNG, "the app's own file stays where it was");
 }

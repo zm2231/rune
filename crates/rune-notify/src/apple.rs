@@ -1,13 +1,14 @@
-//! `UNUserNotificationCenter`. macOS only shows notifications for a bundled, signed app, so
-//! outside one (`cargo run`, tests) nothing posts. The first post asks the person for
+//! `UNUserNotificationCenter`, on macOS and iOS. The system only shows notifications for a
+//! bundled, signed app, so outside one (`cargo run`, tests) nothing posts. The first post asks the person for
 //! permission; until they allow it, posts are dropped. A notification's buttons and text box are a
 //! category of its own (one per set of actions, registered with the center before the post); a
 //! press comes back as the click, with the action and the words typed, without the app coming
-//! forward (the actions don't ask for the foreground).
+//! forward (the actions don't ask for the foreground). Attachments are copied into the temp folder
+//! first, because `UNNotificationAttachment` moves the file it is given into the system's store.
 
 #![allow(unsafe_code)]
 
-use super::{Action, Click, Notification};
+use super::{Action, Click, Notification, attachment};
 use block2::{Block, RcBlock};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, AnyProtocol, Bool, ClassBuilder, Sel};
@@ -16,13 +17,12 @@ use objc2::{class, msg_send, sel};
 #[link(name = "UserNotifications", kind = "framework")]
 unsafe extern "C" {}
 
-// UNAuthorizationOptionBadge | UNAuthorizationOptionAlert: banners and Dock icon badges, never a
-// sound. Notifications themselves never set `content.badge`; including the badge option keeps
-// macOS from suppressing `NSDockTile.badgeLabel` (`WindowHandle::set_taskbar`) and exposes the
-// "Badge application icon" toggle in System Settings.
-const AUTH_OPTIONS: usize = (1 << 0) | (1 << 2);
-// UNNotificationPresentationOptionList | Banner: shown even while the app is in front.
+// UNAuthorizationOptionBadge | Sound | Alert. Notifications never set `content.badge`; the badge
+// option keeps macOS from suppressing `NSDockTile.badgeLabel` (`WindowHandle::set_taskbar`). The
+// sound option only allows one: a notification plays it when `Notification::sound` sets it.
+const AUTH_OPTIONS: usize = (1 << 0) | (1 << 1) | (1 << 2);
 const PRESENT_LIST_BANNER: usize = (1 << 3) | (1 << 4);
+const PRESENT_SOUND: usize = 1 << 1;
 
 pub(super) fn bundled() -> bool {
     // SAFETY: `NSBundle.mainBundle`, `bundleIdentifier`, and `bundlePath` are thread-safe
@@ -84,22 +84,64 @@ unsafe fn add(n: &Notification) {
     // SAFETY: invoked inside an autorelease pool for a bundled app; every Foundation and
     // `UNUserNotificationCenter` message matches its selector and signature.
     objc2::rc::autoreleasepool(|_| unsafe {
-        let content: Retained<AnyObject> = msg_send![class!(UNMutableNotificationContent), new];
-        let content = Retained::as_ptr(&content).cast_mut();
-        let _: () = msg_send![content, setTitle: ns(&n.title)];
-        let _: () = msg_send![content, setBody: ns(&n.body)];
-        let _: () = msg_send![content, setUserInfo: dictionary(&n.info)];
-        if let Some(category) = category(&n.actions) {
-            let _: () = msg_send![content, setCategoryIdentifier: ns(&category)];
-        }
+        let content = content(n);
         let request: *mut AnyObject = msg_send![
             class!(UNNotificationRequest),
             requestWithIdentifier: ns(&n.id),
-            content: content,
+            content: &*content,
             trigger: std::ptr::null::<AnyObject>()
         ];
         let _: () = msg_send![center(), addNotificationRequest: request, withCompletionHandler: std::ptr::null::<Block<dyn Fn(*mut AnyObject)>>()];
     });
+}
+
+pub(super) unsafe fn content(n: &Notification) -> Retained<AnyObject> {
+    // SAFETY: caller holds an autorelease pool; each setter matches `UNMutableNotificationContent`.
+    unsafe {
+        let content: Retained<AnyObject> = msg_send![class!(UNMutableNotificationContent), new];
+        let c = Retained::as_ptr(&content).cast_mut();
+        let _: () = msg_send![c, setTitle: ns(&n.title)];
+        let _: () = msg_send![c, setBody: ns(&n.body)];
+        let _: () = msg_send![c, setUserInfo: dictionary(&n.info)];
+        if let Some(category) = category(&n.actions) {
+            let _: () = msg_send![c, setCategoryIdentifier: ns(&category)];
+        }
+        if let Some(thread) = &n.thread {
+            let _: () = msg_send![c, setThreadIdentifier: ns(&thread.id)];
+        }
+        if n.sound {
+            let sound: *mut AnyObject = msg_send![class!(UNNotificationSound), defaultSound];
+            let _: () = msg_send![c, setSound: sound];
+        }
+        let made: Vec<*mut AnyObject> = n.attachments.iter().enumerate().filter_map(|(i, a)| attach(i, a)).collect();
+        if !made.is_empty() {
+            let array: *mut AnyObject = msg_send![class!(NSArray), arrayWithObjects: made.as_ptr(), count: made.len()];
+            let _: () = msg_send![c, setAttachments: array];
+        }
+        content
+    }
+}
+
+unsafe fn attach(i: usize, a: &attachment::Attachment) -> Option<*mut AnyObject> {
+    let copy = attachment::stage(a, &std::env::temp_dir().join("rune-notify")).ok()?;
+    // SAFETY: caller holds an autorelease pool; `error` is a valid out pointer for
+    // `attachmentWithIdentifier:URL:options:error:`.
+    let made: *mut AnyObject = unsafe {
+        let url: *mut AnyObject = msg_send![class!(NSURL), fileURLWithPath: ns(&copy.to_string_lossy())];
+        let mut error: *mut AnyObject = std::ptr::null_mut();
+        msg_send![
+            class!(UNNotificationAttachment),
+            attachmentWithIdentifier: ns(&format!("rune.{i}")),
+            URL: url,
+            options: std::ptr::null::<AnyObject>(),
+            error: &mut error
+        ]
+    };
+    if made.is_null() {
+        std::fs::remove_file(&copy).ok();
+        return None;
+    }
+    Some(made)
 }
 
 thread_local! {
@@ -208,8 +250,14 @@ pub(super) extern "C" fn did_receive(_this: *mut AnyObject, _cmd: Sel, _center: 
     done.call(());
 }
 
-extern "C" fn will_present(_this: *mut AnyObject, _cmd: Sel, _center: *mut AnyObject, _notification: *mut AnyObject, done: &Block<dyn Fn(usize)>) {
-    done.call((PRESENT_LIST_BANNER,));
+pub(super) extern "C" fn will_present(_this: *mut AnyObject, _cmd: Sel, _center: *mut AnyObject, notification: *mut AnyObject, done: &Block<dyn Fn(usize)>) {
+    // SAFETY: `UNUserNotificationCenter` passes a live `UNNotification`.
+    let sound: *mut AnyObject = unsafe {
+        let request: *mut AnyObject = msg_send![notification, request];
+        let content: *mut AnyObject = msg_send![request, content];
+        msg_send![content, sound]
+    };
+    done.call((if sound.is_null() { PRESENT_LIST_BANNER } else { PRESENT_LIST_BANNER | PRESENT_SOUND },));
 }
 
 pub(super) fn delegate_class() -> &'static AnyClass {
@@ -247,6 +295,18 @@ pub(super) fn install_delegate() {
     });
 }
 
+#[cfg(target_os = "ios")]
+pub(super) fn app_focused() -> bool {
+    let Some(app) = AnyClass::get(c"UIApplication") else { return false };
+    // SAFETY: `sharedApplication` and `applicationState` on the main thread, as `app_focused`
+    // documents; 0 is `UIApplicationStateActive`.
+    unsafe {
+        let app: *mut AnyObject = msg_send![app, sharedApplication];
+        !app.is_null() && { let state: isize = msg_send![app, applicationState]; state == 0 }
+    }
+}
+
+#[cfg(target_os = "macos")]
 pub(super) fn app_focused() -> bool {
     // SAFETY: standard AppKit `NSApplication` queries (`sharedApplication`, `isActive`, `keyWindow`)
     // on the UI thread; `key` is only tested for null.
@@ -258,6 +318,7 @@ pub(super) fn app_focused() -> bool {
     }
 }
 
+#[cfg(target_os = "macos")]
 pub(super) fn bring_to_front() {
     // SAFETY: called on the AppKit main thread (`poll`); `objectAtIndex: 0` is guarded by `n > 0`,
     // and window messages are sent only when `w` is non-null.

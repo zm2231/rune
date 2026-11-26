@@ -1,18 +1,18 @@
 //! An app with a second window and an overlay, on every platform. The main window opens a
-//! "Details" window, which keeps its own count, and shows a HUD pinned to the top edge.
+//! "Details" window, which keeps its own count, and shows a HUD on the bottom edge.
 //!
 //! On the desktop the details window is a window of its own and the HUD floats above other
 //! apps. On an iPad built with `scripts/ios-app --multiple-scenes` the details window is a scene
 //! of its own; on an iPhone it is a sheet over the main window, which a swipe down closes. On
-//! iOS the HUD sits below the status bar, and a touch outside its button reaches the list under
-//! it.
+//! iOS the HUD sits above the home indicator, over the list, and a touch on it outside its
+//! button reaches the row under it.
 //!
 //! `cargo run -p ios-windows`
 
 #![forbid(unsafe_code)]
 
 use rune::tok::{self, type_};
-use rune::{App, AppHandle, AppSpec, Cx, El, OverlayHandle, OverlayInput, OverlayOptions, OverlaySpec, ScrollSpec, Tx, WindowOptions, WindowSpec, col, el, row, text};
+use rune::{App, AppHandle, AppSpec, Cx, El, OverlayHandle, OverlayInput, OverlayOptions, OverlaySpec, ScreenEdge, ScrollSpec, Tx, WindowOptions, WindowSpec, col, el, row, text};
 
 struct Main {
     count: u32,
@@ -60,7 +60,7 @@ fn main_view(s: &Main, cx: &mut Cx<Main>) -> El {
             .on_press(move |s: &mut Main| s.tapped = Some(at))
             .child(text(format!("Row {at}")).font(type_::BODY).color(t.text)))
     });
-    col().w_full().h_full().gap(16.0).pt(top + 72.0).pr(16.0 + right).pb(bottom).pl(16.0 + left).fill(t.bg)
+    col().w_full().h_full().gap(16.0).pt(top + 16.0).pr(16.0 + right).pb(bottom).pl(16.0 + left).fill(t.bg)
         .child(text("Windows").font(type_::TITLE).color(t.text))
         .child(controls)
         .child(text(tapped).key("tapped").font(type_::BODY).color(t.text_secondary))
@@ -91,7 +91,7 @@ fn app() -> App<Main> {
     let details = WindowSpec::from_app("details", details)
         .options(WindowOptions { visible: false, ..Default::default() });
     let (details, _) = app.window(details);
-    let hud = OverlaySpec { margin: 8.0, interactive: true, ..OverlaySpec::new("HUD", (300.0, 56.0), hud_view) }
+    let hud = OverlaySpec { edge: ScreenEdge::Bottom, margin: 24.0, interactive: true, ..OverlaySpec::new("HUD", (300.0, 56.0), hud_view) }
         .options(OverlayOptions { input: OverlayInput::Regions, ..Default::default() });
     let hud = app.overlay(hud, Hud::default());
     app.init(move || Main { count: 0, tapped: None, hud_shown: false, details: Some(details), hud: Some(hud) })

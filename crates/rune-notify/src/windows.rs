@@ -15,7 +15,7 @@ use std::sync::Mutex;
 
 use windows::Data::Xml::Dom::XmlDocument;
 use windows::Foundation::TypedEventHandler;
-use windows::UI::Notifications::{ToastActivatedEventArgs, ToastNotification, ToastNotificationManager};
+use windows::UI::Notifications::{NotificationSetting, ToastActivatedEventArgs, ToastNotification, ToastNotificationManager, ToastNotifier};
 use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::System::Com::{CLSCTX_LOCAL_SERVER, COINIT_MULTITHREADED, CoInitializeEx, CoRegisterClassObject, IClassFactory, IClassFactory_Impl, REGCLS_MULTIPLEUSE};
 use windows::Win32::UI::Notifications::{INotificationActivationCallback, INotificationActivationCallback_Impl, NOTIFICATION_USER_INPUT_DATA};
@@ -27,6 +27,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, HSTRING, IInspectable, Interface, Ref};
 
+use super::status::{Authorization, Failure, report};
 use super::{Click, Identity, Notification};
 
 /// Every toast this process posts goes in one group, so `remove` finds it by its tag.
@@ -148,6 +149,10 @@ pub(super) fn post(n: &Notification) -> bool {
     let Some(app) = app_id() else { return false };
     let tag = tag(&n.id);
     match show(&app, n, &tag) {
+        Err(failure) => {
+            report(&n.id, failure);
+            false
+        }
         Ok(toast) => {
             let mut posted = POSTED.lock().unwrap_or_else(|e| e.into_inner());
             posted.retain(|p| p.tag != tag);
@@ -157,11 +162,34 @@ pub(super) fn post(n: &Notification) -> bool {
             posted.push(Posted { id: n.id.clone(), tag, _toast: toast });
             true
         }
-        Err(_) => false,
     }
 }
 
-fn show(app: &str, n: &Notification, tag: &str) -> windows::core::Result<ToastNotification> {
+pub(super) fn authorization() -> Authorization {
+    let Some(app) = app_id() else { return Authorization::Unavailable };
+    ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(app)).map_or(Authorization::NotDetermined, |notifier| setting(&notifier))
+}
+
+fn setting(notifier: &ToastNotifier) -> Authorization {
+    match notifier.Setting() {
+        Ok(NotificationSetting::Enabled) => Authorization::Authorized,
+        Ok(_) => Authorization::Denied,
+        Err(_) => Authorization::NotDetermined,
+    }
+}
+
+fn show(app: &str, n: &Notification, tag: &str) -> Result<ToastNotification, Failure> {
+    let system = |e: windows::core::Error| Failure::System(e.to_string());
+    let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(app)).map_err(system)?;
+    if setting(&notifier) == Authorization::Denied {
+        return Err(Failure::Denied);
+    }
+    let toast = toast(n, tag).map_err(system)?;
+    notifier.Show(&toast).map_err(system)?;
+    Ok(toast)
+}
+
+fn toast(n: &Notification, tag: &str) -> windows::core::Result<ToastNotification> {
     let scheme = SCHEME.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let doc = XmlDocument::new()?;
     doc.LoadXml(&HSTRING::from(xml(n, scheme.as_deref())))?;
@@ -181,7 +209,6 @@ fn show(app: &str, n: &Notification, tag: &str) -> windows::core::Result<ToastNo
         super::deliver(Click { id, info });
         Ok(())
     }))?;
-    ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(app))?.Show(&toast)?;
     Ok(toast)
 }
 

@@ -130,6 +130,8 @@ fn print_counts(s: &State) {
 fn background() -> bool { std::env::var_os("NATIVE_VIEW_BACKGROUND").is_some() }
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    if let Some(pid) = ax_check::reader_pid() { return ax_check::run(pid); }
     let app = App::new(AppSpec::<State> {
         poll: Some(poll),
         scenes: &[("collapsed", |s| s.open = false), ("tall", |s| s.tall = true)],
@@ -140,7 +142,7 @@ fn main() {
         WINDOW.with(|w| { let _ = w.set(window.clone()); });
         if std::env::var_os("NATIVE_VIEW_CALL").is_some() { call::open(window); }
         #[cfg(target_os = "macos")]
-        if background() { ax_check::start(); }
+        if background() { ax_check::spawn(); }
     })
     .run();
 }

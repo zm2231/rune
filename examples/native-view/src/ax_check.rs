@@ -6,18 +6,35 @@ use std::time::Duration;
 use objc2_application_services::{AXError, AXIsProcessTrusted, AXUIElement};
 use objc2_core_foundation::{CFArray, CFRetained, CFString, CFType};
 
-pub fn start() {
-    std::thread::spawn(|| loop {
-        std::thread::sleep(Duration::from_secs(1));
-        println!("native-view: ax {}", read());
-    });
+const FLAG: &str = "--ax-read";
+
+pub fn spawn() {
+    let Ok(exe) = std::env::current_exe() else { return };
+    if let Err(e) = std::process::Command::new(exe).arg(FLAG).arg(std::process::id().to_string()).spawn() {
+        eprintln!("native-view: no accessibility reader: {e}");
+    }
 }
 
-fn read() -> String {
+pub fn reader_pid() -> Option<libc::pid_t> {
+    let mut args = std::env::args().skip(1);
+    if args.next()? != FLAG { return None; }
+    args.next()?.parse().ok()
+}
+
+pub fn run(pid: libc::pid_t) {
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+        // SAFETY: signal 0 sends nothing; it only checks that `pid` still exists.
+        if unsafe { libc::kill(pid, 0) } != 0 { return; }
+        println!("native-view: ax {}", read(pid));
+    }
+}
+
+fn read(pid: libc::pid_t) -> String {
     // SAFETY: AXIsProcessTrusted takes no arguments and only reads this process's trust.
     if !unsafe { AXIsProcessTrusted() } { return "untrusted: allow this terminal in Privacy & Security > Accessibility".into(); }
-    // SAFETY: the pid is this process's own, which is alive for the call.
-    let app = unsafe { AXUIElement::new_application(std::process::id() as libc::pid_t) };
+    // SAFETY: AXUIElementCreateApplication takes any pid; one that has exited makes queries fail.
+    let app = unsafe { AXUIElement::new_application(pid) };
     // SAFETY: `app` is a valid element.
     let _ = unsafe { app.set_messaging_timeout(1.0) };
     let mut stack = children(&app, "AXWindows");

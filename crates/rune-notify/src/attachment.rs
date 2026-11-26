@@ -41,7 +41,7 @@ impl Format {
             Format::Aiff => "public.aiff-audio",
             Format::Wav => "com.microsoft.waveform-audio",
             Format::Mp3 => "public.mp3",
-            Format::M4a => "com.apple.m4a-audio",
+            Format::M4a => "public.mpeg-4-audio",
             Format::Mp4 => "public.mpeg-4",
             Format::Mpeg => "public.mpeg",
             Format::Avi => "public.avi",

@@ -81,9 +81,9 @@ pub(crate) enum Acquire<D> {
 /// Why an acquired drawable must be dropped and re-acquired after the runtime stepped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReacquireReason {
-    /// Native system materials (e.g. macOS visual effect views) turned on during the step; the
-    /// host rebuilds with native materials enabled before re-acquiring.
-    #[cfg(any(test, target_os = "macos", all(target_os = "windows", feature = "windows-system-material")))]
+    /// Native system materials (e.g. macOS visual effect views) or hosted native views turned
+    /// on during the step; the host rebuilds with them enabled before re-acquiring.
+    #[cfg(any(test, target_os = "macos", target_os = "ios", all(target_os = "windows", feature = "windows-system-material")))]
     NativeMaterials,
     /// A handler changed `Tx::set_srgb_blend`; the surface and renderer reconfigure for the new
     /// target format before re-acquiring.

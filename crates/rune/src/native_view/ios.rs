@@ -235,7 +235,6 @@ impl Hosts {
 
     pub(crate) fn present<R>(&mut self, draws: &[NativeViewDraw], scale: f32, present: impl FnOnce() -> R) -> R {
         self.clips.prune(|id| super::slot(id).is_some());
-        self.sync_transactions(!draws.is_empty());
         if draws.is_empty() && self.clips.idle() { return present(); }
         let (Some(transaction), Some(root)) = (AnyClass::get(c"CATransaction"), self.root()) else { return present() };
         // SAFETY: CATransaction class methods on the main thread, balanced below.
@@ -250,12 +249,13 @@ impl Hosts {
         out
     }
 
-    fn sync_transactions(&mut self, on: bool) {
-        if on == self.synced { return; }
-        let Some(layer) = self.layer.as_deref() else { return };
+    pub(crate) fn sync_transactions(&mut self, on: bool) -> bool {
+        if on == self.synced { return false; }
+        let Some(layer) = self.layer.as_deref() else { return false };
         // SAFETY: a CAMetalLayer setter on the main thread, read when the next drawable is acquired.
         unsafe { let _: () = msg_send![layer, setPresentsWithTransaction: Bool::new(on)]; }
         self.synced = on;
+        on
     }
 
     fn root(&mut self) -> Option<Retained<AnyObject>> {

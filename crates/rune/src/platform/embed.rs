@@ -476,6 +476,8 @@ impl<S: 'static> EmbedSurface for LayerHost<S> {
     fn missed(&mut self, missed: Missed, now: Instant) -> bool { self.core.missed(missed, now) }
     fn retry_after(&self, now: Instant) -> Option<f64> { self.core.retry_after(now) }
     fn presented(&mut self, ticking: bool) { self.core.presented(ticking) }
+    #[cfg(target_os = "ios")]
+    fn sync_hosts(&mut self) -> bool { self.core.hosts.sync_transactions(!self.rt.core().paint.native_views().is_empty()) }
     fn serves(&self) -> Serves { Serves { clipboard: self.core.clipboard.is_some(), popup_menus: self.core.popup_menus, file_dialogs: self.core.file_dialogs } }
     fn receive_clipboard(&mut self) {
         if let Some(clipboard) = &self.core.clipboard { clipboard.receive_core(self.rt.core_mut()); }

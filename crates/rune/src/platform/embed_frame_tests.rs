@@ -131,6 +131,7 @@ struct MockEmbedSurface {
     retry: Option<f64>,
     /// The host serves the system clipboard.
     clipboard: bool,
+    hosts_turn_on: bool,
     log: Vec<String>,
 }
 
@@ -159,6 +160,7 @@ impl MockEmbedSurface {
             comp_animating: false,
             retry: None,
             clipboard: false,
+            hosts_turn_on: false,
             log: Vec::new(),
         }
     }
@@ -198,6 +200,12 @@ impl EmbedSurface for MockEmbedSurface {
     }
 
     fn retry_after(&self, _now: Instant) -> Option<f64> { self.retry }
+
+    fn sync_hosts(&mut self) -> bool {
+        let on = std::mem::take(&mut self.hosts_turn_on);
+        if on { self.log.push("hosts on".into()); }
+        on
+    }
 
     fn serves(&self) -> Serves { Serves { clipboard: self.clipboard, ..Serves::default() } }
 
@@ -252,6 +260,19 @@ fn run_embed_frame_follows_shared_acquire_step_reblend_present_order() {
     assert_eq!(
         surface.log,
         ["acquire:ok:1", "step", "reblend:true", "acquire:ok:2", "prepare:2", "render:2", "present:2", "presented:false"]
+    );
+}
+
+#[test]
+fn a_frame_that_starts_hosting_native_views_presents_on_a_drawable_taken_after_the_switch() {
+    let start = crate::time::now();
+    let mut surface = MockEmbedSurface::new(start);
+    surface.hosts_turn_on = true;
+    surface.acquires = std::collections::VecDeque::from([Acquire::Ready(1), Acquire::Ready(2)]);
+    assert!(run_embed_frame(&mut surface).drew);
+    assert_eq!(
+        surface.log,
+        ["acquire:ok:1", "step", "hosts on", "acquire:ok:2", "prepare:2", "render:2", "present:2", "presented:false"]
     );
 }
 

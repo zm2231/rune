@@ -593,7 +593,9 @@ impl Tx {
     /// Passing [`ColorScheme::System`](crate::ColorScheme::System) clears the per-window override
     /// so the window inherits any app-wide override set via
     /// [`AppHandle::set_color_scheme`](crate::AppHandle::set_color_scheme) or the operating
-    /// system's appearance. Ignored on overlays, web, and headless.
+    /// system's appearance. In an overlay's handler this sets that overlay's scheme:
+    /// [`Cx::system_dark`](crate::Cx::system_dark) follows it, and on macOS so does the overlay
+    /// panel's `NSAppearance`. Ignored on web and headless.
     ///
     /// ```no_run
     /// use rune::{ColorScheme, El, el};

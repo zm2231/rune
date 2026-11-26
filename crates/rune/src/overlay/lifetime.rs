@@ -19,7 +19,8 @@ impl OverlayCore {
         if self.poll_terminal_gpu_loss(app) { return; }
         if self.presence.shown() { return; }
         // Hidden, it missed the redraws a new accent or portal preference asks for.
-        app.rt_mut().set_system_dark(crate::platform::preferences::dark().unwrap_or(self.dark));
+        let system_dark = crate::platform::preferences::dark().unwrap_or(self.system_dark);
+        self.adopt_system_dark(app.rt_mut(), system_dark);
         #[cfg(target_os = "linux")]
         {
             let rt = app.rt_mut();
@@ -512,8 +513,8 @@ impl OverlayCore {
         crate::platform::portal_appearance::follow(&window);
         #[cfg(all(target_os = "linux", not(feature = "dbus")))]
         crate::platform::preferences::follow_fallback(&window);
-        self.dark = window.theme().map_or_else(|| crate::platform::preferences::desktop_dark(&window).unwrap_or(true), |t| t == winit::window::Theme::Dark);
-        app.rt_mut().set_system_dark(self.dark);
+        let system_dark = window.theme().map_or_else(|| crate::platform::preferences::desktop_dark(&window).unwrap_or(true), |t| t == winit::window::Theme::Dark);
+        self.adopt_system_dark(app.rt_mut(), system_dark);
         if self.cursor.is_none() { self.cursor = Some(crate::cursor::os::OsCursor::new()); }
         // The surface first: on macOS it binds winit's view and its layer, which then move
         // into the panel.
@@ -525,6 +526,7 @@ impl OverlayCore {
             self.panel = Some(crate::platform::macos::Panel::adopt(&window, self.at, self.interactive, &self.options, self.macos_color_space, wake)?);
             let panel = self.panel.as_ref().unwrap();
             if let Some(level) = self.macos_level { panel.set_level(level); }
+            self.sync_native_scheme();
             let native = (Some(panel.window_number()), crate::OverlayCapabilities::placed(
                 panel.capture_exclusion(), super::keys::keys_support(self.options.keys, true), OverlaySupport::Supported,
             ));

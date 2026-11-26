@@ -110,6 +110,9 @@ mod retire;
 #[cfg(not(target_arch = "wasm32"))]
 use retire::Retire;
 #[cfg(not(target_arch = "wasm32"))]
+#[path = "overlay/scheme.rs"]
+mod scheme;
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "overlay/surface.rs"]
 mod surface;
 #[cfg(not(target_arch = "wasm32"))]
@@ -665,6 +668,9 @@ pub(in crate::overlay) struct OverlayCore {
     rest: crate::window::Rest,
     retire: Retire,
     dark: bool,
+    system_dark: bool,
+    color_scheme: crate::ColorScheme,
+    app_scheme: crate::ColorScheme,
     dirty: bool,
     idle: bool,
     /// After the last frame the runtime asked for no other; only the compositor animates.
@@ -800,6 +806,9 @@ impl OverlayCore {
             rest: Default::default(),
             retire: Default::default(),
             dark: true,
+            system_dark: true,
+            color_scheme: crate::ColorScheme::System,
+            app_scheme: crate::window::app_color_scheme(),
             dirty: true,
             idle: true,
             runtime_idle: false,
@@ -865,13 +874,6 @@ impl OverlayCore {
     pub(super) fn scroll_bars_changed(&mut self, rt: &mut RuntimeCore, bars: crate::platform::scroll_bars::SystemScrollBars) {
         if bars == rt.system_scroll_bars_state() { return; }
         rt.set_system_scroll_bars_state(bars);
-        self.dirty = true;
-    }
-
-    pub(super) fn theme_changed(&mut self, rt: &mut RuntimeCore, dark: bool) {
-        self.dark = dark;
-        rt.set_system_dark(dark);
-        self.sync_window_backdrop(rt, true);
         self.dirty = true;
     }
 

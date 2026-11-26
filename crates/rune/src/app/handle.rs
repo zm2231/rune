@@ -106,7 +106,10 @@ impl<S: 'static> AppHandle<S> {
     /// system materials, and windows with no per-window override follow it. On Windows and Linux
     /// this applies to every window whose own color scheme is `ColorScheme::System`, including
     /// windows created or recreated later. Windows with an explicit per-window `Light` or `Dark`
-    /// override keep their own scheme. Safe to call from any thread; no-op on web and headless.
+    /// override keep their own scheme. Overlays follow it on every platform the same way: an
+    /// overlay with no scheme of its own (`Tx::set_color_scheme` from its handlers) reports it
+    /// through [`Cx::system_dark`](crate::Cx::system_dark) and, on macOS, its panel's
+    /// `NSAppearance`. Safe to call from any thread; no-op on web and headless.
     ///
     /// ```no_run
     /// use rune::{App, AppSpec, ColorScheme, el};

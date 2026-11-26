@@ -185,7 +185,6 @@ pub(crate) enum WakeEvent {
     /// App-wide color scheme changed (`AppHandle::set_color_scheme`): every host syncs with
     /// `app_color_scheme()`.
     #[cfg(not(target_arch = "wasm32"))]
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     AppColorScheme,
     Place(usize, crate::windows::PlaceRequest),
     Frame(usize, crate::window::frame::FrameRequest),
@@ -289,7 +288,6 @@ pub(crate) trait AnyHost {
     /// Shows, restores and activates it as the default reopen.
     fn reopen(&mut self, _event_loop: &ActiveEventLoop) {}
     /// Syncs this host's native window theme with the current process-wide `app_color_scheme()`.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     fn apply_app_color_scheme(&mut self) {}
     /// Windows: reconciles `El::system_material` native vs fallback state after a system effects
     /// policy notification.

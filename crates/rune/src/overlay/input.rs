@@ -114,6 +114,7 @@ impl OverlayCore {
     /// pending content size not already consumed in the same frame by `take_live_fit_resize`.
     /// A hidden overlay records it for its next show; a shown one queues it.
     pub(super) fn take_window_requests(&mut self, rt: &mut RuntimeCore) {
+        if let Some(scheme) = rt.host.window_color_scheme.take() { self.set_color_scheme(rt, scheme); }
         let Some(raw) = drop_window_requests(rt) else { return };
         if !self.sizing_active() { return; }
         let scale = self.live_scale().unwrap_or_else(|| rt.window_scale());

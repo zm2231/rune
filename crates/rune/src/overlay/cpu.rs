@@ -440,11 +440,11 @@ impl super::OverlayCore {
             }
         };
         crate::window::displays::track(&window);
-        self.dark = window.theme().map_or_else(
+        let system_dark = window.theme().map_or_else(
             || crate::platform::preferences::desktop_dark(&window).unwrap_or(true),
             |t| t == winit::window::Theme::Dark,
         );
-        app.rt_mut().set_system_dark(self.dark);
+        self.adopt_system_dark(app.rt_mut(), system_dark);
         if self.cursor.is_none() {
             self.cursor = Some(crate::cursor::os::OsCursor::new());
         }

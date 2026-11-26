@@ -378,10 +378,8 @@ impl Host {
         #[cfg(target_os = "macos")]
         crate::platform::macos::appearance::set_app_appearance(scheme);
         #[cfg(not(target_os = "macos"))]
-        {
-            self.apply_window_color_scheme();
-            self.native_handle.send(|_| crate::window::WakeEvent::AppColorScheme);
-        }
+        self.apply_window_color_scheme();
+        self.native_handle.send(|_| crate::window::WakeEvent::AppColorScheme);
     }
 
     pub(in crate::window) fn show(&mut self, event_loop: &ActiveEventLoop) {

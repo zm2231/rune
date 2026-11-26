@@ -131,43 +131,83 @@ fn a_poll_hears_each_visibility_change_once() {
     assert_eq!(rt.wake_deadline(), None, "each wake is spent");
 }
 
-/// With an assistive tool attached, a covered window does zero view builds for ordinary
-/// background updates and timer wakes, and brings both the view and the accessibility tree
-/// up to date in one build when uncovered.
+fn tree_shows(update: &accesskit::TreeUpdate, text: &str) -> bool {
+    update.nodes.iter().any(|(_, n)| n.value() == Some(text) || n.label() == Some(text))
+}
+
 #[test]
-fn a_covered_window_with_a11y_skips_ordinary_builds_and_updates_on_uncover() {
+fn a_covered_window_with_a11y_keeps_its_tree_within_an_interval_of_its_state() {
+    use crate::a11y::covered::COVERED_BUILD_INTERVAL as INTERVAL;
     let mut rt = Runtime::new(Chat::default(), view, (200.0, 50.0), Env { system_dark: true, scale: 1.0 });
-    rt.poll = Some(|chat, _, _| { chat.polls += 1; let unread = chat.read < chat.messages; chat.read = chat.messages; unread });
-    let start = crate::time::now();
-    rt.wall_start = Some(start);
+    rt.poll = Some(|chat, _, _| { let unread = chat.read < chat.messages; chat.read = chat.messages; unread });
+    rt.wall_start = Some(crate::time::now());
     rt.frame(0.0);
     rt.a11y_activate("Chat");
     assert!(rt.a11y_update().is_some(), "initial tree sent");
-
     rt.set_live_visible(false);
-    let (builds, commits, polls) = (BUILDS.get(), rt.stats.commits, rt.state.polls);
-    for k in 1..=30 {
-        rt.update(|chat, tx| { chat.messages += 1; tx.wake_after(Duration::from_millis(10)); });
-        covered_step(&mut rt);
-        rt.wall_start = Some(start - k * Duration::from_millis(20));
+    let commits = rt.stats.commits;
+    let mut builds: Vec<(f64, u32)> = Vec::new();
+    let step = |rt: &mut Runtime<Chat>, t: f64, builds: &mut Vec<(f64, u32)>| {
+        let before = BUILDS.get();
+        rt.wall_start = Some(crate::time::now() - Duration::from_secs_f64(t));
+        covered_step(rt);
+        assert!(BUILDS.get() - before <= 1);
+        if BUILDS.get() > before {
+            let text = shown_text(rt).unwrap();
+            let update = rt.a11y_update().expect("a covered build sends the tree");
+            assert!(tree_shows(&update, &text), "the tree holds what built: {text}");
+            builds.push((rt.clock, text.split(' ').next().unwrap().parse().unwrap()));
+        }
+    };
+    let mut changes = Vec::new();
+    for k in 1..=50 {
+        let t = 0.5 + f64::from(k) * 0.02;
+        while let Some(due) = rt.wake_deadline().filter(|&due| due < t) { step(&mut rt, due, &mut builds); }
+        rt.update(|chat, _| chat.messages += 1);
+        step(&mut rt, t, &mut builds);
+        changes.push((t, rt.state.messages));
+    }
+    for _ in 0..4 {
+        let Some(due) = rt.wake_deadline() else { break };
+        step(&mut rt, due, &mut builds);
+    }
+    assert_eq!(rt.wake_deadline(), None, "no wake left once the last change built");
+    assert!(builds.windows(2).all(|w| w[1].0 - w[0].0 >= INTERVAL - 1e-3), "at most one build per interval: {builds:?}");
+    for (t, n) in changes {
+        assert!(
+            builds.iter().any(|&(at, shown)| at >= t && at <= t + INTERVAL + 0.01 && shown >= n),
+            "the change at {t:.2} reaches the tree within the interval: {builds:?}"
+        );
+    }
+    assert_eq!(builds.last().map(|b| b.1), Some(50), "the last change builds");
+    assert_eq!(rt.stats.commits - commits, builds.len() as u64, "builds only, and no frames drawn: {builds:?}");
+    assert!(builds.len() <= 5, "a second of changes builds about once per interval: {builds:?}");
+}
+
+#[test]
+fn a_covered_window_with_a11y_updates_its_tree_on_uncover() {
+    let mut rt = Runtime::new(Chat::default(), view, (200.0, 50.0), Env { system_dark: true, scale: 1.0 });
+    rt.poll = Some(|chat, _, _| { let unread = chat.read < chat.messages; chat.read = chat.messages; unread });
+    rt.frame(0.0);
+    rt.a11y_activate("Chat");
+    assert!(rt.a11y_update().is_some(), "initial tree sent");
+    rt.set_live_visible(false);
+    let builds = BUILDS.get();
+    for _ in 0..30 {
+        rt.update(|chat, _| chat.messages += 1);
         covered_step(&mut rt);
     }
-    assert_eq!((rt.state.messages, rt.state.read), (30, 30), "updates and poll ran");
-    assert_eq!(rt.state.polls - polls, 60, "poll runs for every wake and timer");
-    assert_eq!(BUILDS.get() - builds, 0, "no view builds for ordinary wakes while covered with a11y");
-    assert_eq!(rt.stats.commits, commits, "no commits while covered");
-    assert!(rt.a11y_update().is_none(), "no spurious tree update while covered");
+    assert_eq!(BUILDS.get() - builds, 1, "one build inside the interval");
+    assert!(rt.a11y_update().is_some_and(|u| tree_shows(&u, "1 1")), "the first change reaches the tree");
+    assert!(rt.a11y_update().is_none(), "nothing more to send while the rest waits");
 
     rt.set_live_visible(true);
     rt.settle_all();
     rt.frame(1.0 / 120.0);
-    assert_eq!(BUILDS.get() - builds, 1, "uncovering builds once");
+    assert_eq!(BUILDS.get() - builds, 2, "uncovering builds once");
     assert_eq!(shown_text(&rt).as_deref(), Some("30 30"));
     let update = rt.a11y_update().expect("uncovering brings the a11y tree up to date at once");
-    assert!(
-        update.nodes.iter().any(|(_, n)| n.value() == Some("30 30") || n.label() == Some("30 30")),
-        "a11y tree reflects the latest state after uncover"
-    );
+    assert!(tree_shows(&update, "30 30"), "a11y tree reflects the latest state after uncover");
 }
 
 /// First activation on an out-of-date covered window builds once so the initial tree is current,
@@ -220,8 +260,8 @@ fn a_covered_window_with_a11y_builds_once_on_first_activation() {
     assert_eq!(BUILDS.get() - clean_builds, 0, "clean first activation does zero builds");
 }
 
-/// An assistive client's own action on a covered window still builds once and updates the tree,
-/// while ordinary updates before and after it do zero builds.
+/// An assistive client's own action on a covered window builds at once and updates the tree,
+/// inside the interval that holds ordinary updates to one build.
 #[test]
 fn a_covered_window_with_a11y_builds_once_for_assistive_action() {
     #[derive(Default)]
@@ -251,11 +291,11 @@ fn a_covered_window_with_a11y_builds_once_for_assistive_action() {
         rt.update(|s, _| s.messages += 1);
         covered_step(&mut rt);
     }
-    assert_eq!(BUILDS.get() - builds, 0, "ordinary updates do zero builds");
+    assert_eq!(BUILDS.get() - builds, 1, "ordinary updates inside one interval build once");
 
     assert!(rt.accessibility_action("btn", accesskit::Action::Click, None));
     covered_step(&mut rt);
-    assert_eq!(BUILDS.get() - builds, 1, "assistive action builds once");
+    assert_eq!(BUILDS.get() - builds, 2, "assistive action builds at once");
     assert_eq!(rt.state.clicks, 1);
     let update = rt.a11y_update().expect("action updates the a11y tree");
     assert!(
@@ -267,12 +307,12 @@ fn a_covered_window_with_a11y_builds_once_for_assistive_action() {
         rt.update(|s, _| s.messages += 1);
         covered_step(&mut rt);
     }
-    assert_eq!(BUILDS.get() - builds, 1, "ordinary updates after action do zero builds");
+    assert_eq!(BUILDS.get() - builds, 2, "ordinary updates after the action wait for the interval");
 }
 
 /// A programmatic focus request while covered (PR #995: a permission card arrives in poll and
-/// requests focus while the window is minimised/covered) builds once so focus lands on the new
-/// card, while ordinary updates before and after do zero builds.
+/// requests focus while the window is minimised/covered) builds at once so focus lands on the
+/// new card, inside the interval that holds ordinary updates to one build.
 #[test]
 fn a_covered_window_with_a11y_builds_once_for_programmatic_focus_request() {
     #[derive(Default)]
@@ -336,12 +376,12 @@ fn a_covered_window_with_a11y_builds_once_for_programmatic_focus_request() {
         rt.update(|s, _| s.messages += 1);
         covered_step(&mut rt);
     }
-    assert_eq!(BUILDS.get() - builds, 0, "ordinary updates do zero builds");
+    assert_eq!(BUILDS.get() - builds, 1, "ordinary updates inside one interval build once");
 
     // PR #995 scenario: permission arrives in poll and asks for focus while covered.
     rt.state.ask_permission = true;
     covered_step(&mut rt);
-    assert_eq!(BUILDS.get() - builds, 1, "programmatic Tx::focus builds once");
+    assert_eq!(BUILDS.get() - builds, 2, "programmatic Tx::focus builds at once");
     let update = rt.a11y_update().expect("a11y tree updates with focused permission card");
     let focused = update.nodes.iter().find(|(id, _)| *id == update.focus).map(|(_, n)| (n.author_id(), n.label()));
     assert_eq!(focused, Some((Some("perm-card"), Some("Permission required"))), "focus reaches the permission card while covered");
@@ -351,12 +391,12 @@ fn a_covered_window_with_a11y_builds_once_for_programmatic_focus_request() {
         rt.update(|s, _| s.messages += 1);
         covered_step(&mut rt);
     }
-    assert_eq!(BUILDS.get() - builds, 1, "ordinary updates after focus request do zero builds");
+    assert_eq!(BUILDS.get() - builds, 2, "ordinary updates after the focus request wait for the interval");
 
     // Tx::focus_when_shown also builds once and focuses the new card.
     rt.state.ask_when_shown = true;
     covered_step(&mut rt);
-    assert_eq!(BUILDS.get() - builds, 2, "programmatic Tx::focus_when_shown builds once");
+    assert_eq!(BUILDS.get() - builds, 3, "programmatic Tx::focus_when_shown builds at once");
     let update2 = rt.a11y_update().expect("a11y tree updates with second focused card");
     let focused2 = update2.nodes.iter().find(|(id, _)| *id == update2.focus).map(|(_, n)| (n.author_id(), n.label()));
     assert_eq!(focused2, Some((Some("second-card"), Some("Second permission"))));

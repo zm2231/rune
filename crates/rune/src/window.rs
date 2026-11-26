@@ -761,8 +761,8 @@ impl ApplicationHandler<WakeEvent> for Windows {
 /// covered (an occlusion event, or a drawable refused as occluded), minimised, or waiting out
 /// a missed frame. `poll`, due timers and queued input run now, as for a hidden window
 /// (`Runtime::hidden_wake`); the view and layout wait, dirty, for the frame that uncovers it,
-/// even with an assistive client attached, except on an assistive action, stale first activation,
-/// or a programmatic focus request (`Runtime::covered_wake`).
+/// unless an assistive client reads the window, which gets what changed built without drawing,
+/// at most once per `COVERED_BUILD_INTERVAL` (`Runtime::covered_wake`).
 /// Uncovering settles first, so that frame builds once and paints motion where it would have
 /// ended, as Core Animation's time-based motion has by the time a covered window shows again.
 #[cfg(test)]

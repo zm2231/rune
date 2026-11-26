@@ -18,6 +18,9 @@ mod actions_tests;
 mod aria_tests;
 #[cfg(test)]
 mod auto_complete_tests;
+pub(crate) mod covered;
+#[cfg(test)]
+mod covered_tests;
 pub(crate) mod dump;
 #[cfg(test)]
 mod dump_tests;

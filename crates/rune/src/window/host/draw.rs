@@ -588,10 +588,16 @@ impl FrameHost for WindowFrame<'_> {
         #[cfg(target_os = "macos")]
         if !self.state.materials_checked {
             self.state.materials_checked = true;
+            let rt = self.host.app.rt();
             if let Some(l) = self.host.win.as_mut()
-                && l.surface.as_ref().is_some_and(|surface| l.native.materials.update(self.host.app.rt().transparent, !self.host.app.rt().paint.materials().is_empty(), &l.window, surface))
+                && let Some(surface) = l.surface.as_ref()
             {
-                return PostStepCheck::Reacquire(ReacquireReason::NativeMaterials);
+                let hosting = !rt.paint.native_views().is_empty();
+                if hosting { l.native.hosts.attach(&l.window); }
+                let materials = l.native.materials.update(rt.transparent, !rt.paint.materials().is_empty(), &l.window, surface);
+                if l.native.materials.set_hosts(surface, hosting) | materials {
+                    return PostStepCheck::Reacquire(ReacquireReason::NativeMaterials);
+                }
             }
         }
         #[cfg(all(target_os = "windows", feature = "windows-system-material"))]
@@ -641,7 +647,7 @@ impl FrameHost for WindowFrame<'_> {
 
     fn prepare_reacquire(&mut self, reason: ReacquireReason, info: &mut StepInfo) -> bool {
         match reason {
-            #[cfg(any(test, target_os = "macos", all(target_os = "windows", feature = "windows-system-material")))]
+            #[cfg(any(test, target_os = "macos", target_os = "ios", all(target_os = "windows", feature = "windows-system-material")))]
             ReacquireReason::NativeMaterials => {
                 // Rebuild with the updated native-materials state before acquiring the replacement drawable.
                 #[cfg(target_os = "macos")]
@@ -654,7 +660,7 @@ impl FrameHost for WindowFrame<'_> {
                     let native = self.host.win.as_ref().is_some_and(|l| l.native.materials.native());
                     self.host.app.rt_mut().paint.set_windows_acrylic_materials(native);
                 }
-                #[cfg(not(any(target_os = "macos", all(target_os = "windows", feature = "windows-system-material"))))]
+                #[cfg(not(any(target_os = "macos", target_os = "ios", all(target_os = "windows", feature = "windows-system-material"))))]
                 self.host.app.rt_mut().paint.set_native_materials(true);
                 let more = self.host.app.frame(0.0);
                 info.runtime_animating |= more;

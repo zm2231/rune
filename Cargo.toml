@@ -68,6 +68,7 @@ members = [
     "examples/motion-bento/chaos",
     "examples/site-scenes",
     "examples/luau-panel",
+    "examples/native-view",
 ]
 # Default cargo check/test targets: the core framework, libraries and theme.
 # Excludes examples/*, www/app, rune-luau (C++ Luau build via cc/mlua), rune-notify/rune-mac
@@ -174,7 +175,9 @@ accesskit_atspi_common = { path = "vendor/accesskit_atspi_common" }
 # children, focused element and hit test leave the adapter alone off the main thread, which AppKit
 # calls them on while the process queries itself, so they answer from the superclass instead of
 # racing or panicking on the main thread's borrow; and a field past Rune's 64 KiB text-run limit keeps
-# its line, string and selection ranges, answered from its value when a reader asks. Re-made by
+# its line, string and selection ranges, answered from its value when a reader asks; and
+# `Adapter::set_hosted_views` puts platform views (`El::native_view`) in the tree as the last child of
+# their element's node, answering hit tests inside it. Re-made by
 # `scripts/vendor-accesskit-macos.sh <version>` when AccessKit is bumped; apps that build Rune patch it too.
 accesskit_macos = { path = "vendor/accesskit_macos" }
 

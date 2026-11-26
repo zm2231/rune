@@ -11,6 +11,7 @@ use super::{Actions, Activation};
 pub(super) struct Adapter {
     adapter: accesskit_macos::SubclassingAdapter,
     _display_options: DisplayOptions,
+    hosted: Vec<(accesskit::NodeId, crate::NativeViewId)>,
 }
 
 impl Adapter {
@@ -32,11 +33,22 @@ impl Adapter {
         // SAFETY: `view` is a valid NSView that outlives the adapter (the window owns it, and
         // hosts drop the adapter before the window).
         let adapter = unsafe { accesskit_macos::SubclassingAdapter::new(view, activation, actions) };
-        Some(Adapter { adapter, _display_options })
+        Some(Adapter { adapter, _display_options, hosted: Vec::new() })
     }
 
     pub(super) fn update(&mut self, update: accesskit::TreeUpdate) {
         if let Some(events) = self.adapter.update_if_active(|| update) { events.raise(); }
+    }
+
+    pub(super) fn host(&mut self, draws: &[crate::NativeViewDraw]) {
+        if draws.len() == self.hosted.len() && draws.iter().zip(&self.hosted).all(|(d, h)| (super::tree::element_id(d.id), d.view) == *h) { return; }
+        self.hosted = draws.iter().map(|d| (super::tree::element_id(d.id), d.view)).collect();
+        let slots: Vec<_> = self.hosted.iter().filter_map(|&(id, view)| Some((id, crate::native_view::slot(view)?))).collect();
+        let views: Vec<_> = slots.iter()
+            .filter_map(|(id, slot)| Some((*id, std::ptr::from_ref(slot.view.object()?).cast_mut().cast::<std::ffi::c_void>())))
+            .collect();
+        // SAFETY: each pointer is a live container view the slots above hold.
+        unsafe { self.adapter.set_hosted_views(&views) };
     }
 
     pub(super) fn focus(&mut self, focused: bool) {

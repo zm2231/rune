@@ -307,6 +307,13 @@ impl Accessibility {
         // SAFETY: `+[NSMutableArray array]` takes nothing and returns a new array, never nil.
         let list: Retained<AnyObject> = unsafe { msg_send![class!(NSMutableArray), array] };
         for element in self.mirror.elements() {
+            if let Some(slot) = element.hosted.and_then(crate::native_view::slot) {
+                if let Some(view) = slot.view.object() {
+                    // SAFETY: `addObject:` takes an object that is not nil, which the hosted view is.
+                    let _: () = unsafe { msg_send![&*list, addObject: view] };
+                }
+                continue;
+            }
             let object = self.made.remove(&element.id).unwrap_or_else(|| RuneElement::new(mtm, host, element.id));
             object.describe(element, zoom);
             // SAFETY: `addObject:` takes an object that is not nil, which the element is.

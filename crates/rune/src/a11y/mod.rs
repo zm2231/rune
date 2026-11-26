@@ -326,6 +326,8 @@ impl Adapter {
             #[cfg(all(feature = "accessibility", target_os = "windows"))]
             self.inner.notify(rt.a11y_changes());
         }
+        #[cfg(all(feature = "accessibility", target_os = "macos"))]
+        self.inner.host(rt.paint.native_views());
     }
 }
 

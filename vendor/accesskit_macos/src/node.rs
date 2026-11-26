@@ -481,12 +481,12 @@ declare_class!(
         }
 
         #[method_id(accessibilityChildren)]
-        fn children(&self) -> Option<Id<NSArray<PlatformNode>>> {
+        fn children(&self) -> Option<Id<NSArray<NSObject>>> {
             self.children_internal()
         }
 
         #[method_id(accessibilityChildrenInNavigationOrder)]
-        fn children_in_navigation_order(&self) -> Option<Id<NSArray<PlatformNode>>> {
+        fn children_in_navigation_order(&self) -> Option<Id<NSArray<NSObject>>> {
             // For now, we assume the children are in navigation order.
             self.children_internal()
         }
@@ -1465,13 +1465,17 @@ impl PlatformNode {
         self.resolve_with_context(|node, _, _| f(node))
     }
 
-    fn children_internal(&self) -> Option<Id<NSArray<PlatformNode>>> {
+    fn children_internal(&self) -> Option<Id<NSArray<NSObject>>> {
         self.resolve_with_context(|node, _, context| {
-            let platform_nodes = node
+            let mut children = node
                 .filtered_children(filter)
-                .map(|child| context.get_or_create_platform_node(child.id()))
-                .collect::<Vec<Id<PlatformNode>>>();
-            NSArray::from_vec(platform_nodes)
+                .map(|child| Id::into_super(Id::into_super(context.get_or_create_platform_node(child.id()))))
+                .collect::<Vec<Id<NSObject>>>();
+            if let Some(hosted) = context.hosted_view(node.locate().0) {
+                unsafe { hosted.setAccessibilityParent(Some(self)) };
+                children.push(Id::into_super(Id::into_super(hosted)));
+            }
+            NSArray::from_vec(children)
         })
     }
 }

@@ -135,6 +135,7 @@ impl RuntimeCore {
         // A selection's edge scroll stepped: it follows the pointer over this layout, and shows.
         let edge = self.laid_edge_scroll(app);
         if edge.repaint { animating |= self.build(); }
+        self.collect_native_views();
         animating |= edge.queued;
         self.report_at_bottom();
         animating |= self.report_visible_rows();

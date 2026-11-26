@@ -491,6 +491,7 @@ impl Host {
             shadow,
             panel,
             materials: crate::system_material::macos::Materials::new(),
+            hosts: crate::native_view::macos::Hosts::new(),
             help: Default::default(),
             full_screen,
             fn_key,

@@ -324,6 +324,16 @@ impl SubclassingAdapter {
         let mut state = self.associated.ivars().state.borrow_mut();
         state.adapter.update_view_focus_state(is_focused)
     }
+
+    /// See [`Adapter::set_hosted_views`].
+    ///
+    /// # Safety
+    ///
+    /// Each pointer must be a valid, unreleased pointer to an `NSView`.
+    pub unsafe fn set_hosted_views(&mut self, views: &[(accesskit::NodeId, *mut std::ffi::c_void)]) {
+        let mut state = self.associated.ivars().state.borrow_mut();
+        unsafe { state.adapter.set_hosted_views(views) }
+    }
 }
 
 impl Drop for SubclassingAdapter {

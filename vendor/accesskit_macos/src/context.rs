@@ -13,6 +13,8 @@ use objc2_foundation::MainThreadMarker;
 use std::fmt::Debug;
 use std::{cell::RefCell, rc::Rc};
 
+pub(crate) type HostedViews = Rc<RefCell<HashMap<accesskit::NodeId, Id<NSView>>>>;
+
 pub(crate) trait ActionHandlerNoMut {
     fn do_action(&self, request: ActionRequest);
 }
@@ -37,6 +39,7 @@ pub(crate) struct Context {
     pub(crate) action_handler: Rc<dyn ActionHandlerNoMut>,
     platform_nodes: RefCell<HashMap<FullNodeId, Id<PlatformNode>>>,
     pub(crate) mtm: MainThreadMarker,
+    pub(crate) hosted: HostedViews,
 }
 
 impl Debug for Context {
@@ -57,6 +60,7 @@ impl Context {
         tree: Tree,
         action_handler: Rc<dyn ActionHandlerNoMut>,
         mtm: MainThreadMarker,
+        hosted: HostedViews,
     ) -> Rc<Self> {
         Rc::new(Self {
             view,
@@ -64,6 +68,7 @@ impl Context {
             action_handler,
             platform_nodes: RefCell::new(HashMap::new()),
             mtm,
+            hosted,
         })
     }
 
@@ -81,6 +86,10 @@ impl Context {
     pub(crate) fn remove_platform_node(&self, id: FullNodeId) -> Option<Id<PlatformNode>> {
         let mut platform_nodes = self.platform_nodes.borrow_mut();
         platform_nodes.remove(&id)
+    }
+
+    pub(crate) fn hosted_view(&self, id: accesskit::NodeId) -> Option<Id<NSView>> {
+        self.hosted.borrow().get(&id).cloned()
     }
 
     pub(crate) fn do_action(&self, request: ActionRequest) {

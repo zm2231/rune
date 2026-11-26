@@ -56,7 +56,7 @@ impl RuntimeCore {
             image: n.vis.pixels.is_some() || n.vis.surface.is_some(),
         };
         // A control the keyboard reaches is always in the tree, whatever its role says.
-        roles::map(n.role, &cx).or_else(|| (input.is_some() || self.can_focus(i)).then_some(Role::Group))
+        roles::map(n.role, &cx).or_else(|| (input.is_some() || self.can_focus(i) || self.native_view_of(i).is_some()).then_some(Role::Group))
     }
 
     /// A hash of everything [`Self::a11y_node`] and its text's lines and links read of node
@@ -75,6 +75,7 @@ impl RuntimeCore {
         self.node_disabled(i).hash(&mut h);
         self.has_image_menu(i).hash(&mut h);
         n.a11y.live.hash(&mut h);
+        self.native_view_of(i).hash(&mut h);
         if let Some(m) = n.a11y.more.as_deref() {
             (&m.description, &m.value, &m.set, &m.shortcut, m.invalid, m.read_only, m.sorted, m.busy,
                 m.row_count, m.column_count, m.row_index, m.column_index).hash(&mut h);
@@ -227,6 +228,7 @@ impl RuntimeCore {
         let modal = handlers.is_some_and(|h| h.modal.is_some());
         let focusable = self.can_focus(i);
         let mut node = AkNode::new(role);
+        if let Some(view) = self.native_view_of(i) { node.set_class_name(crate::native_view::a11y_class(view)); }
         // Disabled is what the app says (or an inert subtree); an element that only contains an
         // open modal isn't. Actions go only where input may.
         let enabled = !self.node_disabled(i) && !n.inert;

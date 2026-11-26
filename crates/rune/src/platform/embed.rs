@@ -96,6 +96,8 @@ struct LayerHostCore {
     /// The host shows share sheets itself.
     shares: bool,
     surface_health: EmbedSurfaceHealth,
+    #[cfg(target_os = "ios")]
+    hosts: crate::native_view::ios::Hosts,
 }
 
 impl LayerHostCore {
@@ -139,6 +141,9 @@ impl LayerHostCore {
             file_dialogs: false,
             shares: false,
             surface_health: EmbedSurfaceHealth::default(),
+            // SAFETY: `layer` is the live CAMetalLayer the surface above was made on.
+            #[cfg(target_os = "ios")]
+            hosts: unsafe { crate::native_view::ios::Hosts::new(layer) },
         };
         Ok((core, size, scale, now))
     }
@@ -482,6 +487,8 @@ impl<S: 'static> EmbedSurface for LayerHost<S> {
     fn missed(&mut self, missed: Missed, now: Instant) -> bool { self.core.missed(missed, now) }
     fn retry_after(&self, now: Instant) -> Option<f64> { self.core.retry_after(now) }
     fn presented(&mut self, ticking: bool) { self.core.presented(ticking) }
+    #[cfg(target_os = "ios")]
+    fn sync_hosts(&mut self) -> bool { self.core.hosts.sync_transactions(!self.rt.core().paint.native_views().is_empty()) }
     fn serves(&self) -> Serves { Serves { clipboard: self.core.clipboard.is_some(), popup_menus: self.core.popup_menus, file_dialogs: self.core.file_dialogs, shares: self.core.shares } }
     fn receive_clipboard(&mut self) {
         if let Some(clipboard) = &self.core.clipboard { clipboard.receive_core(self.rt.core_mut()); }
@@ -517,6 +524,15 @@ impl<S: 'static> EmbedSurface for LayerHost<S> {
     }
 
     fn submit_and_present(&mut self, prepared: PreparedEmbedFrame) -> Instant {
+        #[cfg(target_os = "ios")]
+        {
+            let rt = self.rt.core();
+            let mut hosts = std::mem::replace(&mut self.core.hosts, crate::native_view::ios::Hosts::detached());
+            let at = hosts.present(rt.paint.native_views(), rt.window_scale(), || self.core.submit_and_present(prepared));
+            self.core.hosts = hosts;
+            at
+        }
+        #[cfg(not(target_os = "ios"))]
         self.core.submit_and_present(prepared)
     }
 

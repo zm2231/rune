@@ -104,6 +104,10 @@ pub(crate) trait EmbedSurface {
     fn retry_after(&self, _now: Instant) -> Option<f64> { None }
     /// A frame presented; `ticking` says whether another follows on the next tick.
     fn presented(&mut self, _ticking: bool) {}
+    /// After the step: brings presenting in Core Animation transactions in line with whether
+    /// the frame hosts native views. True when it just turned on, so the drawable acquired
+    /// before the step is dropped and another taken: the layer reads the setting on acquire.
+    fn sync_hosts(&mut self) -> bool { false }
     /// What the host serves itself instead of refusing.
     fn serves(&self) -> Serves { Serves::default() }
     /// Takes what the system clipboard answered since the last frame, before the runtime steps.
@@ -180,6 +184,8 @@ impl<E: EmbedSurface> FrameHost for EmbedFrameHost<'_, E> {
     fn post_step_check(&mut self, _info: &mut StepInfo) -> PostStepCheck {
         if self.needs_reblend() {
             PostStepCheck::Reacquire(ReacquireReason::Reblend)
+        } else if self.surface.sync_hosts() {
+            PostStepCheck::Reacquire(ReacquireReason::NativeMaterials)
         } else {
             PostStepCheck::Keep
         }
@@ -189,7 +195,7 @@ impl<E: EmbedSurface> FrameHost for EmbedFrameHost<'_, E> {
     fn prepare_reacquire(&mut self, reason: ReacquireReason, _info: &mut StepInfo) -> bool {
         match reason {
             ReacquireReason::Reblend => self.surface.reblend(),
-            #[cfg(any(test, target_os = "macos"))]
+            #[cfg(any(test, target_os = "macos", target_os = "ios"))]
             ReacquireReason::NativeMaterials => true,
             #[cfg(not(target_arch = "wasm32"))]
             ReacquireReason::ContentResize => true,

@@ -364,7 +364,7 @@ impl FrameHost for OverlayFrame<'_> {
             return false;
         }
         match reason {
-            #[cfg(any(test, target_os = "macos", all(target_os = "windows", feature = "windows-system-material")))]
+            #[cfg(any(test, target_os = "macos", target_os = "ios", all(target_os = "windows", feature = "windows-system-material")))]
             ReacquireReason::NativeMaterials => {
                 // Rebuild with the updated native-materials state into a replacement drawable.
                 #[cfg(target_os = "macos")]
@@ -377,7 +377,7 @@ impl FrameHost for OverlayFrame<'_> {
                     let native = self.core.surface.live().is_some_and(|l| l.materials.native());
                     self.app.rt_mut().paint.set_windows_acrylic_materials(native);
                 }
-                #[cfg(not(any(target_os = "macos", all(target_os = "windows", feature = "windows-system-material"))))]
+                #[cfg(not(any(target_os = "macos", target_os = "ios", all(target_os = "windows", feature = "windows-system-material"))))]
                 self.app.rt_mut().paint.set_native_materials(true);
                 let more = self.app.frame(0.0);
                 info.runtime_animating |= more;

@@ -5,7 +5,8 @@
 # VoiceOver doesn't know, so VoiceOver's rotor and VO-Command-H found no heading; and accessibility
 # children, focus and hit test reading the adapter's state only on the main thread, since AppKit
 # calls them from a background thread while the process queries itself and the main thread may hold
-# that borrow, which raced or aborted). Run it when
+# that borrow, which raced or aborted; and platform views an app hosts in an element, set with
+# `set_hosted_views`, as that element's last accessibility child and its hit test). Run it when
 # AccessKit is bumped, then build: a patch that no longer applies fails here, and the change goes
 # back in by hand. If upstream AccessKit takes the change, delete vendor/accesskit_macos and its
 # `[patch.crates-io]` entry instead.

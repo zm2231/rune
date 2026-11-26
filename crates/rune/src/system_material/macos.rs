@@ -109,6 +109,15 @@ impl Materials {
         if let Some(on) = self.update_flag(|f| f.live(on)) { crate::platform::macos::present_with_transaction(surface, on); }
     }
 
+    /// `El::native_view` elements are showing or not: they move with the drawable, so the layer
+    /// presents with transactions while any shows. True when that just turned transactions on,
+    /// so the caller drops this frame's drawable and acquires another, as `update` says.
+    pub(crate) fn set_hosts(&mut self, surface: &wgpu::Surface<'_>, on: bool) -> bool {
+        let Some(written) = self.update_flag(|f| f.hosts(on)) else { return false };
+        crate::platform::macos::present_with_transaction(surface, written);
+        written
+    }
+
     /// After a build: switches native views on when a transparent window's frame found material
     /// elements, and off when it found none. True when it switched them on, so the caller
     /// drops this frame's drawable, builds again natively and acquires another: wgpu reads

@@ -1,0 +1,1 @@
+- **A gliding scroll allocates nothing per steady frame again.** Paint's inherited-state side table now keeps both of its swapped buffers at the same capacity, as the other paint buffers do, so a row crossing a scroll edge no longer grows the second buffer on a later frame.

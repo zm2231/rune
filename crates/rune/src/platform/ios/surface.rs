@@ -25,6 +25,12 @@ use crate::runtime::{TouchPhase, Waker};
 use crate::time::Instant;
 use crate::{GesturePhase, Ime, KeyEvent, MagnifyEvent, PhysicalInput, RotateEvent};
 
+pub(crate) struct Reading {
+    pub(crate) tree: Option<TreeUpdate>,
+    pub(crate) masks: Option<Vec<(u64, String)>>,
+    pub(crate) zoom: f32,
+}
+
 /// What the focused field tells the keyboard after a frame.
 pub(crate) struct TextState {
     /// A text field, or a caret an app draws itself, has the focus.
@@ -99,9 +105,8 @@ pub(crate) trait Surface {
     fn accessibility_wanted(&mut self);
     /// What a client did to an element, for the next frame.
     fn accessibility_act(&mut self, request: ActionRequest);
-    /// The accessibility tree's changes since the last frame, while a client listens, and the
-    /// view's zoom: the tree is in the app's points, which the zoom scales to the view's.
-    fn accessibility(&mut self) -> Option<(TreeUpdate, f32)>;
+    /// The accessibility tree's changes since the last frame, while a client listens.
+    fn accessibility(&mut self) -> Option<Reading>;
 
     // The app's lifecycle.
     /// The view joined or left a window, or its scene or app changed phase: the app's hooks
@@ -118,6 +123,8 @@ pub(crate) trait Surface {
     fn set_reduced_motion(&mut self, reduced: bool);
     /// The text size setting, as a scale of its default.
     fn set_text_scale(&mut self, scale: f32);
+    fn set_bold_text(&mut self, on: bool);
+    fn set_increased_contrast(&mut self, on: bool);
     /// What the screen keeps at the view's top, right, bottom and left edges, in points.
     fn set_safe_area(&mut self, insets: [f32; 4]);
     fn set_keyboard(&mut self, visible: Option<(f32, f32)>);
@@ -352,9 +359,12 @@ impl<S: 'static> Surface for Hosted<S> {
 
     fn accessibility_act(&mut self, request: ActionRequest) { self.accessibility.act(request); }
 
-    fn accessibility(&mut self) -> Option<(TreeUpdate, f32)> {
+    fn accessibility(&mut self) -> Option<Reading> {
         let zoom = self.host.runtime().zoom();
-        self.accessibility.update(self.host.runtime_mut().core_mut()).map(|update| (update, zoom))
+        let tree = self.accessibility.update(self.host.runtime_mut().core_mut());
+        let core = self.host.runtime().core();
+        let masks = (tree.is_some() || (core.has_secure_focus() && core.a11y_listening())).then(|| core.a11y_masks());
+        (tree.is_some() || masks.is_some()).then_some(Reading { tree, masks, zoom })
     }
 
     // The app's lifecycle.
@@ -403,6 +413,10 @@ impl<S: 'static> Surface for Hosted<S> {
     fn set_reduced_motion(&mut self, reduced: bool) { self.host.runtime_mut().set_system_reduced_motion(reduced); }
 
     fn set_text_scale(&mut self, scale: f32) { self.host.runtime_mut().set_system_text_scale(scale); }
+
+    fn set_bold_text(&mut self, on: bool) { self.host.runtime_mut().set_system_bold_text(on); }
+
+    fn set_increased_contrast(&mut self, on: bool) { self.host.runtime_mut().set_system_increased_contrast(on); }
 
     fn set_safe_area(&mut self, insets: [f32; 4]) {
         let rt = self.host.runtime_mut();

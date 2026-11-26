@@ -311,6 +311,21 @@ impl RuntimeCore {
         Some(TextSelection { anchor: pos_in(ai, a_byte)?, focus: pos_in(fi, f_byte)? })
     }
 
+    #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+    pub(crate) fn a11y_listening(&self) -> bool { self.host.a11y().is_some() }
+
+    #[cfg_attr(not(any(test, target_os = "ios")), allow(dead_code))]
+    pub(crate) fn a11y_masks(&self) -> Vec<(u64, String)> {
+        let nodes = self.tree.nodes.iter().enumerate();
+        let secure = nodes.filter_map(|(i, n)| n.input.as_deref().filter(|input| input.edit.is_secure()).map(|input| (i, n, &input.edit)));
+        secure.filter(|(i, _, edit)| !edit.text.is_empty() && self.a11y_in_tree(*i))
+            .map(|(_, n, edit)| {
+                let mask = if edit.is_single_line() { "•".repeat(edit.text.chars().count()) } else { crate::edit::MULTILINE_SECURE_MASK.to_owned() };
+                (element_id(n.id).0, mask)
+            })
+            .collect()
+    }
+
     /// The value and state a text field adds to its node.
     pub(super) fn a11y_input(&self, i: usize, input: &crate::el::InputSpec, node: &mut AkNode) {
         if !input.placeholder.is_empty() { node.set_placeholder(input.placeholder.as_str()); }

@@ -1,0 +1,1 @@
+- **`Kit::increased_contrast`.** Returns the kit for a system that asks for more contrast: muted and faint text and icons move halfway to the base ink, and borders a third of the way, more opaque. Pick it when `Cx::system_increased_contrast()` is true (macOS's and iOS's Increase Contrast). The kit gallery does.

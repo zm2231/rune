@@ -105,8 +105,9 @@ impl Select {
         self.details = d.iter().map(|x| x.as_ref().map(|s| s.as_ref().to_owned())).collect();
         self
     }
-    /// The field trigger's width in points (default 280). Ignored when [`Self::fill`] is set
-    /// or when the appearance is [`SelectAppearance::Inline`].
+    /// The field trigger's width in points (default 280), the widest it grows: in a narrower
+    /// parent it takes the parent's width. Ignored when [`Self::fill`] is set or when the
+    /// appearance is [`SelectAppearance::Inline`].
     pub fn width(mut self, w: f32) -> Self {
         self.width = w;
         self
@@ -414,7 +415,7 @@ impl Select {
                 k.overlay_state(t, self.state, hover, !disabled)
             }
             SelectAppearance::Field => {
-                let t = if self.fill { trigger.w_full().shrink() } else { trigger.w(self.width) };
+                let t = if self.fill { trigger.w_full().shrink() } else { trigger.w_full().max_w(self.width).shrink() };
                 let mut t = t
                     .h(28.0)
                     .pr(6.0)

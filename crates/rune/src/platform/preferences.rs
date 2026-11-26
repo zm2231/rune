@@ -477,8 +477,29 @@ pub(crate) fn increased_contrast() -> bool {
     }
     #[cfg(target_os = "windows")]
     { contrast().is_some() }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "ios")]
+    {
+        // SAFETY: the function has this C signature in UIKit's headers.
+        #[link(name = "UIKit", kind = "framework")]
+        unsafe extern "C" {
+            fn UIAccessibilityDarkerSystemColorsEnabled() -> bool;
+        }
+        // SAFETY: a C function that reads the Increase Contrast setting.
+        unsafe { UIAccessibilityDarkerSystemColorsEnabled() }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "ios")))]
     { false }
+}
+
+#[cfg(target_os = "ios")]
+pub(crate) fn bold_text() -> bool {
+    // SAFETY: the function has this C signature in UIKit's headers.
+    #[link(name = "UIKit", kind = "framework")]
+    unsafe extern "C" {
+        fn UIAccessibilityIsBoldTextEnabled() -> bool;
+    }
+    // SAFETY: a C function that reads the Bold Text setting.
+    unsafe { UIAccessibilityIsBoldTextEnabled() }
 }
 
 /// The colours a system contrast theme asks every app to paint with (Windows' Contrast themes,

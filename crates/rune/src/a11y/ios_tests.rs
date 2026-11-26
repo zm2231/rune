@@ -149,7 +149,7 @@ fn a_double_tap_clicks_or_else_focuses_and_asks_nothing_of_what_takes_neither() 
         (3, field),
         (4, label("Text", [0.0, 0.0, 10.0, 10.0])),
     ]));
-    let action = |id| mirror.request(id, Gesture::Activate).map(|r| (r.action, r.target_node));
+    let mut action = |id| mirror.request(id, Gesture::Activate).map(|r| (r.action, r.target_node));
     assert_eq!(action(2), Some((Action::Click, NodeId(2))));
     assert_eq!(action(3), Some((Action::Focus, NodeId(3))));
     assert_eq!(action(4), None);
@@ -161,6 +161,10 @@ fn a_scroll_goes_to_the_nearest_scroll_view_around_the_element() {
     let mut list = node(Role::ScrollView, [0.0, 0.0, 400.0, 600.0], &[3]);
     list.add_action(Action::ScrollDown);
     list.add_action(Action::ScrollRight);
+    list.set_scroll_y(0.0);
+    list.set_scroll_y_max(400.0);
+    list.set_scroll_x(0.0);
+    list.set_scroll_x_max(200.0);
     let mut mirror = Mirror::default();
     mirror.apply(whole(vec![
         (1, node(Role::Window, [0.0, 0.0, 400.0, 800.0], &[2, 4])),
@@ -168,7 +172,7 @@ fn a_scroll_goes_to_the_nearest_scroll_view_around_the_element() {
         (3, label("Row", [0.0, 0.0, 10.0, 10.0])),
         (4, label("Outside", [0.0, 0.0, 10.0, 10.0])),
     ]));
-    let scroll = |id, toward| mirror.request(id, Gesture::Scroll(toward)).map(|r| (r.action, r.target_node));
+    let mut scroll = |id, toward| mirror.request(id, Gesture::Scroll(toward)).map(|r| (r.action, r.target_node));
     assert_eq!(scroll(3, Toward::Down), Some((Action::ScrollDown, NodeId(2))));
     assert_eq!(scroll(3, Toward::Up), None, "the list is at its top");
     assert_eq!(scroll(3, Toward::Right), Some((Action::ScrollRight, NodeId(2))));
@@ -186,7 +190,7 @@ fn the_readers_cursor_landing_on_an_element_asks_for_it_to_be_scrolled_into_view
         (2, row),
         (3, label("Fixed", [0.0, 20.0, 10.0, 10.0])),
     ]));
-    let landed = |id| mirror.request(id, Gesture::Focused).map(|r| (r.action, r.target_node));
+    let mut landed = |id| mirror.request(id, Gesture::Focused).map(|r| (r.action, r.target_node));
     assert_eq!(landed(2), Some((Action::ScrollIntoView, NodeId(2))));
     assert_eq!(landed(3), None, "an element that takes no scroll is asked nothing");
 }
@@ -215,4 +219,140 @@ fn nodes_the_tree_no_longer_reaches_leave_the_mirror() {
     assert!(changes.layout);
     assert_eq!(labels(&mirror), ["Messages"]);
     assert_eq!(mirror.request(3, Gesture::Activate), None);
+}
+
+#[test]
+fn the_reader_follows_the_apps_focus_to_an_element_but_not_on_the_first_tree_or_to_a_container() {
+    let mut mirror = Mirror::default();
+    let focused = |focus| TreeUpdate { focus: NodeId(focus), ..part(vec![]) };
+    assert_eq!(mirror.apply(TreeUpdate { focus: NodeId(3), ..whole(screen()) }).focus, None);
+    assert_eq!(mirror.apply(focused(5)).focus, Some(5));
+    assert_eq!(mirror.apply(focused(5)).focus, None, "it stayed");
+    assert_eq!(mirror.apply(focused(1)).focus, None, "the window is no element");
+    assert_eq!(mirror.apply(focused(3)).focus, Some(3));
+}
+
+fn scrolled(offset: f64, max: f64) -> Vec<(u64, Node)> {
+    let mut list = node(Role::ScrollView, [0.0, 0.0, 400.0, 500.0], &[3]);
+    for action in [Action::ScrollUp, Action::ScrollDown] { list.add_action(action); }
+    list.set_scroll_y(offset);
+    list.set_scroll_y_max(max);
+    vec![(1, node(Role::Window, [0.0, 0.0, 400.0, 800.0], &[2])), (2, list), (3, label("Row", [0.0, 0.0, 10.0, 10.0]))]
+}
+
+#[test]
+fn a_scroll_at_its_end_is_refused_and_one_that_moves_says_which_page_it_landed_on() {
+    let mut mirror = Mirror::default();
+    mirror.apply(whole(scrolled(0.0, 1000.0)));
+    assert_eq!(mirror.request(3, Gesture::Scroll(Toward::Up)), None, "already at the top");
+    assert_eq!(mirror.apply(part(vec![])).page, None, "a refused scroll says nothing");
+    assert!(mirror.request(3, Gesture::Scroll(Toward::Down)).is_some());
+    let [(_, _), (_, list), _] = &scrolled(450.0, 1000.0)[..] else { panic!() };
+    assert_eq!(mirror.apply(part(vec![(2, list.clone())])).page.as_deref(), Some("Page 2 of 4"));
+    assert_eq!(mirror.apply(part(vec![])).page, None, "said once");
+    let [_, (_, list), _] = &scrolled(1000.0, 1000.0)[..] else { panic!() };
+    mirror.apply(part(vec![(2, list.clone())]));
+    assert_eq!(mirror.request(3, Gesture::Scroll(Toward::Down)), None, "already at the bottom");
+    assert!(mirror.request(3, Gesture::Scroll(Toward::Up)).is_some());
+    assert_eq!(mirror.apply(part(vec![])).page.as_deref(), Some("Page 4 of 4"));
+}
+
+#[test]
+fn a_context_menu_is_a_custom_action_and_a_disclosure_says_whether_it_is_open() {
+    let mut row = pressable(node(Role::Button, [0.0, 0.0, 200.0, 40.0], &[]));
+    row.set_label("Details");
+    row.set_expanded(false);
+    row.add_action(Action::ShowContextMenu);
+    let mut mirror = Mirror::default();
+    mirror.apply(whole(vec![(1, node(Role::Window, [0.0, 0.0, 400.0, 800.0], &[2])), (2, row)]));
+    assert_eq!((mirror.elements()[0].expanded, mirror.elements()[0].menu), (Some(false), true));
+    assert_eq!(mirror.request(2, Gesture::Menu).map(|r| r.action), Some(Action::ShowContextMenu));
+    mirror.apply(whole(screen()));
+    assert_eq!((mirror.elements()[1].expanded, mirror.elements()[1].menu), (None, false));
+    assert_eq!(mirror.request(3, Gesture::Menu), None);
+}
+
+#[test]
+fn an_empty_field_named_by_its_placeholder_says_it_once() {
+    let mut field = node(Role::TextInput, [0.0, 0.0, 200.0, 40.0], &[]);
+    field.set_label("Search");
+    field.set_placeholder("Search");
+    let mut mirror = Mirror::default();
+    mirror.apply(whole(vec![(1, node(Role::Window, [0.0, 0.0, 400.0, 800.0], &[2])), (2, field)]));
+    assert_eq!((mirror.elements()[0].label.as_str(), mirror.elements()[0].value.as_deref()), ("Search", None));
+}
+
+fn fields() -> Vec<(u64, Node)> {
+    let field = |role, label: &str, y| {
+        let mut n = node(role, [0.0, y, 200.0, 40.0], &[]);
+        n.set_label(label);
+        n.add_action(Action::Focus);
+        n
+    };
+    vec![
+        (1, node(Role::Window, [0.0, 0.0, 400.0, 800.0], &[2, 3, 4, 5])),
+        (2, field(Role::TextInput, "Name", 0.0)),
+        (3, field(Role::MultilineTextInput, "Notes", 50.0)),
+        (4, field(Role::PasswordInput, "Password", 100.0)),
+        (5, field(Role::SearchInput, "Search", 150.0)),
+    ]
+}
+
+#[test]
+fn text_fields_say_they_are_text_fields_and_a_password_a_secure_one() {
+    let mut mirror = Mirror::default();
+    mirror.apply(whole(fields()));
+    let kinds: Vec<_> = mirror.elements().iter().map(|e| traits::names(e.traits)).collect();
+    assert_eq!(kinds, [vec!["text-field"], vec!["text-field"], vec!["secure-text-field"], vec!["search", "text-field"]]);
+}
+
+#[test]
+fn only_the_focused_text_field_is_editing_and_it_stops_when_focus_moves_away() {
+    let mut mirror = Mirror::default();
+    let editing = |mirror: &Mirror| mirror.elements().iter().filter(|e| e.editing).map(|e| e.id).collect::<Vec<_>>();
+    mirror.apply(TreeUpdate { focus: NodeId(2), ..whole(fields()) });
+    assert_eq!(editing(&mirror), [2]);
+    mirror.apply(TreeUpdate { focus: NodeId(3), ..part(vec![]) });
+    assert_eq!(editing(&mirror), [3], "focus moved to another field mid-session");
+    mirror.apply(TreeUpdate { focus: NodeId(1), ..part(vec![]) });
+    assert_eq!(editing(&mirror), Vec::<u64>::new(), "focus left every field");
+    mirror.apply(TreeUpdate { focus: NodeId(4), ..part(vec![]) });
+    assert_eq!(editing(&mirror), Vec::<u64>::new(), "a password field never forwards its text");
+}
+
+#[test]
+fn a_password_reads_as_its_dots_or_its_placeholder_and_never_its_text() {
+    use crate::{Cx, Env, Runtime, TextEdit, col, text_input};
+    struct Form { pw: TextEdit }
+    let view = |s: &Form, _: &mut Cx<Form>| {
+        col().child(text_input(&s.pw, crate::tok::type_::BODY).key("pw").single_line().label("Password")
+            .placeholder("Enter a password", crate::Color::WHITE).w(200.0).on_edit(|s: &mut Form| &mut s.pw))
+    };
+    let mut rt = Runtime::new(Form { pw: TextEdit::new("hunter2").secure() }, view, (400.0, 200.0), Env::new(true, 1.0));
+    let read = |rt: &mut Runtime<Form>| {
+        rt.frame(0.0);
+        let json = rt.ios_accessibility_json();
+        assert!(!json.to_string().contains("hunter2"), "{json}");
+        let pw = json.as_array().unwrap().iter().find(|e| e["key"] == "pw").cloned().unwrap();
+        (pw["label"].as_str().map(str::to_owned), pw["value"].as_str().map(str::to_owned))
+    };
+    assert_eq!(read(&mut rt), (Some("Password".into()), Some("•••••••".into())));
+    rt.update(|s, _| s.pw.set_revealed(true));
+    assert_eq!(read(&mut rt), (Some("Password".into()), Some("•••••••".into())), "revealed on screen, still dots to a reader");
+    rt.update(|s, _| s.pw = TextEdit::new("").secure());
+    assert_eq!(read(&mut rt), (Some("Password".into()), Some("Enter a password".into())));
+}
+
+#[test]
+fn typing_a_password_changes_its_dots_with_no_change_to_the_tree() {
+    let mut mirror = Mirror::default();
+    mirror.apply(whole(fields()));
+    let value = |mirror: &Mirror| mirror.elements().iter().find(|e| e.id == 4).and_then(|e| e.value.clone());
+    assert!(mirror.set_masks(vec![(4, "•••".into())]));
+    mirror.refresh();
+    assert_eq!(value(&mirror).as_deref(), Some("•••"));
+    assert!(!mirror.set_masks(vec![(4, "•••".into())]), "the same dots are no change");
+    assert!(mirror.set_masks(Vec::new()));
+    mirror.refresh();
+    assert_eq!(value(&mirror), None);
 }

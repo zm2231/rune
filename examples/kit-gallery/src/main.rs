@@ -16,6 +16,8 @@
 mod stories;
 
 #[cfg(test)]
+mod a11y_tests;
+#[cfg(test)]
 mod gallery_tests;
 #[cfg(test)]
 mod layer_timing;
@@ -46,6 +48,7 @@ pub struct G {
     pub nowrap_code: TextEdit,
     pub align_y_edits: [TextEdit; 4],
     pub key_preview_edit: TextEdit,
+    pub password_edit: TextEdit,
     pub field_menu_edit: TextEdit,
     pub field_menu: Option<rune::FieldMenuRequest>,
     pub field_menu_last: Option<String>,
@@ -139,6 +142,7 @@ fn init() -> G {
             TextEdit::new("Default top-aligned (Align::Start)"),
         ],
         key_preview_edit: TextEdit::new(""),
+        password_edit: TextEdit::new(""),
         field_menu_edit: TextEdit::new("Select text, right-click or press Shift+F10"),
         field_menu: None,
         field_menu_last: None,
@@ -257,11 +261,26 @@ pub fn kit(s: &G, dark: bool) -> &'static Kit {
     rune_theme_opencode::kit(dark)
 }
 
+fn contrasted(k: &'static Kit) -> &'static Kit {
+    thread_local! {
+        static MADE: std::cell::RefCell<Vec<(*const Kit, &'static Kit)>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    MADE.with_borrow_mut(|made| {
+        if let Some((_, more)) = made.iter().find(|(from, _)| std::ptr::eq(*from, k)) { return *more; }
+        let more: &'static Kit = Box::leak(Box::new(k.increased_contrast()));
+        made.push((k, more));
+        more
+    })
+}
+
 fn view(s: &G, cx: &mut Cx<G>) -> El {
     if s.reduced {
         cx.reduced_motion(true);
     }
+    cx.zoom(cx.system_text_scale());
+    cx.bold_text(cx.system_bold_text());
     let k = kit(s, cx.system_dark());
+    let k = if cx.system_increased_contrast() { contrasted(k) } else { k };
     if s.story == "rune-tooltip--help-arrow" {
         cx.help_look(
             rune_kit::TooltipStyle::from_kit(k, rune_kit::TooltipAppearance::Compact)
@@ -274,11 +293,12 @@ fn view(s: &G, cx: &mut Cx<G>) -> El {
     let body = stories::render(s, k, &mut overlays);
     stories::field_menu::mount_live_field_menu(s, k, &mut overlays);
     stories::popup_menu::mount_live_popup_menu(s, k, &mut overlays);
+    let [top, right, bottom, left] = cx.safe_area();
     let frame = if s.story == "index" {
-        col().key("frame").w_full().h_full().fill(k.c.page).child(body)
+        col().key("frame").w_full().h_full().fill(k.c.page).pt(top).pr(right).pb(bottom).pl(left).child(body)
     } else {
         // Storybook's decorator: the page colour and 24 px of padding around the story.
-        col().key("frame").fill(k.c.page).padding(24.0).child(body)
+        col().key("frame").fill(k.c.page).pt(24.0 + top).pr(24.0 + right).pb(24.0 + bottom).pl(24.0 + left).child(body)
     };
     rune_kit::root(frame, overlays)
 }

@@ -92,6 +92,7 @@ impl RuntimeCore {
             system_accent: self.host.system_accent,
             system_contrast: self.host.system_contrast,
             system_increased_contrast: self.host.system_increased_contrast,
+            system_bold_text: self.host.system_bold_text,
             system_scroll_bars: self.host.scroll_bars.state,
             system_languages: self.host.system_languages.clone(),
             languages_gen: self.host.languages_gen,
@@ -555,6 +556,7 @@ impl Measurement<'_> {
             system_accent: this.system_accent,
             system_contrast: this.system_contrast,
             system_increased_contrast: this.system_increased_contrast,
+            system_bold_text: this.system_bold_text,
             system_scroll_bars: this.system_scroll_bars,
             system_languages: this.system_languages.clone(),
             system_reduced_motion: this.system_reduced_motion,
@@ -652,6 +654,7 @@ impl Measurement<'_> {
                     path_ids: &mut *self.path_ids,
                     next_id: &mut *self.next_id,
                     foreground: self.defaults.foreground,
+                    bold_text: self.defaults.bold_text,
                     missed_virtual_memo: false,
                 };
                 let (root_id, _) = flatten_with_buf(root, None, &mut path_buf, 0, crate::tok::motion::DEFAULT, RowLayout::Free, true, &mut taffy, &mut nodes, scale, &mut memo_ctx);

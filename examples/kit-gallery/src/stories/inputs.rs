@@ -66,6 +66,17 @@ pub(super) fn text_input_with_field(_: &G, k: &Kit, _: &mut Vec<El>) -> El {
 /// Read-only `TextInput` and `TextArea` (`read_only(true)`): focusable with visible caret,
 /// keyboard navigation (arrows, Shift+arrows, Home/End, word steps), pointer selection, and Copy,
 /// while refusing edits, Cut, Paste, Undo/Redo, and IME.
+pub(super) fn text_input_password(s: &G, k: &Kit, _: &mut Vec<El>) -> El {
+    grid(16.0, 280.0).child(
+        TextInput::new(&s.password_edit)
+            .label("Password")
+            .placeholder("Enter a password")
+            .secure()
+            .on_edit(|s: &mut G| &mut s.password_edit)
+            .build(k),
+    )
+}
+
 pub(super) fn text_input_read_only(s: &G, k: &Kit, _: &mut Vec<El>) -> El {
     let status = s
         .pick

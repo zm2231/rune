@@ -25,6 +25,18 @@ pub(crate) mod traits {
     pub(crate) const TOGGLE: u16 = 1 << 8;
     pub(crate) const SEARCH: u16 = 1 << 9;
     pub(crate) const UPDATES: u16 = 1 << 10;
+    pub(crate) const TEXT_FIELD: u16 = 1 << 11;
+    pub(crate) const SECURE_TEXT_FIELD: u16 = 1 << 12;
+
+    const NAMES: [(u16, &str); 13] = [
+        (BUTTON, "button"), (LINK, "link"), (IMAGE, "image"), (SELECTED, "selected"), (STATIC_TEXT, "static-text"),
+        (DISABLED, "disabled"), (ADJUSTABLE, "adjustable"), (HEADER, "header"), (TOGGLE, "toggle"), (SEARCH, "search"),
+        (UPDATES, "updates"), (TEXT_FIELD, "text-field"), (SECURE_TEXT_FIELD, "secure-text-field"),
+    ];
+
+    pub(crate) fn names(bits: u16) -> Vec<&'static str> {
+        NAMES.iter().filter(|(bit, _)| bits & bit != 0).map(|(_, name)| *name).collect()
+    }
 }
 
 /// One thing a reader can land on.
@@ -38,6 +50,9 @@ pub(crate) struct Element {
     pub(crate) traits: u16,
     /// Left, top, width and height in the app's points, which the view's zoom scales to its own.
     pub(crate) rect: [f32; 4],
+    pub(crate) expanded: Option<bool>,
+    pub(crate) menu: bool,
+    pub(crate) editing: bool,
     /// The nearest scroll view around it, for a reader's scroll gesture.
     scrolls: Option<u64>,
 }
@@ -54,6 +69,7 @@ pub(crate) enum Gesture {
     Focused,
     /// A scroll that shows the content further in this direction.
     Scroll(Toward),
+    Menu,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,7 +82,12 @@ pub(crate) struct Changes {
     pub(crate) layout: bool,
     /// What live regions newly say, in tree order.
     pub(crate) announce: Vec<String>,
+    pub(crate) focus: Option<u64>,
+    pub(crate) page: Option<String>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Axis { X, Y }
 
 #[derive(Default)]
 pub(crate) struct Mirror {
@@ -75,19 +96,35 @@ pub(crate) struct Mirror {
     elements: Vec<Element>,
     /// What each live region said last, by node.
     said: HashMap<u64, String>,
+    focus: Option<u64>,
+    paging: Option<(u64, Axis)>,
+    masks: HashMap<u64, String>,
 }
 
 impl Mirror {
     pub(crate) fn elements(&self) -> &[Element] { &self.elements }
+
+    pub(crate) fn set_masks(&mut self, masks: Vec<(u64, String)>) -> bool {
+        let masks: HashMap<u64, String> = masks.into_iter().collect();
+        if masks == self.masks { return false }
+        self.masks = masks;
+        true
+    }
+
+    pub(crate) fn refresh(&mut self) -> Changes {
+        let Some(focus) = self.focus.filter(|_| self.root.is_some()) else { return Changes::default() };
+        self.apply(TreeUpdate { nodes: Vec::new(), tree: None, tree_id: TreeId::ROOT, focus: NodeId(focus) })
+    }
 
     /// Takes the tree's changes and flattens it again.
     pub(crate) fn apply(&mut self, update: TreeUpdate) -> Changes {
         // A whole tree after none (a reader just asked) says nothing: what a live region held
         // before anyone listened is old news.
         let first = self.root.is_none();
+        let focus = update.focus.0;
         if let Some(tree) = &update.tree { self.root = Some(tree.root); }
         for (id, node) in update.nodes { self.nodes.insert(id.0, node); }
-        let mut walk = Walk { nodes: &self.nodes, elements: Vec::new(), live: Vec::new(), seen: Vec::new() };
+        let mut walk = Walk { nodes: &self.nodes, masks: &self.masks, focus, elements: Vec::new(), live: Vec::new(), seen: Vec::new() };
         if let Some(root) = self.root { walk.node(root, [0.0, 0.0], true, None, None); }
         let Walk { elements, live, seen, .. } = walk;
         let seen: crate::runtime::HashSet<u64> = seen.into_iter().collect();
@@ -101,36 +138,74 @@ impl Mirror {
         self.said = said;
         let order = |list: &[Element]| list.iter().map(|e| e.id).collect::<Vec<_>>();
         let layout = order(&elements) != order(&self.elements);
+        let moved = !first && self.focus != Some(focus) && elements.iter().any(|e| e.id == focus);
+        self.focus = Some(focus);
         self.elements = elements;
-        Changes { layout, announce }
+        let page = self.paging.take().and_then(|(id, axis)| page(self.nodes.get(&id)?, axis));
+        Changes { layout, announce, focus: moved.then_some(focus), page }
     }
 
     /// The tree's action for what a reader did to element `id`, if the element takes it.
-    pub(crate) fn request(&self, id: u64, gesture: Gesture) -> Option<ActionRequest> {
+    pub(crate) fn request(&mut self, id: u64, gesture: Gesture) -> Option<ActionRequest> {
+        let (request, paging) = self.resolve(id, gesture)?;
+        if paging.is_some() { self.paging = paging; }
+        Some(request)
+    }
+
+    pub(crate) fn json(&self) -> serde_json::Value {
+        const GESTURES: [(Gesture, &str); 8] = [
+            (Gesture::Activate, "activate"), (Gesture::Increment, "increment"), (Gesture::Decrement, "decrement"),
+            (Gesture::Menu, "menu"), (Gesture::Scroll(Toward::Up), "scroll-up"), (Gesture::Scroll(Toward::Down), "scroll-down"),
+            (Gesture::Scroll(Toward::Left), "scroll-left"), (Gesture::Scroll(Toward::Right), "scroll-right"),
+        ];
+        let elements = self.elements.iter().map(|e| {
+            let node = &self.nodes[&e.id];
+            let mut v = serde_json::json!({ "label": e.label, "traits": traits::names(e.traits), "frame": e.rect.map(|x| (x * 10.0).round() / 10.0) });
+            if let Some(key) = node.author_id() { v["key"] = key.into(); }
+            if let Some(value) = &e.value { v["value"] = value.as_str().into(); }
+            if let Some(hint) = &e.hint { v["hint"] = hint.as_str().into(); }
+            if let Some(expanded) = e.expanded { v["expanded"] = expanded.into(); }
+            let actions: Vec<&str> = GESTURES.iter().filter(|(g, _)| self.resolve(e.id, *g).is_some()).map(|(_, name)| *name).collect();
+            if !actions.is_empty() { v["actions"] = actions.into(); }
+            v
+        });
+        serde_json::Value::Array(elements.collect())
+    }
+
+    fn resolve(&self, id: u64, gesture: Gesture) -> Option<(ActionRequest, Option<(u64, Axis)>)> {
         let node = self.nodes.get(&id)?;
+        let mut paging = None;
         let first = |actions: &[Action]| actions.iter().copied().find(|a| node.supports_action(*a));
         let (target, action) = match gesture {
             Gesture::Activate => (id, first(&[Action::Click, Action::Focus])?),
             Gesture::Increment => (id, first(&[Action::Increment])?),
             Gesture::Decrement => (id, first(&[Action::Decrement])?),
             Gesture::Focused => (id, first(&[Action::ScrollIntoView])?),
+            Gesture::Menu => (id, first(&[Action::ShowContextMenu])?),
             Gesture::Scroll(toward) => {
                 let scrolls = self.elements.iter().find(|e| e.id == id)?.scrolls?;
-                let action = match toward {
-                    Toward::Up => Action::ScrollUp,
-                    Toward::Down => Action::ScrollDown,
-                    Toward::Left => Action::ScrollLeft,
-                    Toward::Right => Action::ScrollRight,
+                let view = self.nodes.get(&scrolls)?;
+                let (action, axis) = match toward {
+                    Toward::Up => (Action::ScrollUp, Axis::Y),
+                    Toward::Down => (Action::ScrollDown, Axis::Y),
+                    Toward::Left => (Action::ScrollLeft, Axis::X),
+                    Toward::Right => (Action::ScrollRight, Axis::X),
                 };
-                (scrolls, self.nodes.get(&scrolls).filter(|n| n.supports_action(action)).map(|_| action)?)
+                let (offset, max) = offsets(view, axis);
+                let ahead = match toward { Toward::Up | Toward::Left => offset > EDGE, Toward::Down | Toward::Right => offset < max - EDGE };
+                if !view.supports_action(action) || !ahead { return None; }
+                paging = Some((scrolls, axis));
+                (scrolls, action)
             }
         };
-        Some(ActionRequest { action, target_tree: TreeId::ROOT, target_node: NodeId(target), data: None })
+        Some((ActionRequest { action, target_tree: TreeId::ROOT, target_node: NodeId(target), data: None }, paging))
     }
 }
 
 struct Walk<'a> {
+    focus: u64,
     nodes: &'a HashMap<u64, Node>,
+    masks: &'a HashMap<u64, String>,
     elements: Vec<Element>,
     live: Vec<(u64, String)>,
     seen: Vec<u64>,
@@ -150,7 +225,7 @@ impl Walk<'_> {
         }
         let scrolls = if SCROLLS.iter().any(|a| n.supports_action(*a)) { Some(id.0) } else { scrolls };
         let shown = bounds.map(|b| clip.map_or(b, |clip| within(b, clip)));
-        let element = if hidden { None } else { shown.and_then(|shown| element(id.0, n, name, shown, scrolls)) };
+        let element = if hidden { None } else { shown.and_then(|shown| element(id.0, n, name, self.masks.get(&id.0).map(String::as_str), shown, scrolls, self.focus)) };
         let clip = if n.clips_children() && !root { shown.or(clip) } else { clip };
         let leaf = element.is_some();
         self.elements.extend(element);
@@ -164,6 +239,27 @@ impl Walk<'_> {
 
 const SCROLLS: [Action; 4] = [Action::ScrollUp, Action::ScrollDown, Action::ScrollLeft, Action::ScrollRight];
 
+const EDGE: f64 = 0.5;
+
+const PAGE: f64 = 0.9;
+
+fn offsets(view: &Node, axis: Axis) -> (f64, f64) {
+    match axis {
+        Axis::Y => (view.scroll_y().unwrap_or(0.0), view.scroll_y_max().unwrap_or(0.0)),
+        Axis::X => (view.scroll_x().unwrap_or(0.0), view.scroll_x_max().unwrap_or(0.0)),
+    }
+}
+
+fn page(view: &Node, axis: Axis) -> Option<String> {
+    let bounds = view.bounds()?;
+    let (offset, max) = offsets(view, axis);
+    let step = PAGE * match axis { Axis::Y => bounds.height(), Axis::X => bounds.width() };
+    if step <= 0.0 { return None; }
+    let total = (max / step).ceil().max(0.0) as u32 + 1;
+    let at = if offset >= max - EDGE { total } else { ((offset / step).round().max(0.0) as u32 + 1).min(total) };
+    Some(format!("Page {at} of {total}"))
+}
+
 /// The part of `b` inside `clip`. Something scrolled out of view keeps its place in the order
 /// and collapses onto the edge it left by, where no finger finds it; a reader that steps onto
 /// it scrolls it back.
@@ -174,7 +270,7 @@ fn within(b: [f64; 4], clip: [f64; 4]) -> [f64; 4] {
 
 /// The element `n` is, or none for a container and for text with nothing to say. `shown` is
 /// the part of it in view: left, top, right, bottom in the app's points.
-fn element(id: u64, n: &Node, name: Option<String>, shown: [f64; 4], scrolls: Option<u64>) -> Option<Element> {
+fn element(id: u64, n: &Node, name: Option<String>, mask: Option<&str>, shown: [f64; 4], scrolls: Option<u64>, focus: u64) -> Option<Element> {
     use traits::*;
     let role = n.role();
     let control = match role {
@@ -183,8 +279,9 @@ fn element(id: u64, n: &Node, name: Option<String>, shown: [f64; 4], scrolls: Op
         Role::CheckBox | Role::Switch | Role::MenuItemCheckBox => BUTTON | TOGGLE,
         Role::Link => LINK,
         Role::Slider | Role::SpinButton => ADJUSTABLE,
-        Role::SearchInput => SEARCH,
-        Role::TextInput | Role::MultilineTextInput | Role::PasswordInput => 0,
+        Role::SearchInput => SEARCH | TEXT_FIELD,
+        Role::TextInput | Role::MultilineTextInput => TEXT_FIELD,
+        Role::PasswordInput => SECURE_TEXT_FIELD,
         _ if n.supports_action(Action::Click) => BUTTON,
         _ => {
             let kind = match role {
@@ -208,6 +305,7 @@ fn element(id: u64, n: &Node, name: Option<String>, shown: [f64; 4], scrolls: Op
         Some(Toggled::True) => Some("1".to_owned()),
         Some(Toggled::False) => Some("0".to_owned()),
         Some(Toggled::Mixed) => Some("2".to_owned()),
+        None if role == Role::PasswordInput => mask.map(str::to_owned),
         None if text_field || traits & ADJUSTABLE != 0 || traits & UPDATES != 0 => {
             n.value().map(str::to_owned).or_else(|| n.numeric_value().map(|x| format!("{x}")))
         }
@@ -216,12 +314,23 @@ fn element(id: u64, n: &Node, name: Option<String>, shown: [f64; 4], scrolls: Op
     // An empty field is read by its placeholder, as UIKit's own are.
     let (label, value) = match (name, n.placeholder()) {
         (None, Some(placeholder)) => (placeholder.to_owned(), value),
+        (Some(name), Some(placeholder)) if name == placeholder && value.as_deref().is_none_or(str::is_empty) => (name, None),
         (name, Some(placeholder)) if value.as_deref().is_none_or(str::is_empty) => (name.unwrap_or_default(), Some(placeholder.to_owned())),
         (name, _) => (name.unwrap_or_default(), value),
     };
     let rect = [shown[0] as f32, shown[1] as f32, (shown[2] - shown[0]) as f32, (shown[3] - shown[1]) as f32];
     let value = value.filter(|v| !v.is_empty());
-    Some(Element { id, label, value, hint: n.description().map(str::to_owned), traits, rect, scrolls })
+    let menu = n.supports_action(Action::ShowContextMenu);
+    Some(Element { id, label, value, hint: n.description().map(str::to_owned), traits, rect, expanded: n.is_expanded(), menu, editing: id == focus && traits & TEXT_FIELD != 0, scrolls })
+}
+
+impl crate::runtime::RuntimeCore {
+    pub fn ios_accessibility_json(&self) -> serde_json::Value {
+        let mut mirror = Mirror::default();
+        mirror.set_masks(self.a11y_masks());
+        mirror.apply(self.accessibility_tree());
+        mirror.json()
+    }
 }
 
 #[cfg(test)]

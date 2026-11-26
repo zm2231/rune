@@ -304,6 +304,11 @@ define_class!(
             self.text_size_changed();
         }
 
+        #[unsafe(method(runeDisplayOptions:))]
+        fn display_options(&self, _notification: &AnyObject) {
+            self.display_options_changed();
+        }
+
         #[unsafe(method(runeReduceMotion:))]
         fn reduce_motion(&self, _notification: &AnyObject) {
             self.reduce_motion_changed();
@@ -443,8 +448,8 @@ impl RuneView {
             None => self.menu_follow_caret(),
         }
         if let Some((id, kind, multiple, options)) = file { self.pick_file(id, kind, multiple, &options); }
-        if let Some((tree, zoom)) = tree {
-            let posts = self.ivars().accessibility.borrow_mut().apply(self.mtm(), self, tree, zoom);
+        if let Some(reading) = tree {
+            let posts = self.ivars().accessibility.borrow_mut().apply(self.mtm(), self, reading);
             posts.post();
         }
         self.sync_mirror();

@@ -78,9 +78,14 @@ What works:
 - **Clipboard and menus.** Copy, cut and paste use the system pasteboard. A menu from
   `Tx::popup_menu` (a field's Cut, Copy and Paste among them) shows as the system's edit menu.
 - **Accessibility.** VoiceOver, Switch Control and Voice Control read the same accessibility
-  tree the desktop platforms do. The Reduce Motion setting is followed, and
-  `Cx::system_text_scale` is the Dynamic Type size: `cx.zoom(cx.system_text_scale())` scales
-  a view with it.
+  tree the desktop platforms do: a double tap presses a control, a swipe up or down adjusts a
+  slider, a three-finger swipe pages the scroll view under the cursor and says which page it
+  landed on, the cursor follows the app's focus, live regions and `Tx::announce` are spoken, and
+  a control's context menu is in the Actions rotor. The Reduce Motion setting is followed.
+  `Cx::system_text_scale` is the Dynamic Type size, `Cx::system_bold_text` the Bold Text
+  setting and `Cx::system_increased_contrast` Increase Contrast: `cx.zoom(cx.system_text_scale())`
+  scales a view with the text size, and `cx.bold_text(cx.system_bold_text())` draws its text a
+  weight heavier, as UIKit's text is.
 - **Handles.** `AppHandle::update` and `wake` from a background thread reach the app, as from
   a window; `is_visible` follows the app going to the background. `App::on_ready` runs once
   the first frame is on screen.

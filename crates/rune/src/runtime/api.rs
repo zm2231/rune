@@ -350,6 +350,8 @@ impl<S: 'static> Runtime<S> {
     #[inline(always)]
     pub fn set_system_increased_contrast(&mut self, on: bool) { self.core_mut().set_system_increased_contrast(on); }
     #[inline(always)]
+    pub fn set_system_bold_text(&mut self, on: bool) { self.core_mut().set_system_bold_text(on); }
+    #[inline(always)]
     pub fn set_system_reduced_motion(&mut self, reduced: bool) { self.core_mut().set_system_reduced_motion(reduced); }
     #[inline(always)]
     pub fn system_reduced_motion(&self) -> bool { self.core().host.system_reduced_motion() }
@@ -824,6 +826,11 @@ impl<S: 'static> Runtime<S> {
     pub fn accessibility_tree(&self) -> accesskit::TreeUpdate { self.core().accessibility_tree() }
     #[inline(always)]
     pub fn accessibility_json(&self) -> serde_json::Value { self.core().accessibility_json() }
+    /// The elements iOS exposes for [`Self::accessibility_tree`], in the order VoiceOver moves
+    /// through them, with their labels, values, traits, frames in window points and the gestures
+    /// they take. Built on every platform, so tests can check what VoiceOver hears.
+    #[inline(always)]
+    pub fn ios_accessibility_json(&self) -> serde_json::Value { self.core().ios_accessibility_json() }
     #[inline(always)]
     pub fn a11y_json(&self) -> String { self.core().a11y_json() }
 

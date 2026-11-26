@@ -26,6 +26,7 @@ struct State {
     page_at: Option<f64>,
     seconds: u64,
     views: Cell<u64>,
+    background: bool,
 }
 
 thread_local! {
@@ -44,6 +45,7 @@ impl Default for State {
             page_at: None,
             seconds: 0,
             views: Cell::new(0),
+            background: background(),
         }
     }
 }
@@ -62,7 +64,11 @@ fn paragraph(n: usize, t: &tok::Theme) -> El {
 fn view(s: &State, cx: &mut Cx<State>) -> El {
     s.views.set(s.views.get() + 1);
     let t = tok::theme(cx.system_dark());
-    let seconds = if s.page_at.is_some() { format!("Page up for {} s", s.seconds) } else { "No page yet".into() };
+    let seconds = match (s.page_at, s.background) {
+        (Some(_), true) => format!("Up for {} s", s.seconds),
+        (Some(_), false) => format!("Page up for {} s", s.seconds),
+        (None, _) => "No page yet".into(),
+    };
     let sidebar = col().key("sidebar").w(200.0).h_full().gap(10.0).padding(16.0).fill(t.card)
         .child(text("Native view").font(type_::TITLE).color(t.text))
         .child(text(seconds).key("seconds").font(type_::BODY).color(t.text_secondary))
@@ -97,6 +103,10 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     }
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     if s.web.is_some() && s.page_at.is_none() { s.page_at = Some(now); }
+    if s.background && s.page_at.is_none() {
+        s.page_at = Some(now);
+        tx.minimize();
+    }
     let Some(page_at) = s.page_at else { return false };
     let seconds = ((now - page_at).max(0.0)) as u64;
     tx.wake_after(Duration::from_secs_f64((page_at + (seconds + 1) as f64 - now).max(0.0)));
@@ -115,13 +125,16 @@ fn print_counts(s: &State) {
     );
 }
 
+fn background() -> bool { std::env::var_os("NATIVE_VIEW_BACKGROUND").is_some() }
+
 fn main() {
-    App::new(AppSpec::<State> {
+    let app = App::new(AppSpec::<State> {
         poll: Some(poll),
         scenes: &[("collapsed", |s| s.open = false), ("tall", |s| s.tall = true)],
         ..AppSpec::new("Native view", (900.0, 640.0), State::default, view)
-    })
-    .on_ready(|window| {
+    });
+    let app = if background() { app.open_inactive() } else { app };
+    app.on_ready(|window| {
         WINDOW.with(|w| { let _ = w.set(window.clone()); });
         if std::env::var_os("NATIVE_VIEW_CALL").is_some() { call::open(window); }
     })

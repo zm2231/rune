@@ -364,18 +364,25 @@ fn tag(id: &str) -> String {
     format!("{:016x}", h.finish())
 }
 
-/// The toast's XML: a generic toast with the title and body, its buttons and text boxes, and no
-/// sound. Its launch arguments are the user info, or with an activation scheme the link a click
-/// opens. A button's arguments are the user info with its action and the notification's id;
+/// The toast's XML: a generic toast with the title and body, the first image attachment, its
+/// buttons and text boxes, under its thread's header, with the default sound or none. Its launch
+/// arguments are the user info, or with an activation scheme the link a click opens; a click on
+/// the header carries the same. A button's arguments are the user info with its action and the notification's id;
 /// it's a background activation when the install registered the app's activator (it reaches
 /// `serve`, or starts the app for `wait`), else a foreground one the toast's own event takes in
 /// the running app, which doesn't bring itself forward for it.
 pub(super) fn xml(n: &Notification, scheme: Option<&str>) -> String {
     let body = if n.body.is_empty() { String::new() } else { format!("<text>{}</text>", escape(&n.body)) };
-    let launch = match scheme {
-        Some(scheme) => format!("activationType=\"protocol\" launch=\"{}\"", escape(&link(scheme, n))),
-        None => format!("launch=\"{}\"", escape(&encode(&n.info))),
+    let (kind, target) = match scheme {
+        Some(scheme) => (" activationType=\"protocol\"", escape(&link(scheme, n))),
+        None => ("", escape(&encode(&n.info))),
     };
+    let launch = format!("launch=\"{target}\"{kind}");
+    let header = n.thread.as_ref().map_or(String::new(), |t| {
+        format!("<header id=\"{}\" title=\"{}\" arguments=\"{target}\"{kind}/>", escape(&t.id), escape(&t.title))
+    });
+    let image = n.image().map_or(String::new(), |a| format!("<image src=\"{}\"/>", escape(&super::attachment::file_uri(a.path()))));
+    let audio = if n.sound { "<audio src=\"ms-winsoundevent:Notification.Default\"/>" } else { "<audio silent=\"true\"/>" };
     let activation = if activator().is_some() { "background" } else { "foreground" };
     let arguments = |action: &str| {
         let mut info = n.info.clone();
@@ -394,7 +401,7 @@ pub(super) fn xml(n: &Notification, scheme: Option<&str>) -> String {
     let (inputs, buttons): (Vec<&str>, Vec<&str>) = actions.split_inclusive("/>").partition(|part| part.starts_with("<input"));
     let actions = if actions.is_empty() { String::new() } else { format!("<actions>{}{}</actions>", inputs.concat(), buttons.concat()) };
     format!(
-        "<toast {launch}><visual><binding template=\"ToastGeneric\"><text>{}</text>{body}</binding></visual>{actions}<audio silent=\"true\"/></toast>",
+        "<toast {launch}>{header}<visual><binding template=\"ToastGeneric\"><text>{}</text>{body}{image}</binding></visual>{actions}{audio}</toast>",
         escape(&n.title),
     )
 }
@@ -458,3 +465,7 @@ fn unpercent(s: &str) -> String {
     }
     String::from_utf8_lossy(&out).into_owned()
 }
+
+#[cfg(test)]
+#[path = "windows_tests.rs"]
+mod tests;

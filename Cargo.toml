@@ -31,6 +31,7 @@ members = [
     "examples/ios-fields",
     "examples/swiftui-host",
     "examples/ios-system",
+    "examples/notify-threads",
     "examples/hello-floor",
     "examples/launch-floor",
     "examples/web-hello",

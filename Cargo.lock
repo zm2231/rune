@@ -2618,6 +2618,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "notify-threads"
+version = "0.0.1"
+dependencies = [
+ "rune",
+ "rune-notify",
+]
+
+[[package]]
 name = "notify-types"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

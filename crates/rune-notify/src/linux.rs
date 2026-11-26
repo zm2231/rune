@@ -3,6 +3,7 @@
 //! capabilities; `available` is whether one answered. Rune ids map to the server's numeric ids,
 //! so posting an id again replaces its notification, and a click (`ActionInvoked`) comes back
 //! with the id and user info it was posted with.
+use super::attachment::file_uri;
 use super::{ACTION, Action, Click, Notification, TOKEN, deliver};
 use async_channel::{Receiver, Sender, unbounded};
 use futures_lite::{FutureExt, StreamExt};
@@ -19,6 +20,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const RPC_TIMEOUT: Duration = Duration::from_secs(5);
 /// The action key a server invokes for a click on the notification itself.
 const DEFAULT_ACTION: &str = "default";
+const SOUND: &str = "message-new-instant";
 
 /// What the server can do, from `GetCapabilities`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -46,7 +48,7 @@ pub(crate) fn register(id: &str, name: &str) {
 struct Post { n: Notification, app_name: String, desktop_entry: Option<String> }
 
 enum Command {
-    Post(Post),
+    Post(Box<Post>),
     Remove(Vec<String>),
 }
 
@@ -84,7 +86,7 @@ pub(crate) fn post(n: &Notification) -> bool {
         Some((id, name)) => (name, Some(id)),
         None => (program_name(), None),
     };
-    commands.try_send(Command::Post(Post { n: n.clone(), app_name, desktop_entry })).is_ok()
+    commands.try_send(Command::Post(Box::new(Post { n: n.clone(), app_name, desktop_entry }))).is_ok()
 }
 
 pub(crate) fn remove(ids: &[&str]) {
@@ -148,11 +150,7 @@ async fn run(commands: Receiver<Command>, ready: mpsc::SyncSender<bool>) {
                 let replaces = shown.get(&post.n.id).map_or(0, |s| s.server);
                 let actions = actions_for(&post.n, caps);
                 let body = body_for(&post.n.body, caps);
-                let mut hints: HashMap<&str, Value> = HashMap::new();
-                hints.insert("suppress-sound", Value::from(true));
-                if let Some(entry) = post.desktop_entry.as_deref() {
-                    hints.insert("desktop-entry", Value::from(entry));
-                }
+                let hints = hints_for(&post.n, post.desktop_entry.as_deref());
                 let args = (post.app_name.as_str(), replaces, "", post.n.title.as_str(), body.as_str(), actions, hints, -1i32);
                 if let Some(Ok(server)) = timeout(RPC_TIMEOUT, proxy.call::<_, _, u32>("Notify", &args)).await {
                     shown.insert(post.n.id, Shown { server, info: post.n.info, token: None });
@@ -213,6 +211,23 @@ pub(crate) fn actions_for(n: &Notification, caps: Caps) -> Vec<&str> {
         }
     }
     list
+}
+
+/// The notification spec has no thread or group hint, so `Notification::thread` adds none.
+pub(crate) fn hints_for(n: &Notification, desktop_entry: Option<&str>) -> HashMap<&'static str, Value<'static>> {
+    let mut hints = HashMap::new();
+    if n.sound {
+        hints.insert("sound-name", Value::from(SOUND.to_owned()));
+    } else {
+        hints.insert("suppress-sound", Value::from(true));
+    }
+    if let Some(entry) = desktop_entry {
+        hints.insert("desktop-entry", Value::from(entry.to_owned()));
+    }
+    if let Some(image) = n.image() {
+        hints.insert("image-path", Value::from(file_uri(image.path())));
+    }
+    hints
 }
 
 /// The body as the server reads it: escaped where it would take it for markup.

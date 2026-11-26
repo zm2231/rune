@@ -1,0 +1,12 @@
+[package]
+name = "notify-threads"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rune = { workspace = true, default-features = true }
+rune-notify = { workspace = true }
+
+[lints]
+workspace = true

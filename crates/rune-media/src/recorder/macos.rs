@@ -69,7 +69,7 @@ fn default_input() -> Option<u32> {
     (status == 0 && device != 0).then_some(device)
 }
 
-pub(super) fn permission() -> MicPermission {
+pub(crate) fn permission() -> MicPermission {
     // SAFETY: `AVMediaTypeAudio` is an immutable static AVFoundation string constant.
     let (Some(audio), Some(device)) = (unsafe { AVMediaTypeAudio }, AnyClass::get(c"AVCaptureDevice")) else {
         return MicPermission::Restricted;
@@ -84,7 +84,7 @@ pub(super) fn permission() -> MicPermission {
     }
 }
 
-pub(super) fn request_permission(callback: Box<dyn FnOnce(MicPermission) + Send>) {
+pub(crate) fn request_permission(callback: Box<dyn FnOnce(MicPermission) + Send>) {
     if let Err(e) = preflight() {
         if cfg!(debug_assertions) {
             eprintln!("rune: {e}");
@@ -113,7 +113,7 @@ pub(super) fn request_permission(callback: Box<dyn FnOnce(MicPermission) + Send>
 
 /// macOS ends a bundled app that touches the microphone without a usage description; refuse
 /// instead. An unbundled binary is attributed to the terminal that ran it.
-pub(super) fn preflight() -> Result<(), String> {
+pub(crate) fn preflight() -> Result<(), String> {
     // SAFETY: `NSBundle` class and instance selectors match their Foundation Objective-C signatures.
     unsafe {
         let bundle: Option<Retained<AnyObject>> = msg_send![class!(NSBundle), mainBundle];

@@ -550,6 +550,37 @@ with both from the connection options in `scene(_:willConnectTo:options:)`. The 
 made whose app has the hook gets the link. One passed on before any view is made waits for
 the first view; once a view is made, a link no view has a hook for is dropped.
 
+## Voice calls
+
+`rune::Voice` (see "Voice calls" in `crates/rune/README.md`) runs a call through Apple's
+voice-processing I/O unit. While a voice stream runs, it owns the app's audio session:
+
+- **Category and mode**: `AVAudioSessionCategoryPlayAndRecord` in `AVAudioSessionModeVoiceChat`,
+  with `AllowBluetoothHFP` (a Bluetooth headset's microphone works) and `DefaultToSpeaker` (the
+  loudspeaker, not the earpiece, when nothing is plugged in). The session asks for 48 kHz and
+  10 ms buffers. The voice unit converts to the stream's own rate.
+- **Activation**: `Voice::start` activates the session and `Voice::stop` deactivates it with
+  `NotifyOthersOnDeactivation`, so music that the call paused resumes.
+- **Interruptions**: a phone call, an alarm or Siri pauses the stream (`VoiceState::Interrupted`,
+  `VoiceEvent::Interrupted`). When the interruption ends with the system's resume hint, the
+  stream starts again (`VoiceEvent::Resumed`). Without the hint, it starts again the next time
+  the app comes to the foreground. A stream stopped during an interruption stays stopped.
+- **Routes**: plugging in or unplugging headphones, or a headset connecting or going away,
+  rebuilds the stream on the new route (`VoiceEvent::DeviceChanged`). A media services reset
+  rebuilds it too.
+- **The background**: a call keeps running when the app goes to the background. The stream
+  runs on its own threads and the audio thread, not on the view, so the view resting does not
+  touch it. iOS keeps the app running only when `UIBackgroundModes` includes `audio`;
+  without it, iOS suspends the app and the call stops until the app comes back.
+- **Permission**: iOS asks the first time the session records. Ask earlier with
+  `Voice::request_permission`. `Voice::permission` reads the answer without asking.
+
+The `Info.plist` of an app that uses `Voice` needs:
+
+- `NSMicrophoneUsageDescription`, the sentence iOS shows when it asks. Without it,
+  `Voice::open` returns `VoiceError::OpenFailed` rather than let iOS end the app.
+- `UIBackgroundModes` with `audio`, for a call that keeps going in the background.
+
 ## Ship an app
 
 What `scripts/ios-app` puts in a bundle beyond what a test run needs, and the build it makes
@@ -782,6 +813,8 @@ needs the same:
 - `UISupportedInterfaceOrientations~ipad` with all four orientations, or an iPad runs the app
   full screen only, never in Split View or a Stage Manager window.
 - `CFBundleURLTypes` with the app's schemes, when it takes links (`--url-scheme`).
+- `NSMicrophoneUsageDescription`, and `UIBackgroundModes` with `audio`, for voice calls
+  ("Voice calls" above).
 - `CFBundleIcons` and `CFBundleIcons~ipad` naming the icon in the bundle's `Assets.car`, when
   it has an icon (`--icon`; "The icon" above).
 

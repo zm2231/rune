@@ -5,8 +5,11 @@
 
 #![forbid(unsafe_code)]
 
+use std::cell::{Cell, OnceCell};
+use std::time::Duration;
+
 use rune::tok::{self, motion, type_};
-use rune::{AppSpec, Cx, El, NativeView, ScrollSpec, TextEdit, Tx, col, el, row, text, text_input};
+use rune::{App, AppSpec, Cx, El, NativeView, ScrollSpec, TextEdit, Tx, WindowHandle, col, el, row, text, text_input};
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 const URL: &str = "https://en.wikipedia.org/wiki/Special:Random";
@@ -18,6 +21,14 @@ struct State {
     open: bool,
     tall: bool,
     note: TextEdit,
+    page_at: Option<f64>,
+    seconds: u64,
+    views: Cell<u64>,
+    call: bool,
+}
+
+thread_local! {
+    static WINDOW: OnceCell<WindowHandle> = const { OnceCell::new() };
 }
 
 impl Default for State {
@@ -29,6 +40,10 @@ impl Default for State {
             open: true,
             tall: false,
             note: TextEdit::default(),
+            page_at: None,
+            seconds: 0,
+            views: Cell::new(0),
+            call: std::env::var_os("NATIVE_VIEW_CALL").is_some(),
         }
     }
 }
@@ -45,18 +60,22 @@ fn paragraph(n: usize, t: &tok::Theme) -> El {
 }
 
 fn view(s: &State, cx: &mut Cx<State>) -> El {
+    s.views.set(s.views.get() + 1);
     let t = tok::theme(cx.system_dark());
+    let seconds = if s.page_at.is_some() { format!("Page up for {} s", s.seconds) } else { "No page yet".into() };
     let sidebar = col().key("sidebar").w(200.0).h_full().gap(10.0).padding(16.0).fill(t.card)
         .child(text("Native view").font(type_::TITLE).color(t.text))
+        .child(text(seconds).key("seconds").font(type_::BODY).color(t.text_secondary))
         .child(button("collapse", if s.open { "Collapse" } else { "Expand" }, &t, |s| s.open = !s.open))
         .child(button("height", if s.tall { "Shorter" } else { "Taller" }, &t, |s| s.tall = !s.tall))
         .child(text_input(&s.note, type_::BODY).key("note").label("Note").single_line()
             .placeholder("Type here, then in the page", t.text_secondary).color(t.text)
             .w_full().padding(10.0).radius(8.0).fill(t.bg).on_edit(|s: &mut State| &mut s.note));
+    let sidebar = if s.call { sidebar.child(el().key("hidden-page").size(1.0, 1.0).opacity(0.01).native_view(&s.slot)) } else { sidebar };
     let page_h = if s.tall { 560.0 } else { 380.0 };
     let card = col().key("card").w_full().h(if s.open { page_h } else { 0.0 }).clip_soft(0.0).radius(14.0)
         .motion(motion::SNAPPY)
-        .child(el().key("page").w_full().h(page_h).radius(14.0).native_view(&s.slot));
+        .child(if s.call { el().key("page").w_full().h(page_h).radius(14.0) } else { el().key("page").w_full().h(page_h).radius(14.0).native_view(&s.slot) });
     let content = (1..=12).fold(
         col().w_full().gap(16.0).padding(24.0)
             .child(text("A page in a pane").font(type_::TITLE).color(t.text))
@@ -69,7 +88,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .child(col().key("pane").grow(1.0).shrink().h_full().scroll(ScrollSpec { stick_bottom: false }).child(content))
 }
 
-fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
+fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     if s.web.is_none() && s.slot.in_window() {
         match wry::WebViewBuilder::new().with_url(URL).build_as_child(&s.slot) {
@@ -77,16 +96,36 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
             Err(e) => eprintln!("native-view: no web view: {e}"),
         }
     }
-    let _ = s;
-    false
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    if s.web.is_some() && s.page_at.is_none() { s.page_at = Some(now); }
+    let Some(page_at) = s.page_at else { return false };
+    let seconds = ((now - page_at).max(0.0)) as u64;
+    tx.wake_after(Duration::from_secs_f64((page_at + (seconds + 1) as f64 - now).max(0.0)));
+    if seconds == s.seconds { return false; }
+    s.seconds = seconds;
+    print_counts(s);
+    true
+}
+
+fn print_counts(s: &State) {
+    let Some(stats) = WINDOW.with(|w| w.get().map(WindowHandle::surface_stats)) else { return };
+    let c = stats.totals;
+    println!(
+        "native-view: {}s views {} redraws {} presents {} skipped {} occluded {} timeouts {} outdated {} pacing {:?}",
+        s.seconds, s.views.get(), c.redraws, c.presents, c.skipped, c.occluded, c.timeouts, c.outdated, stats.pacing,
+    );
 }
 
 fn main() {
-    rune::run(AppSpec::<State> {
+    let call = std::env::var_os("NATIVE_VIEW_CALL").is_some();
+    App::new(AppSpec::<State> {
         poll: Some(poll),
         scenes: &[("collapsed", |s| s.open = false), ("tall", |s| s.tall = true)],
         ..AppSpec::new("Native view", (900.0, 640.0), State::default, view)
-    });
+    })
+    .window_options(rune::WindowOptions { transparent: call, ..Default::default() })
+    .on_ready(|window| WINDOW.with(|w| { let _ = w.set(window.clone()); }))
+    .run();
 }
 
 #[cfg(test)]

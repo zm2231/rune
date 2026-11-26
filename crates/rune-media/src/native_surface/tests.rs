@@ -935,16 +935,23 @@ fn orientations_come_from_quarter_turn_transforms_only() {
     assert_eq!(buffer_pixel(Orient([0, 1, -1, 0]), [6, 4], 3, 0), (0, 0));
 }
 
+fn bt709_steps(byte: u8) -> f32 {
+    let x = rune_core::color::srgb_decode(byte as f32 / 255.0);
+    (if x < 0.018 { 4.5 * x } else { 1.099 * x.powf(0.45) - 0.099 }) * 255.0
+}
+
 // A buffer drawn with an orientation equals the same picture turned upright on the CPU, for
 // every quarter turn and flip, at 1:1, magnified and shrunk, BGRA and NV12.
 on_each_backend!(oriented_frames_draw_like_frames_turned_upright, oriented_frames_on_metal, oriented_frames_draw_like_frames_turned_upright_on);
 fn oriented_frames_draw_like_frames_turned_upright_on(gpu: Gpu) {
+    let software = gpu.adapter.get_info().device_type == wgpu::DeviceType::Cpu;
     let mut renderer = SurfaceRenderer::new(&gpu.device, OFFSCREEN_FORMAT);
     let mut id = 0;
     for native in [false, cfg!(target_os = "macos")] {
         for m in ORIENTS {
             let o = Orient(m);
             for frame in [bgra_ramp(16, 8).0, synthetic(32, 16, 3)] {
+                let filtered_in_8_bits = software && frame.format != Format::Bgra;
                 let upright = turned(&frame, o);
                 let [uw, uh] = [upright.width, upright.height];
                 let (oriented, reference) = (NativeSurface::new(), NativeSurface::new());
@@ -956,7 +963,8 @@ fn oriented_frames_draw_like_frames_turned_upright_on(gpu: Gpu) {
                     let got = render(&gpu, &mut renderer, &[draw(&oriented, rect)], (w, h));
                     let want = render(&gpu, &mut renderer, &[draw(&reference, rect)], (w, h));
                     for (i, (g, r)) in got.iter().zip(&want).enumerate() {
-                        assert!(g.abs_diff(*r) <= 1, "native={native} {m:?} {what} byte {i}: {g} != {r}");
+                        let close = if filtered_in_8_bits { (bt709_steps(*g) - bt709_steps(*r)).abs() < 4.0 } else { g.abs_diff(*r) <= 1 };
+                        assert!(close, "native={native} {m:?} {what} byte {i}: {g} != {r}");
                     }
                 }
             }

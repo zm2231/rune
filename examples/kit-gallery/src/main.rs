@@ -278,11 +278,12 @@ fn view(s: &G, cx: &mut Cx<G>) -> El {
     let body = stories::render(s, k, &mut overlays);
     stories::field_menu::mount_live_field_menu(s, k, &mut overlays);
     stories::popup_menu::mount_live_popup_menu(s, k, &mut overlays);
+    let [top, right, bottom, left] = cx.safe_area();
     let frame = if s.story == "index" {
-        col().key("frame").w_full().h_full().fill(k.c.page).child(body)
+        col().key("frame").w_full().h_full().fill(k.c.page).pt(top).pr(right).pb(bottom).pl(left).child(body)
     } else {
         // Storybook's decorator: the page colour and 24 px of padding around the story.
-        col().key("frame").fill(k.c.page).padding(24.0).child(body)
+        col().key("frame").fill(k.c.page).pt(24.0 + top).pr(24.0 + right).pb(24.0 + bottom).pl(24.0 + left).child(body)
     };
     rune_kit::root(frame, overlays)
 }

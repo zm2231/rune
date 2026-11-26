@@ -38,17 +38,28 @@ fn runtime(page: Page) -> Runtime<Page> {
     rt
 }
 
-fn tab(rt: &mut Runtime<Page>, back: bool) {
+fn press_tab(rt: &mut Runtime<Page>, back: bool) {
     rt.key(KeyEvent { key: Key::Tab, mods: Mods { shift: back, ..Mods::default() } });
     rt.frame(0.1);
 }
 
+fn tab(rt: &mut Runtime<Page>, back: bool) {
+    press_tab(rt, back);
+    frames(rt);
+}
+
 fn frames(rt: &mut Runtime<Page>) {
+    run_requests();
     rt.frame(0.2);
     rt.frame(0.3);
 }
 
-fn calls(slot: &NativeView) -> Vec<Call> { slot.slot.view.calls.take() }
+fn calls(slot: &NativeView) -> Vec<Call> {
+    run_requests();
+    slot.slot.view.calls.take()
+}
+
+fn untouched(slot: &NativeView) -> bool { slot.slot.view.calls.borrow().is_empty() }
 
 fn focus(rt: &mut Runtime<Page>, key: &str) {
     let (x, y) = rt.find(key).expect("the control is drawn");
@@ -65,6 +76,32 @@ fn tab_from_the_control_before_a_host_enters_it_from_its_start() {
     tab(&mut rt, false);
     assert_eq!(calls(&rt.state.web), [Call::Enter { back: false }]);
     assert_eq!(rt.presented_focus_key(), None, "Rune's focus clears while the view has the keyboard");
+}
+
+#[test]
+fn the_host_takes_the_keyboard_after_the_frame_not_inside_it() {
+    let mut rt = runtime(Page::new());
+    focus(&mut rt, "before");
+    press_tab(&mut rt, false);
+    assert!(untouched(&rt.state.web), "AppKit and UIKit call back into Rune's text input when the first responder changes");
+    assert_eq!(rt.presented_focus_key(), Some("before"), "Rune keeps focus until the view has the keyboard");
+    frames(&mut rt);
+    assert_eq!(calls(&rt.state.web), [Call::Enter { back: false }]);
+    assert_eq!(rt.presented_focus_key(), None);
+}
+
+#[test]
+fn a_host_that_refuses_the_keyboard_leaves_focus_where_it_was() {
+    let mut rt = runtime(Page::new());
+    focus(&mut rt, "before");
+    press_tab(&mut rt, false);
+    rt.state.web.slot.view.built.set(false);
+    frames(&mut rt);
+    assert_eq!(calls(&rt.state.web), [Call::Enter { back: false }, Call::Reclaim]);
+    assert_eq!(rt.presented_focus_key(), Some("before"));
+    rt.state.web.slot.view.built.set(true);
+    tab(&mut rt, false);
+    assert_eq!(calls(&rt.state.web), [Call::Enter { back: false }], "the next Tab tries again");
 }
 
 #[test]
@@ -164,7 +201,63 @@ fn a_focus_request_while_a_host_has_the_keyboard_takes_it_back() {
     rt.update(|_, tx| tx.focus("first", true));
     rt.frame(0.2);
     assert_eq!(rt.presented_focus_key(), Some("first"));
+    assert!(untouched(&rt.state.web), "the keyboard comes back after the frame");
     assert_eq!(calls(&rt.state.web), [Call::Reclaim]);
+}
+
+#[test]
+fn a_rune_focus_request_after_native_focus_wins() {
+    let mut rt = runtime(Page::new());
+    focus(&mut rt, "before");
+    rt.update(|p, tx| {
+        p.web.focus();
+        tx.focus("first", true);
+    });
+    rt.frame(0.15);
+    frames(&mut rt);
+    assert_eq!(rt.presented_focus_key(), Some("first"));
+    assert_eq!(calls(&rt.state.web), [Call::Reclaim]);
+}
+
+#[test]
+fn a_rune_focus_request_while_tab_enters_a_host_wins() {
+    let mut rt = runtime(Page::new());
+    focus(&mut rt, "before");
+    press_tab(&mut rt, false);
+    rt.update(|_, tx| tx.focus("first", true));
+    rt.frame(0.15);
+    frames(&mut rt);
+    assert_eq!(rt.presented_focus_key(), Some("first"));
+    assert_eq!(calls(&rt.state.web), [Call::Reclaim]);
+}
+
+#[test]
+fn a_rune_focus_request_after_the_host_took_the_keyboard_wins() {
+    for tab_in in [false, true] {
+        let mut rt = runtime(Page::new());
+        focus(&mut rt, "before");
+        if tab_in { press_tab(&mut rt, false); } else { rt.state.web.focus(); }
+        run_requests();
+        rt.update(|_, tx| tx.focus("first", true));
+        rt.frame(0.15);
+        frames(&mut rt);
+        assert_eq!(rt.presented_focus_key(), Some("first"));
+        assert_eq!(calls(&rt.state.web).last(), Some(&Call::Reclaim), "the keyboard comes back to Rune");
+    }
+}
+
+#[test]
+fn a_rune_focus_request_after_a_queued_host_press_wins() {
+    let mut rt = runtime(Page::new());
+    focus(&mut rt, "before");
+    rt.state.web.focus();
+    run_requests();
+    rt.frame(0.12);
+    rt.update(|_, tx| tx.focus("first", true));
+    rt.frame(0.15);
+    frames(&mut rt);
+    assert_eq!(rt.presented_focus_key(), Some("first"));
+    assert_eq!(calls(&rt.state.web).last(), Some(&Call::Reclaim));
 }
 
 #[test]

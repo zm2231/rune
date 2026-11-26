@@ -6,6 +6,7 @@ use winit::raw_window_handle::{HandleError, WindowHandle};
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Call {
+    Focus,
     Enter { back: bool },
     Reclaim,
 }
@@ -25,7 +26,14 @@ impl Container {
 
     pub(crate) fn in_window(&self) -> bool { false }
 
-    pub(crate) fn focus(&self) -> bool { false }
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn focus(&self) -> bool {
+        #[cfg(test)]
+        { self.calls.borrow_mut().push(Call::Focus); }
+        self.can_enter()
+    }
+
+    pub(crate) fn run_soon(&self) {}
 
     pub(crate) fn has_focus(&self) -> bool { false }
 
@@ -36,6 +44,7 @@ impl Container {
         { false }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn enter(&self, back: bool) -> bool {
         #[cfg(test)]
         { self.calls.borrow_mut().push(Call::Enter { back }); }
@@ -43,6 +52,7 @@ impl Container {
         self.can_enter()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn reclaim(&self) {
         #[cfg(test)]
         self.calls.borrow_mut().push(Call::Reclaim);

@@ -65,7 +65,16 @@ pub(crate) struct Slot {
     pub(crate) view: Container,
     pressed: Cell<bool>,
     tabbed: Cell<Option<bool>>,
+    refused: Cell<bool>,
+    request: Cell<Option<Request>>,
     wake: RefCell<Option<Arc<crate::live::Wake>>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Request {
+    Focus,
+    Enter { back: bool },
+    Reclaim,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,6 +96,8 @@ impl NativeView {
             view: Container::new(),
             pressed: Cell::new(false),
             tabbed: Cell::new(None),
+            refused: Cell::new(false),
+            request: Cell::new(None),
             wake: RefCell::new(None),
         });
         SLOTS.with(|s| {
@@ -106,10 +117,9 @@ impl NativeView {
     pub fn in_window(&self) -> bool { self.slot.view.in_window() }
 
     /// Gives the keyboard to the view built into the slot (its first subview), as a click into
-    /// it would. Rune's own focus clears in the next frame. Does nothing off macOS and iOS.
-    pub fn focus(&self) {
-        if self.slot.view.focus() { self.slot.press(); }
-    }
+    /// it would, once the current frame or event has been handled. Rune's own focus then clears
+    /// in the next frame. Does nothing off macOS and iOS.
+    pub fn focus(&self) { self.slot.ask(Request::Focus); }
 
     /// Whether the keyboard is in the view built into the slot: the window's first responder is
     /// the container or inside it. False off macOS and iOS.
@@ -139,6 +149,26 @@ impl Slot {
     pub(crate) fn take_pressed(&self) -> bool { self.pressed.replace(false) }
 
     pub(crate) fn take_tabbed(&self) -> Option<bool> { self.tabbed.take() }
+
+    pub(crate) fn take_refused(&self) -> bool { self.refused.replace(false) }
+
+    pub(crate) fn ask(&self, request: Request) {
+        if self.request.replace(Some(request)).is_none() { self.view.run_soon(); }
+    }
+
+    #[cfg_attr(not(any(test, target_os = "macos", target_os = "ios")), allow(dead_code))]
+    fn run(&self) {
+        match self.request.take() {
+            Some(Request::Focus) => if self.view.focus() { self.press() },
+            Some(Request::Enter { back }) if self.view.enter(back) => self.press(),
+            Some(Request::Enter { .. }) => {
+                self.refused.set(true);
+                self.wake();
+            }
+            Some(Request::Reclaim) => self.view.reclaim(),
+            None => {}
+        }
+    }
 
     fn tab_out(&self, back: bool) {
         self.tabbed.set(Some(back));
@@ -170,6 +200,20 @@ pub(crate) fn press_where(hit: impl Fn(&Slot) -> bool) {
 pub(crate) fn tabbed_out_where(back: bool, hit: impl Fn(&Slot) -> bool) {
     let slots: Vec<Rc<Slot>> = SLOTS.with(|s| s.borrow().values().filter_map(Weak::upgrade).collect());
     for slot in slots.iter().filter(|s| hit(s)) { slot.tab_out(back); }
+}
+
+pub(crate) fn yield_to_rune() {
+    let slots: Vec<Rc<Slot>> = SLOTS.with(|s| s.borrow().values().filter_map(Weak::upgrade).collect());
+    for slot in &slots {
+        let entering = matches!(slot.request.get(), Some(Request::Focus | Request::Enter { .. }));
+        if slot.pressed.replace(false) | entering { slot.ask(Request::Reclaim); }
+    }
+}
+
+#[cfg_attr(not(any(test, target_os = "macos", target_os = "ios")), allow(dead_code))]
+pub(crate) fn run_requests() {
+    let slots: Vec<Rc<Slot>> = SLOTS.with(|s| s.borrow().values().filter_map(Weak::upgrade).collect());
+    for slot in &slots { slot.run(); }
 }
 
 #[cfg(any(test, target_os = "ios"))]

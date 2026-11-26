@@ -7,11 +7,12 @@ const MAP: NativeViewId = NativeViewId(2);
 fn run(state: &mut Keyboard, event: Event) -> Vec<Effect> { step(state, event).into_iter().collect() }
 
 #[test]
-fn tab_onto_a_host_enters_it_and_blurs_rune() {
+fn tab_onto_a_host_enters_it_and_blurs_rune_once_it_has_the_keyboard() {
     let mut state = Keyboard::Rune;
-    assert_eq!(run(&mut state, Event::TabInto { view: WEB, back: false }), [Effect::Enter { view: WEB, back: false }, Effect::Blur]);
+    assert_eq!(run(&mut state, Event::TabInto { view: WEB, back: false }), [Effect::Enter { view: WEB, back: false }]);
     assert_eq!(state, Keyboard::Hosted(WEB));
-    assert_eq!(run(&mut state, Event::TabInto { view: MAP, back: true }), [Effect::Enter { view: MAP, back: true }, Effect::Blur]);
+    assert_eq!(run(&mut state, Event::Pressed(WEB)), [Effect::Blur]);
+    assert_eq!(run(&mut state, Event::TabInto { view: MAP, back: true }), [Effect::Enter { view: MAP, back: true }]);
     assert_eq!(state, Keyboard::Hosted(MAP));
 }
 

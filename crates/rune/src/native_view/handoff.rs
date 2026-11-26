@@ -30,7 +30,7 @@ pub(crate) fn step(state: &mut Keyboard, event: Event) -> Effects<Effect> {
     match event {
         Event::TabInto { view, back } => {
             *state = Keyboard::Hosted(view);
-            Effects::two(Effect::Enter { view, back }, Effect::Blur)
+            Effects::one(Effect::Enter { view, back })
         }
         Event::Pressed(view) => {
             *state = Keyboard::Hosted(view);

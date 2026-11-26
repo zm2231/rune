@@ -497,8 +497,8 @@ impl RuntimeCore {
     }
     fn set_focus_entry(&mut self, app: &mut dyn AppDriver, path: Option<String>, keyboard: bool, keep_entry: bool, sync_all: bool) -> bool {
         self.edit.on_input_focus_change(path.as_deref());
-        if path.is_some() { self.native_view_reclaim(); }
         let moved = self.kbd.focus.path() != path.as_deref();
+        if moved && path.is_some() { self.native_view_reclaim(); }
         // A field left mid-composition keeps what it showed, as a browser's does (Tab the input
         // method let through, a click on another control, `Tx::focus`).
         if moved && self.focused_input().is_some() && self.composing(app) {

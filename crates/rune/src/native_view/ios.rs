@@ -67,6 +67,7 @@ fn container_class() -> Option<&'static AnyClass> {
         // SAFETY: as above.
         unsafe { fill_subviews(this) }
     }
+    unsafe extern "C-unwind" fn run(_: &AnyObject, _: Sel, _: *mut AnyObject) { super::run_requests() }
     unsafe extern "C-unwind" fn began(this: &AnyObject, _: Sel, presses: &AnyObject, event: *mut AnyObject) {
         // SAFETY: UIKit calls this on the main thread with its own press set, passed on unchanged.
         unsafe {
@@ -89,10 +90,11 @@ fn container_class() -> Option<&'static AnyClass> {
         }
     }
     class(c"RuneNativeViewContainer", |b| {
-        // SAFETY: the signatures match -[UIView layoutSubviews], -[UIView didAddSubview:] and
+        // SAFETY: the signatures match -[UIView layoutSubviews], -[UIView didAddSubview:],
         // UIResponder's pressesBegan:withEvent:, pressesEnded:withEvent: and
-        // pressesCancelled:withEvent:.
+        // pressesCancelled:withEvent:, and a method taking one object, the perform's nil argument, that returns nothing.
         unsafe {
+            b.add_method(sel!(runeNativeViewRun:), run as unsafe extern "C-unwind" fn(_, _, _));
             b.add_method(sel!(layoutSubviews), layout as unsafe extern "C-unwind" fn(_, _));
             b.add_method(sel!(didAddSubview:), added as unsafe extern "C-unwind" fn(_, _, _));
             b.add_method(sel!(pressesBegan:withEvent:), began as unsafe extern "C-unwind" fn(_, _, _, _));
@@ -193,6 +195,16 @@ impl Container {
     }
 
     pub(crate) fn can_enter(&self) -> bool { self.in_window() && self.hosted().is_some() }
+
+    pub(crate) fn run_soon(&self) {
+        let Some(view) = self.view.as_deref() else { return };
+        // SAFETY: NSObject's main thread perform, called on the main thread: it queues the
+        // message for the run loop's next pass in its common modes, after the current frame or
+        // event returns, and retains the view until then.
+        unsafe {
+            let _: () = msg_send![view, performSelectorOnMainThread: sel!(runeNativeViewRun:), withObject: std::ptr::null_mut::<AnyObject>(), waitUntilDone: Bool::NO];
+        }
+    }
 
     pub(crate) fn enter(&self, _back: bool) -> bool {
         let Some(hosted) = self.hosted() else { return false };

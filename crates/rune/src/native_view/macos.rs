@@ -120,9 +120,12 @@ fn container_class() -> Option<&'static AnyClass> {
         // SAFETY: as above.
         unsafe { fill_subviews(this); link_key_views(this) }
     }
+    unsafe extern "C-unwind" fn run(_: &AnyObject, _: Sel, _: *mut AnyObject) { super::run_requests() }
     class(c"RuneNativeViewContainer", |b| {
-        // SAFETY: the signatures match -[NSView resizeSubviewsWithOldSize:] and -[NSView didAddSubview:].
+        // SAFETY: the signatures match -[NSView resizeSubviewsWithOldSize:], -[NSView
+        // didAddSubview:] and a method taking one object, the perform's nil argument, that returns nothing.
         unsafe {
+            b.add_method(sel!(runeNativeViewRun:), run as unsafe extern "C-unwind" fn(_, _, _));
             b.add_method(sel!(resizeSubviewsWithOldSize:), resize as unsafe extern "C-unwind" fn(_, _, _));
             b.add_method(sel!(didAddSubview:), added as unsafe extern "C-unwind" fn(_, _, _));
         }
@@ -230,6 +233,16 @@ impl Container {
     }
 
     pub(crate) fn can_enter(&self) -> bool { self.in_window() && self.view.as_deref().and_then(hosted).is_some() }
+
+    pub(crate) fn run_soon(&self) {
+        let Some(view) = self.view.as_deref() else { return };
+        // SAFETY: NSObject's main thread perform, called on the main thread: it queues the
+        // message for the run loop's next pass in its common modes, after the current frame or
+        // event returns, and retains the view until then.
+        unsafe {
+            let _: () = msg_send![view, performSelectorOnMainThread: sel!(runeNativeViewRun:), withObject: std::ptr::null_mut::<AnyObject>(), waitUntilDone: Bool::NO];
+        }
+    }
 
     pub(crate) fn enter(&self, back: bool) -> bool {
         let (Some(view), Some(window)) = (self.view.as_deref(), self.window()) else { return false };

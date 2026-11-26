@@ -1,6 +1,6 @@
 use super::*;
 use crate::native_view::handoff::{self, Effect, Event};
-use crate::native_view::{NativeViewDraw, Tag};
+use crate::native_view::{NativeViewDraw, Request, Tag};
 use crate::runtime::input::action::Action;
 use crate::runtime::turn::intersect;
 
@@ -28,6 +28,10 @@ impl RuntimeCore {
                 self.frame.queue.push(Action::NativeView(Event::TabbedOut { view: draw.view, back }));
                 queued = true;
             }
+            if slot.take_refused() {
+                self.frame.queue.push(Action::NativeView(Event::Refused(draw.view)));
+                queued = true;
+            }
         }
         self.paint.native_views = out;
         if queued { self.frame.live.waker().notify(); }
@@ -37,11 +41,7 @@ impl RuntimeCore {
         let mut ran = false;
         for effect in handoff::step(&mut self.kbd.hosted, event) {
             match effect {
-                Effect::Enter { view, back } => {
-                    if !crate::native_view::slot(view).is_some_and(|slot| slot.view.enter(back)) {
-                        return self.native_view_event(app, Event::Refused(view), tx);
-                    }
-                }
+                Effect::Enter { view, back } => ask(view, Request::Enter { back }),
                 Effect::Blur => {
                     if self.kbd.focus.path().is_some() {
                         self.set_focus(app, None, self.kbd.focus.keyboard());
@@ -49,17 +49,16 @@ impl RuntimeCore {
                     }
                 }
                 Effect::Continue { from, back } => ran |= self.tab_past_host(app, from, back, tx),
-                Effect::Reclaim(view) => {
-                    if let Some(slot) = crate::native_view::slot(view) { slot.view.reclaim(); }
-                }
+                Effect::Reclaim(view) => ask(view, Request::Reclaim),
             }
         }
         ran
     }
 
     pub(in crate::runtime) fn native_view_reclaim(&mut self) {
+        crate::native_view::yield_to_rune();
         for effect in handoff::step(&mut self.kbd.hosted, Event::RuneFocused) {
-            if let Effect::Reclaim(view) = effect && let Some(slot) = crate::native_view::slot(view) { slot.view.reclaim(); }
+            if let Effect::Reclaim(view) = effect { ask(view, Request::Reclaim); }
         }
     }
 
@@ -106,4 +105,8 @@ impl RuntimeCore {
             opacity,
         })
     }
+}
+
+fn ask(view: crate::NativeViewId, request: Request) {
+    if let Some(slot) = crate::native_view::slot(view) { slot.ask(request); }
 }

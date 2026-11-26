@@ -403,7 +403,15 @@ the app's list.
 The main list is the first vertical scroll view down the view's centre line from under the
 status bar (the **Scroll to top** item above), and `Runtime::main_scroll` reads its offset and reach. With
 no such list the scroll view's content fits it, and the bars show nothing under them.
-Whether the bars' blur reaches what Rune draws under them is not yet verified.
+On the iOS 27 simulator, under SwiftUI's `NavigationStack` (`examples/swiftui-host`), the
+navigation bar showed no edge with the list at its top, and blurred the cards that scrolled
+under it, up under the status bar. Whether the tab bar's bottom edge does the same is not yet
+verified.
+
+When the safe area's top changes, as a large title collapses into the bar or opens out of it,
+the main list's offset moves by the same amount (`Runtime::shift_main_scroll`), so what it
+shows stays where it was on screen and under a finger that holds it. A list at rest at its
+top stays at its top.
 
 What UIKit does with a tap on the status bar was shown on the iOS simulator only:
 

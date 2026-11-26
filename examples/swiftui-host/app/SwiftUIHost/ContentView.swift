@@ -11,7 +11,7 @@ struct ContentView: View {
                 RuneView(swiftui_host_view)
                     .ignoresSafeArea()
                     .navigationTitle("Cards")
-                    .navigationBarTitleDisplayMode(.inline)
+                    .navigationBarTitleDisplayMode(.large)
                     .toolbar {
                         ToolbarItem(placement: .topBarLeading) {
                             Button("Clear", role: .destructive) { cards.clear() }
@@ -26,12 +26,17 @@ struct ContentView: View {
             .badge(Int(cards.count))
 
             NavigationStack {
-                Form {
+                List {
                     Section("Shared with the Rune tab") {
                         LabeledContent("Cards", value: "\(cards.count)")
                         Button("Add Card") { cards.add() }
                         Button("Clear All", role: .destructive) { cards.clear() }
                             .disabled(cards.count == 0)
+                    }
+                    Section("Native rows") {
+                        ForEach(1...40, id: \.self) { row in
+                            Text("Row \(row)")
+                        }
                     }
                 }
                 .navigationTitle("SwiftUI")

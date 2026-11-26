@@ -404,7 +404,11 @@ impl<S: 'static> Surface for Hosted<S> {
 
     fn set_text_scale(&mut self, scale: f32) { self.host.runtime_mut().set_system_text_scale(scale); }
 
-    fn set_safe_area(&mut self, insets: [f32; 4]) { self.host.runtime_mut().set_safe_area(insets); }
+    fn set_safe_area(&mut self, insets: [f32; 4]) {
+        let rt = self.host.runtime_mut();
+        rt.shift_main_scroll(insets[0] - rt.core().safe_area()[0]);
+        rt.set_safe_area(insets);
+    }
 
     fn set_keyboard(&mut self, visible: Option<(f32, f32)>) {
         let core = self.host.runtime_mut().core_mut();

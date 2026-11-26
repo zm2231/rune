@@ -47,6 +47,16 @@ impl TouchScroll {
     }
 }
 
+pub(in crate::runtime) fn shift_held(state: &mut Option<TouchScroll>, viewport: NodeId, dy: f64) -> bool {
+    match state {
+        Some(TouchScroll::Held { id, origin, horizontal: false } | TouchScroll::Dragging { id, origin, horizontal: false }) if *id == viewport => {
+            *origin += dy;
+            true
+        }
+        _ => false,
+    }
+}
+
 /// What happens to a touch's pan.
 #[derive(Clone, Copy, Debug)]
 pub(in crate::runtime) enum TouchEvent {

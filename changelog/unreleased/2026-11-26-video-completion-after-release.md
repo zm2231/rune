@@ -1,0 +1,1 @@
+- Video surfaces report a frame's completion (`FrameTiming::completed_at`) only after the finished submission has let go of the frame, so an observer that recycles a picture on completion never finds it still held.

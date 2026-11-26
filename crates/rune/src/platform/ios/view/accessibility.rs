@@ -25,7 +25,7 @@ impl RuneView {
     /// What a reader did to element `id`: true when the element takes it, which the next frame
     /// then does.
     pub(crate) fn accessibility_gesture(&self, id: u64, gesture: Gesture) -> bool {
-        let Some(request) = self.ivars().accessibility.borrow().request(id, gesture) else { return false };
+        let Some(request) = self.ivars().accessibility.borrow_mut().request(id, gesture) else { return false };
         self.with_surface(|surface| surface.accessibility_act(request));
         self.pace(Event::Wake);
         true

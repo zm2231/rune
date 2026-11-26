@@ -15,9 +15,9 @@ use std::cell::Cell;
 use accesskit::{ActionRequest, TreeUpdate};
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
 use objc2_foundation::NSString;
-use objc2::rc::{Retained, Weak};
+use objc2::rc::{Allocated, Retained, Weak};
 use objc2::runtime::{AnyObject, NSObject};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, extern_class, msg_send};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, extern_class, msg_send, sel};
 
 use super::view::RuneView;
 use crate::a11y::ios::{Element, Gesture, Mirror, Toward, traits};
@@ -40,6 +40,7 @@ unsafe extern "C" {
     static UIAccessibilityLayoutChangedNotification: u32;
     static UIAccessibilityScreenChangedNotification: u32;
     static UIAccessibilityAnnouncementNotification: u32;
+    static UIAccessibilityPageScrolledNotification: u32;
     fn UIAccessibilityPostNotification(notification: u32, argument: Option<&AnyObject>);
     fn UIAccessibilityIsVoiceOverRunning() -> bool;
 }
@@ -82,7 +83,8 @@ fn toward(direction: isize) -> Option<Toward> {
         1 => Toward::Left,
         2 => Toward::Right,
         3 => Toward::Down,
-        4 => Toward::Up,
+        4 | 6 => Toward::Up,
+        5 => Toward::Down,
         _ => return None,
     })
 }
@@ -99,6 +101,8 @@ extern_class!(
 struct ElementIvars {
     id: Cell<u64>,
     host: Weak<RuneView>,
+    expanded: Cell<isize>,
+    menu: Cell<bool>,
 }
 
 define_class!(
@@ -134,12 +138,22 @@ define_class!(
         fn scroll(&self, direction: isize) -> bool {
             toward(direction).is_some_and(|toward| self.did(Gesture::Scroll(toward)))
         }
+
+        #[unsafe(method(accessibilityExpandedStatus))]
+        fn expanded_status(&self) -> isize {
+            self.ivars().expanded.get()
+        }
+
+        #[unsafe(method(runeShowMenu:))]
+        fn show_menu(&self, _action: &AnyObject) -> bool {
+            self.did(Gesture::Menu)
+        }
     }
 );
 
 impl RuneElement {
     fn new(mtm: MainThreadMarker, host: &RuneView, id: u64) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(ElementIvars { id: Cell::new(id), host: Weak::new(host) });
+        let this = Self::alloc(mtm).set_ivars(ElementIvars { id: Cell::new(id), host: Weak::new(host), expanded: Cell::new(0), menu: Cell::new(false) });
         // SAFETY: `initWithAccessibilityContainer:` is the designated initializer, and the
         // container is the view the element belongs to.
         unsafe { msg_send![super(this), initWithAccessibilityContainer: host] }
@@ -162,6 +176,26 @@ impl RuneElement {
             let _: () = msg_send![self, setAccessibilityHint: text(element.hint.as_deref()).as_deref()];
             let _: () = msg_send![self, setAccessibilityTraits: ui_traits(element.traits)];
             let _: () = msg_send![self, setAccessibilityFrameInContainerSpace: CGRect::new(CGPoint::new(x, y), CGSize::new(w, h))];
+        }
+        self.ivars().expanded.set(match element.expanded { None => 0, Some(true) => 1, Some(false) => 2 });
+        if self.ivars().menu.replace(element.menu) != element.menu {
+            self.set_menu(element.menu);
+        }
+    }
+
+    fn set_menu(&self, menu: bool) {
+        // SAFETY: `initWithName:target:selector:` takes a name, a target it holds weakly and a
+        // selector the target answers with a `BOOL`, as `runeShowMenu:` does; the arrays hold
+        // objects that are not nil.
+        unsafe {
+            let actions: Retained<AnyObject> = msg_send![class!(NSMutableArray), array];
+            if menu {
+                let name = NSString::from_str("Show menu");
+                let action: Allocated<AnyObject> = msg_send![class!(UIAccessibilityCustomAction), alloc];
+                let action: Retained<AnyObject> = msg_send![action, initWithName: &*name, target: self, selector: sel!(runeShowMenu:)];
+                let _: () = msg_send![&*actions, addObject: &*action];
+            }
+            let _: () = msg_send![self, setAccessibilityCustomActions: &*actions];
         }
     }
 }
@@ -197,7 +231,7 @@ impl Accessibility {
     /// Whether a client asked for the elements yet.
     pub(crate) fn asked(&self) -> bool { self.asked }
 
-    pub(crate) fn request(&self, id: u64, gesture: Gesture) -> Option<ActionRequest> {
+    pub(crate) fn request(&mut self, id: u64, gesture: Gesture) -> Option<ActionRequest> {
         self.mirror.request(id, gesture)
     }
 
@@ -218,9 +252,11 @@ impl Accessibility {
             let _: () = unsafe { msg_send![&*list, addObject: &*object] };
             made.insert(element.id, object);
         }
+        let focus = changes.focus.and_then(|id| made.get(&id).cloned());
         self.made = made;
         self.list = list;
-        Posts { screen: first && changes.layout, layout: !first && changes.layout, announce: changes.announce }
+        let layout = !first && changes.layout && changes.page.is_none();
+        Posts { screen: first && changes.layout, layout, focus, page: changes.page, announce: changes.announce }
     }
 }
 
@@ -228,16 +264,25 @@ impl Accessibility {
 pub(crate) struct Posts {
     screen: bool,
     layout: bool,
+    focus: Option<Retained<RuneElement>>,
+    page: Option<String>,
     announce: Vec<String>,
 }
 
 impl Posts {
     pub(crate) fn post(self) {
         // SAFETY: UIKit's notifications, each with the argument it documents: none to let
-        // the reader choose where to land, or the words to speak.
+        // the reader choose where to land, the element to land on, or the words to speak.
         unsafe {
             if self.screen { UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, None); }
-            if self.layout { UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, None); }
+            match &self.focus {
+                Some(element) => UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, Some(element)),
+                None if self.layout => UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, None),
+                None => {}
+            }
+            if let Some(page) = &self.page {
+                UIAccessibilityPostNotification(UIAccessibilityPageScrolledNotification, Some(&NSString::from_str(page)));
+            }
             for words in &self.announce {
                 UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, Some(&NSString::from_str(words)));
             }

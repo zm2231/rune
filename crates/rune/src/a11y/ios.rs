@@ -38,6 +38,8 @@ pub(crate) struct Element {
     pub(crate) traits: u16,
     /// Left, top, width and height in the app's points, which the view's zoom scales to its own.
     pub(crate) rect: [f32; 4],
+    pub(crate) expanded: Option<bool>,
+    pub(crate) menu: bool,
     /// The nearest scroll view around it, for a reader's scroll gesture.
     scrolls: Option<u64>,
 }
@@ -54,6 +56,7 @@ pub(crate) enum Gesture {
     Focused,
     /// A scroll that shows the content further in this direction.
     Scroll(Toward),
+    Menu,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,7 +69,12 @@ pub(crate) struct Changes {
     pub(crate) layout: bool,
     /// What live regions newly say, in tree order.
     pub(crate) announce: Vec<String>,
+    pub(crate) focus: Option<u64>,
+    pub(crate) page: Option<String>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Axis { X, Y }
 
 #[derive(Default)]
 pub(crate) struct Mirror {
@@ -75,6 +83,8 @@ pub(crate) struct Mirror {
     elements: Vec<Element>,
     /// What each live region said last, by node.
     said: HashMap<u64, String>,
+    focus: Option<u64>,
+    paging: Option<(u64, Axis)>,
 }
 
 impl Mirror {
@@ -85,6 +95,7 @@ impl Mirror {
         // A whole tree after none (a reader just asked) says nothing: what a live region held
         // before anyone listened is old news.
         let first = self.root.is_none();
+        let focus = update.focus.0;
         if let Some(tree) = &update.tree { self.root = Some(tree.root); }
         for (id, node) in update.nodes { self.nodes.insert(id.0, node); }
         let mut walk = Walk { nodes: &self.nodes, elements: Vec::new(), live: Vec::new(), seen: Vec::new() };
@@ -101,12 +112,15 @@ impl Mirror {
         self.said = said;
         let order = |list: &[Element]| list.iter().map(|e| e.id).collect::<Vec<_>>();
         let layout = order(&elements) != order(&self.elements);
+        let moved = !first && self.focus != Some(focus) && elements.iter().any(|e| e.id == focus);
+        self.focus = Some(focus);
         self.elements = elements;
-        Changes { layout, announce }
+        let page = self.paging.take().and_then(|(id, axis)| page(self.nodes.get(&id)?, axis));
+        Changes { layout, announce, focus: moved.then_some(focus), page }
     }
 
     /// The tree's action for what a reader did to element `id`, if the element takes it.
-    pub(crate) fn request(&self, id: u64, gesture: Gesture) -> Option<ActionRequest> {
+    pub(crate) fn request(&mut self, id: u64, gesture: Gesture) -> Option<ActionRequest> {
         let node = self.nodes.get(&id)?;
         let first = |actions: &[Action]| actions.iter().copied().find(|a| node.supports_action(*a));
         let (target, action) = match gesture {
@@ -114,15 +128,21 @@ impl Mirror {
             Gesture::Increment => (id, first(&[Action::Increment])?),
             Gesture::Decrement => (id, first(&[Action::Decrement])?),
             Gesture::Focused => (id, first(&[Action::ScrollIntoView])?),
+            Gesture::Menu => (id, first(&[Action::ShowContextMenu])?),
             Gesture::Scroll(toward) => {
                 let scrolls = self.elements.iter().find(|e| e.id == id)?.scrolls?;
-                let action = match toward {
-                    Toward::Up => Action::ScrollUp,
-                    Toward::Down => Action::ScrollDown,
-                    Toward::Left => Action::ScrollLeft,
-                    Toward::Right => Action::ScrollRight,
+                let view = self.nodes.get(&scrolls)?;
+                let (action, axis) = match toward {
+                    Toward::Up => (Action::ScrollUp, Axis::Y),
+                    Toward::Down => (Action::ScrollDown, Axis::Y),
+                    Toward::Left => (Action::ScrollLeft, Axis::X),
+                    Toward::Right => (Action::ScrollRight, Axis::X),
                 };
-                (scrolls, self.nodes.get(&scrolls).filter(|n| n.supports_action(action)).map(|_| action)?)
+                let (offset, max) = offsets(view, axis);
+                let ahead = match toward { Toward::Up | Toward::Left => offset > EDGE, Toward::Down | Toward::Right => offset < max - EDGE };
+                if !view.supports_action(action) || !ahead { return None; }
+                self.paging = Some((scrolls, axis));
+                (scrolls, action)
             }
         };
         Some(ActionRequest { action, target_tree: TreeId::ROOT, target_node: NodeId(target), data: None })
@@ -163,6 +183,27 @@ impl Walk<'_> {
 }
 
 const SCROLLS: [Action; 4] = [Action::ScrollUp, Action::ScrollDown, Action::ScrollLeft, Action::ScrollRight];
+
+const EDGE: f64 = 0.5;
+
+const PAGE: f64 = 0.9;
+
+fn offsets(view: &Node, axis: Axis) -> (f64, f64) {
+    match axis {
+        Axis::Y => (view.scroll_y().unwrap_or(0.0), view.scroll_y_max().unwrap_or(0.0)),
+        Axis::X => (view.scroll_x().unwrap_or(0.0), view.scroll_x_max().unwrap_or(0.0)),
+    }
+}
+
+fn page(view: &Node, axis: Axis) -> Option<String> {
+    let bounds = view.bounds()?;
+    let (offset, max) = offsets(view, axis);
+    let step = PAGE * match axis { Axis::Y => bounds.height(), Axis::X => bounds.width() };
+    if step <= 0.0 { return None; }
+    let total = (max / step).ceil().max(0.0) as u32 + 1;
+    let at = if offset >= max - EDGE { total } else { ((offset / step).round().max(0.0) as u32 + 1).min(total) };
+    Some(format!("Page {at} of {total}"))
+}
 
 /// The part of `b` inside `clip`. Something scrolled out of view keeps its place in the order
 /// and collapses onto the edge it left by, where no finger finds it; a reader that steps onto
@@ -221,7 +262,8 @@ fn element(id: u64, n: &Node, name: Option<String>, shown: [f64; 4], scrolls: Op
     };
     let rect = [shown[0] as f32, shown[1] as f32, (shown[2] - shown[0]) as f32, (shown[3] - shown[1]) as f32];
     let value = value.filter(|v| !v.is_empty());
-    Some(Element { id, label, value, hint: n.description().map(str::to_owned), traits, rect, scrolls })
+    let menu = n.supports_action(Action::ShowContextMenu);
+    Some(Element { id, label, value, hint: n.description().map(str::to_owned), traits, rect, expanded: n.is_expanded(), menu, scrolls })
 }
 
 #[cfg(test)]

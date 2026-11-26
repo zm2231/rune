@@ -2,9 +2,12 @@
 //! button. It presses where it lands, so a tap clicks; dragging an element that drags
 //! (`El::on_drag`: a slider, a scroll bar) drags it; any other drag pans the scroll viewport
 //! under the finger (`runtime/scroll/touch.rs`), flinging it on with momentum, and cancels
-//! the press. A finger held still for [`LONG_PRESS`] is a secondary click there, as Chromium's
-//! long press sends `contextmenu`: the press it began lets go without a click and the menu opens
-//! under the finger, which then lifts on nothing. When a second finger lands with an
+//! the press. Where a secondary press opens something (an `on_secondary_press` handler, a
+//! link's, a field's, selectable text's or an image's menu, or a window-drag region's window
+//! menu), a finger held still for [`LONG_PRESS`] is a secondary click there, as Chromium's long
+//! press sends `contextmenu`: the press it began lets go without a click and the menu opens
+//! under the finger, which then lifts on nothing. Elsewhere a held finger stays a press: it
+//! still pans when it moves and clicks when it lifts. When a second finger lands with an
 //! `El::on_magnify` handler under the fingers' midpoint, the first finger's pending press,
 //! hold, drag or pan cancels cleanly without a click or fling, and two-finger pinches route to
 //! `on_magnify` through [`touch_machine::step_touch`]; otherwise further fingers are ignored.
@@ -14,8 +17,8 @@ use super::touch_machine::{
     Finger, Mode, SlopResolution, TouchEffect, TouchInput, TouchState, TwoFingerTargets, step_touch,
 };
 use super::*;
-/// A finger held still this long (seconds) opens the menu under it (Chromium's
-/// `long_press_time_in_ms`).
+/// A finger held still this long (seconds) opens the menu under it, where there is one
+/// (Chromium's `long_press_time_in_ms`).
 const LONG_PRESS: f64 = 0.5;
 /// Fallback hold deadline (seconds) behind the browser's live `contextmenu` event under
 /// `TouchHoldPolicy::HostContextMenu`: clears Android's longest Touch & Hold accessibility delay

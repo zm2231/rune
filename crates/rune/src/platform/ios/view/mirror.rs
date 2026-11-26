@@ -1,7 +1,7 @@
 #![allow(unsafe_code)]
 
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use objc2::rc::Retained;
+use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, NSObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, extern_class, msg_send};
 
@@ -18,8 +18,7 @@ extern_class!(
 );
 
 const ALWAYS_INSETS: isize = 3;
-const EDGE_TOP: usize = 1;
-const EDGE_TOP_AND_BOTTOM: usize = 1 | 4;
+const EDGES: [usize; 2] = [1, 4];
 
 define_class!(
     // SAFETY: `UIScrollView` is made to be subclassed, and `Mirror` has no `Drop`.
@@ -79,13 +78,33 @@ impl RuneView {
 
     pub(super) fn offer_mirror(&self) {
         let Some(mirror) = self.ivars().mirror.borrow().clone() else { return };
-        let Some(controller) = self.controller() else { return };
-        // SAFETY: `UIViewController` takes and answers a nullable `UIScrollView` for an
-        // `NSDirectionalRectEdge`, a single edge when asking; the mirror is one.
-        unsafe {
-            let current: Option<Retained<AnyObject>> = msg_send![&*controller, contentScrollViewForEdge: EDGE_TOP];
-            if current.is_none() {
-                let _: () = msg_send![&*controller, setContentScrollView: &*mirror, forEdge: EDGE_TOP_AND_BOTTOM];
+        let window: Option<Retained<AnyObject>> = {
+            // SAFETY: `UIView.window` is a nullable `UIWindow`.
+            unsafe { msg_send![self, window] }
+        };
+        let controller = window.and_then(|_| self.controller());
+        let previous = self.ivars().mirrored_by.borrow().load();
+        if let Some(previous) = previous && controller.as_ref().is_none_or(|c| !std::ptr::eq(&**c, &*previous)) {
+            for edge in EDGES {
+                // SAFETY: as below; a nil scroll view clears the edge.
+                unsafe {
+                    let current: Option<Retained<AnyObject>> = msg_send![&*previous, contentScrollViewForEdge: edge];
+                    if current.is_some_and(|current| std::ptr::eq(&*current, Retained::as_ptr(&mirror).cast())) {
+                        let _: () = msg_send![&*previous, setContentScrollView: None::<&AnyObject>, forEdge: edge];
+                    }
+                }
+            }
+        }
+        *self.ivars().mirrored_by.borrow_mut() = controller.as_ref().map(Weak::from_retained).unwrap_or_default();
+        let Some(controller) = controller else { return };
+        for edge in EDGES {
+            // SAFETY: `UIViewController` takes and answers a nullable `UIScrollView` for a single
+            // `NSDirectionalRectEdge`; the mirror is one.
+            unsafe {
+                let current: Option<Retained<AnyObject>> = msg_send![&*controller, contentScrollViewForEdge: edge];
+                if current.is_none() {
+                    let _: () = msg_send![&*controller, setContentScrollView: &*mirror, forEdge: edge];
+                }
             }
         }
     }

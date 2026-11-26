@@ -403,10 +403,21 @@ the app's list.
 The main list is the first vertical scroll view down the view's centre line from under the
 status bar (the **Scroll to top** item above), and `Runtime::main_scroll` reads its offset and reach. With
 no such list the scroll view's content fits it, and the bars show nothing under them.
-On the iOS 27 simulator, under SwiftUI's `NavigationStack` (`examples/swiftui-host`), the
-navigation bar showed no edge with the list at its top, and blurred the cards that scrolled
-under it, up under the status bar. Whether the tab bar's bottom edge does the same is not yet
-verified.
+When the view joins a window, its nearest view controller is given this scroll view for each
+of its top and bottom edges that names none of its own (`setContentScrollView(_:for:)`), so
+its bars follow the main list for their large title as well as their edge. An edge where the
+host named a scroll view keeps it. When the view leaves that controller, the edges it was
+given are cleared.
+
+What the bars did was shown on the iOS 27 simulator, under SwiftUI's `NavigationStack` and
+`TabView` (`examples/swiftui-host`):
+
+- with the list at its top the navigation bar showed no edge, and it blurred the cards that
+  scrolled under it, up under the status bar;
+- a large title collapsed into the bar as the list was dragged up, stayed collapsed when the
+  finger lifted, and opened again back at the top;
+- around the floating tab bar, the Rune list looked as a native SwiftUI `List` did at the same
+  place in its scroll: neither showed a strong bottom edge.
 
 When the safe area's top changes, as a large title collapses into the bar or opens out of it,
 the main list's offset moves by the same amount (`Runtime::shift_main_scroll`), so what it

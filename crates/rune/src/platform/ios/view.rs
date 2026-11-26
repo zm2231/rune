@@ -109,6 +109,7 @@ pub(crate) struct Ivars {
     keys: RefCell<keys::Repeat>,
     key_seq: Cell<Seq>,
     mirror: RefCell<Option<Retained<mirror::Mirror>>>,
+    mirrored_by: RefCell<Weak<AnyObject>>,
 }
 
 define_class!(
@@ -393,6 +394,7 @@ impl RuneView {
             keys: RefCell::new(keys::Repeat::Idle),
             key_seq: Cell::new(Seq::default()),
             mirror: RefCell::new(None),
+            mirrored_by: RefCell::default(),
         });
         let frame = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0));
         // SAFETY: `initWithFrame:` is `UIView`'s designated initializer.

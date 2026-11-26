@@ -26,6 +26,9 @@
 //! left (default `360,0`). The app quits after `GLASS_PANEL_SECONDS` when that is set.
 //! `GLASS_PANEL_POPOVER` asks for the popover material everywhere, and `GLASS_PANEL_MARK`
 //! draws a marker that tells the two windows apart in a recording.
+//!
+//! On iOS the screen is one view: the card flies over the tiles inside it, docks below the status
+//! bar, holds and flies again, and the Light or Dark button switches the view's appearance.
 
 #![forbid(unsafe_code)]
 
@@ -34,7 +37,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use rune::{
-    App, AppSpec, Color, Cx, DisplayTarget, El, KeyPolicy, LoopSpec, OverlayHandle, OverlayInput, OverlayOptions,
+    App, AppSpec, Color, ColorScheme, Cx, DisplayTarget, El, KeyPolicy, LoopSpec, OverlayHandle, OverlayInput, OverlayOptions,
     OverlayPlacement, OverlaySpec, RunOptions, Shadow, SystemMaterial, TextStyle, Transition, Tx, WindowSpec, col, el,
     oklch, row, text,
 };
@@ -119,14 +122,23 @@ fn ease(t: f32) -> f32 {
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
 
+#[derive(Clone, Copy)]
+struct Path {
+    start: [f32; 4],
+    dock: [f32; 4],
+}
+
+const WINDOW_PATH: Path = Path { start: START, dock: DOCK };
+
 /// The card at flight time `t` (0 to 1): its rect, corner radius and lift. Width leads height,
 /// and the centre rides an arc that rises over the dock before it settles.
-fn flight(t: f32) -> ([f32; 4], f32, f32) {
+fn flight(path: Path, t: f32) -> ([f32; 4], f32, f32) {
+    let Path { start, dock } = path;
     let p = ease(t);
-    let w = lerp(START[2], DOCK[2], ease(t * 1.25));
-    let h = lerp(START[3], DOCK[3], ease(t * 1.25 - 0.25));
+    let w = lerp(start[2], dock[2], ease(t * 1.25));
+    let h = lerp(start[3], dock[3], ease(t * 1.25 - 0.25));
     let centre = |r: [f32; 4]| [r[0] + r[2] * 0.5, r[1] + r[3] * 0.5];
-    let (from, to) = (centre(START), centre(DOCK));
+    let (from, to) = (centre(start), centre(dock));
     let control = [lerp(from[0], to[0], 0.6), 0.0];
     let arc = |a: usize| (1.0 - p) * (1.0 - p) * from[a] + 2.0 * p * (1.0 - p) * control[a] + p * p * to[a];
     ([arc(0) - w * 0.5, arc(1) - h * 0.5, w, h], lerp(START_RADIUS, DOCK_RADIUS, p), (std::f32::consts::PI * p).sin())
@@ -139,19 +151,19 @@ fn button(label: &'static str, ink: Color, fill: f32) -> El {
 
 /// The card: glass, frost, hairline and contents, clipped with continuous corners, over two
 /// shadows that deepen and spread with `lift`.
-fn card(s: &Panel, dark: bool, [x, y, w, h]: [f32; 4], radius: f32, lift: f32, docked: bool) -> El {
+fn card(s: &Panel, dark: bool, path: Path, [x, y, w, h]: [f32; 4], radius: f32, lift: f32, docked: bool) -> El {
     let ink = if dark { Color::WHITE } else { BLACK };
     let frost = if dark { rune::color::hex("#1e1e1e").unwrap_or(BLACK) } else { Color::WHITE }.alpha(0.62);
     let swap = Transition::opacity().combined(Transition::scale(0.96)).combined(Transition::blur(3.0));
     let content = if docked {
-        row().key("docked").absolute(0.0, 0.0).size(DOCK[2], DOCK[3]).px(20.0).gap(12.0).center_y().transition(swap)
+        row().key("docked").absolute(0.0, 0.0).size(path.dock[2], path.dock[3]).px(20.0).gap(12.0).center_y().transition(swap)
             .child(col().gap(3.0)
                 .child(text("Waiting for access").font(TextStyle::new(15.0, 620.0)).color(ink.alpha(0.847)))
                 .child(text("Turn it on in System Settings").font(TextStyle::new(12.0, 450.0)).color(ink.alpha(0.5))))
             .child(el().grow(1.0))
             .child(button("Open", ink, 0.12))
     } else {
-        col().key("asking").absolute(0.0, 0.0).size(START[2], START[3]).padding(22.0).gap(12.0).transition(swap)
+        col().key("asking").absolute(0.0, 0.0).size(path.start[2], path.start[3]).padding(22.0).gap(12.0).transition(swap)
             .child(text("Allow screen recording?").font(TextStyle::new(19.0, 650.0)).color(ink.alpha(0.847)))
             .child(text("The assistant needs to see the window you are working in to help with it.")
                 .w_full().wrap().font(TextStyle::new(13.5, 450.0)).color(ink.alpha(0.5)))
@@ -174,12 +186,12 @@ fn view(s: &Panel, cx: &mut Cx<Panel>) -> El {
     let root = el().key("root").w_full().h_full();
     match s.role {
         Role::Backdrop => backdrop(),
-        Role::Dock => root.child(card(s, dark, [MARGIN, MARGIN, DOCK[2], DOCK[3]], DOCK_RADIUS, 0.0, true))
+        Role::Dock => root.child(card(s, dark, WINDOW_PATH, [MARGIN, MARGIN, DOCK[2], DOCK[3]], DOCK_RADIUS, 0.0, true))
             .children(s.mark.then(|| marker(4.0, 4.0, Color { r: 1.0, g: 0.0, b: 1.0, a: 1.0 }))),
         Role::Flight => {
             let t = s.started.map_or(0.0, |started| ((s.now - started) / FLIGHT_SECONDS) as f32);
-            let (rect, radius, lift) = flight(t);
-            let root = root.child(card(s, dark, rect, radius, lift, t >= 0.4))
+            let (rect, radius, lift) = flight(WINDOW_PATH, t);
+            let root = root.child(card(s, dark, WINDOW_PATH, rect, radius, lift, t >= 0.4))
                 .children(s.mark.then(|| marker(DOCK[0] - MARGIN + 12.0, DOCK[1] - MARGIN + 4.0, Color { r: 0.0, g: 1.0, b: 1.0, a: 1.0 })));
             // Keeps frames, and so `poll`, coming until the hand-off.
             if s.started.is_some() && !s.handed {
@@ -189,12 +201,33 @@ fn view(s: &Panel, cx: &mut Cx<Panel>) -> El {
     }
 }
 
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+fn phone_view(s: &Panel, cx: &mut Cx<Panel>) -> El {
+    let [w, h] = cx.layout_size("root").unwrap_or([FLIGHT_WINDOW.0, FLIGHT_WINDOW.1]);
+    let [top, _, bottom, _] = cx.safe_area();
+    let dark = cx.system_dark();
+    let path = Path { start: [16.0, (h - 236.0) * 0.55, w - 32.0, 236.0], dock: [16.0, top + 12.0, w - 32.0, 92.0] };
+    let t = s.started.map_or(0.0, |started| ((s.now - started) / FLIGHT_SECONDS) as f32);
+    let (rect, radius, lift) = flight(path, t);
+    let ink = if dark { Color::WHITE } else { BLACK };
+    let appearance = row().key("appearance").role("button").label(if dark { "Light" } else { "Dark" }).focusable(true).hit()
+        .absolute(w * 0.5 - 50.0, h - bottom - 52.0).size(100.0, 36.0).center().radius(18.0).continuous_corners()
+        .system_material(s.material)
+        .on_press_tx(move |_: &mut Panel, tx: &mut Tx| tx.set_color_scheme(if dark { ColorScheme::Light } else { ColorScheme::Dark }))
+        .child(text(if dark { "Light" } else { "Dark" }).font(TextStyle::new(14.0, 600.0)).color(ink.alpha(0.847)));
+    let root = el().key("root").w_full().h_full().child(tiles((w, h))).child(card(s, dark, path, rect, radius, lift, t >= 0.4)).child(appearance);
+    if s.started.is_some() && !s.handed {
+        root.child(el().key("frames").absolute(0.0, 0.0).size(1.0, 1.0).looping(LoopSpec::rotation(1.0)))
+    } else { root }
+}
+
 fn marker(x: f32, y: f32, color: Color) -> El { el().key("mark").absolute(x, y).size(4.0, 4.0).fill(color) }
 
 /// Colour tiles and sweeping bars behind the flight, so the glass has something to bend.
-fn backdrop() -> El {
-    let (w, h) = FLIGHT_WINDOW;
-    let (cols, rows) = (20, 13);
+fn backdrop() -> El { tiles(FLIGHT_WINDOW) }
+
+fn tiles((w, h): (f32, f32)) -> El {
+    let (cols, rows) = (20, (20.0 * h / w).round().max(1.0) as usize);
     let tile = (w / cols as f32, h / rows as f32);
     let tiles = (0..cols * rows).map(move |i| {
         let (c, r) = (i % cols, i / cols);
@@ -208,6 +241,20 @@ fn backdrop() -> El {
     el().key("backdrop").w_full().h_full().children(tiles).children(bars)
 }
 
+#[cfg(target_os = "ios")]
+fn main() {
+    let app = App::new(AppSpec { poll: Some(poll), ..AppSpec::new("Glass panel", FLIGHT_WINDOW, || panel(Role::Flight), phone_view) });
+    let handle = app.handle();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(1200));
+        handle.update(|s, _| s.fly = true);
+        std::thread::sleep(Duration::from_millis(2800));
+        handle.update(|s, _| (s.started, s.landed, s.handed) = (None, None, false));
+    });
+    app.run();
+}
+
+#[cfg(not(target_os = "ios"))]
 fn main() {
     let at = rune::env::var("GLASS_PANEL_AT")
         .and_then(|v| v.split_once(',').and_then(|(x, y)| Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?))))

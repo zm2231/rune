@@ -25,5 +25,6 @@ pub(crate) fn tint(material: SystemMaterial, fill: Color, dark: bool) -> Color {
         (SystemMaterial::Sidebar, false) => (0.94, 0.72),
         (SystemMaterial::Sidebar, true) => (0.11, 0.72),
     };
-    Color { r: white, g: white, b: white, a: alpha }
+    let level = crate::color::srgb_decode(white);
+    Color { r: level, g: level, b: level, a: alpha }
 }

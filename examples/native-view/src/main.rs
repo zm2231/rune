@@ -1,6 +1,7 @@
 //! A web page hosted in a scrolling Rune pane with `El::native_view`: the page tracks its card
 //! through scrolls, a spring collapse and window resizes. Tab moves from the sidebar into the
-//! page and back out. `cargo run -p native-view` on macOS;
+//! page and back out. `cargo run -p native-view` on macOS; `-- --tab-lab` loads a local page of
+//! form fields that lists each key and focus change it sees, to check Tab handoff against;
 //! elsewhere the card lays out as an empty box. `-- --snap target/native-view.png` renders it
 //! headless.
 
@@ -11,6 +12,32 @@ use rune::{AppSpec, Cx, El, NativeView, ScrollSpec, TextEdit, Tx, col, el, row, 
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 const URL: &str = "https://en.wikipedia.org/wiki/Special:Random";
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+const TAB_LAB: &str = r##"<!doctype html>
+<meta name="viewport" content="width=device-width">
+<style>
+body { font: 16px -apple-system, sans-serif; margin: 12px; }
+input, button, a { font: inherit; display: block; margin: 6px 0; }
+:focus { outline: 3px solid #f60; }
+#log { font: 12px ui-monospace, monospace; white-space: pre; }
+</style>
+<input id="first" placeholder="first field">
+<a id="link" href="#link">a link</a>
+<button id="button">a button</button>
+<input id="last" placeholder="last field">
+<div id="log"></div>
+<script>
+const out = document.getElementById("log");
+const say = line => { out.textContent = (line + "\n" + out.textContent).slice(0, 3000); };
+const name = el => el && el.id ? "#" + el.id : el ? el.tagName.toLowerCase() : "none";
+addEventListener("keydown", e => say(`keydown ${e.shiftKey ? "Shift-" : ""}${e.key} at ${name(document.activeElement)}`), true);
+addEventListener("focusin", e => say(`focusin ${name(e.target)}`), true);
+addEventListener("focusout", e => say(`focusout ${name(e.target)}`), true);
+addEventListener("focus", () => say("page focus"));
+addEventListener("blur", () => say("page blur"));
+</script>
+"##;
 
 struct State {
     slot: NativeView,
@@ -73,7 +100,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
 fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     if s.web.is_none() && s.slot.in_window() {
-        match wry::WebViewBuilder::new().with_url(URL).build_as_child(&s.slot) {
+        let builder = wry::WebViewBuilder::new();
+        let builder = if std::env::args().any(|a| a == "--tab-lab") { builder.with_html(TAB_LAB) } else { builder.with_url(URL) };
+        match builder.build_as_child(&s.slot) {
             Ok(web) => s.web = Some(web),
             Err(e) => eprintln!("native-view: no web view: {e}"),
         }

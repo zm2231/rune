@@ -13,7 +13,7 @@ use super::{
 use crate::render::{
     Gpu, Renderer,
     loss_latch::{GpuFailureKind, GpuLossLatch, GpuLossPolicy},
-    warm_machine::{Clock, ShutdownOutcome, WarmSlot},
+    warm_machine::{Clock, ShutdownOutcome, State, WarmSlot},
 };
 use crate::time::Instant;
 use crate::{App, AppSpec, Cx, El, el};
@@ -66,14 +66,13 @@ fn test_warmed(owner: Option<Arc<GpuLossLatch>>) -> Option<(Warmed, wgpu::Device
     Some((Warmed::new(gpu, renderer, owner), device))
 }
 
-fn wait_until(pred: impl Fn() -> bool) {
-    for _ in 0..500 {
-        if pred() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert!(pred(), "timed out waiting for warm slot state");
+fn built(slot: &WarmSlot<Warmed, Arc<FakeClock>>) -> State {
+    slot.wake_and_wait_for(|state| !matches!(state, State::Running { .. }))
+}
+
+fn parked(slot: &WarmSlot<Warmed, Arc<FakeClock>>) {
+    let state = built(slot);
+    assert!(matches!(state, State::Parked { .. }), "the warmed device must park: {state:?}");
 }
 
 #[test]
@@ -103,7 +102,9 @@ fn warm_make_failure_latches_terminal_owner_and_wakes_once() {
         })),
     );
 
-    wait_until(|| latch.is_failed() && slot.shutdown(Duration::from_secs(2)) == ShutdownOutcome::Drained);
+    built(&slot);
+    assert!(latch.is_failed());
+    assert_eq!(slot.shutdown(Duration::from_secs(2)), ShutdownOutcome::Drained);
     assert_eq!(latch.kind(), Some(GpuFailureKind::InitFailed));
     assert_eq!(latch.reason().as_deref(), Some("no compatible display adapter"));
     assert_eq!(wakes.load(Ordering::SeqCst), 1);
@@ -132,7 +133,8 @@ fn warm_prepare_destroy_latches_and_does_not_park() {
         })),
     );
 
-    wait_until(|| latch.is_failed());
+    built(&slot);
+    assert!(latch.is_failed());
     assert_eq!(wakes.load(Ordering::SeqCst), 1);
     assert!(take_from_slot(&slot).is_none(), "destroyed device must not be parked");
     assert_eq!(slot.shutdown(Duration::from_secs(2)), ShutdownOutcome::Drained);
@@ -179,7 +181,8 @@ fn warm_prepare_validation_error_latches_without_panicking_and_does_not_park() {
         })),
     );
 
-    wait_until(|| latch.is_failed());
+    built(&slot);
+    assert!(latch.is_failed());
     assert_eq!(latch.kind(), Some(GpuFailureKind::UncapturedError));
     assert_eq!(wakes.load(Ordering::SeqCst), 1);
     assert!(take_from_slot(&slot).is_none(), "validation-failed device must not be parked");
@@ -211,7 +214,7 @@ fn parked_device_lost_while_waiting_trips_owner_on_take_and_refuses_fallback() {
         None,
     );
 
-    wait_until(|| slot.has_ready());
+    parked(&slot);
     assert!(!latch.is_failed(), "healthy parked device must not be latched");
 
     // Device dies while waiting in Parked (Ready) BEFORE a surface calls take().
@@ -279,7 +282,7 @@ fn failed_terminal_refuses_warm_and_second_request_extends_linger_without_replac
             a_prep_cb.fetch_add(1, Ordering::SeqCst);
         })),
     );
-    wait_until(|| slot.has_ready());
+    parked(&slot);
     assert_eq!(a_prep.load(Ordering::SeqCst), 1);
 
     // 3. Owner B calls warm_on_slot while Parked: extends LINGER without replacing owner A or
@@ -333,9 +336,10 @@ fn clean_linger_expiry_discard_cancel_and_shutdown_never_falsely_latch_terminal_
         |owner| test_warmed(owner).map(|(w, _)| w),
         None,
     );
-    wait_until(|| slot.has_ready());
+    parked(&slot);
     clock.advance(Duration::from_millis(50));
-    wait_until(|| !slot.has_ready());
+    let expired = slot.wake_and_wait_for(|state| !matches!(state, State::Parked { .. }));
+    assert!(matches!(expired, State::NotStarted { .. }), "LINGER must expire on the clock: {expired:?}");
     assert_eq!(slot.shutdown(Duration::from_secs(2)), ShutdownOutcome::Drained);
     assert!(!owner.is_failed(), "clean LINGER expiry must never falsely latch Terminal owner");
 
@@ -349,7 +353,7 @@ fn clean_linger_expiry_discard_cancel_and_shutdown_never_falsely_latch_terminal_
         |owner| test_warmed(owner).map(|(w, _)| w),
         None,
     );
-    wait_until(|| slot2.has_ready());
+    parked(&slot2);
     slot2.cancel();
     assert_eq!(slot2.shutdown(Duration::from_secs(2)), ShutdownOutcome::Drained);
     assert!(!owner2.is_failed(), "clean Cancel/Shutdown must never falsely latch Terminal owner");

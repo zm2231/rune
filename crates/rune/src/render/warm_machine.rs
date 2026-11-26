@@ -440,6 +440,16 @@ impl<T: Send + 'static, C: Clock + 'static> WarmSlot<T, C> {
     }
 
     #[cfg(test)]
+    pub(crate) fn wake_and_wait_for(&self, settled: impl Fn(State) -> bool) -> State {
+        let mut inner = self.lock();
+        self.changed.notify_all();
+        while !settled(inner.state) {
+            inner = self.changed.wait(inner).unwrap_or_else(|e| e.into_inner());
+        }
+        inner.state
+    }
+
+    #[cfg(test)]
     pub(crate) fn wait_until_zero_workers(&self, timeout: Duration) -> usize {
         let deadline = self.clock.now() + timeout;
         let mut inner = self.lock();

@@ -374,7 +374,8 @@ pub fn authorization(f: impl FnOnce(Authorization) + Send + 'static) {
 
 /// Calls `f` for every notification `post` took that the system didn't show, from any thread
 /// (wake the app's loop from it): the app's notifications are off, the person turned them down
-/// when asked, or the system refused the post. A post called off by `remove` is not an error.
+/// when asked, or the system refused the post. A post called off by `remove`, or replaced by a
+/// later post of the same id before the system answered, is not reported.
 /// Install it at launch, before the first post.
 pub fn on_post_error(f: impl Fn(PostError) + Send + Sync + 'static) {
     *status::error_handler().lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(f));

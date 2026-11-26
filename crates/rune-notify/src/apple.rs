@@ -130,7 +130,9 @@ pub(super) unsafe fn post_to(center: *mut AnyObject, n: Notification) {
             unsafe { add(center, &n, ticket) };
             return;
         }
-        inflight().settle(&n.id, ticket);
+        if inflight().settle(&n.id, ticket) != Settled::Wanted {
+            return;
+        }
         let failure = if error.is_null() {
             Failure::Denied
         } else {
@@ -154,7 +156,7 @@ unsafe fn add(center: *mut AnyObject, n: &Notification, ticket: u64) {
         if settled == Settled::Withdrawn {
             // SAFETY: `center` outlives its own completion handler.
             unsafe { withdraw(center, &[&id]) };
-        } else if !error.is_null() {
+        } else if settled == Settled::Wanted && !error.is_null() {
             // SAFETY: a non-nil `error` is the add's live `NSError`, read inside this pool.
             refused(&id, Failure::System(objc2::rc::autoreleasepool(|_| unsafe { described(error) })));
         }

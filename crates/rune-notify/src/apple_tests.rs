@@ -152,6 +152,34 @@ fn a_denied_or_failed_permission_request_reaches_on_post_error() {
 }
 
 #[test]
+fn a_post_removed_or_posted_again_before_a_refusal_reports_nothing() {
+    let got = Arc::new(Mutex::new(Vec::new()));
+    let sink = got.clone();
+    crate::on_post_error(move |e| {
+        if e.id.starts_with("quiet-") {
+            sink.lock().unwrap().push(e);
+        }
+    });
+    let center = fake_center();
+    post(&center, "quiet-1");
+    remove(&center, "quiet-1");
+    answer(false, std::ptr::null_mut());
+    post(&center, "quiet-2");
+    remove(&center, "quiet-2");
+    // SAFETY: inside an autorelease pool; `errorWithDomain:code:userInfo:` takes a nil user info.
+    objc2::rc::autoreleasepool(|_| unsafe {
+        let error: *mut AnyObject = msg_send![class!(NSError), errorWithDomain: ns("UNErrorDomain"), code: 1isize, userInfo: std::ptr::null::<AnyObject>()];
+        answer(false, error);
+    });
+    post(&center, "quiet-3");
+    post(&center, "quiet-3");
+    answer(false, std::ptr::null_mut());
+    *error_handler().lock().unwrap() = None;
+    assert!(got.lock().unwrap().is_empty(), "{:?}", got.lock().unwrap());
+    ASKED.with_borrow_mut(Vec::clear);
+}
+
+#[test]
 fn authorization_reads_the_centers_status() {
     let center = fake_center();
     for (status, want) in [(1, Authorization::Denied), (3, Authorization::Provisional)] {

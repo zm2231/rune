@@ -330,11 +330,18 @@ fn run_window_factory(options: crate::RunOptions, args: Args, factory: Factory) 
         #[cfg(not(any(feature = "tooling", debug_assertions)))]
         Err(StartError::Window(WITHOUT_TOOLING.into()))
     } else {
-        #[cfg(target_os = "ios")]
-        { let _ = options; crate::platform::ios::run_windows(factory).map_err(StartError::Window) }
-        #[cfg(not(target_os = "ios"))]
-        crate::window::run_windows(factory, args, options).map_err(StartError::Window)
+        run_native(factory, args, options)
     }
+}
+
+#[cfg(target_os = "ios")]
+fn run_native(factory: Factory, _: Args, _: crate::RunOptions) -> Result<(), StartError> {
+    crate::platform::ios::run_windows(factory).map_err(StartError::Window)
+}
+
+#[cfg(not(target_os = "ios"))]
+fn run_native(factory: Factory, args: Args, options: crate::RunOptions) -> Result<(), StartError> {
+    crate::window::run_windows(factory, args, options).map_err(StartError::Window)
 }
 
 /// Lists the windows, or renders the one `--window KEY` selects (the first by default) with its
@@ -358,7 +365,7 @@ fn headless_window(windows: Vec<crate::AnyWindowSpec>, displays: &[crate::Displa
     let mut window = windows.remove(index);
     let args = window.resolve_args(args);
     if !args.headless() {
-        return crate::window::run_windows(Box::new(move |_| vec![window]), args, options).map_err(StartError::Window);
+        return run_native(Box::new(move |_| vec![window]), args, options);
     }
     let scale = displays.iter().find(|d| d.primary).unwrap_or(&displays[0]).scale;
     window.headless(args, scale as f32)

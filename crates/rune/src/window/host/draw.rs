@@ -588,10 +588,16 @@ impl FrameHost for WindowFrame<'_> {
         #[cfg(target_os = "macos")]
         if !self.state.materials_checked {
             self.state.materials_checked = true;
+            let rt = self.host.app.rt();
             if let Some(l) = self.host.win.as_mut()
-                && l.surface.as_ref().is_some_and(|surface| l.native.materials.update(self.host.app.rt().transparent, !self.host.app.rt().paint.materials().is_empty(), &l.window, surface))
+                && let Some(surface) = l.surface.as_ref()
             {
-                return PostStepCheck::Reacquire(ReacquireReason::NativeMaterials);
+                let hosting = !rt.paint.native_views().is_empty();
+                if hosting { l.native.hosts.attach(&l.window); }
+                let materials = l.native.materials.update(rt.transparent, !rt.paint.materials().is_empty(), &l.window, surface);
+                if l.native.materials.set_hosts(surface, hosting) | materials {
+                    return PostStepCheck::Reacquire(ReacquireReason::NativeMaterials);
+                }
             }
         }
         #[cfg(all(target_os = "windows", feature = "windows-system-material"))]

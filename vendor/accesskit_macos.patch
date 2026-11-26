@@ -1,3 +1,140 @@
+diff --git a/src/adapter.rs b/src/adapter.rs
+index 86b4b00..040b948 100644
+--- a/src/adapter.rs
++++ b/src/adapter.rs
+@@ -4,7 +4,7 @@
+ // the LICENSE-MIT file), at your option.
+ 
+ use crate::{
+-    context::{ActionHandlerNoMut, ActionHandlerWrapper, Context},
++    context::{ActionHandlerNoMut, ActionHandlerWrapper, Context, HostedViews},
+     event::{EventGenerator, QueuedEvents, focus_event},
+     filters::filter,
+     node::can_be_focused,
+@@ -75,6 +75,7 @@ impl ActionHandler for PlaceholderActionHandler {
+ #[derive(Debug)]
+ pub struct Adapter {
+     state: State,
++    hosted: HostedViews,
+ }
+ 
+ impl Adapter {
+@@ -100,7 +101,24 @@ impl Adapter {
+             action_handler: Rc::new(ActionHandlerWrapper::new(action_handler)),
+             mtm,
+         };
+-        Self { state }
++        Self { state, hosted: HostedViews::default() }
++    }
++
++    /// Hosts platform views in the tree: each view becomes the last accessibility child of the
++    /// node with its id, reports that node as its parent, and answers hit tests inside the
++    /// node's bounds. Replaces the views set before.
++    ///
++    /// # Safety
++    ///
++    /// Each pointer must be a valid, unreleased pointer to an `NSView`.
++    pub unsafe fn set_hosted_views(&mut self, views: &[(NodeId, *mut c_void)]) {
++        let mut hosted = self.hosted.borrow_mut();
++        hosted.clear();
++        for &(id, view) in views {
++            if let Some(view) = unsafe { Id::retain(view as *mut NSView) } {
++                hosted.insert(id, view);
++            }
++        }
+     }
+ 
+     /// If and only if the tree has been initialized, call the provided function
+@@ -128,6 +146,7 @@ impl Adapter {
+                     tree,
+                     Rc::clone(action_handler),
+                     placeholder_context.mtm,
++                    Rc::clone(&self.hosted),
+                 );
+                 let result = context.tree.borrow().state().focus().map(|node| {
+                     QueuedEvents::new(Rc::clone(&context), vec![focus_event(node.id())])
+@@ -184,7 +203,7 @@ impl Adapter {
+             } => match activation_handler.request_initial_tree() {
+                 Some(initial_state) => {
+                     let tree = Tree::new(initial_state, *is_view_focused);
+-                    let context = Context::new(view.clone(), tree, Rc::clone(action_handler), *mtm);
++                    let context = Context::new(view.clone(), tree, Rc::clone(action_handler), *mtm, Rc::clone(&self.hosted));
+                     let result = Rc::clone(&context);
+                     self.state = State::Active(context);
+                     result
+@@ -202,6 +221,7 @@ impl Adapter {
+                         placeholder_tree,
+                         Rc::new(ActionHandlerWrapper::new(PlaceholderActionHandler {})),
+                         *mtm,
++                        Rc::clone(&self.hosted),
+                     );
+                     let result = Rc::clone(&placeholder_context);
+                     self.state = State::Placeholder {
+@@ -288,8 +308,14 @@ impl Adapter {
+         let tree = context.tree.borrow();
+         let state = tree.state();
+         let root = state.root();
+-        let point = from_ns_point(&view, &root, point);
+-        let node = root.node_at_point(point, &filter).unwrap_or(root);
++        let local = from_ns_point(&view, &root, point);
++        let node = root.node_at_point(local, &filter).unwrap_or(root);
++        if let Some(hosted) = context.hosted_view(node.locate().0) {
++            let hit: *mut NSObject = unsafe { objc2::msg_send![&*hosted, accessibilityHitTest: point] };
++            if !hit.is_null() {
++                return hit;
++            }
++        }
+         Id::autorelease_return(context.get_or_create_platform_node(node.id())) as *mut _
+     }
+ }
+diff --git a/src/context.rs b/src/context.rs
+index fe2f100..3f3a160 100644
+--- a/src/context.rs
++++ b/src/context.rs
+@@ -13,6 +13,8 @@ use objc2_foundation::MainThreadMarker;
+ use std::fmt::Debug;
+ use std::{cell::RefCell, rc::Rc};
+ 
++pub(crate) type HostedViews = Rc<RefCell<HashMap<accesskit::NodeId, Id<NSView>>>>;
++
+ pub(crate) trait ActionHandlerNoMut {
+     fn do_action(&self, request: ActionRequest);
+ }
+@@ -37,6 +39,7 @@ pub(crate) struct Context {
+     pub(crate) action_handler: Rc<dyn ActionHandlerNoMut>,
+     platform_nodes: RefCell<HashMap<FullNodeId, Id<PlatformNode>>>,
+     pub(crate) mtm: MainThreadMarker,
++    pub(crate) hosted: HostedViews,
+ }
+ 
+ impl Debug for Context {
+@@ -57,6 +60,7 @@ impl Context {
+         tree: Tree,
+         action_handler: Rc<dyn ActionHandlerNoMut>,
+         mtm: MainThreadMarker,
++        hosted: HostedViews,
+     ) -> Rc<Self> {
+         Rc::new(Self {
+             view,
+@@ -64,6 +68,7 @@ impl Context {
+             action_handler,
+             platform_nodes: RefCell::new(HashMap::new()),
+             mtm,
++            hosted,
+         })
+     }
+ 
+@@ -83,6 +88,10 @@ impl Context {
+         platform_nodes.remove(&id)
+     }
+ 
++    pub(crate) fn hosted_view(&self, id: accesskit::NodeId) -> Option<Id<NSView>> {
++        self.hosted.borrow().get(&id).cloned()
++    }
++
+     pub(crate) fn do_action(&self, request: ActionRequest) {
+         self.action_handler.do_action(request);
+     }
 diff --git a/src/event.rs b/src/event.rs
 index 445419c..a7b4389 100644
 --- a/src/event.rs
@@ -836,7 +973,7 @@ index 0000000..ae053e0
 +    }
 +}
 diff --git a/src/node.rs b/src/node.rs
-index 7be2e59..7322204 100644
+index 7be2e59..3f7e679 100644
 --- a/src/node.rs
 +++ b/src/node.rs
 @@ -29,7 +29,32 @@ use objc2_foundation::{
@@ -897,6 +1034,21 @@ index 7be2e59..7322204 100644
 +        }
          if let Some(value) = self.0.value() {
              return Some(Value::String(value));
+         }
+@@ -447,12 +481,12 @@ declare_class!(
+         }
+ 
+         #[method_id(accessibilityChildren)]
+-        fn children(&self) -> Option<Id<NSArray<PlatformNode>>> {
++        fn children(&self) -> Option<Id<NSArray<NSObject>>> {
+             self.children_internal()
+         }
+ 
+         #[method_id(accessibilityChildrenInNavigationOrder)]
+-        fn children_in_navigation_order(&self) -> Option<Id<NSArray<PlatformNode>>> {
++        fn children_in_navigation_order(&self) -> Option<Id<NSArray<NSObject>>> {
+             // For now, we assume the children are in navigation order.
+             self.children_internal()
          }
 @@ -755,6 +789,10 @@ declare_class!(
          #[method(accessibilityNumberOfCharacters)]
@@ -1091,8 +1243,31 @@ index 7be2e59..7322204 100644
      }
  
      fn resolve<F, T>(&self, f: F) -> Option<T>
+@@ -1355,13 +1465,17 @@ impl PlatformNode {
+         self.resolve_with_context(|node, _, _| f(node))
+     }
+ 
+-    fn children_internal(&self) -> Option<Id<NSArray<PlatformNode>>> {
++    fn children_internal(&self) -> Option<Id<NSArray<NSObject>>> {
+         self.resolve_with_context(|node, _, context| {
+-            let platform_nodes = node
++            let mut children = node
+                 .filtered_children(filter)
+-                .map(|child| context.get_or_create_platform_node(child.id()))
+-                .collect::<Vec<Id<PlatformNode>>>();
+-            NSArray::from_vec(platform_nodes)
++                .map(|child| Id::into_super(Id::into_super(context.get_or_create_platform_node(child.id()))))
++                .collect::<Vec<Id<NSObject>>>();
++            if let Some(hosted) = context.hosted_view(node.locate().0) {
++                unsafe { hosted.setAccessibilityParent(Some(self)) };
++                children.push(Id::into_super(Id::into_super(hosted)));
++            }
++            NSArray::from_vec(children)
+         })
+     }
+ }
 diff --git a/src/subclass.rs b/src/subclass.rs
-index f4ebc19..6e10394 100644
+index f4ebc19..c71502a 100644
 --- a/src/subclass.rs
 +++ b/src/subclass.rs
 @@ -19,7 +19,7 @@ use objc2::{
@@ -1148,6 +1323,23 @@ index f4ebc19..6e10394 100644
          return unsafe { msg_send![super(this, prev_class(this)), accessibilityHitTest: point] };
      };
      let mut state = associated.ivars().state.borrow_mut();
+@@ -314,6 +324,16 @@ impl SubclassingAdapter {
+         let mut state = self.associated.ivars().state.borrow_mut();
+         state.adapter.update_view_focus_state(is_focused)
+     }
++
++    /// See [`Adapter::set_hosted_views`].
++    ///
++    /// # Safety
++    ///
++    /// Each pointer must be a valid, unreleased pointer to an `NSView`.
++    pub unsafe fn set_hosted_views(&mut self, views: &[(accesskit::NodeId, *mut std::ffi::c_void)]) {
++        let mut state = self.associated.ivars().state.borrow_mut();
++        unsafe { state.adapter.set_hosted_views(views) }
++    }
+ }
+ 
+ impl Drop for SubclassingAdapter {
 diff --git a/src/util.rs b/src/util.rs
 index f5146a7..8197676 100644
 --- a/src/util.rs

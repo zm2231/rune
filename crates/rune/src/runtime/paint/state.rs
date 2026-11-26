@@ -53,7 +53,7 @@ pub(crate) struct PaintState {
     /// The scale each node's text drew at (its own and its ancestors'), for text hit tests.
     pub(crate) drawn_scale: Vec<f32>,
     /// Per node: it drew inside its clip and the window in the last build.
-    pub(super) seen: Vec<bool>,
+    pub(in crate::runtime) seen: Vec<bool>,
     /// Drawn videos' state generations; a change re-runs the view.
     pub(super) video_signature: u64,
     pub(super) pixel_snap: pixel_snap::Glides,
@@ -70,7 +70,7 @@ pub(crate) struct PaintState {
     pub(super) row_lifts: Vec<(usize, f32)>,
     /// Only nonempty when retained exit nodes or matched flights make storage order differ
     /// from paint order.
-    pub(super) layer_paint_order: Vec<usize>,
+    pub(in crate::runtime) layer_paint_order: Vec<usize>,
     /// Sorted indices of anchored overlays lifted in `update_layer_paint_order` so they paint
     /// after (and above) a `.raise()` or flying subtree containing their anchor.
     pub(super) lifted_anchors: Vec<usize>,
@@ -96,6 +96,7 @@ pub(crate) struct PaintState {
     pub(in crate::runtime) text_quads: quads::TextQuads,
     /// `El::system_material` elements built this frame, in paint order.
     pub(super) materials: Vec<crate::system_material::MaterialDraw>,
+    pub(in crate::runtime) native_views: Vec<crate::native_view::NativeViewDraw>,
     /// Wayland blur regions emitted by `El::system_material` elements this frame (empty unless
     /// `wayland_blur_materials` is enabled).
     pub(super) wayland_material_blurs: Vec<crate::system_material::WaylandMaterialBlur>,
@@ -172,6 +173,7 @@ impl PaintState {
             text_rows: HashMap::default(),
             text_quads: quads::TextQuads::new(),
             materials: Vec::new(),
+            native_views: Vec::new(),
             wayland_material_blurs: Vec::new(),
             #[cfg(any(test, all(target_os = "windows", feature = "windows-system-material")))]
             windows_material_draws: Vec::new(),
@@ -632,6 +634,11 @@ impl PaintState {
     #[inline]
     pub(crate) fn materials(&self) -> &[crate::system_material::MaterialDraw] {
         &self.materials
+    }
+
+    #[inline]
+    pub(crate) fn native_views(&self) -> &[crate::native_view::NativeViewDraw] {
+        &self.native_views
     }
 
     #[cfg(any(test, all(target_os = "windows", feature = "windows-system-material")))]

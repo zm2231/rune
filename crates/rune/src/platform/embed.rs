@@ -94,6 +94,8 @@ struct LayerHostCore {
     /// The host shows file dialogs itself.
     file_dialogs: bool,
     surface_health: EmbedSurfaceHealth,
+    #[cfg(target_os = "ios")]
+    hosts: crate::native_view::ios::Hosts,
 }
 
 impl LayerHostCore {
@@ -136,6 +138,9 @@ impl LayerHostCore {
             popup_menus: false,
             file_dialogs: false,
             surface_health: EmbedSurfaceHealth::default(),
+            // SAFETY: `layer` is the live CAMetalLayer the surface above was made on.
+            #[cfg(target_os = "ios")]
+            hosts: unsafe { crate::native_view::ios::Hosts::new(layer) },
         };
         Ok((core, size, scale, now))
     }
@@ -506,6 +511,15 @@ impl<S: 'static> EmbedSurface for LayerHost<S> {
     }
 
     fn submit_and_present(&mut self, prepared: PreparedEmbedFrame) -> Instant {
+        #[cfg(target_os = "ios")]
+        {
+            let rt = self.rt.core();
+            let mut hosts = std::mem::replace(&mut self.core.hosts, crate::native_view::ios::Hosts::detached());
+            let at = hosts.present(rt.paint.native_views(), rt.window_scale(), || self.core.submit_and_present(prepared));
+            self.core.hosts = hosts;
+            at
+        }
+        #[cfg(not(target_os = "ios"))]
         self.core.submit_and_present(prepared)
     }
 

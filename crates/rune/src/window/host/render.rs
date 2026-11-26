@@ -419,7 +419,9 @@ pub(super) fn submit_and_present_window(
     #[cfg(target_os = "macos")]
     {
         let (draws, scale) = crate::system_material::present_draws(host.app.rt());
-        l.native.materials.present(draws, scale, || gpu.queue.present(prepared.frame));
+        let hosted = host.app.rt().paint.native_views();
+        let native = &mut l.native;
+        native.hosts.present(hosted, scale, || native.materials.present(draws, scale, || gpu.queue.present(prepared.frame)));
     }
     #[cfg(target_os = "windows")]
     if let (Some(rects), Some(surface)) = (&prepared.present_rect, l.surface.as_ref())

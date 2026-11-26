@@ -21,6 +21,7 @@ pub(in crate::window) struct Native {
     pub(in crate::window) panel: Option<crate::platform::macos::Panel>,
     /// `El::system_material` views behind the Metal layer.
     pub(in crate::window) materials: crate::system_material::macos::Materials,
+    pub(in crate::window) hosts: crate::native_view::macos::Hosts,
     pub(in crate::window) help: crate::platform::macos::help::NativeHelp,
     /// Redraws on full screen changes.
     pub(in crate::window) full_screen: crate::window::chrome::mac::FullScreenWatch,

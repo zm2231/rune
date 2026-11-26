@@ -81,6 +81,7 @@ mod layout_seed;
 pub use layout_seed::LayoutSeed;
 mod memory;
 mod motion;
+mod native_views;
 mod node_index;
 use node_index::NodeIndex;
 mod paint;

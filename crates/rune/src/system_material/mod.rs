@@ -251,6 +251,7 @@ pub(crate) fn assign(views: &[(SystemMaterial, Option<NodeId>)], draws: &[(Syste
 pub(crate) struct PresentFlag {
     moving: bool,
     materials: bool,
+    hosts: bool,
     live: bool,
     written: bool,
 }
@@ -274,6 +275,12 @@ impl PresentFlag {
         self.write()
     }
 
+    /// `El::native_view` elements started or stopped showing. The value to write, when it changed.
+    pub(crate) fn hosts(&mut self, on: bool) -> Option<bool> {
+        self.hosts = on;
+        self.write()
+    }
+
     /// The user started or stopped dragging the window's edge. The value to write, when it changed.
     pub(crate) fn live(&mut self, on: bool) -> Option<bool> {
         self.live = on;
@@ -281,7 +288,7 @@ impl PresentFlag {
     }
 
     fn write(&mut self) -> Option<bool> {
-        let on = self.moving || self.materials || self.live;
+        let on = self.moving || self.materials || self.hosts || self.live;
         (on != self.written).then(|| { self.written = on; on })
     }
 }

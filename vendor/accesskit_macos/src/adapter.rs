@@ -4,7 +4,7 @@
 // the LICENSE-MIT file), at your option.
 
 use crate::{
-    context::{ActionHandlerNoMut, ActionHandlerWrapper, Context},
+    context::{ActionHandlerNoMut, ActionHandlerWrapper, Context, HostedViews},
     event::{EventGenerator, QueuedEvents, focus_event},
     filters::filter,
     node::can_be_focused,
@@ -75,6 +75,7 @@ impl ActionHandler for PlaceholderActionHandler {
 #[derive(Debug)]
 pub struct Adapter {
     state: State,
+    hosted: HostedViews,
 }
 
 impl Adapter {
@@ -100,7 +101,24 @@ impl Adapter {
             action_handler: Rc::new(ActionHandlerWrapper::new(action_handler)),
             mtm,
         };
-        Self { state }
+        Self { state, hosted: HostedViews::default() }
+    }
+
+    /// Hosts platform views in the tree: each view becomes the last accessibility child of the
+    /// node with its id, reports that node as its parent, and answers hit tests inside the
+    /// node's bounds. Replaces the views set before.
+    ///
+    /// # Safety
+    ///
+    /// Each pointer must be a valid, unreleased pointer to an `NSView`.
+    pub unsafe fn set_hosted_views(&mut self, views: &[(NodeId, *mut c_void)]) {
+        let mut hosted = self.hosted.borrow_mut();
+        hosted.clear();
+        for &(id, view) in views {
+            if let Some(view) = unsafe { Id::retain(view as *mut NSView) } {
+                hosted.insert(id, view);
+            }
+        }
     }
 
     /// If and only if the tree has been initialized, call the provided function
@@ -128,6 +146,7 @@ impl Adapter {
                     tree,
                     Rc::clone(action_handler),
                     placeholder_context.mtm,
+                    Rc::clone(&self.hosted),
                 );
                 let result = context.tree.borrow().state().focus().map(|node| {
                     QueuedEvents::new(Rc::clone(&context), vec![focus_event(node.id())])
@@ -184,7 +203,7 @@ impl Adapter {
             } => match activation_handler.request_initial_tree() {
                 Some(initial_state) => {
                     let tree = Tree::new(initial_state, *is_view_focused);
-                    let context = Context::new(view.clone(), tree, Rc::clone(action_handler), *mtm);
+                    let context = Context::new(view.clone(), tree, Rc::clone(action_handler), *mtm, Rc::clone(&self.hosted));
                     let result = Rc::clone(&context);
                     self.state = State::Active(context);
                     result
@@ -202,6 +221,7 @@ impl Adapter {
                         placeholder_tree,
                         Rc::new(ActionHandlerWrapper::new(PlaceholderActionHandler {})),
                         *mtm,
+                        Rc::clone(&self.hosted),
                     );
                     let result = Rc::clone(&placeholder_context);
                     self.state = State::Placeholder {
@@ -288,8 +308,14 @@ impl Adapter {
         let tree = context.tree.borrow();
         let state = tree.state();
         let root = state.root();
-        let point = from_ns_point(&view, &root, point);
-        let node = root.node_at_point(point, &filter).unwrap_or(root);
+        let local = from_ns_point(&view, &root, point);
+        let node = root.node_at_point(local, &filter).unwrap_or(root);
+        if let Some(hosted) = context.hosted_view(node.locate().0) {
+            let hit: *mut NSObject = unsafe { objc2::msg_send![&*hosted, accessibilityHitTest: point] };
+            if !hit.is_null() {
+                return hit;
+            }
+        }
         Id::autorelease_return(context.get_or_create_platform_node(node.id())) as *mut _
     }
 }

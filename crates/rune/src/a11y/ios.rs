@@ -40,6 +40,8 @@ pub(crate) struct Element {
     pub(crate) rect: [f32; 4],
     /// The nearest scroll view around it, for a reader's scroll gesture.
     scrolls: Option<u64>,
+    /// The `El::native_view` slot it hosts, which stands in the list in its place.
+    pub(crate) hosted: Option<crate::NativeViewId>,
 }
 
 /// What a reader did to an element.
@@ -176,6 +178,10 @@ fn within(b: [f64; 4], clip: [f64; 4]) -> [f64; 4] {
 /// the part of it in view: left, top, right, bottom in the app's points.
 fn element(id: u64, n: &Node, name: Option<String>, shown: [f64; 4], scrolls: Option<u64>) -> Option<Element> {
     use traits::*;
+    let rect = [shown[0] as f32, shown[1] as f32, (shown[2] - shown[0]) as f32, (shown[3] - shown[1]) as f32];
+    if let Some(view) = n.class_name().and_then(crate::native_view::from_a11y_class) {
+        return Some(Element { id, label: String::new(), value: None, hint: None, traits: 0, rect, scrolls, hosted: Some(view) });
+    }
     let role = n.role();
     let control = match role {
         Role::Button | Role::DefaultButton | Role::MenuItem | Role::Tab | Role::ListBoxOption | Role::TreeItem | Role::ComboBox
@@ -219,9 +225,8 @@ fn element(id: u64, n: &Node, name: Option<String>, shown: [f64; 4], scrolls: Op
         (name, Some(placeholder)) if value.as_deref().is_none_or(str::is_empty) => (name.unwrap_or_default(), Some(placeholder.to_owned())),
         (name, _) => (name.unwrap_or_default(), value),
     };
-    let rect = [shown[0] as f32, shown[1] as f32, (shown[2] - shown[0]) as f32, (shown[3] - shown[1]) as f32];
     let value = value.filter(|v| !v.is_empty());
-    Some(Element { id, label, value, hint: n.description().map(str::to_owned), traits, rect, scrolls })
+    Some(Element { id, label, value, hint: n.description().map(str::to_owned), traits, rect, scrolls, hosted: None })
 }
 
 #[cfg(test)]

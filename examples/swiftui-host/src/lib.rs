@@ -25,6 +25,10 @@ pub fn spec() -> AppSpec<State> {
     AppSpec::new("Cards", (390.0, 760.0), State::default, view)
 }
 
+fn count(cards: usize) -> String {
+    if cards == 1 { "1 card".into() } else { format!("{cards} cards") }
+}
+
 fn hue(number: u32) -> f32 {
     (number as f32 * 47.0) % 360.0
 }
@@ -47,10 +51,11 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
     let [top, right, bottom, left] = cx.safe_area();
     let mut list = col().w_full().gap(12.0).pt(16.0 + top).pr(16.0 + right).pb(16.0 + bottom).pl(16.0 + left)
         .child(text("Drawn by Rune").font(BIG).color(t.text))
-        .child(text(format!("{} cards. Add them from the toolbar; tap one to open it in SwiftUI.", state.cards.len()))
+        .child(text(format!("{}. Add cards from the toolbar; tap one to open it in SwiftUI.", count(state.cards.len())))
             .font(BODY).color(t.text_secondary).wrap().w_full());
     if state.cards.is_empty() {
-        list = list.child(text("No cards").key("empty").font(type_::TITLE).color(t.text_secondary).w_full().center().h(96.0));
+        list = list.child(el().key("empty").w_full().h(96.0).center()
+            .child(text("No cards").font(type_::TITLE).color(t.text_secondary)));
     }
     for &number in &state.cards {
         list = list.child(card(number, dark));

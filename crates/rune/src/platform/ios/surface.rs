@@ -19,7 +19,7 @@ use super::text::undo::Offer;
 use crate::a11y::AccessibilityLink;
 use crate::app::{App, OnWindow, Shared};
 use crate::embed::{EmbedFrame, LayerHost};
-use crate::file_dialog::{DialogAnswer, FileDialogError, FileDialogKind, FileDialogOptions};
+use crate::file_dialog::{DialogAnswer, FileDialogError};
 use crate::popup_menu::Show;
 use crate::runtime::{TouchPhase, Waker};
 use crate::time::Instant;
@@ -84,7 +84,8 @@ pub(crate) trait Surface {
     /// The menu showing was answered with an item's id, or dismissed.
     fn popup_pick(&mut self, picked: Option<String>);
     /// The file dialog to show, once the frame that asked for it is done.
-    fn file_dialog(&mut self) -> Option<(u64, FileDialogKind, bool, FileDialogOptions)>;
+    fn file_dialog(&mut self) -> Option<crate::file_dialog::Shown>;
+    fn share(&mut self) -> Option<crate::share::Shown>;
     /// The dialog's answer: the chosen file, none when cancelled, or why it could not show.
     fn file_dialog_answer(&mut self, id: u64, answer: Result<DialogAnswer, String>);
 
@@ -125,6 +126,7 @@ pub(crate) trait Surface {
     fn set_text_scale(&mut self, scale: f32);
     fn set_bold_text(&mut self, on: bool);
     fn set_increased_contrast(&mut self, on: bool);
+    fn set_size_classes(&mut self, classes: crate::SizeClasses);
     /// What the screen keeps at the view's top, right, bottom and left edges, in points.
     fn set_safe_area(&mut self, insets: [f32; 4]);
     fn set_keyboard(&mut self, visible: Option<(f32, f32)>);
@@ -189,6 +191,7 @@ impl<S: 'static> Surface for Hosted<S> {
         }
         // An update may have set the menu (`AppHandle::set_menu`).
         self.menus.drain();
+        self.host.runtime_mut().core_mut().take_late_link_answers();
         let frame = self.host.frame_at(target);
         // What handlers asked of a window in this frame, or in a hook since the last, is
         // taken and dropped the same way: none of it waits or piles up.
@@ -307,7 +310,12 @@ impl<S: 'static> Surface for Hosted<S> {
         self.field_step(field_touch::Event::Answered { select_all: picked.as_deref() == Some("select-all") });
     }
 
-    fn file_dialog(&mut self) -> Option<(u64, FileDialogKind, bool, FileDialogOptions)> {
+    fn share(&mut self) -> Option<crate::share::Shown> {
+        let wake = self.wake.clone();
+        self.host.runtime_mut().core_mut().take_share(wake)
+    }
+
+    fn file_dialog(&mut self) -> Option<crate::file_dialog::Shown> {
         self.host.runtime_mut().core_mut().take_file_dialog()
     }
 
@@ -418,6 +426,8 @@ impl<S: 'static> Surface for Hosted<S> {
 
     fn set_increased_contrast(&mut self, on: bool) { self.host.runtime_mut().set_system_increased_contrast(on); }
 
+    fn set_size_classes(&mut self, classes: crate::SizeClasses) { self.host.runtime_mut().set_size_classes(classes); }
+
     fn set_safe_area(&mut self, insets: [f32; 4]) {
         let rt = self.host.runtime_mut();
         rt.shift_main_scroll(insets[0] - rt.core().safe_area()[0]);
@@ -466,8 +476,9 @@ pub(crate) fn mount<S: 'static>(mut app: App<S>) -> Mount {
         // view calls this on the main thread.
         let host = unsafe { LayerHost::from_core_animation_layer(layer, &spec, state, size, scale, dark, wake.clone())? };
         // The view is the app's whole host here: links open in the system, as from a window.
-        let mut host = host.with_system_clipboard(wake.clone()).with_popup_menus().with_file_dialogs().with_system_links();
+        let mut host = host.with_system_clipboard(wake.clone()).with_popup_menus().with_file_dialogs().with_share_sheets().with_system_links();
         host.runtime_mut().configure(config);
+        host.runtime_mut().core_mut().answer_links_later(wake.clone());
         // `configure` handed the runtime the app's hooks, as a window's host does. The app is
         // hidden until the view says where its scene is (`Surface::lifecycle`), as a window is
         // until it is shown.

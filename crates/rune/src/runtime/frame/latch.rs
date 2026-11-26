@@ -149,6 +149,9 @@ impl RuntimeCore {
         for request in tx.file_dialogs.drain(..).filter_map(|call| call.take()) {
             self.request_file_dialog(request);
         }
+        for request in tx.shares.drain(..).filter_map(|call| call.take()) {
+            self.request_share(request);
+        }
         if let Some(mode) = tx.font_smoothing.take() { self.set_font_smoothing(mode); }
         if std::mem::take(&mut tx.fonts_added) { self.follow_font_families(); }
         if let Some((sans, mono)) = tx.font_families.take() { self.set_font_families(&sans, &mono); }

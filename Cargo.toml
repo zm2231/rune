@@ -30,6 +30,7 @@ members = [
     "examples/hello",
     "examples/ios-fields",
     "examples/swiftui-host",
+    "examples/ios-system",
     "examples/hello-floor",
     "examples/launch-floor",
     "examples/web-hello",

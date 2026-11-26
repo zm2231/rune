@@ -1,0 +1,1 @@
+- **iOS: pasting an image reads a photo copied as JPEG or HEIC.** The pasteboard's image is read in any format UIKit reads and handed to the app as PNG, where only a PNG was read before.

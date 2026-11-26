@@ -85,6 +85,15 @@ impl RuneView {
         style == STYLE_DARK
     }
 
+    fn size_classes(&self) -> crate::SizeClasses {
+        // SAFETY: `traitCollection` is never nil, and its size classes are `NSInteger` enums.
+        let (horizontal, vertical): (isize, isize) = unsafe {
+            let traits: Retained<AnyObject> = msg_send![self, traitCollection];
+            (msg_send![&*traits, horizontalSizeClass], msg_send![&*traits, verticalSizeClass])
+        };
+        super::super::size_class::classes(horizontal, vertical)
+    }
+
     /// What the screen keeps at the view's top, right, bottom and left edges: the status bar,
     /// the home indicator, the display's corners where the view reaches them, and the soft
     /// keyboard while it shows.
@@ -122,6 +131,7 @@ impl RuneView {
                         surface.set_text_scale(text_scale());
                         surface.set_bold_text(bold_text());
                         surface.set_increased_contrast(increased_contrast());
+                        surface.set_size_classes(self.size_classes());
                         // A client that asked before the app started still gets its tree.
                         if self.ivars().accessibility.borrow().asked() { surface.accessibility_wanted(); }
                         Stage::Live(surface)
@@ -220,10 +230,11 @@ impl RuneView {
     /// The system's appearance, or another of the view's traits, changed: the tint is resolved
     /// for the new traits.
     pub(super) fn traits_changed(&self) {
-        let (dark, accent) = (self.dark(), self.tint());
+        let (dark, accent, classes) = (self.dark(), self.tint(), self.size_classes());
         self.with_surface(|surface| {
             surface.set_dark(dark);
             surface.set_accent(accent);
+            surface.set_size_classes(classes);
         });
         self.pace(Event::Wake);
     }

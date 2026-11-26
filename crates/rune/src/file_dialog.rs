@@ -23,6 +23,7 @@ use crate::Tx;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::Waker;
 
+mod media;
 #[cfg(all(feature = "native-file-dialog", target_os = "linux"))]
 mod portal;
 #[cfg(any(all(feature = "native-file-dialog", target_os = "linux"), all(test, unix)))]
@@ -266,6 +267,12 @@ impl DialogAnswer {
     }
 }
 
+pub use media::{MediaKind, MediaPicker};
+
+/// What a host shows: the dialog's id, kind, whether an Open picks several, its options, and
+/// the photo picker it stands for, if any.
+pub(crate) type Shown = (u64, FileDialogKind, bool, FileDialogOptions, Option<MediaPicker>);
+
 pub(crate) type DialogOutcome = Result<DialogAnswer, FileDialogError>;
 
 pub(crate) type AnswerFn = Box<dyn FnOnce(crate::states::States<'_>, DialogOutcome, &mut Tx)>;
@@ -275,6 +282,8 @@ pub(crate) struct Request {
     pub multiple: bool,
     pub options: FileDialogOptions,
     pub on_answer: AnswerFn,
+    /// `Tx::pick_media`: a photo picker where the platform has one.
+    pub media: Option<MediaPicker>,
 }
 
 /// A `Tx`'s dialog request. `Tx` is `Clone`; clones share the request and the runtime takes it once.
@@ -298,6 +307,7 @@ pub(crate) struct Pending {
     pub kind: FileDialogKind,
     pub multiple: bool,
     pub options: FileDialogOptions,
+    pub media: Option<MediaPicker>,
 }
 
 /// The runtime's one file dialog. Its answer carries its `id`, so an answer to a dialog that
@@ -352,6 +362,7 @@ impl Pending {
         let filters: Vec<_> = o.filters.iter().map(|(name, ext)| serde_json::json!({ "name": name, "extensions": ext })).collect();
         let mut v = serde_json::json!({ "kind": self.kind.name(), "title": o.title, "filters": filters });
         if self.multiple { v["multiple"] = true.into(); }
+        if let Some(media) = &self.media { v["media"] = media.kind().name().into(); }
         if let Some(dir) = &o.directory { v["directory"] = dir.display().to_string().into(); }
         if let Some(name) = &o.file_name { v["fileName"] = name.clone().into(); }
         v
@@ -420,6 +431,7 @@ impl Tx {
             multiple: true,
             options,
             on_answer,
+            media: None,
         })))));
     }
 
@@ -444,6 +456,7 @@ impl Tx {
             multiple: false,
             options,
             on_answer,
+            media: None,
         })))));
     }
 
@@ -467,6 +480,7 @@ impl Tx {
             multiple: false,
             options,
             on_answer,
+            media: None,
         })))));
     }
 }
@@ -520,7 +534,7 @@ impl Presenter {
     /// show. True when an answer was queued.
     pub(crate) fn open_core(&mut self, rt: &mut crate::runtime::RuntimeCore, window: Option<&winit::window::Window>) -> bool {
         let Some(window) = window.filter(|_| self.showing.is_none()) else { return false };
-        let Some((id, kind, multiple, options)) = rt.take_file_dialog() else { return false };
+        let Some((id, kind, multiple, options, _)) = rt.take_file_dialog() else { return false };
         #[cfg(all(feature = "native-file-dialog", target_os = "macos"))]
         {
             self.sheet_parent = crate::platform::macos::ns_window(window);

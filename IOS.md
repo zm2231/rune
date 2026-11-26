@@ -23,6 +23,12 @@ What works:
 - **Safe area.** `Cx::safe_area` holds what the status bar, the home indicator and the soft
   keyboard take: pad a full-screen root by it. When the keyboard rises over the focused text
   field, or moves, the field's scroll views scroll the whole field into what the keyboard leaves.
+- **Size classes and multitasking.** `Cx::horizontal_size_class` and `Cx::vertical_size_class`
+  are the view's trait collection: compact across on an iPhone and in a narrow iPad window
+  (Slide Over, a third of Split View, a small Stage Manager window), regular on a full-screen
+  iPad. The view takes every size its window is given, and a resize or rotation that changes a
+  class re-runs the view. A bundle `scripts/ios-app` makes turns every way on an iPad, which
+  is what lets it share the screen.
 - **Text input.** The soft keyboard shows while a text field has the focus. Typing, delete,
   return, predictions, autocorrection, dictation and marked text edit the field; a secure
   field shows the keyboard none of its text. The keyboard is told where the field's
@@ -75,6 +81,11 @@ What works:
   for `El::on_physical_input`.
 - **App menus.** In an app `rune::run` started, `App::menu_item` items join an iPad's menu bar
   and its ⌘ list; on an iPhone their shortcuts run them when no handler takes the key.
+- **Share sheet.** `Tx::share` shows `UIActivityViewController` with the share's text, link
+  and files. On an iPad it is a popover pointing at the share's anchor (an element's key or a
+  point), or at the view's centre when that element is gone. The callback gets the activity
+  the user chose (`com.apple.UIKit.activity.Mail` and the like), or `None` when they closed
+  the sheet.
 - **Clipboard and menus.** Copy, cut and paste use the system pasteboard. A menu from
   `Tx::popup_menu` (a field's Cut, Copy and Paste among them) shows as the system's edit menu.
 - **Accessibility.** VoiceOver, Switch Control and Voice Control read the same accessibility
@@ -102,7 +113,8 @@ What works:
   the background and out of its window, and makes what went again when it next shows. An
   `on_rest` that changes what the view shows gets a frame at once when the view is in front. An
   app that embeds a `LayerHost` itself calls `LayerHost::trim_memory`.
-- **Links and files.** `Tx::open_url` opens a link in the app that owns its scheme.
+- **Links and files.** `Tx::open_url` opens a link in the app that owns its scheme, and
+  `Tx::open_url_then` hears whether one took it, on the frame after the system says.
   A file dialog opens in its options' `directory` when the system can show that folder.
   `Tx::open_file` shows the system's document picker and answers with a copy of the file.
   `Tx::open_folder` answers with the folder picked, and `Tx::save_file` asks for a folder and
@@ -112,6 +124,10 @@ What works:
   A save asks nothing before it replaces: the answer is only a path, and a file of that name
   already in the folder is replaced by what the app writes there. A dialog's `title` isn't
   shown: the picker has none.
+  `Tx::pick_media` shows the system's photo picker, which asks for no permission to the photo
+  library: each photo or video picked is copied into the app's temporary folder, which the
+  system may empty while the app isn't running, and the app gets the copies' paths in the order
+  picked.
   An iOS app has no Downloads folder, so `AppDirs::downloads` is `None`: save through
   `Tx::save_file`.
 

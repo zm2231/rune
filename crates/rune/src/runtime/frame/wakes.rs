@@ -142,7 +142,7 @@ impl RuntimeCore {
     /// `open_url_then` result is queued for the next frame. A browser that comes to the front
     /// can hide the window, and its result still has to reach the app.
     pub(crate) fn keys_queued(&self) -> bool {
-        self.frame.queue.iter().any(|a| matches!(a, Action::Physical(..) | Action::Key { .. } | Action::KeyUp(_) | Action::WindowFocus(_) | Action::Files(_) | Action::FileDialog(..) | Action::UrlOpened(..)))
+        self.frame.queue.iter().any(|a| matches!(a, Action::Physical(..) | Action::Key { .. } | Action::KeyUp(_) | Action::WindowFocus(_) | Action::Files(_) | Action::FileDialog(..) | Action::UrlOpened(..) | Action::Shared(..)))
     }
 
     /// Host time on the logical clock.

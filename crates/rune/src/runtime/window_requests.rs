@@ -12,6 +12,8 @@ pub(crate) struct HostState {
     pub(in crate::runtime) titlebar_inset: f32,
     /// What [`Cx::system_text_scale`] reports: the system's text size setting.
     pub(in crate::runtime) system_text_scale: f32,
+    /// What [`Cx::horizontal_size_class`] and [`Cx::vertical_size_class`] report.
+    pub(in crate::runtime) size_classes: crate::SizeClasses,
     pub(in crate::runtime) maximized: bool,
     pub(in crate::runtime) full_screen: bool,
     /// Confirmed OS-active whole-window backdrop reported by [`Cx::window_backdrop`].
@@ -85,6 +87,11 @@ pub(crate) struct HostState {
     url_scheme_requests: Vec<String>,
     /// True when attached to a live window, overlay or web canvas, not a headless or scripted run.
     pub(crate) open_urls_natively: bool,
+    /// The share sheet asked for (`Tx::share`).
+    pub(crate) sharing: crate::share::Sharing,
+    /// Links the system answers after they open (`RuntimeCore::answer_links_later`).
+    #[cfg(any(test, target_os = "ios"))]
+    pub(crate) late_links: Option<crate::open_url::later::Later>,
     /// Pop-up menus asked for (`Tx::popup_menu`) and not yet answered, oldest first.
     pub(in crate::runtime) popups: popup_dispatch::Popups,
     /// Lifecycle state of the in-window fallback pop-up menu delivered to `App::on_popup_menu`.
@@ -138,6 +145,7 @@ impl HostState {
             titlebar: Default::default(),
             titlebar_inset: 0.0,
             system_text_scale: 1.0,
+            size_classes: crate::SizeClasses::default(),
             maximized: false,
             full_screen: false,
             window_backdrop: crate::WindowBackdrop::None,
@@ -175,6 +183,9 @@ impl HostState {
             path_requests: Vec::new(),
             url_scheme_requests: Vec::new(),
             open_urls_natively: false,
+            sharing: Default::default(),
+            #[cfg(any(test, target_os = "ios"))]
+            late_links: None,
             popups: Default::default(),
             popup_fallback: Default::default(),
             popup_fallback_seq: 0,

@@ -1,0 +1,1 @@
+- **iOS: file dialogs no longer stop a debug build.** Presenting the document picker passed a null pointer where UIKit takes a completion block, which objc2's argument check rejects in debug builds, so `Tx::open_file`, `open_files`, `save_file` and `open_folder` ended the app. The pickers now pass no block.

@@ -14,6 +14,8 @@
 
 pub(crate) mod incoming;
 pub(crate) mod instance;
+#[cfg(any(test, target_os = "ios"))]
+pub(crate) mod later;
 pub(crate) mod scheme;
 
 const MAX_LEN: usize = 8192;
@@ -79,7 +81,7 @@ impl crate::Tx {
     /// or [`OpenUrlError::Failed`] when it couldn't, so the app can show an inline error or
     /// the link to copy. A link refused here returns its error and `on_result` never runs.
     ///
-    /// What "took the link" means differs: macOS and Windows say whether a handler opened it;
+    /// What "took the link" means differs: macOS, Windows and iOS say whether a handler opened it;
     /// Linux whether `xdg-open` started, not whether it found a browser. The web can't see a
     /// blocked tab, since a tab opened without an opener is never handed back; it fails a link
     /// asked for outside a click or key press, which browsers block, and reports `Ok(())` for
@@ -233,6 +235,10 @@ impl crate::runtime::HostState {
 
 impl crate::runtime::RuntimeCore {
     pub(crate) fn open_urls(&mut self, links: Vec<Link>) {
+        #[cfg(target_os = "ios")]
+        if self.host.open_urls_natively && self.host.late_links.is_some() {
+            return self.open_urls_later_with(links, open_then);
+        }
         self.open_urls_with(links, crate::runtime::HostState::open_link);
     }
 
@@ -265,23 +271,35 @@ fn open(url: &str) -> Result<(), OpenUrlError> {
 }
 
 /// iOS opens a link in the app that owns its scheme: Safari for the web, Mail for `mailto:`.
-/// The system answers later, so a link nothing opens fails without a word here.
+/// The system answers later, so this says only whether the link could be asked for.
+#[cfg(target_os = "ios")]
+fn open(url: &str) -> Result<(), OpenUrlError> {
+    open_then(url, Box::new(|_| {}));
+    Ok(())
+}
+
+/// Opens `url` and calls `done` with whether an app took it, once the system says.
 #[cfg(target_os = "ios")]
 #[allow(unsafe_code)]
-fn open(url: &str) -> Result<(), OpenUrlError> {
+fn open_then(url: &str, done: later::Done) {
     use objc2::rc::{Retained, autoreleasepool};
-    use objc2::runtime::AnyObject;
+    use objc2::runtime::{AnyObject, Bool};
     use objc2::{class, msg_send};
+    let done = std::cell::Cell::new(Some(done));
+    let answer = move |result| if let Some(done) = done.take() { done(result) };
     // SAFETY: the shared application lives for the process; `openURL:options:completionHandler:`
-    // takes an `NSURL`, a dictionary of options and a block or nil. Handlers run on the UI thread.
+    // takes an `NSURL`, a dictionary of options and a block of one `BOOL`, which it copies and
+    // calls once on the main thread. Handlers run on the UI thread.
     autoreleasepool(|_| unsafe {
-        let url = build_apple_url(url).ok_or(OpenUrlError::Invalid)?;
+        let Some(url) = build_apple_url(url) else { return answer(Err(OpenUrlError::Invalid)) };
         let app: Option<Retained<AnyObject>> = msg_send![class!(UIApplication), sharedApplication];
-        let app = app.ok_or_else(|| OpenUrlError::Failed("no application".into()))?;
+        let Some(app) = app else { return answer(Err(OpenUrlError::Failed("no application".into()))) };
         let options: Retained<AnyObject> = msg_send![class!(NSDictionary), dictionary];
-        let _: () = msg_send![&*app, openURL: &*url, options: &*options, completionHandler: std::ptr::null::<std::ffi::c_void>()];
-        Ok(())
-    })
+        let block = block2::RcBlock::new(move |opened: Bool| {
+            answer(if opened.as_bool() { Ok(()) } else { Err(OpenUrlError::Failed("no app opened it".into())) });
+        });
+        let _: () = msg_send![&*app, openURL: &*url, options: &*options, completionHandler: &*block];
+    });
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]

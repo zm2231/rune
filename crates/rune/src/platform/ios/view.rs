@@ -32,6 +32,8 @@ mod lifecycle;
 mod link;
 mod menu;
 mod mirror;
+mod photos;
+mod share;
 mod tint;
 
 use link::MainOnly;
@@ -46,6 +48,12 @@ extern_protocol!(
     /// A document picker tells its delegate what was picked, or that nothing was.
     #[name = "UIDocumentPickerDelegate"]
     unsafe trait DocumentPickerDelegate: NSObjectProtocol {}
+);
+
+extern_protocol!(
+    /// A photo picker tells its delegate what was picked, or that nothing was.
+    #[name = "PHPickerViewControllerDelegate"]
+    unsafe trait PhotoPickerDelegate: NSObjectProtocol {}
 );
 
 extern_protocol!(
@@ -101,6 +109,8 @@ pub(crate) struct Ivars {
     accessibility: RefCell<Accessibility>,
     /// The file dialog whose picker is up.
     file_dialog: RefCell<Option<files::Picking>>,
+    /// The dialog whose photo picker is up.
+    media_dialog: Cell<Option<u64>>,
     menu: RefCell<edit_menu::State>,
     menu_seq: Cell<Seq>,
     /// What presents the menu, made when the first one opens.
@@ -150,6 +160,14 @@ define_class!(
         #[unsafe(method(documentPickerWasCancelled:))]
         fn document_picker_cancelled(&self, _picker: &AnyObject) {
             self.file_picked(None);
+        }
+    }
+
+    // SAFETY: the protocol's one method is implemented with its signature.
+    unsafe impl PhotoPickerDelegate for RuneView {
+        #[unsafe(method(picker:didFinishPicking:))]
+        fn photos_picked(&self, picker: &AnyObject, results: &AnyObject) {
+            self.media_picked(picker, results);
         }
     }
 
@@ -400,6 +418,7 @@ impl RuneView {
             keyboard: Cell::new(0.0),
             accessibility: RefCell::new(Accessibility::new()),
             file_dialog: RefCell::new(None),
+            media_dialog: Cell::new(None),
             menu: RefCell::default(),
             menu_seq: Cell::new(Seq::default()),
             edit_menu: RefCell::new(None),
@@ -435,8 +454,8 @@ impl RuneView {
     /// Draws the frame the display link's next refresh shows, and tells the pacing how it went.
     fn draw(&self) {
         let Some(target) = self.frame_target() else { return };
-        let drawn = self.with_surface(|surface| (surface.frame(target), surface.text(), surface.accessibility(), surface.popup(), surface.file_dialog()));
-        let Some((frame, text, tree, popup, file)) = drawn else {
+        let drawn = self.with_surface(|surface| (surface.frame(target), surface.text(), surface.accessibility(), surface.popup(), surface.file_dialog(), surface.share()));
+        let Some((frame, text, tree, popup, file, share)) = drawn else {
             self.pace(Event::Frame { animating: false, wake_after: None });
             return;
         };
@@ -447,7 +466,12 @@ impl RuneView {
             Some((popup, field)) => self.open_menu(popup, field),
             None => self.menu_follow_caret(),
         }
-        if let Some((id, kind, multiple, options)) = file { self.pick_file(id, kind, multiple, &options); }
+        match file {
+            Some((id, _, _, _, Some(media))) => self.pick_media(id, &media),
+            Some((id, kind, multiple, options, None)) => self.pick_file(id, kind, multiple, &options),
+            None => {}
+        }
+        if let Some(share) = share { self.show_share(share); }
         if let Some(reading) = tree {
             let posts = self.ivars().accessibility.borrow_mut().apply(self.mtm(), self, reading);
             posts.post();

@@ -609,6 +609,10 @@ impl RuntimeCore {
         self.frame.queue.push(Action::UrlOpened(f, result));
     }
 
+    pub(crate) fn share_done(&mut self, f: crate::share::DoneFn, result: crate::share::ShareResult) {
+        self.frame.queue.push(Action::Shared(f, result));
+    }
+
     /// Whether a text field, or a caret an app draws itself, has the focus: a host with a soft
     /// keyboard shows it.
     #[cfg_attr(not(target_os = "ios"), allow(dead_code))]

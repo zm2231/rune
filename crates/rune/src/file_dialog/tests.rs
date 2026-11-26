@@ -101,7 +101,7 @@ fn a_host_shows_the_dialog_once_and_answers_it_by_id() {
     let mut rt = Runtime::new(Import::default(), import, (200.0, 100.0), Env::new(true, 1.0));
     rt.frame(0.0);
     press(&mut rt);
-    let (id, kind, multiple, _) = rt.take_file_dialog().expect("the host takes it");
+    let (id, kind, multiple, ..) = rt.take_file_dialog().expect("the host takes it");
     assert_eq!((kind, multiple), (FileDialogKind::Open, false));
     assert!(rt.take_file_dialog().is_none(), "showing, so not taken again");
     rt.answer_file_dialog(id, Err(FileDialogError("no portal".into())));
@@ -260,7 +260,7 @@ fn concurrent_host_overlay_and_cancel_paths_work_for_open_files() {
     assert_eq!(rt.state.answers, [Err("a file dialog is already open".to_owned())]);
     assert!(rt.file_dialog_multiple(), "the first multi-file dialog stays open");
 
-    let (id, kind, multiple, _) = rt.take_file_dialog().expect("the host takes it");
+    let (id, kind, multiple, ..) = rt.take_file_dialog().expect("the host takes it");
     assert_eq!((kind, multiple), (FileDialogKind::Open, true));
     assert!(rt.take_file_dialog().is_none(), "showing, so not taken again");
     rt.answer_file_dialog(id, Err(FileDialogError("no portal".into())));

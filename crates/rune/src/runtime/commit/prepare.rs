@@ -73,6 +73,7 @@ impl RuntimeCore {
             titlebar_inset: self.host.titlebar_inset / self.host.zoom.k,
             safe_area: self.safe_area().map(|inset| inset / self.host.zoom.k),
             system_text_scale: self.host.system_text_scale,
+            size_classes: self.host.size_classes,
             chrome: self.host.titlebar.insets.zoomed(self.host.zoom.k),
             maximized: self.host.maximized,
             full_screen: self.host.full_screen,

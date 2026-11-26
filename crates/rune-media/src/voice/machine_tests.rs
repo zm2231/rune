@@ -199,3 +199,18 @@ fn close_releases_the_device_and_ignores_everything_after() {
     assert!(rig.step(Event::Mute(true)).is_empty());
     assert_eq!(Effects::<Effect>::none(), step(&mut rig.seq, &mut rig.state, Event::DevicesChanged { now: rig.t0 }));
 }
+
+#[test]
+fn a_failed_stream_comes_back_after_a_device_change_or_media_reset() {
+    for event in [Event::DevicesChanged { now: rune_core::time::now() }, Event::MediaReset { now: rune_core::time::now() }] {
+        let mut rig = Rig::new();
+        rig.step(Event::Start);
+        rig.ran(0, Err(Fault::lasting("no device")));
+        let effects = rig.step(event);
+        let (attempt, due) = rig.wake();
+        assert_eq!(effects, vec![Effect::Discard, Effect::WakeAt { attempt, due }]);
+        assert_eq!(rig.step(Event::RetryDue { attempt, now: due }), vec![Effect::Run]);
+        assert_eq!(rig.ran(0, Ok(())), vec![Effect::Tell(VoiceEvent::DeviceChanged)]);
+        assert_eq!(rig.state, State::Running);
+    }
+}

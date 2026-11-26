@@ -162,7 +162,7 @@ pub(crate) fn step(seq: &mut Seq, state: &mut State, event: Event) -> Effects<Ef
             let cause = *cause;
             reconnect(seq, state, now + SETTLE, 0, cause, Discard)
         }
-        (State::Failed(_), Event::DevicesChanged { now }) => {
+        (State::Failed(_), Event::DevicesChanged { now } | Event::MediaReset { now }) => {
             reconnect(seq, state, now + SETTLE, 0, Cause::Device, Discard)
         }
         (_, Event::DevicesChanged { .. } | Event::MediaReset { .. }) => Effects::one(Discard),

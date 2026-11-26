@@ -151,13 +151,11 @@ impl Platform {
     }
 
     pub(super) fn activate(&mut self) -> Result<(), Fault> {
-        if !self.active {
-            self.prepare()?;
-            // SAFETY: `setActive:error:` on the shared session.
-            unsafe { session().setActive_error(true) }
-                .map_err(|e| Fault::passing(format!("activating the audio session: {}", e.localizedDescription())))?;
-            self.active = true;
-        }
+        self.prepare()?;
+        // SAFETY: `setActive:error:` on the shared session; activating an active session is a no-op, and after a media reset it brings the session back.
+        unsafe { session().setActive_error(true) }
+            .map_err(|e| Fault::passing(format!("activating the audio session: {}", e.localizedDescription())))?;
+        self.active = true;
         Ok(())
     }
 

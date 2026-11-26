@@ -564,6 +564,7 @@ pub(crate) struct Presenter {
 impl Presenter {
     pub(crate) fn new(wake: Waker) -> Self { Self { session: None, wake: Some(wake) } }
 
+    #[cfg(not(target_os = "ios"))]
     pub(crate) fn connect(&mut self, wake: Waker) { self.wake = Some(wake); }
 
     /// Runs the callback of a menu that closed since the last event. True when one ran. The

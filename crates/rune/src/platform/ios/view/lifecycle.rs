@@ -71,7 +71,7 @@ unsafe impl Encode for EdgeInsets {
 
 impl RuneView {
     /// The view's size in points and its scale.
-    fn metrics(&self) -> ((f32, f32), f32) {
+    pub(super) fn metrics(&self) -> ((f32, f32), f32) {
         // SAFETY: `UIView` properties of these types.
         let (bounds, scale): (CGRect, CGFloat) = unsafe { (msg_send![self, bounds], msg_send![self, contentScaleFactor]) };
         ((bounds.size.width as f32, bounds.size.height as f32), scale as f32)
@@ -112,7 +112,7 @@ impl RuneView {
     /// What the screen keeps at the view's top, right, bottom and left edges: the status bar,
     /// the home indicator, the display's corners where the view reaches them, and the soft
     /// keyboard while it shows.
-    fn safe_area(&self) -> [f32; 4] {
+    pub(super) fn safe_area(&self) -> [f32; 4] {
         // SAFETY: a `UIView` property of type `UIEdgeInsets`.
         let insets: EdgeInsets = unsafe { msg_send![self, safeAreaInsets] };
         // The soft keyboard takes the bottom of the screen as the home indicator does: content
@@ -130,6 +130,7 @@ impl RuneView {
         // own change borrows it.
         let waiting = matches!(*self.ivars().stage.borrow(), Stage::Waiting(_));
         let accent = waiting.then(|| self.tint());
+        let mut overlays = Vec::new();
         let mut stage = self.ivars().stage.borrow_mut();
         *stage = match std::mem::replace(&mut *stage, Stage::Failed) {
             Stage::Waiting(mount) => {
@@ -149,6 +150,7 @@ impl RuneView {
                         surface.set_size_classes(self.size_classes());
                         // A client that asked before the app started still gets its tree.
                         if self.ivars().accessibility.borrow().asked() { surface.accessibility_wanted(); }
+                        overlays = surface.take_overlays();
                         Stage::Live(surface)
                     }
                     Err(error) => {
@@ -164,6 +166,8 @@ impl RuneView {
             Stage::Failed => Stage::Failed,
         };
         drop(stage);
+        self.adopt_overlays(overlays);
+        self.place_overlays();
         self.pace(Event::Wake);
     }
 
@@ -258,6 +262,7 @@ impl RuneView {
     pub(super) fn safe_area_changed(&self) {
         let insets = self.safe_area();
         self.with_surface(|surface| surface.set_safe_area(insets));
+        self.place_overlays();
         self.pace(Event::Wake);
     }
 
@@ -312,7 +317,9 @@ impl RuneView {
     /// asks for no frame. A hook that changed what the view shows, or asked for work a frame
     /// does, wakes the pacing, which draws only for a view in a window in front.
     pub(super) fn memory_warned(&self) {
-        let stale = self.with_surface(|surface| surface.memory_warning()).unwrap_or(false);
+        // SAFETY: `UIView.window` is a nullable object.
+        let window: Option<Retained<AnyObject>> = unsafe { msg_send![self, window] };
+        let stale = self.with_surface(|surface| surface.memory_warning(window.is_some())).unwrap_or(false);
         if stale { self.pace(Event::Wake); }
     }
 

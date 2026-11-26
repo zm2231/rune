@@ -124,7 +124,7 @@ pub(crate) fn effective_bounds(
 
 /// Root `(min_size, max_size)` layout constraints passed to Taffy so wrapping text wraps at
 /// effective `max_w` instead of laying out on one unbounded line.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub(crate) fn layout_limits(
     config: SizingConfig,
     work_area: Option<(f32, f32)>,
@@ -186,7 +186,7 @@ pub(crate) fn size_changed(current: (f32, f32), next: (f32, f32), scale: f32) ->
 
 /// Like `overlay::options::local_rect`, preserving `(x, y)` on `OverlayPlacement::Rect` while
 /// substituting `at.size` on axes fitted by `sizing`.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub(crate) fn local_rect_for(
     at: crate::overlay::Placement,
     placement: Option<OverlayPlacement>,
@@ -266,7 +266,7 @@ impl WaylandResize {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 impl super::OverlayCore {
     /// Resolves `(work_area_points, backing_scale)` for the overlay's target display.
     pub(super) fn target_metrics(

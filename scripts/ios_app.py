@@ -28,8 +28,10 @@ def info(args):
     """The bundle's Info.plist: a full-screen app on one window scene Rune configures in code."""
     # The schemes whose links iOS opens with the app (`App::on_open_url`).
     links = dict(CFBundleURLTypes=[dict(CFBundleURLName=args.id, CFBundleURLSchemes=list(args.url_scheme))]) if args.url_scheme else {}
+    windows = {"NSUserActivityTypes": ["rune.window"]} if args.multiple_scenes else {}
     return dict(
         **links,
+        **windows,
         CFBundleName=args.name, CFBundleDisplayName=args.display_name, CFBundleIdentifier=args.id,
         CFBundleExecutable=args.exe, CFBundlePackageType="APPL",
         CFBundleShortVersionString=args.version, CFBundleVersion=args.build,
@@ -39,7 +41,7 @@ def info(args):
         UILaunchScreen={},
         # Without it an iPhone holds a display link at 60 Hz on a 120 Hz display.
         CADisableMinimumFrameDurationOnPhone=True,
-        UIApplicationSceneManifest=dict(UIApplicationSupportsMultipleScenes=False),
+        UIApplicationSceneManifest=dict(UIApplicationSupportsMultipleScenes=args.multiple_scenes),
         UISupportedInterfaceOrientations=[
             "UIInterfaceOrientationPortrait", "UIInterfaceOrientationLandscapeLeft",
             "UIInterfaceOrientationLandscapeRight"],
@@ -292,6 +294,8 @@ def flags():
                         help=f"the oldest iOS the app runs on, which the binary must have been built for (default: {MIN_OS})")
     parser.add_argument("--url-scheme", action="append", default=[], metavar="SCHEME",
                         help="a scheme whose links open the app (myapp for myapp://...); repeat for more")
+    parser.add_argument("--multiple-scenes", action="store_true",
+                        help="on an iPad, show each of the app's windows in a scene of its own (default: the others are sheets)")
     parser.add_argument("--no-install", action="store_true", help="stage the bundle only")
     parser.add_argument("--no-launch", action="store_true", help="install without launching")
     parser.add_argument("--wait", type=float, default=3, metavar="SECONDS",

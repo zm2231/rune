@@ -91,6 +91,7 @@ pub(crate) enum ReacquireReason {
     /// A content-sized overlay's committed layout changed height; resize, re-place, and
     /// reconfigure its surface before re-acquiring so the new content presents in the same frame.
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(target_os = "ios", allow(dead_code))]
     ContentResize,
 }
 

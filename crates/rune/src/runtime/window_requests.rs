@@ -573,7 +573,7 @@ impl RuntimeCore {
 
     /// The root's natural `(width, height)` in window points (view points times `Cx::zoom`),
     /// measured without committing or firing `apply`, `on_layout`, `on_ready`, `poll`, or timers.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
     pub(crate) fn measure_content(&mut self, app: &dyn ViewDriver) -> (f32, f32) {
         let measured = self.measure_pass(app, &Tx::default(), false);
         let zoom = measured.zoom;

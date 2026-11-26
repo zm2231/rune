@@ -375,6 +375,7 @@ impl<S: 'static> crate::App<S> {
                         })
                         .clone();
                     self.shared.core.set_gpu_loss_latch(Some(Arc::clone(&latch)));
+                    #[cfg(not(target_os = "ios"))]
                     for overlay in &mut self.overlays {
                         overlay.set_gpu_loss_latch(Some(Arc::clone(&latch)));
                     }
@@ -382,6 +383,7 @@ impl<S: 'static> crate::App<S> {
                 GpuLossPolicy::Recover => {
                     self.gpu_loss_latch = None;
                     self.shared.core.set_gpu_loss_latch(None);
+                    #[cfg(not(target_os = "ios"))]
                     for overlay in &mut self.overlays {
                         overlay.set_gpu_loss_latch(None);
                     }

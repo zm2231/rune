@@ -3,7 +3,8 @@
 
 #![allow(unsafe_code)]
 
-use std::ffi::c_void;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -14,12 +15,14 @@ use super::dropped::{self, Kind, Reported};
 use super::field_touch;
 use super::keys::Stroke;
 use super::lifecycle;
+use super::park;
 use super::text::doc::Snapshot;
 use super::text::geometry::Geometry;
 use super::text::undo::Offer;
 use crate::a11y::AccessibilityLink;
-use crate::app::{App, OnWindow, Shared};
+use crate::app::{OnWindow, Shared};
 use crate::embed::{EmbedFrame, LayerHost};
+use crate::overlay::ios::{Control, Feed};
 use crate::file_dialog::{DialogAnswer, FileDialogError};
 use crate::popup_menu::Show;
 use crate::runtime::{TouchPhase, Waker};
@@ -133,36 +136,70 @@ pub(crate) trait Surface {
     fn set_keyboard(&mut self, visible: Option<(f32, f32)>);
     /// The system is short of memory: the caches the last frame didn't draw from go, and
     /// `App::on_rest` runs for the app's own. True when the hook left a frame work to do.
-    fn memory_warning(&mut self) -> bool;
+    fn memory_warning(&mut self, on_screen: bool) -> bool;
     fn interface_style(&mut self) -> Option<isize>;
+
+    fn takes_touch(&self, control: &Control, x: f32, y: f32) -> bool;
+    fn take_overlays(&mut self) -> Vec<OverlaySlot>;
+    fn set_window(&mut self, key: String);
+    fn close(&mut self);
 }
 
-struct Hosted<S: 'static> {
-    host: LayerHost<S>,
-    /// What the app's handles reach it through: `AppHandle::update` and `wake` from any thread.
-    shared: Arc<Shared<S>>,
-    /// The app's menu items, in UIKit's main menu.
-    menus: crate::native_menu::MenuGuard,
-    accessibility: AccessibilityLink,
+pub(crate) struct OverlaySlot {
+    pub(crate) control: Rc<RefCell<Control>>,
+    pub(crate) mount: Mount,
+}
+
+pub(super) struct Hosted<S: 'static> {
+    pub(super) host: LayerHost<S>,
+    pub(super) role: Role<S>,
+    pub(super) accessibility: AccessibilityLink,
     /// The app's name, which names the accessibility tree's root.
-    title: &'static str,
-    /// `App::on_ready`, which runs once the first frame is on screen, as a window's does.
-    on_ready: Option<OnWindow>,
-    /// The kinds of request this view has said it drops.
-    dropped: Reported,
-    /// `App::on_quit`, which runs when the app is about to terminate.
-    on_quit: Option<fn(&mut S, &mut crate::Tx)>,
-    /// `App::on_rest`, which runs when the view rests: its scene went to the background, or
-    /// it left its window.
-    on_rest: Option<fn(&mut S, &mut crate::Tx) -> bool>,
+    pub(super) title: &'static str,
     /// What the app's hooks were last told of the view's scene.
-    lifecycle: lifecycle::State,
+    pub(super) lifecycle: lifecycle::State,
     /// What a finger on the focused field is doing, and the field's menu.
-    field: field_touch::State,
+    pub(super) field: field_touch::State,
+    pub(super) wake: Waker,
+    pub(super) appearance: Appearance,
+    pub(super) park: park::State,
+}
+
+pub(super) enum Role<S: 'static> {
+    App(Box<AppRole<S>>),
+    Overlay(Box<OverlayRole<S>>),
+}
+
+pub(super) struct AppRole<S: 'static> {
+    /// What the app's handles reach it through: `AppHandle::update` and `wake` from any thread.
+    pub(super) shared: Arc<Shared<S>>,
+    /// The app's menu items, in UIKit's main menu.
+    pub(super) menus: crate::native_menu::MenuGuard,
+    /// `App::on_ready`, which runs once the first frame is on screen, as a window's does.
+    pub(super) on_ready: Option<OnWindow>,
+    /// The kinds of request this view has said it drops.
+    pub(super) dropped: Reported,
+    pub(super) on_quit: Option<fn(&mut S, &mut crate::Tx)>,
+    pub(super) on_rest: Option<fn(&mut S, &mut crate::Tx) -> bool>,
+    pub(super) on_close: Option<fn(&mut S, &mut crate::Tx)>,
     /// Its place among the apps receiving links (`App::on_open_url`).
-    _open_urls: crate::open_url::incoming::Listeners,
-    wake: Waker,
-    appearance: Appearance,
+    pub(super) _open_urls: crate::open_url::incoming::Listeners,
+    pub(super) window: Option<String>,
+    pub(super) undrawn: bool,
+    pub(super) overlays: Vec<OverlaySlot>,
+}
+
+pub(super) struct OverlayRole<S: 'static> {
+    pub(super) feed: Feed<S>,
+}
+
+impl<S: 'static> Role<S> {
+    fn on_rest(&self) -> Option<fn(&mut S, &mut crate::Tx) -> bool> {
+        match self {
+            Role::App(app) => app.on_rest,
+            Role::Overlay(_) => None,
+        }
+    }
 }
 
 impl<S: 'static> Hosted<S> {
@@ -176,6 +213,54 @@ impl<S: 'static> Hosted<S> {
             }
         }
     }
+
+    fn park_step(&mut self, event: park::Event) -> bool {
+        let mut work = false;
+        for effect in park::step(&mut self.park, event) {
+            match effect {
+                park::Effect::Trim => work |= self.host.trim_memory_with(self.role.on_rest()),
+                park::Effect::Release => self.host.release_gpu(),
+                park::Effect::Remake => if let Err(error) = self.host.remake_gpu() { eprintln!("rune: a view could not make its renderer again: {error}") },
+            }
+        }
+        work
+    }
+
+    fn app_requests(&mut self) {
+        let Role::App(app) = &mut self.role else { return };
+        let host = &mut self.host;
+        let requests = app.shared.drain(|update| { host.runtime_mut().update_if(update); });
+        if let Some(key) = &app.window {
+            super::scenes::asked(key, requests.window.clone(), requests.activation == Some(crate::app::Activation::Focus));
+        }
+        for (kind, asked) in dropped::asked(&requests, app.window.is_some()) {
+            if asked { report(&mut app.dropped, kind); }
+        }
+        if let Some(scheme) = requests.color_scheme { self.appearance.set_app(scheme); }
+        app.menus.drain();
+    }
+
+    fn app_frame_done(&mut self, frame: EmbedFrame) {
+        let rt = self.host.runtime_mut();
+        if let Some(scheme) = rt.host.window_color_scheme.take() { self.appearance.set_window(scheme); }
+        let (shell, minimize) = (rt.shell_request.take(), rt.host.minimize.field());
+        if minimize { rt.minimize_step(crate::window::MinimizeEvent::Lost); }
+        let Role::App(app) = &mut self.role else { return };
+        let managed = app.window.is_some();
+        if let Some(key) = &app.window && shell == Some(crate::Shell::Close) {
+            super::scenes::asked(key, Some(crate::app::WindowRequest::Close), false);
+        }
+        let opened = if managed { 0 } else { dropped::take_opened() };
+        for (kind, asked) in dropped::asked_by_handlers(shell, minimize, opened, managed) {
+            if asked { report(&mut app.dropped, kind); }
+        }
+        if !frame.drew { return; }
+        if let Some(key) = app.window.as_deref().filter(|_| app.undrawn) {
+            app.undrawn = false;
+            super::scenes::drawn(key);
+        }
+        if let Some(mut ready) = app.on_ready.take() { ready(&crate::WindowHandle::new(app.window.as_deref().unwrap_or("main"))); }
+    }
 }
 
 impl<S: 'static> Surface for Hosted<S> {
@@ -184,30 +269,15 @@ impl<S: 'static> Surface for Hosted<S> {
 
     fn frame(&mut self, target: Instant) -> EmbedFrame {
         self.accessibility.receive(self.host.runtime_mut().core_mut(), self.title);
-        // What the app's handles asked since the last frame. A view is not a window: requests
-        // to show, move or quit one have nothing to act on, and only the updates run. The
-        // first dropped request of each kind says so.
-        let host = &mut self.host;
-        let requests = self.shared.drain(|update| { host.runtime_mut().update_if(update); });
-        for (kind, asked) in dropped::asked(&requests) {
-            if asked { report(&mut self.dropped, kind); }
-        }
-        if let Some(scheme) = requests.color_scheme { self.appearance.set_app(scheme); }
-        // An update may have set the menu (`AppHandle::set_menu`).
-        self.menus.drain();
+        self.park_step(park::Event::Drawing);
+        self.app_requests();
+        if let Role::Overlay(overlay) = &self.role { overlay.feed.drain(self.host.runtime_mut()); }
         self.host.runtime_mut().core_mut().take_late_link_answers();
         let frame = self.host.frame_at(target);
-        // What handlers asked of a window in this frame, or in a hook since the last, is
-        // taken and dropped the same way: none of it waits or piles up.
-        let rt = self.host.runtime_mut();
-        if let Some(scheme) = rt.host.window_color_scheme.take() { self.appearance.set_window(scheme); }
-        let (shell, minimize) = (rt.shell_request.take(), rt.host.minimize.field());
-        if minimize { rt.minimize_step(crate::window::MinimizeEvent::Lost); }
-        for (kind, asked) in dropped::asked_by_handlers(shell, minimize, dropped::take_opened()) {
-            if asked { report(&mut self.dropped, kind); }
+        match &mut self.role {
+            Role::App(_) => self.app_frame_done(frame),
+            Role::Overlay(overlay) => overlay.feed.fit(self.host.runtime_mut()),
         }
-        // There is no window to hand over: the handle is one no window answers, as on the web.
-        if frame.drew && let Some(mut ready) = self.on_ready.take() { ready(&crate::WindowHandle::new("main")); }
         // A tap that left the field's caret where it was, or Select All, opens the field's menu.
         if self.field.awaits_frame() {
             let rt = self.host.runtime();
@@ -389,7 +459,7 @@ impl<S: 'static> Surface for Hosted<S> {
                 // As a window going off screen and back: live values rest, and
                 // `App::on_visibility` hears each change after the first frame.
                 lifecycle::Effect::Visibility(visible) => {
-                    self.shared.visible.store(visible, Ordering::Release);
+                    if let Role::App(app) = &self.role { app.shared.visible.store(visible, Ordering::Release); }
                     rt.set_live_visible(visible);
                 }
                 // As a window's focus event: `App::on_focus` runs, and a blur ends what the
@@ -404,9 +474,9 @@ impl<S: 'static> Surface for Hosted<S> {
                 // `App::on_rest` runs. Nothing here encodes or submits GPU work, which the
                 // background forbids, and no frame follows until the scene is in front again:
                 // a hook that changed state leaves the runtime's next frame to show it.
-                lifecycle::Effect::Rest => self.host.rest(self.on_rest, true),
+                lifecycle::Effect::Rest => self.host.rest(self.role.on_rest(), true),
                 lifecycle::Effect::Quit => {
-                    if let Some(quit) = self.on_quit { rt.update(quit); }
+                    if let Role::App(app) = &self.role && let Some(quit) = app.on_quit { rt.update(quit); }
                     // The hook runs inside the notification. No frame follows it, so what it
                     // copied or cleared goes to the clipboard's worker here; the process may
                     // end before the worker has written it.
@@ -445,14 +515,34 @@ impl<S: 'static> Surface for Hosted<S> {
         if visible.is_some() { core.request_caret_follow(); }
     }
 
-    fn memory_warning(&mut self) -> bool { self.host.trim_memory_with(self.on_rest) }
+    fn memory_warning(&mut self, on_screen: bool) -> bool { self.park_step(park::Event::MemoryWarning { on_screen }) }
 
     fn interface_style(&mut self) -> Option<isize> { self.appearance.changed() }
+
+    fn takes_touch(&self, control: &Control, x: f32, y: f32) -> bool {
+        control.takes(self.host.runtime().hit_regions(), x, y)
+    }
+
+    fn take_overlays(&mut self) -> Vec<OverlaySlot> {
+        match &mut self.role {
+            Role::App(app) => std::mem::take(&mut app.overlays),
+            Role::Overlay(_) => Vec::new(),
+        }
+    }
+
+    fn set_window(&mut self, key: String) {
+        if let Role::App(app) = &mut self.role { app.window = Some(key); }
+    }
+
+    fn close(&mut self) {
+        if let Role::App(app) = &self.role && let Some(close) = app.on_close { self.host.runtime_mut().update(close); }
+        (self.wake)();
+    }
 }
 
 /// Starts an app on a `CAMetalLayer`, once its view has a size: the layer, the view's size in
 /// points, its scale, whether the system is dark, and the waker other threads call.
-pub(crate) type Mount = Box<dyn FnOnce(*mut c_void, (f32, f32), f32, bool, Waker) -> Result<Box<dyn Surface>, String>>;
+pub(crate) type Mount = Box<dyn FnOnce(*mut std::ffi::c_void, (f32, f32), f32, bool, Waker) -> Result<Box<dyn Surface>, String>>;
 
 impl<S: 'static> Hosted<S> {
     /// A point of the `UIView` in the app's own points (`zoom`).
@@ -462,38 +552,6 @@ impl<S: 'static> Hosted<S> {
 }
 
 /// Says on stderr that a request of this kind is dropped, the first time the view drops one.
-fn report(reported: &mut Reported, kind: Kind) {
+pub(super) fn report(reported: &mut Reported, kind: Kind) {
     if reported.first(kind) { eprintln!("rune: {}", kind.message()); }
-}
-
-pub(crate) fn mount<S: 'static>(mut app: App<S>) -> Mount {
-    let on_ready = app.on_ready.take();
-    // From here, so a link the scene is handed before the view has a size waits among the
-    // app's updates and runs before its first frame.
-    let open_urls = crate::open_url::incoming::listen(&app);
-    // A view is one app's one surface: the other windows and the overlays it asked for go
-    // with the `App`.
-    let mut dropped = Reported::default();
-    if !app.windows.is_empty() { report(&mut dropped, Kind::Windows); }
-    if !app.overlays.is_empty() { report(&mut dropped, Kind::Overlays); }
-    let (on_quit, on_rest, appearance) = (app.on_quit, app.on_rest, Appearance::new(app.color_scheme));
-    let (spec, state, shared, config) = app.into_parts(None);
-    Box::new(move |layer, size, scale, dark, wake| {
-        // SAFETY: `layer` is the `CAMetalLayer` of the view that owns this surface, and the
-        // view calls this on the main thread.
-        let host = unsafe { LayerHost::from_core_animation_layer(layer, &spec, state, size, scale, dark, wake.clone())? };
-        // The view is the app's whole host here: links open in the system, as from a window.
-        let mut host = host.with_system_clipboard(wake.clone()).with_popup_menus().with_file_dialogs().with_share_sheets().with_system_links();
-        host.runtime_mut().configure(config);
-        host.runtime_mut().core_mut().answer_links_later(wake.clone());
-        host.runtime_mut().core_mut().set_backdrop_materials(true);
-        // `configure` handed the runtime the app's hooks, as a window's host does. The app is
-        // hidden until the view says where its scene is (`Surface::lifecycle`), as a window is
-        // until it is shown.
-        host.runtime_mut().set_live_visible(false);
-        // The handles' requests wake the view, as they wake a window's event loop.
-        shared.connect(wake.clone());
-        let menus = crate::native_menu::MenuGuard::attach(&shared, false);
-        Ok(Box::new(Hosted { host, shared, menus, accessibility: AccessibilityLink::with_wake(wake.clone()), wake, title: spec.title, on_ready, dropped, on_quit, on_rest, lifecycle: lifecycle::State::default(), field: field_touch::State::default(), _open_urls: open_urls, appearance }))
-    })
 }

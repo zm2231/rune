@@ -181,11 +181,12 @@ impl HostWaker {
     fn prepare(
         key: &str,
         handle: Option<WindowHandle>,
-        overlays: &mut Vec<Box<dyn crate::overlay::PendingOverlay>>,
+        #[cfg(not(target_os = "ios"))] overlays: &mut Vec<Box<dyn crate::overlay::PendingOverlay>>,
         cx: super::Start<'_>,
         standard_menus: bool,
     ) -> (Self, WindowHandle, usize, Rc<RefCell<Weak<Gpu>>>, bool) {
         crate::video::enable_playback();
+        #[cfg(not(target_os = "ios"))]
         cx.overlays.append(overlays);
         let native_handle = handle.unwrap_or_else(|| WindowHandle::new(key));
         let super::Start { proxy, slot, gpu: gpu_pool, wayland, .. } = cx;
@@ -276,7 +277,7 @@ impl Host {
             cx.on_display_close.push(hook);
         }
         let (prepared, native_handle, slot, gpu_pool, wayland) =
-            HostWaker::prepare(&key, handle, &mut app.overlays, cx, app.standard_menus);
+            HostWaker::prepare(&key, handle, #[cfg(not(target_os = "ios"))] &mut app.overlays, cx, app.standard_menus);
         let (on_window, on_ready, on_frame_encoded, on_frame_drawn) = (
             app.on_window.take(),
             app.on_ready.take(),

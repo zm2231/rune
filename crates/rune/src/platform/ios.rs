@@ -15,7 +15,13 @@ pub(crate) mod field_touch;
 pub(crate) mod keys;
 pub(crate) mod lifecycle;
 pub(crate) mod links;
+#[cfg(target_os = "ios")]
+mod mount;
+pub(crate) mod overlay;
 pub(crate) mod pacing;
+pub(crate) mod park;
+#[cfg(target_os = "ios")]
+mod scenes;
 pub(crate) mod size_class;
 #[cfg(target_os = "ios")]
 mod surface;
@@ -23,6 +29,7 @@ pub(crate) mod text;
 pub(crate) mod tint;
 #[cfg(target_os = "ios")]
 mod view;
+pub(crate) mod windows;
 pub(crate) mod zoom;
 
 #[cfg(target_os = "ios")]
@@ -30,7 +37,9 @@ pub(crate) use app::run;
 #[cfg(target_os = "ios")]
 pub(crate) use app::run_windows;
 #[cfg(target_os = "ios")]
-pub(crate) use surface::{Mount, mount};
+pub(crate) use mount::{Entry, entry, overlay_slot};
+#[cfg(target_os = "ios")]
+pub(crate) use surface::OverlaySlot;
 
 /// A new `UIView *` that draws `app`, for a host that owns its own window: add it to a view
 /// hierarchy, or return it from a `UIViewRepresentable`. It fills its superview, starts the app
@@ -41,7 +50,7 @@ pub(crate) use surface::{Mount, mount};
 #[cfg(target_os = "ios")]
 pub fn view<S: 'static>(app: crate::App<S>) -> *mut std::ffi::c_void {
     let Some(mtm) = objc2::MainThreadMarker::new() else { return std::ptr::null_mut() };
-    let mount = surface::mount(app);
+    let mount = mount::mount(app);
     // No event loop of Rune's says when the host has made its views, so each one settles the
     // links: one handed over before the first view was made has reached its hook by now, and
     // from here a link goes to a view that listens or is dropped, never kept.

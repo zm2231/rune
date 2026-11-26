@@ -1,16 +1,22 @@
 //! Where an overlay goes: its screen and its position on that screen's edge.
 
+#[cfg(not(target_os = "ios"))]
 use winit::dpi::PhysicalPosition;
 use winit::event_loop::ActiveEventLoop;
 
+#[cfg(not(target_os = "ios"))]
 use super::{Placement, ScreenEdge};
+#[cfg(not(target_os = "ios"))]
 use crate::el::Align;
-use crate::{DisplayTarget, OverlayOptions, OverlayPlacement};
+use crate::DisplayTarget;
+#[cfg(not(target_os = "ios"))]
+use crate::{OverlayOptions, OverlayPlacement};
 
 /// Places an overlay on its target display. Edge placements (`None` and
 /// `OverlayPlacement::Edge`) anchor inside all four sides of the display's work area on Windows
 /// (excluding taskbars and docked app bars); `Rect` and `FullScreen` stay in full display
 /// coordinates.
+#[cfg(not(target_os = "ios"))]
 pub(super) fn position(event_loop: &ActiveEventLoop, at: Placement, options: &OverlayOptions) -> Option<PhysicalPosition<i32>> {
     let monitor = monitor(event_loop, &options.display)?;
     let scale = monitor.scale_factor();
@@ -30,6 +36,7 @@ pub(super) fn position(event_loop: &ActiveEventLoop, at: Placement, options: &Ov
 /// Edge placements (`None` and `Some(OverlayPlacement::Edge { .. })`) anchor inside all four
 /// sides of `work_area`. `OverlayPlacement::Rect` and `OverlayPlacement::FullScreen` anchor to
 /// `display` so full-screen pickers and explicit desktop rects keep full-monitor coordinates.
+#[cfg(not(target_os = "ios"))]
 fn position_in(
     display: ((i32, i32), (u32, u32)),
     work_area: ((i32, i32), (u32, u32)),
@@ -75,6 +82,7 @@ fn position_in(
     )
 }
 
+#[cfg(not(target_os = "ios"))]
 pub(super) fn monitor(event_loop: &ActiveEventLoop, target: &DisplayTarget) -> Option<winit::monitor::MonitorHandle> {
     monitor_at(event_loop, target, None)
 }

@@ -6,6 +6,7 @@
 #![allow(unsafe_code)]
 
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -32,6 +33,7 @@ mod lifecycle;
 mod link;
 mod menu;
 mod mirror;
+mod overlays;
 mod photos;
 mod share;
 mod tint;
@@ -120,6 +122,8 @@ pub(crate) struct Ivars {
     key_seq: Cell<Seq>,
     mirror: RefCell<Option<Retained<mirror::Mirror>>>,
     mirrored_by: RefCell<Weak<AnyObject>>,
+    overlays: RefCell<Vec<overlays::Overlay>>,
+    control: RefCell<Option<Rc<RefCell<crate::overlay::ios::Control>>>>,
 }
 
 define_class!(
@@ -139,6 +143,18 @@ define_class!(
         #[unsafe(method(gestureRecognizer:shouldRecognizeSimultaneouslyWithGestureRecognizer:))]
         fn recognizes_with(&self, _recognizer: &AnyObject, _other: &AnyObject) -> bool {
             true
+        }
+
+        #[unsafe(method(gestureRecognizer:shouldReceiveTouch:))]
+        fn receives_touch(&self, _recognizer: &AnyObject, touch: &AnyObject) -> bool {
+            // SAFETY: a touch's `view` is a nullable `UIView`; `isKindOfClass:` answers a `BOOL`.
+            unsafe {
+                let view: Option<Retained<AnyObject>> = msg_send![touch, view];
+                view.is_none_or(|view| {
+                    let rune: bool = msg_send![&*view, isKindOfClass: class!(RuneView)];
+                    !rune || std::ptr::eq(Retained::as_ptr(&view).cast::<RuneView>(), self)
+                })
+            }
         }
 
         /// A long press begins only over something with a menu to open.
@@ -203,6 +219,18 @@ define_class!(
         #[unsafe(method(layerClass))]
         fn layer_class() -> &'static AnyClass {
             class!(CAMetalLayer)
+        }
+
+        #[unsafe(method_id(hitTest:withEvent:))]
+        fn hit_test(&self, point: CGPoint, event: Option<&AnyObject>) -> Option<Retained<AnyObject>> {
+            // SAFETY: `UIView` implements it with this signature, answering a nullable view that
+            // its superview keeps alive, which is retained here.
+            let hit: Option<Retained<AnyObject>> = unsafe {
+                let hit: *mut AnyObject = msg_send![super(self), hitTest: point, withEvent: event];
+                Retained::retain(hit)
+            };
+            let on_self = hit.as_ref().is_some_and(|hit| std::ptr::eq(Retained::as_ptr(hit).cast::<RuneView>(), self));
+            hit.filter(|_| !on_self || self.overlay_takes(point.x as f32, point.y as f32) != Some(false))
         }
 
         #[unsafe(method(layoutSubviews))]
@@ -370,7 +398,7 @@ define_class!(
 
         #[unsafe(method_id(accessibilityElements))]
         fn accessibility_elements(&self) -> Option<Retained<AnyObject>> {
-            Some(self.accessibility_asked())
+            Some(self.overlay_elements(self.accessibility_asked()))
         }
 
         /// With no text field focused the view itself hears a hardware keyboard.
@@ -426,6 +454,8 @@ impl RuneView {
             key_seq: Cell::new(Seq::default()),
             mirror: RefCell::new(None),
             mirrored_by: RefCell::default(),
+            overlays: RefCell::default(),
+            control: RefCell::new(None),
         });
         let frame = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0));
         // SAFETY: `initWithFrame:` is `UIView`'s designated initializer.
@@ -441,6 +471,19 @@ impl RuneView {
         view.recognize(class!(UIRotationGestureRecognizer), sel!(runeRotate:));
         view.recognize(class!(UILongPressGestureRecognizer), sel!(runeLongPress:));
         view.recognize_pointer();
+        view
+    }
+
+    fn overlay(mtm: MainThreadMarker, mount: Mount, control: Rc<RefCell<crate::overlay::ios::Control>>) -> Retained<Self> {
+        let view = Self::new(mtm, mount);
+        *view.ivars().control.borrow_mut() = Some(control);
+        // SAFETY: `UIView` properties of these types; `clearColor` is a shared `UIColor`.
+        unsafe {
+            let _: () = msg_send![&*view, setAutoresizingMask: 0usize];
+            let _: () = msg_send![&*view, setOpaque: false];
+            let clear: Retained<AnyObject> = msg_send![class!(UIColor), clearColor];
+            let _: () = msg_send![&*view, setBackgroundColor: &*clear];
+        }
         view
     }
 

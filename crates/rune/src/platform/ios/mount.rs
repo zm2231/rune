@@ -42,7 +42,7 @@ pub(crate) fn mount<S: 'static>(mut app: App<S>) -> Mount {
         // SAFETY: `layer` is the `CAMetalLayer` of the view that owns this surface, and the
         // view calls this on the main thread.
         let host = unsafe { LayerHost::from_core_animation_layer(layer, &spec, state, size, scale, dark, wake.clone())? };
-        let mut host = host.with_system_clipboard(wake.clone()).with_popup_menus().with_file_dialogs().with_share_sheets().with_system_links();
+        let mut host = host.with_system_clipboard(wake.clone()).with_popup_menus().with_file_dialogs().with_share_sheets().with_shell().with_system_links();
         host.runtime_mut().configure(config);
         host.runtime_mut().core_mut().answer_links_later(wake.clone());
         host.runtime_mut().core_mut().set_backdrop_materials(true);

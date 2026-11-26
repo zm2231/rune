@@ -96,6 +96,8 @@ struct LayerHostCore {
     file_dialogs: bool,
     /// The host shows share sheets itself.
     shares: bool,
+    /// The host closes its own window.
+    shell: bool,
     surface_health: EmbedSurfaceHealth,
     #[cfg(target_os = "ios")]
     hosts: crate::native_view::ios::Hosts,
@@ -143,6 +145,7 @@ impl LayerHostCore {
             popup_menus: false,
             file_dialogs: false,
             shares: false,
+            shell: false,
             surface_health: EmbedSurfaceHealth::default(),
             // SAFETY: `layer` is the live CAMetalLayer the surface above was made on.
             #[cfg(target_os = "ios")]
@@ -411,6 +414,14 @@ impl<S: 'static> LayerHost<S> {
         self
     }
 
+    /// The host closes its own window when a handler asks ([`Tx::close_window`](crate::Tx::close_window)),
+    /// taking the runtime's shell request after the frame. Without this the request is dropped.
+    #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+    pub(crate) fn with_shell(mut self) -> Self {
+        self.core.shell = true;
+        self
+    }
+
     /// Links a handler opens with [`Tx::open_url`](crate::Tx::open_url) open in the system, as
     /// from an app's own window, once the handler's frame is done. Without this nothing opens:
     /// the host takes the checked links with [`Runtime::take_url_requests`] and opens them
@@ -562,7 +573,7 @@ impl<S: 'static> EmbedSurface for LayerHost<S> {
     fn presented(&mut self, ticking: bool) { self.core.presented(ticking) }
     #[cfg(target_os = "ios")]
     fn sync_hosts(&mut self) -> bool { self.core.hosts.sync_transactions(!self.rt.core().paint.native_views().is_empty()) }
-    fn serves(&self) -> Serves { Serves { clipboard: self.core.clipboard.is_some(), popup_menus: self.core.popup_menus, file_dialogs: self.core.file_dialogs, shares: self.core.shares } }
+    fn serves(&self) -> Serves { Serves { clipboard: self.core.clipboard.is_some(), popup_menus: self.core.popup_menus, file_dialogs: self.core.file_dialogs, shares: self.core.shares, shell: self.core.shell } }
     fn receive_clipboard(&mut self) {
         if let Some(clipboard) = &self.core.clipboard { clipboard.receive_core(self.rt.core_mut()); }
     }

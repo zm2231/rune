@@ -416,3 +416,18 @@ fn frame_summary_is_copy_and_step_and_flush_preserves_haptics_for_host() {
     );
 }
 
+
+#[test]
+fn a_close_request_outlives_the_frame_only_for_a_host_that_closes_its_window() {
+    let start = crate::time::now();
+    for shell in [false, true] {
+        let mut clock = FrameClock::new(start);
+        let mut rt = Runtime::new((), |_, _| el().size(40.0, 20.0), (40.0, 20.0), Env::default());
+        rt.wall_start = Some(start);
+        rt.update(|_, tx| tx.close_window());
+        let (core, mut app) = rt.split_mut();
+        step_and_flush(&mut clock, core, &mut app, start, false, Serves { shell, ..Serves::default() });
+        let kept = rt.core_mut().shell_request.take();
+        assert_eq!(kept, shell.then_some(crate::Shell::Close), "serving the shell: {shell}");
+    }
+}

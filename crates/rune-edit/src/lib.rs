@@ -88,6 +88,8 @@ pub use model::MarkRange;
 pub use model::ParagraphInfo;
 pub use model::RichStyle;
 #[doc(hidden)]
+pub use replace::is_emoji_cluster;
+#[doc(hidden)]
 pub use replace::next_char;
 #[doc(hidden)]
 pub use replace::prev_char;

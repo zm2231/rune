@@ -177,7 +177,7 @@ impl Document {
             Event::Replace { range, text } => {
                 let mut effects = self.unmark();
                 let string = self.string();
-                let bytes = byte(&string, range.start)..byte(&string, range.end).max(byte(&string, range.start));
+                let bytes = whole_emoji(&string, byte(&string, range.start)..byte(&string, range.end).max(byte(&string, range.start)));
                 effects.push(Effect::Select(self.start + bytes.start..self.start + bytes.end));
                 self.phase = Phase::Plain { selection: bytes };
                 self.write(&text);
@@ -207,6 +207,7 @@ impl Document {
                 // A selection outside the marked text ends the marking first, which shifts
                 // nothing: the marked text becomes text where it stood.
                 let mut effects = self.unmark();
+                let bytes = whole_emoji(&self.string(), bytes);
                 self.phase = Phase::Plain { selection: bytes.clone() };
                 effects.push(Effect::Select(self.start + bytes.start..self.start + bytes.end));
                 effects
@@ -281,6 +282,17 @@ fn byte(text: &str, at: usize) -> usize {
         units += c.len_utf16();
     }
     text.len()
+}
+
+fn whole_emoji(text: &str, mut bytes: Range<usize>) -> Range<usize> {
+    for (start, cluster) in text.grapheme_indices(true) {
+        let end = start + cluster.len();
+        if start >= bytes.end { break; }
+        if !rune_edit::is_emoji_cluster(cluster) { continue; }
+        if start < bytes.start && bytes.start < end { bytes.start = start; }
+        if start < bytes.end && bytes.end < end { bytes.end = end; }
+    }
+    bytes
 }
 
 /// Where the grapheme that ends at byte `at` of `text` starts.

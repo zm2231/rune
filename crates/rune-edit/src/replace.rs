@@ -18,12 +18,16 @@ pub fn prev_char(s: &str, i: usize) -> usize {
 pub(crate) fn prev_backspace(s: &str, i: usize) -> usize {
     let start = prev_char(s, i);
     let cluster = &s[start..i];
-    let emoji = cluster.chars().any(|c| matches!(c as u32, 0xFE0F | 0x20E3 | 0x1F3FB..=0x1F3FF | 0x1F1E6..=0x1F1FF | 0xE0020..=0xE007F))
-        || (cluster.contains('\u{200D}') && cluster.chars().any(rune_text::is_pictographic));
-    if cluster == "\r\n" || emoji {
+    if cluster == "\r\n" || is_emoji_cluster(cluster) {
         return start;
     }
     s[..i].char_indices().next_back().map_or(0, |(j, _)| j)
+}
+
+#[doc(hidden)]
+pub fn is_emoji_cluster(cluster: &str) -> bool {
+    cluster.chars().any(|c| matches!(c as u32, 0xFE0F | 0x20E3 | 0x1F3FB..=0x1F3FF | 0x1F1E6..=0x1F1FF | 0xE0020..=0xE007F))
+        || (cluster.contains('\u{200D}') && cluster.chars().any(rune_text::is_pictographic))
 }
 
 #[doc(hidden)]

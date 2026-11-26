@@ -177,3 +177,26 @@ fn a_hidden_field_takes_keys_and_keeps_nothing() {
     assert_eq!((doc.string().as_str(), doc.len()), ("", 0));
     assert_eq!(run(&mut doc, Event::Runtime(Snapshot::Hidden)), []);
 }
+
+#[test]
+fn a_range_the_keyboard_cuts_into_an_emoji_takes_the_whole_emoji() {
+    for emoji in ["👍🏽", "👨‍👩‍👧", "🇯🇵", "❤️", "1️⃣"] {
+        let all = format!("a{emoji}");
+        let units = all.encode_utf16().count();
+        let mut doc = field(&all, all.len()..all.len());
+        let effects = run(&mut doc, Event::Replace { range: units - 1..units, text: String::new() });
+        assert_eq!(effects, [Effect::Select(1..all.len()), Effect::Key(Key::Backspace)], "{emoji}");
+        assert_eq!((doc.string().as_str(), doc.selection()), ("a", 1..1), "{emoji}");
+
+        let mut doc = field(&all, all.len()..all.len());
+        assert_eq!(run(&mut doc, Event::Select(units - 1..units)), [Effect::Select(1..all.len())], "{emoji}");
+    }
+}
+
+#[test]
+fn a_range_inside_a_combining_sequence_stays_a_code_point() {
+    let all = "ae\u{301}";
+    let mut doc = field(all, all.len()..all.len());
+    run(&mut doc, Event::Replace { range: 2..3, text: String::new() });
+    assert_eq!(doc.string(), "ae");
+}

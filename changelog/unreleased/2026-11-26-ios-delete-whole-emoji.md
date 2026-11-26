@@ -1,0 +1,1 @@
+- **iOS: the keyboard's delete removes a whole emoji.** When the soft keyboard deletes or selects a range that starts or ends inside an emoji sequence (a skin tone, a ZWJ family, a flag, a variation selector, a keycap), the field takes the whole sequence, as Backspace already did. Before, one delete after 👍🏽 left 👍. A combining accent is still deleted on its own.

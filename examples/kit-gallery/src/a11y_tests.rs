@@ -104,3 +104,16 @@ fn every_storys_ios_elements_match_its_accessibility_tree() {
     assert!(controls > 100, "the stories hold the gallery's controls: {controls}");
     assert!(wrong.is_empty(), "{} mismatches:\n{}", wrong.len(), wrong.join("\n"));
 }
+
+#[test]
+fn the_hooks_storys_fields_offer_their_context_menu_to_voiceover() {
+    let mut rt = build_app().headless_runtime((720.0, 480.0), rune::Env::new(true, 2.0));
+    let (_, setup) = stories::SCENES.iter().find(|(id, _)| *id == "rune-text-input--hooks").expect("hooks scene");
+    rt.update(|s, _| setup(s));
+    rt.frame(0.0);
+    let exported = rt.ios_accessibility_json();
+    for label in ["TextInput", "TextArea", "TextField"] {
+        let field = exported.as_array().into_iter().flatten().find(|e| e["label"] == label).unwrap_or_else(|| panic!("{label} exported"));
+        assert!(has(&field["actions"], "menu"), "{label}: {}", field["actions"]);
+    }
+}

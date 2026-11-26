@@ -10,7 +10,7 @@
 
 #![allow(unsafe_code)]
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use accesskit::{ActionRequest, TreeUpdate};
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
@@ -103,6 +103,7 @@ struct ElementIvars {
     host: Weak<RuneView>,
     expanded: Cell<isize>,
     menu: Cell<bool>,
+    actions: RefCell<Option<Retained<AnyObject>>>,
 }
 
 define_class!(
@@ -139,6 +140,16 @@ define_class!(
             toward(direction).is_some_and(|toward| self.did(Gesture::Scroll(toward)))
         }
 
+        #[unsafe(method(isAccessibilityElement))]
+        fn is_element(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method_id(accessibilityCustomActions))]
+        fn custom_actions(&self) -> Option<Retained<AnyObject>> {
+            self.ivars().actions.borrow().clone()
+        }
+
         #[unsafe(method(accessibilityExpandedStatus))]
         fn expanded_status(&self) -> isize {
             self.ivars().expanded.get()
@@ -153,7 +164,7 @@ define_class!(
 
 impl RuneElement {
     fn new(mtm: MainThreadMarker, host: &RuneView, id: u64) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(ElementIvars { id: Cell::new(id), host: Weak::new(host), expanded: Cell::new(0), menu: Cell::new(false) });
+        let this = Self::alloc(mtm).set_ivars(ElementIvars { id: Cell::new(id), host: Weak::new(host), expanded: Cell::new(0), menu: Cell::new(false), actions: RefCell::new(None) });
         // SAFETY: `initWithAccessibilityContainer:` is the designated initializer, and the
         // container is the view the element belongs to.
         unsafe { msg_send![super(this), initWithAccessibilityContainer: host] }
@@ -185,18 +196,15 @@ impl RuneElement {
 
     fn set_menu(&self, menu: bool) {
         // SAFETY: `initWithName:target:selector:` takes a name, a target it holds weakly and a
-        // selector the target answers with a `BOOL`, as `runeShowMenu:` does; the arrays hold
-        // objects that are not nil.
-        unsafe {
-            let actions: Retained<AnyObject> = msg_send![class!(NSMutableArray), array];
-            if menu {
-                let name = NSString::from_str("Show menu");
-                let action: Allocated<AnyObject> = msg_send![class!(UIAccessibilityCustomAction), alloc];
-                let action: Retained<AnyObject> = msg_send![action, initWithName: &*name, target: self, selector: sel!(runeShowMenu:)];
-                let _: () = msg_send![&*actions, addObject: &*action];
-            }
-            let _: () = msg_send![self, setAccessibilityCustomActions: &*actions];
-        }
+        // selector the target answers with a `BOOL`, as `runeShowMenu:` does; `arrayWithObject:`
+        // takes an object that is not nil.
+        let actions = menu.then(|| unsafe {
+            let name = NSString::from_str("Show menu");
+            let action: Allocated<AnyObject> = msg_send![class!(UIAccessibilityCustomAction), alloc];
+            let action: Retained<AnyObject> = msg_send![action, initWithName: &*name, target: self, selector: sel!(runeShowMenu:)];
+            msg_send![class!(NSArray), arrayWithObject: &*action]
+        });
+        *self.ivars().actions.borrow_mut() = actions;
     }
 }
 

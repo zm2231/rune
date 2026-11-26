@@ -7,6 +7,7 @@ struct FakeStatusItem {
     titles: RefCell<Vec<String>>,
     tooltips: RefCell<Vec<Option<String>>>,
     rect: Cell<Option<[i32; 4]>>,
+    attached: RefCell<Option<Retained<NSMenu>>>,
     popped_menus: RefCell<Vec<Retained<NSMenu>>>,
     removed: Cell<bool>,
     on_pop_up: RefCell<Option<Box<dyn Fn(&NSMenu)>>>,
@@ -19,6 +20,7 @@ impl FakeStatusItem {
             titles: RefCell::new(Vec::new()),
             tooltips: RefCell::new(Vec::new()),
             rect: Cell::new(Some([2400, 0, 56, 48])),
+            attached: RefCell::new(None),
             popped_menus: RefCell::new(Vec::new()),
             removed: Cell::new(false),
             on_pop_up: RefCell::new(None),
@@ -43,10 +45,19 @@ impl StatusItemHost for FakeStatusItem {
         if self.removed.get() { None } else { self.rect.get() }
     }
 
-    fn pop_up_menu(&self, menu: &NSMenu) {
-        self.popped_menus.borrow_mut().push(Retained::from(menu));
+    fn set_menu(&self, menu: Option<&NSMenu>) {
+        *self.attached.borrow_mut() = menu.map(Retained::from);
+    }
+
+    fn perform_click(&self) {
+        let Some(menu) = self.attached.borrow().clone() else { return };
+        if let Some(delegate) = menu.delegate() {
+            // SAFETY: the delegate is the tray's `ButtonTarget`, which implements `menuNeedsUpdate:`.
+            let _: () = unsafe { msg_send![&*delegate, menuNeedsUpdate: &*menu] };
+        }
+        self.popped_menus.borrow_mut().push(menu.clone());
         if let Some(cb) = self.on_pop_up.borrow().as_ref() {
-            cb(menu);
+            cb(&menu);
         }
     }
 
@@ -74,7 +85,7 @@ fn new_with_fake(
         menu: spec.menu,
         rect: None,
     }));
-    let target = alloc_button_target(mtm, id, model.clone(), Arc::new(on_event));
+    let target = alloc_button_target(mtm, id, model.clone(), Arc::new(on_event), spec.menu_on_primary_click);
     let fake = Rc::new(FakeStatusItem::new());
     let host: Rc<dyn StatusItemHost> = fake.clone();
     let native = install_native(mtm, id, model, target.clone(), host, &image);
@@ -135,7 +146,7 @@ fn tray_new_off_main_thread_returns_backend_error() {
 }
 
 #[test]
-fn event_action_classifies_synthetic_nsevent_clicks() {
+fn event_click_classifies_synthetic_nsevent_clicks() {
     let mk = |ty, flags| {
         NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
             ty,
@@ -150,10 +161,10 @@ fn event_action_classifies_synthetic_nsevent_clicks() {
         )
         .unwrap()
     };
-    assert_eq!(event_action(None), MacClickAction::Activate);
-    assert_eq!(event_action(Some(&mk(NSEventType::LeftMouseUp, NSEventModifierFlags::empty()))), MacClickAction::Activate);
-    assert_eq!(event_action(Some(&mk(NSEventType::RightMouseUp, NSEventModifierFlags::empty()))), MacClickAction::ShowMenu);
-    assert_eq!(event_action(Some(&mk(NSEventType::LeftMouseUp, NSEventModifierFlags::Control))), MacClickAction::ShowMenu);
+    assert_eq!(event_click(None), TrayClick::Primary);
+    assert_eq!(event_click(Some(&mk(NSEventType::LeftMouseUp, NSEventModifierFlags::empty()))), TrayClick::Primary);
+    assert_eq!(event_click(Some(&mk(NSEventType::RightMouseUp, NSEventModifierFlags::empty()))), TrayClick::Secondary);
+    assert_eq!(event_click(Some(&mk(NSEventType::LeftMouseUp, NSEventModifierFlags::Control))), TrayClick::Secondary);
 }
 
 #[test]
@@ -191,12 +202,13 @@ fn fake_host_lifecycle_menu_tooltip_clicks_and_drop() {
     );
 
     // Primary click sends Activate { token: None }.
-    target.handle_click(mtm, MacClickAction::Activate);
+    target.handle_click(mtm, TrayClick::Primary);
     assert_eq!(*events.lock().unwrap(), vec![TrayEvent::Activate { token: None }]);
 
     // Secondary click builds and pops the flat NSMenu.
-    target.handle_click(mtm, MacClickAction::ShowMenu);
+    target.handle_click(mtm, TrayClick::Secondary);
     assert_eq!(fake.popped_menus.borrow().len(), 1);
+    assert!(fake.attached.borrow().is_none());
     let menu = fake.popped_menus.borrow()[0].clone();
     assert!(!menu.autoenablesItems());
     assert_eq!(menu.numberOfItems(), 4);
@@ -233,7 +245,7 @@ fn fake_host_lifecycle_menu_tooltip_clicks_and_drop() {
 
     // Updating the menu changes subsequent pop-ups and clears old menu targets.
     native.set_menu(vec![TrayItem::action("resume", "Resume")]);
-    target.handle_click(mtm, MacClickAction::ShowMenu);
+    target.handle_click(mtm, TrayClick::Secondary);
     assert_eq!(fake.popped_menus.borrow().len(), 2);
     assert!(open.target().is_none(), "previous menu targets cleared on replacement");
     let new_menu = fake.popped_menus.borrow()[1].clone();
@@ -242,7 +254,7 @@ fn fake_host_lifecycle_menu_tooltip_clicks_and_drop() {
 
     // Empty menu does not pop up.
     native.set_menu(Vec::new());
-    target.handle_click(mtm, MacClickAction::ShowMenu);
+    target.handle_click(mtm, TrayClick::Secondary);
     assert_eq!(fake.popped_menus.borrow().len(), 2);
 
     // Drop removes the status item and clears the latest menu's targets.
@@ -266,15 +278,15 @@ fn callback_panic_is_caught_and_reentrant_menu_click_is_ignored() {
     .unwrap();
 
     // Panicking Activate callback does not unwind.
-    target.handle_click(mtm, MacClickAction::Activate);
+    target.handle_click(mtm, TrayClick::Primary);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
-    // Re-entrant click while pop_up_menu is active is ignored.
+    // Re-entrant click while the menu is open is ignored.
     let target_for_cb = target.clone();
     *fake.on_pop_up.borrow_mut() = Some(Box::new(move |_| {
-        target_for_cb.handle_click(mtm, MacClickAction::ShowMenu);
+        target_for_cb.handle_click(mtm, TrayClick::Secondary);
     }));
-    target.handle_click(mtm, MacClickAction::ShowMenu);
+    target.handle_click(mtm, TrayClick::Secondary);
     assert_eq!(fake.popped_menus.borrow().len(), 1);
     drop(native);
 }
@@ -323,13 +335,22 @@ fn fake_host_set_icon_set_title_rect_and_check_menu_items() {
     assert!(!img.isTemplate());
     assert_eq!(img.accessibilityDescription().map(|s| s.to_string()), Some("Live Status".into()));
 
+    native.set_accessibility_label("Live Status unavailable".into());
+    let img = fake.image.borrow().clone().expect("relabelled image");
+    assert_eq!(img.accessibilityDescription().map(|s| s.to_string()), Some("Live Status unavailable".into()));
+    assert_eq!(img.size(), NSSize::new(44.0, 22.0));
+    native.set_icon(TrayIcon::rgba(32, 32, vec![255; 32 * 32 * 4])).unwrap();
+    let img = fake.image.borrow().clone().expect("updated image");
+    assert_eq!(img.accessibilityDescription().map(|s| s.to_string()), Some("Live Status unavailable".into()));
+    native.set_icon(TrayIcon::rgba(48, 24, vec![255, 64, 64, 255].repeat(48 * 24))).unwrap();
+
     // Invalid icons are rejected without replacing the current NSImage.
     assert!(matches!(native.set_icon(TrayIcon::rgba(0, 16, Vec::new())), Err(TrayError::Backend(_))));
     assert!(matches!(native.set_icon(TrayIcon::rgba(4, 4, vec![0; 8])), Err(TrayError::Backend(_))));
     assert_eq!(fake.image.borrow().as_ref().unwrap().size(), NSSize::new(44.0, 22.0));
 
     // Check menu items set NSMenuItem.state (1 = on, 0 = off) and dispatch enabled clicks.
-    target.handle_click(mtm, MacClickAction::ShowMenu);
+    target.handle_click(mtm, TrayClick::Secondary);
     let menu = fake.popped_menus.borrow()[0].clone();
     assert_eq!(menu.numberOfItems(), 4);
     let open = menu.itemAtIndex(0).unwrap();
@@ -355,7 +376,7 @@ fn fake_host_set_icon_set_title_rect_and_check_menu_items() {
 
     // Flipping checked state via set_menu updates subsequent pop-ups.
     native.set_menu(vec![TrayItem::check("hud", "Show HUD", true)]);
-    target.handle_click(mtm, MacClickAction::ShowMenu);
+    target.handle_click(mtm, TrayClick::Secondary);
     let next_menu = fake.popped_menus.borrow()[1].clone();
     assert_eq!(next_menu.itemAtIndex(0).unwrap().state(), 1);
 
@@ -371,4 +392,47 @@ fn fake_host_set_icon_set_title_rect_and_check_menu_items() {
     assert_eq!(native.rect(), None);
 
     drop(native);
+}
+
+#[test]
+fn menu_on_primary_click_attaches_a_menu_filled_when_it_opens() {
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let events: Arc<Mutex<Vec<TrayEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let spec = TraySpec::new("dev.rune.extra", "Extra", TrayIcon::rgba(16, 16, vec![255; 16 * 16 * 4]))
+        .menu(vec![TrayItem::action("open", "Open")])
+        .menu_on_primary_click(true);
+    let (native, fake, target) = new_with_fake(mtm, spec, 22.0, move |ev| sink.lock().unwrap().push(ev)).unwrap();
+
+    let attached = fake.attached.borrow().clone().expect("the status item owns the menu");
+    assert!(attached.delegate().is_some());
+
+    native.set_menu(vec![TrayItem::action("resume", "Resume"), TrayItem::action("quit", "Quit")]);
+    fake.perform_click();
+    assert_eq!(attached.numberOfItems(), 2);
+    assert_eq!(attached.itemAtIndex(0).unwrap().title().to_string(), "Resume");
+    let quit = attached.itemAtIndex(1).unwrap();
+    // SAFETY: invoking the target/action installed on the main-thread test menu item.
+    unsafe {
+        let quit_target = quit.target().unwrap();
+        let _: () = msg_send![&*quit_target, runeTrayMenuPick: &*quit];
+    }
+    assert_eq!(*events.lock().unwrap(), vec![TrayEvent::Menu("quit".into())]);
+
+    target.handle_click(mtm, TrayClick::Primary);
+    assert_eq!(fake.popped_menus.borrow().len(), 2);
+    assert!(fake.attached.borrow().is_some(), "the menu stays attached after it opens");
+
+    native.set_menu(Vec::new());
+    assert!(fake.attached.borrow().is_none());
+    target.handle_click(mtm, TrayClick::Primary);
+    target.handle_click(mtm, TrayClick::Secondary);
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![TrayEvent::Menu("quit".into()), TrayEvent::Activate { token: None }]
+    );
+
+    drop(native);
+    assert!(attached.delegate().is_none());
+    assert!(fake.removed.get());
 }

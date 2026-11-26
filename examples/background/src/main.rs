@@ -10,9 +10,10 @@
 //! cargo run -p background -- --open --release-gpu --tray --full-screen
 //! cargo run -p background -- --accessory    # macOS: no Dock icon until `dock on`
 //! cargo run -p background -- --accessory --tray  # menu-bar tray icon (macOS template image) + menu
+//! cargo run -p background -- --accessory --tray --tray-menu-on-click  # a left click opens the menu
 //! # `hud show|hide|top|bottom|recording|transcribing|status` drives a recording-HUD overlay;
 //! # `capsule show|hide|left|wide|status` a clickable corner capsule;
-//! # `tray tooltip <text> | title [text] | icon normal|alert | icon-name [name] | rect` drives live tray updates
+//! # `tray tooltip <text> | title [text] | label <text> | icon normal|alert | icon-name [name] | rect` drives live tray updates
 //! cargo run -p background -- --snap /tmp/background.png
 //! ```
 
@@ -290,7 +291,8 @@ fn main() {
         let tray_for_cb = tray_slot.clone();
         let spec = TraySpec::new("dev.rune.background", "Rune Background", tray_icon(false))
             .tooltip("Rune Background — click to open")
-            .menu(tray_menu(false, false));
+            .menu(tray_menu(false, false))
+            .menu_on_primary_click(std::env::args().any(|a| a == "--tray-menu-on-click"));
         match Tray::new(spec, move |event| match event {
             TrayEvent::Activate { token } => {
                 if let Ok(guard) = tray_for_cb.lock() && let Some(tray) = guard.as_ref() {
@@ -380,6 +382,12 @@ fn main() {
                         tray.set_title(title.join(" "));
                     }
                 }
+                (Some("tray"), Some("label")) => {
+                    let label: Vec<&str> = words.collect();
+                    if let Ok(guard) = tray_cmd.lock() && let Some(tray) = guard.as_ref() {
+                        tray.set_accessibility_label(label.join(" "));
+                    }
+                }
                 (Some("tray"), Some("icon")) => {
                     let alert = words.next() == Some("alert");
                     alert_cmd.store(alert, Ordering::Relaxed);
@@ -403,7 +411,7 @@ fn main() {
                     }
                 }
                 (Some(other), _) => {
-                    eprintln!("background: unknown command {other:?} (open | show | hide | focus | position X Y | activate TOKEN | close | dock on|off | hud show|hide|top|bottom|recording|transcribing|status | capsule show|hide|left|wide|status | tray tooltip|title|icon|icon-name|rect | quit)")
+                    eprintln!("background: unknown command {other:?} (open | show | hide | focus | position X Y | activate TOKEN | close | dock on|off | hud show|hide|top|bottom|recording|transcribing|status | capsule show|hide|left|wide|status | tray tooltip|title|label|icon|icon-name|rect | quit)")
                 }
                 (None, _) => {}
             }

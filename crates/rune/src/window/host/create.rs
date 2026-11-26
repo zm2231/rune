@@ -500,6 +500,7 @@ impl Host {
             launch_drawables,
             _spot: crate::platform::macos::traffic_lights::Spot::new(&window),
             _drop: drop_target,
+            _dock: crate::taskbar::dock::DockCount::new(u64::from(window.id())),
         };
         // Making the GPU and surface took part of the cloak's wait; the frame gets all of it.
         #[cfg(target_os = "windows")]

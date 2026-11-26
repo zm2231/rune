@@ -26,6 +26,8 @@ pub(crate) use ios::{build as build_ios_menus, keys_first, perform as perform_io
 mod key_equivalent;
 #[cfg(test)]
 mod key_equivalent_tests;
+#[cfg(all(target_os = "macos", feature = "test-main-thread"))]
+pub mod main_thread_checks;
 #[cfg(test)]
 mod tests;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]

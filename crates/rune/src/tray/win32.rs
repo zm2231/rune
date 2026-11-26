@@ -1,10 +1,11 @@
 //! `Shell_NotifyIcon` on a message-only window that owns its thread and message loop. A left
-//! click activates; a right click opens a `TrackPopupMenu` menu. The icon comes back when
+//! click activates, or with `menu_on_primary_click` opens the menu; a right click opens a
+//! `TrackPopupMenu` menu. The icon comes back when
 //! Explorer restarts (`TaskbarCreated`).
 
 #![allow(unsafe_code)]
 
-use super::{Handler, TrayError, TrayEvent, TrayIcon, TrayItem, TraySpec};
+use super::{ClickAction, Handler, TrayClick, TrayError, TrayEvent, TrayIcon, TrayItem, TraySpec, route_click};
 use std::{cell::Cell, ptr, sync::{Arc, Mutex, mpsc}, thread::JoinHandle};
 use windows_sys::Win32::{Foundation::*, System::LibraryLoader::GetModuleHandleW, UI::{Shell::*, WindowsAndMessaging::*}};
 
@@ -12,7 +13,7 @@ const CALLBACK: u32 = WM_APP + 1;
 const UPDATE: u32 = WM_APP + 2;
 const ICON_ID: u32 = 1;
 
-struct Model { tooltip: String, menu: Vec<TrayItem>, pending_icon: Option<TrayIcon> }
+struct Model { tooltip: String, label: String, menu: Vec<TrayItem>, pending_icon: Option<TrayIcon>, menu_on_primary_click: bool }
 struct Context { model: Arc<Mutex<Model>>, on_event: Handler, icon: Cell<HICON>, taskbar_created: u32 }
 pub(super) struct Native { window: isize, model: Arc<Mutex<Model>>, worker: Option<JoinHandle<()>> }
 
@@ -91,7 +92,9 @@ fn notify(hwnd: HWND, context: &Context, message: NOTIFY_ICON_MESSAGE) -> bool {
     let mut data = data(hwnd, NIF_MESSAGE | NIF_ICON | NIF_TIP);
     data.uCallbackMessage = CALLBACK;
     data.hIcon = context.icon.get();
-    set_tip(&mut data, &context.model.lock().unwrap_or_else(|e| e.into_inner()).tooltip);
+    let model = context.model.lock().unwrap_or_else(|e| e.into_inner());
+    set_tip(&mut data, super::win32_tip(&model.tooltip, &model.label));
+    drop(model);
     // SAFETY: `data` is fully initialized for this window's icon.
     unsafe { Shell_NotifyIconW(message, &data) != 0 }
 }
@@ -146,10 +149,19 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
         };
         match message {
             CALLBACK => {
-                let event = match l as u32 {
-                    WM_LBUTTONUP => Some(TrayEvent::Activate { token: None }),
-                    WM_RBUTTONUP => pick(hwnd, context).map(TrayEvent::Menu),
+                let click = match l as u32 {
+                    WM_LBUTTONUP => Some(TrayClick::Primary),
+                    WM_RBUTTONUP => Some(TrayClick::Secondary),
                     _ => None,
+                };
+                let action = click.map(|click| {
+                    let model = context.model.lock().unwrap_or_else(|e| e.into_inner());
+                    route_click(click, model.menu_on_primary_click, !model.menu.is_empty())
+                });
+                let event = match action {
+                    Some(ClickAction::Activate) => Some(TrayEvent::Activate { token: None }),
+                    Some(ClickAction::ShowMenu) => pick(hwnd, context).map(TrayEvent::Menu),
+                    Some(ClickAction::Ignore) | None => None,
                 };
                 if let Some(event) = event {
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (context.on_event)(event))).ok();
@@ -197,8 +209,10 @@ impl Native {
     pub(super) fn new(spec: TraySpec, on_event: Handler) -> Result<Self, TrayError> {
         let model = Arc::new(Mutex::new(Model {
             tooltip: spec.tooltip.clone(),
+            label: spec.title.clone(),
             menu: spec.menu.clone(),
             pending_icon: None,
+            menu_on_primary_click: spec.menu_on_primary_click,
         }));
         let shared = model.clone();
         let (ready, result) = mpsc::sync_channel(1);
@@ -259,6 +273,10 @@ impl Native {
     }
     pub(super) fn set_icon_name(&self, _name: String) {}
     pub(super) fn set_title(&self, _title: String) {}
+    pub(super) fn set_accessibility_label(&self, label: String) {
+        self.model.lock().unwrap_or_else(|e| e.into_inner()).label = label;
+        self.update();
+    }
     pub(super) fn rect(&self) -> Option<[i32; 4]> {
         if self.window == 0 {
             return None;

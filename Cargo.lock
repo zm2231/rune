@@ -4576,6 +4576,7 @@ dependencies = [
  "procwatch",
  "raw-window-handle",
  "rfd",
+ "rune",
  "rune-core",
  "rune-edit",
  "rune-gpu",

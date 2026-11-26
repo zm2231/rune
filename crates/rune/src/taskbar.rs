@@ -11,7 +11,13 @@
 //!
 //! macOS shows the badge on the Dock icon, for the app as a whole: the sum of its windows'
 //! counts (`NSDockTile.badgeLabel`); the Dock has no progress bar, so progress shows nothing there.
+//! A window's count goes with the window: one made again (a released GPU, a lost surface) starts
+//! at no count, as a new Windows taskbar button does.
 //! Linux's counterpart, Unity's `LauncherEntry` over D-Bus, isn't built: the calls do nothing.
+
+#[cfg(any(target_os = "macos", test))]
+#[path = "taskbar/dock.rs"]
+pub(crate) mod dock;
 
 /// The bar under a window's taskbar button.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

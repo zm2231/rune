@@ -1,8 +1,10 @@
 //! `NSStatusBar` / `NSStatusItem` on macOS. Primary clicks send `TrayEvent::Activate`;
 //! secondary clicks and Control-clicks open the flat `NSMenu`, whose picks send
-//! `TrayEvent::Menu`. `Tray::new` must run on the main thread; `set_menu`, `set_tooltip`,
-//! `set_icon`, `set_icon_name`, `set_title`, `rect` and `Drop` may be called from any thread
-//! (AppKit calls dispatch to the main queue when off the main thread).
+//! `TrayEvent::Menu`. With `menu_on_primary_click` the menu is the status item's own, filled
+//! from the latest items each time it opens. VoiceOver's and automation's `AXShowMenu` opens the
+//! menu either way. `Tray::new` must run on the main thread; `set_menu`, `set_tooltip`,
+//! `set_icon`, `set_icon_name`, `set_title`, `set_accessibility_label`, `rect` and `Drop` may
+//! be called from any thread (AppKit calls dispatch to the main queue when off the main thread).
 
 #![allow(unsafe_code)]
 
@@ -17,22 +19,23 @@ use std::{
 };
 
 use objc2::{
-    AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
+    AnyThread, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
     rc::Retained,
-    runtime::AnyObject,
+    runtime::{AnyObject, ProtocolObject, Sel},
     sel,
 };
 use objc2_app_kit::{
-    NSApplication, NSBitmapFormat, NSBitmapImageRep, NSCellImagePosition, NSColorSpace,
-    NSDeviceRGBColorSpace, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSFont,
-    NSFontWeightRegular, NSImage, NSImageScaling, NSMenu, NSMenuItem, NSScreen, NSStatusBar,
-    NSStatusBarButton, NSStatusItem, NSVariableStatusItemLength,
+    NSApplication, NSBitmapFormat, NSBitmapImageRep, NSButton, NSCellImagePosition, NSColorSpace,
+    NSControl, NSDeviceRGBColorSpace, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType,
+    NSFont, NSFontWeightRegular, NSImage, NSImageScaling, NSMenu, NSMenuDelegate, NSMenuItem,
+    NSResponder, NSScreen, NSStatusBar, NSStatusBarButton, NSStatusItem, NSVariableStatusItemLength,
+    NSView,
 };
-use objc2_foundation::{NSObject, NSSize, NSString};
+use objc2_foundation::{NSObject, NSObjectProtocol, NSSize, NSString};
 
 use super::{
-    Handler, MacClickAction, TrayError, TrayEvent, TrayIcon, TrayItem, TraySpec,
-    classify_mac_click, macos_icon_point_size, macos_screen_rect_to_physical, premultiply_rgba,
+    ClickAction, Handler, TrayClick, TrayError, TrayEvent, TrayIcon, TrayItem, TraySpec,
+    macos_icon_point_size, macos_screen_rect_to_physical, premultiply_rgba, route_click,
 };
 
 const DEFAULT_BAR_THICKNESS: f64 = 22.0;
@@ -55,7 +58,8 @@ trait StatusItemHost: 'static {
     fn set_title(&self, title: &str);
     fn set_tooltip(&self, tooltip: Option<&str>);
     fn screen_rect(&self, mtm: MainThreadMarker) -> Option<[i32; 4]>;
-    fn pop_up_menu(&self, menu: &NSMenu);
+    fn set_menu(&self, menu: Option<&NSMenu>);
+    fn perform_click(&self);
     fn remove(&self);
 }
 
@@ -90,6 +94,13 @@ impl SystemStatusItem {
             button.setAction(Some(sel!(runeTrayClick:)));
         }
         let _ = button.sendActionOn(NSEventMask::LeftMouseUp | NSEventMask::RightMouseUp);
+        let plain: &AnyObject = &button;
+        if plain.class() == NSStatusBarButton::class() {
+            // SAFETY: `StatusButton` subclasses `NSStatusBarButton`, adds no instance variables
+            // and overrides only accessibility methods with AppKit's signatures. The button's
+            // class is exactly `NSStatusBarButton`, so no runtime subclass (KVO's) is replaced.
+            unsafe { AnyObject::set_class(plain, StatusButton::class()) };
+        }
         Ok(Self { bar, item, button, removed: Cell::new(false) })
     }
 }
@@ -133,15 +144,19 @@ impl StatusItemHost for SystemStatusItem {
         )
     }
 
-    fn pop_up_menu(&self, menu: &NSMenu) {
+    fn set_menu(&self, menu: Option<&NSMenu>) {
+        if !self.removed.get() {
+            self.item.setMenu(menu);
+        }
+    }
+
+    fn perform_click(&self) {
         if self.removed.get() {
             return;
         }
-        self.item.setMenu(Some(menu));
         // SAFETY: main-thread status bar button; with `item.menu` set, `performClick:` opens
         // and tracks the status item's menu synchronously with native highlight and placement.
         unsafe { self.button.performClick(None) };
-        self.item.setMenu(None);
     }
 
     fn remove(&self) {
@@ -207,6 +222,8 @@ struct ButtonIvars {
     id: u64,
     model: Arc<Mutex<Model>>,
     on_event: Handler,
+    menu_on_primary_click: bool,
+    own_menu: RefCell<Option<Retained<NSMenu>>>,
     showing_menu: Cell<bool>,
     last_menu: RefCell<Option<(Retained<NSMenu>, Retained<MenuTarget>)>>,
 }
@@ -223,7 +240,42 @@ define_class!(
         fn click(&self, _sender: Option<&AnyObject>) {
             let Some(mtm) = MainThreadMarker::new() else { return };
             let event = NSApplication::sharedApplication(mtm).currentEvent();
-            self.handle_click(mtm, event_action(event.as_deref()));
+            self.handle_click(mtm, event_click(event.as_deref()));
+        }
+    }
+
+    // SAFETY: `ButtonTarget` inherits from `NSObject`, which implements `NSObjectProtocol`.
+    unsafe impl NSObjectProtocol for ButtonTarget {}
+
+    // SAFETY: main-thread only; `menuNeedsUpdate:` matches AppKit's `NSMenuDelegate` selector ABI.
+    unsafe impl NSMenuDelegate for ButtonTarget {
+        #[unsafe(method(menuNeedsUpdate:))]
+        fn menu_needs_update(&self, menu: &NSMenu) {
+            let Some(mtm) = MainThreadMarker::new() else { return };
+            let items = self.ivars().model.lock().unwrap_or_else(|e| e.into_inner()).menu.clone();
+            self.refill(mtm, menu, &items);
+        }
+    }
+);
+
+define_class!(
+    #[unsafe(super(NSStatusBarButton, NSButton, NSControl, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "RuneTrayStatusBarButton"]
+    struct StatusButton;
+
+    impl StatusButton {
+        #[unsafe(method(accessibilityPerformShowMenu))]
+        fn accessibility_perform_show_menu(&self) -> bool {
+            let target = self.target();
+            target.is_some_and(|target| show_menu_soon(Retained::as_ptr(&target)))
+        }
+
+        #[unsafe(method(isAccessibilitySelectorAllowed:))]
+        fn is_accessibility_selector_allowed(&self, selector: Sel) -> bool {
+            // SAFETY: `NSView` implements `isAccessibilitySelectorAllowed:` with this signature.
+            selector == sel!(accessibilityPerformShowMenu)
+                || unsafe { msg_send![super(self), isAccessibilitySelectorAllowed: selector] }
         }
     }
 );
@@ -236,34 +288,64 @@ impl Drop for ShowingMenuGuard<'_> {
 }
 
 impl ButtonTarget {
-    fn handle_click(&self, mtm: MainThreadMarker, action: MacClickAction) {
+    fn handle_click(&self, mtm: MainThreadMarker, click: TrayClick) {
         let ivars = self.ivars();
         if ivars.showing_menu.get() {
             return;
         }
-        match action {
-            MacClickAction::Activate => {
+        let items = ivars.model.lock().unwrap_or_else(|e| e.into_inner()).menu.clone();
+        match route_click(click, ivars.menu_on_primary_click, !items.is_empty()) {
+            ClickAction::Ignore => {}
+            ClickAction::Activate => {
                 let _ = refresh_rect(ivars.id, mtm);
                 dispatch_event(&ivars.on_event, TrayEvent::Activate { token: None });
             }
-            MacClickAction::ShowMenu => {
-                let items = ivars.model.lock().unwrap_or_else(|e| e.into_inner()).menu.clone();
-                if items.is_empty() {
-                    return;
-                }
-                let (menu, menu_target) = build_menu(mtm, &items, ivars.on_event.clone());
-                let previous = ivars.last_menu.borrow_mut().replace((menu.clone(), menu_target));
-                if let Some((old_menu, _)) = previous {
-                    clear_menu_targets(&old_menu);
-                }
+            ClickAction::ShowMenu => {
                 let host = ITEMS.with(|map| map.borrow().get(&ivars.id).map(|live| live.host.clone()));
                 let Some(host) = host else { return };
                 ivars.showing_menu.set(true);
                 let _guard = ShowingMenuGuard(&ivars.showing_menu);
-                host.pop_up_menu(&menu);
+                let own = ivars.own_menu.borrow().clone();
+                if let Some(menu) = own {
+                    host.set_menu(Some(&menu));
+                    host.perform_click();
+                } else {
+                    let menu = new_menu(mtm);
+                    self.refill(mtm, &menu, &items);
+                    host.set_menu(Some(&menu));
+                    host.perform_click();
+                    host.set_menu(None);
+                }
             }
         }
     }
+
+    fn refill(&self, mtm: MainThreadMarker, menu: &NSMenu, items: &[TrayItem]) {
+        let ivars = self.ivars();
+        if let Some((old, _)) = ivars.last_menu.borrow_mut().take() {
+            clear_menu_targets(&old);
+        }
+        menu.removeAllItems();
+        let target = fill_menu(mtm, menu, items, ivars.on_event.clone());
+        *ivars.last_menu.borrow_mut() = Some((Retained::from(menu), target));
+    }
+}
+
+fn show_menu_soon(target: *const AnyObject) -> bool {
+    let found = ITEMS.with(|map| {
+        map.borrow().iter().find(|(_, live)| std::ptr::eq(Retained::as_ptr(&live.target).cast::<AnyObject>(), target)).map(|(id, live)| {
+            (*id, !live.model.lock().unwrap_or_else(|e| e.into_inner()).menu.is_empty())
+        })
+    });
+    let Some((id, true)) = found else { return false };
+    crate::platform::main_queue::on_main(move || {
+        let Some(mtm) = MainThreadMarker::new() else { return };
+        let target = ITEMS.with(|map| map.borrow().get(&id).map(|live| live.target.clone()));
+        if let Some(target) = target {
+            target.handle_click(mtm, TrayClick::Secondary);
+        }
+    });
+    true
 }
 
 fn dispatch_event(on_event: &Handler, event: TrayEvent) {
@@ -272,11 +354,11 @@ fn dispatch_event(on_event: &Handler, event: TrayEvent) {
     }
 }
 
-fn event_action(event: Option<&NSEvent>) -> MacClickAction {
-    let Some(event) = event else { return MacClickAction::Activate };
+fn event_click(event: Option<&NSEvent>) -> TrayClick {
+    let Some(event) = event else { return TrayClick::Primary };
     let is_right = matches!(event.r#type(), NSEventType::RightMouseUp | NSEventType::RightMouseDown);
     let control = event.modifierFlags().contains(NSEventModifierFlags::Control);
-    classify_mac_click(is_right, control)
+    if is_right || control { TrayClick::Secondary } else { TrayClick::Primary }
 }
 
 fn valid_thickness(thickness: f64) -> f64 {
@@ -363,11 +445,19 @@ fn make_image(icon: &TrayIcon, thickness: f64, description: &str) -> Result<Reta
     })
 }
 
-fn build_menu(
+fn new_menu(mtm: MainThreadMarker) -> Retained<NSMenu> {
+    let menu = NSMenu::new(mtm);
+    menu.setAutoenablesItems(false);
+    crate::native_menu::set_layout_direction(&menu);
+    menu
+}
+
+fn fill_menu(
     mtm: MainThreadMarker,
+    menu: &NSMenu,
     items: &[TrayItem],
     on_event: Handler,
-) -> (Retained<NSMenu>, Retained<MenuTarget>) {
+) -> Retained<MenuTarget> {
     let entries: Vec<MenuEntry> = items
         .iter()
         .filter_map(|item| match item {
@@ -380,9 +470,6 @@ fn build_menu(
     // SAFETY: main-thread NSObject initialization immediately following set_ivars.
     let target: Retained<MenuTarget> =
         unsafe { msg_send![super(mtm.alloc().set_ivars(MenuIvars { entries, on_event })), init] };
-    let menu = NSMenu::new(mtm);
-    menu.setAutoenablesItems(false);
-    crate::native_menu::set_layout_direction(&menu);
     let target_obj: &AnyObject = &target;
     let mut tag = 0isize;
     for item in items {
@@ -402,7 +489,7 @@ fn build_menu(
             }
         }
     }
-    (menu, target)
+    target
 }
 
 fn make_menu_item(
@@ -449,11 +536,14 @@ fn alloc_button_target(
     id: u64,
     model: Arc<Mutex<Model>>,
     on_event: Handler,
+    menu_on_primary_click: bool,
 ) -> Retained<ButtonTarget> {
     let ivars = ButtonIvars {
         id,
         model,
         on_event,
+        menu_on_primary_click,
+        own_menu: RefCell::new(None),
         showing_menu: Cell::new(false),
         last_menu: RefCell::new(None),
     };
@@ -473,9 +563,15 @@ fn install_native(
     let initial_tip = model.lock().unwrap_or_else(|e| e.into_inner()).tooltip.clone();
     host.set_tooltip(non_empty(&initial_tip));
     model.lock().unwrap_or_else(|e| e.into_inner()).rect = host.screen_rect(mtm);
+    if target.ivars().menu_on_primary_click {
+        let menu = new_menu(mtm);
+        menu.setDelegate(Some(ProtocolObject::from_ref(&*target)));
+        *target.ivars().own_menu.borrow_mut() = Some(menu);
+    }
     ITEMS.with(|map| {
         map.borrow_mut().insert(id, LiveItem { host, target, model: model.clone() });
     });
+    apply_menu(id);
     Native { id, model }
 }
 
@@ -483,6 +579,14 @@ fn live_entry(id: u64) -> Option<(Rc<dyn StatusItemHost>, Arc<Mutex<Model>>)> {
     ITEMS.with(|map| {
         map.borrow().get(&id).map(|live| (live.host.clone(), live.model.clone()))
     })
+}
+
+fn apply_menu(id: u64) {
+    let Some((host, model)) = live_entry(id) else { return };
+    let own = ITEMS.with(|map| map.borrow().get(&id).and_then(|live| live.target.ivars().own_menu.borrow().clone()));
+    let Some(menu) = own else { return };
+    let has_menu = !model.lock().unwrap_or_else(|e| e.into_inner()).menu.is_empty();
+    host.set_menu(has_menu.then_some(&*menu));
 }
 
 fn apply_tooltip(id: u64) {
@@ -521,6 +625,9 @@ fn remove_item(id: u64) {
     let Some(live) = ITEMS.with(|map| map.borrow_mut().remove(&id)) else { return };
     if let Some((menu, _)) = live.target.ivars().last_menu.borrow_mut().take() {
         clear_menu_targets(&menu);
+    }
+    if let Some(menu) = live.target.ivars().own_menu.borrow_mut().take() {
+        menu.setDelegate(None);
     }
     live.host.remove();
 }
@@ -564,13 +671,19 @@ impl Native {
             menu: spec.menu,
             rect: None,
         }));
-        let target = alloc_button_target(mtm, id, model.clone(), on_event);
+        let target = alloc_button_target(mtm, id, model.clone(), on_event, spec.menu_on_primary_click);
         let host = Rc::new(SystemStatusItem::new(mtm, bar, &target)?);
         Ok(install_native(mtm, id, model, target, host, &image))
     }
 
     pub(super) fn set_menu(&self, menu: Vec<TrayItem>) {
         self.model.lock().unwrap_or_else(|e| e.into_inner()).menu = menu;
+        let id = self.id;
+        if MainThreadMarker::new().is_some() {
+            apply_menu(id);
+        } else {
+            crate::platform::main_queue::on_main(move || apply_menu(id));
+        }
     }
 
     pub(super) fn set_tooltip(&self, tooltip: String) {
@@ -601,6 +714,20 @@ impl Native {
     }
 
     pub(super) fn set_icon_name(&self, _name: String) {}
+
+    pub(super) fn set_accessibility_label(&self, label: String) {
+        self.model.lock().unwrap_or_else(|e| e.into_inner()).accessibility_label = label;
+        let id = self.id;
+        if let Some(mtm) = MainThreadMarker::new() {
+            apply_icon(id, mtm).ok();
+        } else {
+            crate::platform::main_queue::on_main(move || {
+                if let Some(mtm) = MainThreadMarker::new() {
+                    apply_icon(id, mtm).ok();
+                }
+            });
+        }
+    }
 
     pub(super) fn set_title(&self, title: String) {
         self.model.lock().unwrap_or_else(|e| e.into_inner()).title = title;
@@ -642,6 +769,10 @@ impl Drop for Native {
         }
     }
 }
+
+#[cfg(feature = "test-main-thread")]
+#[path = "main_thread_checks.rs"]
+pub mod main_thread_checks;
 
 #[cfg(test)]
 #[path = "macos_tests.rs"]

@@ -1,13 +1,18 @@
 //! Main-thread macOS checks for `rune::Tray`, without opening a window or touching the live
-//! menu bar by default. Set `RUNE_GUI_TESTS=1` in a logged-in macOS GUI session to also exercise
-//! creating, updating and removing a real `NSStatusItem`.
+//! menu bar by default: the tray's AppKit menus, images and clicks run against a fake status
+//! item. Set `RUNE_GUI_TESTS=1` in a logged-in macOS GUI session to also exercise creating,
+//! updating and removing a real `NSStatusItem`.
 
 #[cfg(not(target_os = "macos"))]
 fn main() {}
 
 #[cfg(target_os = "macos")]
 fn main() {
+    use objc2::MainThreadMarker;
+    use rune::main_thread_checks::tray as checks;
     use rune::{Tray, TrayError, TrayIcon, TrayItem, TraySpec};
+
+    let mtm = MainThreadMarker::new().expect("a harness-free test runs on the main thread");
 
     // Zero dimensions fail cleanly on the main thread before creating any NSStatusItem.
     for (w, h) in [(0, 0), (0, 16), (16, 0)] {
@@ -31,6 +36,12 @@ fn main() {
     .join()
     .unwrap();
     assert!(matches!(off_main, Err(TrayError::Backend(_))));
+
+    checks::fake_host_lifecycle_menu_tooltip_clicks_and_drop(mtm);
+    checks::callback_panic_is_caught_and_reentrant_menu_click_is_ignored(mtm);
+    checks::fake_host_set_icon_set_title_rect_and_check_menu_items(mtm);
+    checks::menu_on_primary_click_attaches_a_menu_filled_when_it_opens(mtm);
+    println!("tray_macos: fake status item checks ok");
 
     if std::env::var_os("RUNE_GUI_TESTS").is_none() {
         println!("tray_macos: live NSStatusBar check skipped (set RUNE_GUI_TESTS=1 in a GUI session)");

@@ -2,13 +2,15 @@
 //! zbus on Linux, `NSStatusBar` / `NSStatusItem` on macOS, and `Shell_NotifyIcon` on its own
 //! message-only window on Windows. A primary click sends [`TrayEvent::Activate`]; a secondary
 //! click (or Control-click on macOS) opens the menu, whose picks send [`TrayEvent::Menu`].
-//! Dropping the [`Tray`] removes the icon.
+//! [`TraySpec::menu_on_primary_click`] makes a primary click open the menu too, as menu bar
+//! extras do on macOS. Dropping the [`Tray`] removes the icon.
 //!
 //! Linux and Windows run each tray on its own thread, so it needs no event loop of the app's
 //! and answers while the app's window is closed. On macOS [`Tray::new`] must run on the main
 //! thread (and works while every window is hidden, including in an accessory app), while
 //! [`Tray::set_menu`], [`Tray::set_tooltip`], [`Tray::set_icon`], [`Tray::set_icon_name`],
-//! [`Tray::set_title`], [`Tray::rect`] and dropping [`Tray`] may happen from any thread.
+//! [`Tray::set_title`], [`Tray::set_accessibility_label`], [`Tray::rect`] and dropping [`Tray`]
+//! may happen from any thread.
 //!
 //! Linux shows the icon only where a tray host runs (KDE, waybar, most bars; GNOME needs an
 //! extension). Without one, [`Tray::new`] still succeeds and the icon appears once a host
@@ -21,7 +23,7 @@ use std::sync::Arc;
 mod native;
 #[cfg(target_os = "macos")]
 #[path = "tray/macos.rs"]
-mod native;
+pub(crate) mod native;
 #[cfg(target_os = "windows")]
 #[path = "tray/win32.rs"]
 mod native;
@@ -143,15 +145,39 @@ pub struct TraySpec {
     pub(crate) icon_name: String,
     pub(crate) icon: TrayIcon,
     pub(crate) menu: Vec<TrayItem>,
+    pub(crate) menu_on_primary_click: bool,
 }
 impl TraySpec {
     pub fn new(id: impl Into<String>, title: impl Into<String>, icon: TrayIcon) -> Self {
-        Self { id: id.into(), title: title.into(), tooltip: String::new(), icon_name: String::new(), icon, menu: Vec::new() }
+        Self { id: id.into(), title: title.into(), tooltip: String::new(), icon_name: String::new(), icon, menu: Vec::new(), menu_on_primary_click: false }
     }
     pub fn tooltip(mut self, tooltip: impl Into<String>) -> Self { self.tooltip = tooltip.into(); self }
     /// A freedesktop icon theme name (Linux `IconName`) a host may draw instead of the pixels.
     pub fn icon_name(mut self, name: impl Into<String>) -> Self { self.icon_name = name.into(); self }
     pub fn menu(mut self, menu: Vec<TrayItem>) -> Self { self.menu = menu; self }
+
+    /// Opens the menu on a primary (left) click as well as a secondary one, the way menu bar
+    /// extras behave on macOS. While the menu is empty, a primary click still sends
+    /// [`TrayEvent::Activate`]. Defaults to `false`.
+    ///
+    /// - macOS: the menu becomes the status item's own menu, so it opens on mouse-down with
+    ///   native highlight, drag-to-pick and keyboard navigation, and no click sends `Activate`.
+    /// - Windows: a left click opens the same menu at the pointer that a right click does.
+    /// - Linux: sets the StatusNotifierItem `ItemIsMenu` property, which asks the tray host to
+    ///   show the menu on a primary click. A host that ignores it (or an empty menu) still sends
+    ///   `Activate`.
+    ///
+    /// ```no_run
+    /// use rune::{Tray, TrayIcon, TrayItem, TraySpec};
+    ///
+    /// let icon = TrayIcon::rgba(32, 32, vec![255; 32 * 32 * 4]).template(true);
+    /// let spec = TraySpec::new("dev.rune.app", "App", icon)
+    ///     .menu(vec![TrayItem::action("quit", "Quit")])
+    ///     .menu_on_primary_click(true);
+    /// let tray = Tray::new(spec, |_| {}).unwrap();
+    /// # let _ = tray;
+    /// ```
+    pub fn menu_on_primary_click(mut self, on: bool) -> Self { self.menu_on_primary_click = on; self }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -277,6 +303,33 @@ impl Tray {
         let _ = title;
     }
 
+    /// Replaces the name screen readers announce for the icon, which starts as the
+    /// [`TraySpec::new`] title. Use it when the icon changes to show a different state, so
+    /// VoiceOver reads "App unavailable" rather than the name it launched with.
+    ///
+    /// - macOS: the status item image's accessibility description, which VoiceOver reads; it
+    ///   carries over to icons set later with [`Tray::set_icon`].
+    /// - Linux: the StatusNotifierItem `Title` property (the one [`Tray::set_title`] sets), with
+    ///   `NewTitle` emitted.
+    /// - Windows: Narrator reads the icon's tooltip text, the one string Windows keeps for it. The
+    ///   label is that text while the app sets no tooltip ([`TraySpec::tooltip`],
+    ///   [`Tray::set_tooltip`]); a tooltip the app sets is shown and read instead, and the label
+    ///   comes back when the tooltip is cleared to empty.
+    ///
+    /// ```no_run
+    /// use rune::{Tray, TrayIcon, TraySpec};
+    ///
+    /// let icon = TrayIcon::rgba(32, 32, vec![255; 32 * 32 * 4]).template(true);
+    /// let tray = Tray::new(TraySpec::new("dev.rune.app", "App", icon), |_| {}).unwrap();
+    /// tray.set_accessibility_label("App unavailable");
+    /// ```
+    pub fn set_accessibility_label(&self, label: impl Into<String>) {
+        #[cfg(any(all(target_os = "linux", feature = "dbus"), target_os = "macos", target_os = "windows"))]
+        self.native.set_accessibility_label(label.into());
+        #[cfg(not(any(all(target_os = "linux", feature = "dbus"), target_os = "macos", target_os = "windows")))]
+        let _ = label;
+    }
+
     /// Returns the tray icon's screen bounding rectangle as `[x, y, width, height]` in physical
     /// desktop pixels (top-left origin, matching [`AppHandle::set_position`](crate::AppHandle::set_position)
     /// and [`Display::position`](crate::Display::position)), or `None` when unavailable.
@@ -301,6 +354,11 @@ impl Tray {
         #[cfg(not(any(all(target_os = "linux", feature = "dbus"), target_os = "macos", target_os = "windows")))]
         { None }
     }
+}
+
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+pub(super) fn win32_tip<'a>(tooltip: &'a str, label: &'a str) -> &'a str {
+    if tooltip.is_empty() { label } else { tooltip }
 }
 
 /// Escapes a tray menu label so Win32 `AppendMenuW` shows it literally: `&` would underline the
@@ -513,21 +571,28 @@ pub(super) fn premultiply_rgba(straight_rgba: &[u8], out: &mut [u8]) {
     }
 }
 
-/// What a macOS status-bar click should trigger.
-#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows", test)), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum MacClickAction {
-    Activate,
-    ShowMenu,
+pub(super) enum TrayClick {
+    Primary,
+    Secondary,
 }
 
-/// Primary click activates; secondary click or Control-click opens the tray menu.
-#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
-pub(super) fn classify_mac_click(is_right_button: bool, control_modifier: bool) -> MacClickAction {
-    if is_right_button || control_modifier {
-        MacClickAction::ShowMenu
-    } else {
-        MacClickAction::Activate
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows", test)), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ClickAction {
+    Activate,
+    ShowMenu,
+    Ignore,
+}
+
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows", test)), allow(dead_code))]
+pub(super) fn route_click(click: TrayClick, menu_on_primary_click: bool, has_menu: bool) -> ClickAction {
+    match (click, has_menu) {
+        (TrayClick::Secondary, true) => ClickAction::ShowMenu,
+        (TrayClick::Secondary, false) => ClickAction::Ignore,
+        (TrayClick::Primary, true) if menu_on_primary_click => ClickAction::ShowMenu,
+        (TrayClick::Primary, _) => ClickAction::Activate,
     }
 }
 
@@ -624,11 +689,24 @@ mod tests {
     }
 
     #[test]
-    fn mac_click_classification_splits_primary_and_secondary_or_control() {
-        assert_eq!(classify_mac_click(false, false), MacClickAction::Activate);
-        assert_eq!(classify_mac_click(true, false), MacClickAction::ShowMenu);
-        assert_eq!(classify_mac_click(false, true), MacClickAction::ShowMenu);
-        assert_eq!(classify_mac_click(true, true), MacClickAction::ShowMenu);
+    fn clicks_route_by_button_option_and_menu() {
+        use ClickAction::*;
+        use TrayClick::*;
+        assert_eq!(route_click(Primary, false, true), Activate);
+        assert_eq!(route_click(Secondary, false, true), ShowMenu);
+        assert_eq!(route_click(Primary, true, true), ShowMenu);
+        assert_eq!(route_click(Secondary, true, true), ShowMenu);
+        assert_eq!(route_click(Primary, false, false), Activate);
+        assert_eq!(route_click(Primary, true, false), Activate);
+        assert_eq!(route_click(Secondary, false, false), Ignore);
+        assert_eq!(route_click(Secondary, true, false), Ignore);
+    }
+
+    #[test]
+    fn menu_on_primary_click_defaults_off() {
+        let spec = TraySpec::new("t", "T", TrayIcon::rgba(1, 1, vec![0; 4]));
+        assert!(!spec.menu_on_primary_click);
+        assert!(spec.menu_on_primary_click(true).menu_on_primary_click);
     }
 
     #[test]
@@ -708,6 +786,13 @@ mod tests {
         assert_eq!(dbusmenu_label("Save & Quit"), "Save & Quit");
         assert_eq!(dbusmenu_label("A\0B"), "AB");
         assert_eq!(dbusmenu_label(""), "");
+    }
+
+    #[test]
+    fn windows_tip_reads_the_tooltip_or_else_the_label() {
+        assert_eq!(win32_tip("", "App unavailable"), "App unavailable");
+        assert_eq!(win32_tip("Click to open", "App unavailable"), "Click to open");
+        assert_eq!(win32_tip("", ""), "");
     }
 
     #[test]

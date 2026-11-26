@@ -236,7 +236,8 @@ system for its scene, focusing one on screen brings its scene forward, and hidin
 one ends its scene. When the window hidden or closed is the only one of the app's on screen,
 the window the user last had in front comes forward first (the primary when no other is left,
 asked for again if the user closed it), so the app stays on screen instead of going to the
-Home Screen. A scene's session carries its window's key, so when the system restores an
+Home Screen; its own scene ends once that window is in front, and `App::on_close` runs then.
+Asking to hide or close it again before that ends it at once. A scene's session carries its window's key, so when the system restores an
 app's scenes at launch each comes back with its window. Windows that start visible
 (`WindowOptions::visible`) open after the primary draws its first frame, on a fresh launch
 only: once the system restores scenes, it decides which windows come back, and a window the

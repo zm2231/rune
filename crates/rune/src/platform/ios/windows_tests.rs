@@ -164,7 +164,19 @@ fn ipad_closing_the_front_window_brings_the_most_recent_other_window_forward_bef
         effects(&mut w, Event::Foreground(scene));
         if scene != 2 { effects(&mut w, Event::Background(scene)); }
     }
-    assert_eq!(effects(&mut w, Event::Ask { window: 1, ask: Ask::Close }), [Effect::Activate(2), Effect::Destroy(1), Effect::Closed(1)]);
+    assert_eq!(effects(&mut w, Event::Ask { window: 1, ask: Ask::Close }), [Effect::Activate(2)]);
+    assert_eq!(effects(&mut w, Event::Foreground(3)), [Effect::Destroy(1), Effect::Closed(1)]);
+    assert_eq!(w.state(1), State::Hidden);
+    assert!(effects(&mut w, Event::Background(2)).is_empty());
+}
+
+#[test]
+fn ipad_a_hidden_front_window_goes_once_the_system_sends_it_back() {
+    let mut w = three_scenes();
+    effects(&mut w, Event::Foreground(2));
+    assert_eq!(effects(&mut w, Event::Ask { window: 1, ask: Ask::Hide }), [Effect::Activate(0)]);
+    assert_eq!(effects(&mut w, Event::Background(2)), [Effect::Destroy(1)]);
+    assert!(effects(&mut w, Event::Foreground(1)).is_empty());
 }
 
 #[test]
@@ -174,9 +186,42 @@ fn ipad_closing_the_front_window_reopens_the_main_window_when_its_session_is_gon
     effects(&mut w, Event::Discarded("main"));
     effects(&mut w, Event::Ask { window: 2, ask: Ask::Hide });
     effects(&mut w, Event::Foreground(2));
-    assert_eq!(effects(&mut w, Event::Ask { window: 1, ask: Ask::Close }), [Effect::Activate(0), Effect::Destroy(1), Effect::Closed(1)]);
+    assert_eq!(effects(&mut w, Event::Ask { window: 1, ask: Ask::Close }), [Effect::Activate(0)]);
     assert_eq!(w.state(0), State::Activating);
     assert_eq!(effects(&mut w, Event::Connected { scene: 9, key: Some("main") }), [Effect::Attach { window: 0, scene: 9 }]);
+    assert_eq!(effects(&mut w, Event::Foreground(9)), [Effect::Destroy(1), Effect::Closed(1)]);
+}
+
+#[test]
+fn ipad_closing_the_front_window_waits_for_a_main_window_already_on_its_way() {
+    let mut w = three_scenes();
+    effects(&mut w, Event::Disconnected(1));
+    effects(&mut w, Event::Discarded("main"));
+    effects(&mut w, Event::Ask { window: 2, ask: Ask::Hide });
+    effects(&mut w, Event::Ask { window: 0, ask: Ask::Show });
+    effects(&mut w, Event::Foreground(2));
+    assert!(effects(&mut w, Event::Ask { window: 1, ask: Ask::Close }).is_empty());
+    effects(&mut w, Event::Connected { scene: 9, key: Some("main") });
+    assert_eq!(effects(&mut w, Event::Foreground(9)), [Effect::Destroy(1), Effect::Closed(1)]);
+}
+
+#[test]
+fn ipad_closing_the_front_window_again_ends_it_without_waiting() {
+    let mut w = three_scenes();
+    effects(&mut w, Event::Foreground(2));
+    effects(&mut w, Event::Ask { window: 1, ask: Ask::Close });
+    assert_eq!(effects(&mut w, Event::Ask { window: 1, ask: Ask::Close }), [Effect::Destroy(1), Effect::Closed(1)]);
+    assert!(effects(&mut w, Event::Foreground(1)).is_empty());
+}
+
+#[test]
+fn ipad_showing_a_leaving_window_keeps_its_scene() {
+    let mut w = three_scenes();
+    effects(&mut w, Event::Foreground(2));
+    effects(&mut w, Event::Ask { window: 1, ask: Ask::Close });
+    assert_eq!(effects(&mut w, Event::Ask { window: 1, ask: Ask::Show }), [Effect::Activate(1)]);
+    assert_eq!(w.state(1), State::Scene(2));
+    assert!(effects(&mut w, Event::Foreground(1)).is_empty());
 }
 
 #[test]

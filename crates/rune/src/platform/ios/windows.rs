@@ -14,6 +14,7 @@ pub(crate) enum State {
     Activating,
     Cancelled,
     Scene(Scene),
+    Leaving { scene: Scene, close: bool },
     Away,
     Sheet,
 }
@@ -99,7 +100,11 @@ impl Windows {
     fn set(&mut self, window: usize, state: State) { self.windows[window].state = state; }
 
     fn in_scene(&self, scene: Scene) -> Option<usize> {
-        self.windows.iter().position(|w| w.state == State::Scene(scene))
+        self.windows.iter().position(|w| matches!(w.state, State::Scene(s) | State::Leaving { scene: s, .. } if s == scene))
+    }
+
+    fn leaving(&self) -> Vec<usize> {
+        (0..self.len()).filter(|&w| matches!(self.state(w), State::Leaving { .. })).collect()
     }
 
     fn rooted(&self) -> bool { matches!(self.state(PRIMARY), State::Scene(_)) }
@@ -120,24 +125,33 @@ impl Windows {
 pub(crate) fn step(windows: &mut Windows, event: Event<'_>) -> Effects<Effect> {
     match event {
         Event::Connected { scene, key } => connected(windows, scene, key),
-        Event::Disconnected(scene) => {
-            if let Some(window) = windows.in_scene(scene) {
+        Event::Disconnected(scene) => match windows.in_scene(scene) {
+            Some(window) if matches!(windows.state(window), State::Leaving { .. }) => gone(windows, window),
+            Some(window) => {
                 windows.set(window, State::Away);
                 windows.front.retain(|&w| w != window);
+                Effects::none()
             }
-            Effects::none()
-        }
-        Event::Foreground(scene) => {
-            if let Some(window) = windows.in_scene(scene) {
+            None => Effects::none(),
+        },
+        Event::Foreground(scene) => match windows.in_scene(scene) {
+            Some(window) if !matches!(windows.state(window), State::Leaving { .. }) => {
                 windows.forget(window);
                 windows.recent.push(window);
                 windows.front.push(window);
+                let mut effects = Effects::none();
+                for leaving in windows.leaving() { effects.extend(gone(windows, leaving)); }
+                effects
             }
-            Effects::none()
-        }
-        Event::Background(scene) => {
-            if let Some(window) = windows.in_scene(scene) { windows.front.retain(|&w| w != window); }
-            Effects::none()
+            _ => Effects::none(),
+        },
+        Event::Background(scene) => match windows.in_scene(scene) {
+            Some(window) if matches!(windows.state(window), State::Leaving { .. }) => gone(windows, window),
+            Some(window) => {
+                windows.front.retain(|&w| w != window);
+                Effects::none()
+            }
+            None => Effects::none(),
         }
         Event::Discarded(key) => match windows.find(key) {
             Some(window) if windows.state(window) == State::Away => {
@@ -187,7 +201,7 @@ fn connected(windows: &mut Windows, scene: Scene, key: Option<&str>) -> Effects<
             windows.set(window, State::Hidden);
             Effects::one(Effect::Refuse(scene))
         }
-        State::Scene(_) | State::Sheet => Effects::one(Effect::Refuse(scene)),
+        State::Scene(_) | State::Leaving { .. } | State::Sheet => Effects::one(Effect::Refuse(scene)),
     }
 }
 
@@ -195,7 +209,7 @@ fn asked(windows: &mut Windows, window: usize, ask: Ask) -> Effects<Effect> {
     match ask {
         Ask::Show | Ask::Focus => show(windows, window, ask == Ask::Focus),
         Ask::Hide | Ask::Close => {
-            let mut effects = hide(windows, window);
+            let mut effects = hide(windows, window, ask == Ask::Close);
             let hidden = windows.state(window) == State::Hidden && !effects.is_empty();
             if ask == Ask::Close && hidden { effects.push(Effect::Closed(window)); }
             effects
@@ -210,6 +224,10 @@ fn show(windows: &mut Windows, window: usize, focus: bool) -> Effects<Effect> {
             Effects::one(Effect::Activate(window))
         }
         (Mode::Scenes, State::Scene(_)) if focus => Effects::one(Effect::Activate(window)),
+        (Mode::Scenes, State::Leaving { scene, .. }) => {
+            windows.set(window, State::Scene(scene));
+            Effects::one(Effect::Activate(window))
+        }
         (Mode::Sheets, State::Hidden) if window != PRIMARY => {
             windows.set(window, State::Sheet);
             windows.sheets.push(window);
@@ -219,16 +237,18 @@ fn show(windows: &mut Windows, window: usize, focus: bool) -> Effects<Effect> {
     }
 }
 
-fn hide(windows: &mut Windows, window: usize) -> Effects<Effect> {
+fn hide(windows: &mut Windows, window: usize, close: bool) -> Effects<Effect> {
     match windows.state(window) {
         _ if windows.mode == Mode::Sheets && window == PRIMARY => Effects::one(Effect::Refused(window)),
-        State::Scene(_) | State::Away => {
-            let forward = windows.successor(window);
+        State::Scene(scene) if let Some(next) = windows.successor(window) => {
+            windows.set(window, State::Leaving { scene, close });
+            windows.forget(window);
+            show(windows, next, true)
+        }
+        State::Scene(_) | State::Away | State::Leaving { .. } => {
             windows.set(window, State::Hidden);
             windows.forget(window);
-            let mut effects = forward.map(|next| show(windows, next, true)).unwrap_or_else(Effects::none);
-            effects.push(Effect::Destroy(window));
-            effects
+            Effects::one(Effect::Destroy(window))
         }
         State::Activating => {
             windows.set(window, State::Cancelled);
@@ -245,6 +265,14 @@ fn hide(windows: &mut Windows, window: usize) -> Effects<Effect> {
         }
         State::Hidden | State::Cancelled => Effects::none(),
     }
+}
+
+fn gone(windows: &mut Windows, window: usize) -> Effects<Effect> {
+    let State::Leaving { close, .. } = windows.state(window) else { return Effects::none() };
+    windows.set(window, State::Hidden);
+    let mut effects = Effects::one(Effect::Destroy(window));
+    if close { effects.push(Effect::Closed(window)); }
+    effects
 }
 
 #[cfg(test)]

@@ -381,13 +381,19 @@ fn edge_cases_empty_non_finite_max_size_headers_and_errors() {
     // Open failure settles all slots once with the error and never writes blank pixels.
     let fail_wakes = Arc::new(AtomicUsize::new(0));
     let fw = fail_wakes.clone();
+    let (woke, woken) = std::sync::mpsc::channel();
+    let woke = Mutex::new(woke);
     let failed = Thumbnails::request("missing.mp4")
         .times([0.0, 1.0, 2.0])
-        .waker(Arc::new(move || { fw.fetch_add(1, Ordering::SeqCst); }))
+        .waker(Arc::new(move || {
+            fw.fetch_add(1, Ordering::SeqCst);
+            woke.lock().unwrap().send(()).ok();
+        }))
         .start_with_decoder(Arc::new(|_, _, _, _| Err("open exploded".into())));
     failed.wait();
     assert!(failed.is_done());
     assert_eq!(failed.completed(), 3);
+    woken.recv_timeout(std::time::Duration::from_secs(30)).expect("the settled batch tells its waker");
     assert_eq!(fail_wakes.load(Ordering::SeqCst), 1);
     for f in failed.frames() {
         assert!(!f.is_ready());

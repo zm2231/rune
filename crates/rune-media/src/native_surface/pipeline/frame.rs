@@ -386,10 +386,7 @@ impl SurfaceRenderer {
                 // The renderer is gone (its device lost and replaced, or the app closing): nothing
                 // resolves the times.
                 if queue.strong_count() == 0 {
-                    for (s, _, mut t) in frames {
-                        t.completed_at = Some(completed_at);
-                        s.report(t);
-                    }
+                    report_completed(frames, completed_at, None);
                     return;
                 }
                 let mut timestamps = device.create_command_encoder(&Default::default());
@@ -409,14 +406,7 @@ impl SurfaceRenderer {
                     }
                     // The sample pair must survive both GPU submissions and CPU mapping.
                     drop(queries);
-                    for (s, _, mut t) in frames {
-                        t.completed_at = Some(completed_at);
-                        if let Some((a, b)) = times {
-                            t.gpu_start_seconds = Some(a);
-                            t.gpu_end_seconds = Some(b);
-                        }
-                        s.report(t);
-                    }
+                    report_completed(frames, completed_at, times);
                 });
                 // This runs on whichever thread polls the device, usually the completion thread:
                 // submitted from here while the window's thread configures a surface, the
@@ -428,12 +418,7 @@ impl SurfaceRenderer {
                 completion.wake();
             });
         } else {
-            encoder.on_submitted_work_done(move || {
-                for (s, _, mut t) in frames {
-                    t.completed_at = Some(rune_core::time::now());
-                    s.report(t);
-                }
-            });
+            encoder.on_submitted_work_done(move || report_completed(frames, rune_core::time::now(), None));
         }
         let index = queue.submit([encoder.finish()]);
         self.release_decoded(queue);
@@ -452,6 +437,23 @@ impl SurfaceRenderer {
         }
         #[cfg(not(target_os = "windows"))]
         let _ = queue;
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn report_completed(
+    frames: Vec<(NativeSurface, Arc<Imported>, FrameTiming)>,
+    completed_at: Instant,
+    times: Option<(f64, f64)>,
+) {
+    for (surface, imported, mut timing) in frames {
+        drop(imported);
+        timing.completed_at = Some(completed_at);
+        if let Some((start, end)) = times {
+            timing.gpu_start_seconds = Some(start);
+            timing.gpu_end_seconds = Some(end);
+        }
+        surface.report(timing);
     }
 }
 

@@ -16,6 +16,8 @@ mod place_tests;
 pub mod macos;
 #[cfg(target_os = "windows")]
 mod dxbc;
+#[cfg(test)]
+mod orient_tests;
 mod pipeline;
 #[cfg(test)]
 mod transfer_tests;

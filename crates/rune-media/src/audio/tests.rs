@@ -227,33 +227,33 @@ fn post_buffer_volume_and_mute_apply_immediately_with_2_4_seconds_queued() {
     assert_eq!(q1.len(), 480 * 2);
     assert!(q1.iter().all(|&s| s == 20_000));
 
-    // Change volume to 0.25 while >2.3 s remain buffered -> very next quantum is 5_000.
+    // Change volume to 0.25 while >2.3 s remain buffered -> the quantum after the one in flight is 5_000.
     fake.clear_captured();
     audio.set_volume(0.25);
     assert!((audio.volume() - 0.25).abs() < 1e-6);
-    fake.set_permits(Some(1));
-    fake.wait_for("second quantum at volume 0.25", |s| s.writes >= 2);
-    let q2 = fake.captured_i16();
-    assert_eq!(q2.len(), 480 * 2);
-    assert!(q2.iter().all(|&s| s == 5_000));
+    assert_gain_change(&fake, 3, 20_000, 5_000);
 
-    // Mute -> very next quantum is exact silence without dropping queued audio.
+    // Mute -> exact silence after the quantum in flight, without dropping queued audio.
     fake.clear_captured();
     audio.set_muted(true);
     assert!(audio.muted());
-    fake.set_permits(Some(1));
-    fake.wait_for("third quantum muted", |s| s.writes >= 3);
-    let q3 = fake.captured_i16();
-    assert_eq!(q3.len(), 480 * 2);
-    assert!(q3.iter().all(|&s| s == 0));
+    assert_gain_change(&fake, 5, 5_000, 0);
 
-    // Unmute -> very next quantum resumes at 5_000.
+    // Unmute -> resumes at 5_000 after the quantum in flight.
     fake.clear_captured();
     audio.set_muted(false);
-    fake.set_permits(Some(1));
-    fake.wait_for("fourth quantum unmuted", |s| s.writes >= 4);
-    let q4 = fake.captured_i16();
-    assert!(q4.iter().all(|&s| s == 5_000));
+    assert_gain_change(&fake, 7, 0, 5_000);
+}
+
+fn assert_gain_change(fake: &FakeHandle, writes: usize, before: i16, after: i16) {
+    fake.set_permits(Some(2));
+    fake.wait_for("two quanta after a gain change", |s| s.writes >= writes);
+    let quanta = fake.captured_i16();
+    assert_eq!(quanta.len(), 2 * 480 * 2);
+    let (in_flight, next) = quanta.split_at(480 * 2);
+    let uniform = |q: &[i16], v: i16| q.iter().all(|&s| s == v);
+    assert!(uniform(in_flight, before) || uniform(in_flight, after), "a quantum mixed gains: {:?}", &in_flight[..4]);
+    assert!(uniform(next, after), "the gain change missed the next quantum: {:?}", &next[..4]);
 }
 
 #[test]
@@ -341,8 +341,8 @@ fn backpressure_underrun_single_wake_recovery_and_non_blocking_drain() {
 
     // Push recovery chunk and call finish(): rejects new pushes, drains to Ended.
     let tail = vec![100i16; 480 * 2];
-    assert_eq!(audio.push_i16(&tail), Ok(480));
     fake.set_latency(480);
+    assert_eq!(audio.push_i16(&tail), Ok(480));
     audio.finish();
     assert_eq!(audio.push_i16(&tail), Err(AudioPushError::Draining));
     wait_until("ring emptied during drain", || audio.position().queued_frames() == 0);
@@ -350,9 +350,9 @@ fn backpressure_underrun_single_wake_recovery_and_non_blocking_drain() {
 
     // Drop device latency to 0 -> transitions to Ended and emits AudioEvent::Ended once.
     fake.set_latency(0);
-    wait_until("ended after drain", || audio.state() == AudioOutputState::Ended);
+    wait_until("ended wake after drain", || wakes.load(Ordering::SeqCst) == 2);
+    assert_eq!(audio.state(), AudioOutputState::Ended);
     assert_eq!(audio.take_events(), vec![AudioEvent::Ended]);
-    assert_eq!(wakes.load(Ordering::SeqCst), 2);
 }
 
 #[test]

@@ -129,9 +129,10 @@ impl NativeView {
     /// view built into the slot: in the next frame Rune's focus moves on to the element after
     /// (before) the hosting element in its Tab order, and the keyboard comes back to Rune.
     ///
-    /// AppKit views, `WKWebView` among them, and iOS views that pass an unused Tab up the
-    /// responder chain report this themselves. Call it for a view that keeps Tab to itself, for
-    /// example from a web page's own Tab listener on its last or first focusable element.
+    /// On macOS, AppKit views, `WKWebView` among them, report this themselves through the
+    /// window's key view loop. On iOS the app reports it: for a `WKWebView`, from a page script
+    /// that sees Tab leave the page's last element (Shift-Tab its first) or wrap around, posting
+    /// a message the app's handler turns into this call, as `examples/native-view` does.
     pub fn tabbed_out(&self, back: bool) { self.slot.tab_out(back); }
 }
 
@@ -190,13 +191,19 @@ impl Slot {
     }
 }
 
-#[cfg_attr(not(any(test, target_os = "macos", target_os = "ios")), allow(dead_code))]
+#[cfg_attr(not(any(test, target_os = "macos")), allow(dead_code))]
 pub(crate) fn press_where(hit: impl Fn(&Slot) -> bool) {
     let slots: Vec<Rc<Slot>> = SLOTS.with(|s| s.borrow().values().filter_map(Weak::upgrade).collect());
     for slot in slots.iter().filter(|s| hit(s)) { slot.press(); }
 }
 
-#[cfg_attr(not(any(target_os = "macos", target_os = "ios")), allow(dead_code))]
+#[cfg(target_os = "ios")]
+pub(crate) fn focus_where(hit: impl Fn(&Slot) -> bool) {
+    let slots: Vec<Rc<Slot>> = SLOTS.with(|s| s.borrow().values().filter_map(Weak::upgrade).collect());
+    for slot in slots.iter().filter(|s| hit(s)) { slot.ask(Request::Focus); }
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) fn tabbed_out_where(back: bool, hit: impl Fn(&Slot) -> bool) {
     let slots: Vec<Rc<Slot>> = SLOTS.with(|s| s.borrow().values().filter_map(Weak::upgrade).collect());
     for slot in slots.iter().filter(|s| hit(s)) { slot.tab_out(back); }
@@ -214,14 +221,6 @@ pub(crate) fn yield_to_rune() {
 pub(crate) fn run_requests() {
     let slots: Vec<Rc<Slot>> = SLOTS.with(|s| s.borrow().values().filter_map(Weak::upgrade).collect());
     for slot in &slots { slot.run(); }
-}
-
-#[cfg(any(test, target_os = "ios"))]
-pub(crate) fn tab_press(usage: isize, flags: isize) -> Option<bool> {
-    const TAB: isize = 0x2B;
-    const SHIFT: isize = 1 << 17;
-    const OTHERS: isize = (1 << 18) | (1 << 19) | (1 << 20);
-    (usage == TAB && flags & OTHERS == 0).then_some(flags & SHIFT != 0)
 }
 
 const A11Y_CLASS: &str = "\x1frune-native-view:";
@@ -262,12 +261,17 @@ impl El {
     /// clears Rune's focus; a press on Rune content takes the keyboard back.
     ///
     /// Tab: the element is a stop in Rune's Tab order once the app has built a view into the
-    /// slot. Tab onto it gives the view the keyboard and clears Rune's focus; on macOS a
-    /// `WKWebView` starts at its first element, or its last on Shift-Tab. When Tab runs past the
-    /// view's last element (Shift-Tab past its first), focus moves on to the next Rune element
-    /// (the previous one) and the keyboard comes back to Rune. On macOS this follows the
-    /// window's key view loop. On iOS a Tab the hosted view leaves unused hands focus back. A view
-    /// that keeps Tab to itself reports it with [`NativeView::tabbed_out`].
+    /// slot. Tab onto it gives the view the keyboard and clears Rune's focus. When Tab runs past
+    /// the view's last element (Shift-Tab past its first), focus moves on to the next Rune
+    /// element (the previous one) and the keyboard comes back to Rune.
+    ///
+    /// On macOS this follows the window's key view loop: a `WKWebView` starts at its first
+    /// element on Tab, or its last on Shift-Tab, and hands Tab back past its ends by itself.
+    ///
+    /// On iOS the view gets the keyboard with nothing inside it focused; a `WKWebView` then moves
+    /// Tab between its page's elements as Safari does. UIKit doesn't tell the app when Tab
+    /// leaves the page, so the app reports it with [`NativeView::tabbed_out`]. A tap inside the
+    /// view also gives it the keyboard.
     ///
     /// In macOS windows and iOS views only; overlays don't host them, and elsewhere the element
     /// draws as an empty box, its rects still listed in

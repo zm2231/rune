@@ -1,9 +1,9 @@
 //! A web page hosted in a scrolling Rune pane with `El::native_view`: the page tracks its card
 //! through scrolls, a spring collapse and window resizes. Tab moves from the sidebar into the
-//! page and back out. `cargo run -p native-view` on macOS; `-- --tab-lab` loads a local page of
-//! form fields that lists each key and focus change it sees, to check Tab handoff against;
-//! elsewhere the card lays out as an empty box. `-- --snap target/native-view.png` renders it
-//! headless.
+//! page and back out; on iOS a page script reports Tab leaving the page. `cargo run -p
+//! native-view` on macOS; `-- --tab-lab` loads a local page of form fields that lists each key
+//! and focus change it sees, to check Tab handoff against; elsewhere the card lays out as an
+//! empty box. `-- --snap target/native-view.png` renders it headless.
 
 #![forbid(unsafe_code)]
 
@@ -12,6 +12,24 @@ use rune::{AppSpec, Cx, El, NativeView, ScrollSpec, TextEdit, Tx, col, el, row, 
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 const URL: &str = "https://en.wikipedia.org/wiki/Special:Random";
+
+#[cfg(target_os = "ios")]
+const TAB_OUT: &str = r#"addEventListener("keydown", e => {
+  if (e.key !== "Tab" || e.altKey || e.ctrlKey || e.metaKey) return;
+  const from = document.activeElement, back = e.shiftKey;
+  setTimeout(() => {
+    if (e.defaultPrevented) return;
+    const to = document.activeElement;
+    const placed = el => el && el !== document.body && el !== document.documentElement;
+    const moved = placed(to) && to !== from;
+    const wrapped = moved && placed(from) && (back
+      ? from.compareDocumentPosition(to) & Node.DOCUMENT_POSITION_FOLLOWING
+      : to.compareDocumentPosition(from) & Node.DOCUMENT_POSITION_FOLLOWING);
+    if (moved && !wrapped) return;
+    if (placed(to)) to.blur();
+    window.ipc.postMessage(back ? "tab-out-back" : "tab-out");
+  }, 0);
+}, true);"#;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 const TAB_LAB: &str = r##"<!doctype html>
@@ -101,6 +119,17 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     if s.web.is_none() && s.slot.in_window() {
         let builder = wry::WebViewBuilder::new();
+        #[cfg(target_os = "ios")]
+        let builder = {
+            let slot = s.slot.clone();
+            builder.with_initialization_script(TAB_OUT).with_ipc_handler(move |message: wry::http::Request<String>| {
+                match message.body().as_str() {
+                    "tab-out" => slot.tabbed_out(false),
+                    "tab-out-back" => slot.tabbed_out(true),
+                    _ => {}
+                }
+            })
+        };
         let builder = if std::env::args().any(|a| a == "--tab-lab") { builder.with_html(TAB_LAB) } else { builder.with_url(URL) };
         match builder.build_as_child(&s.slot) {
             Ok(web) => s.web = Some(web),

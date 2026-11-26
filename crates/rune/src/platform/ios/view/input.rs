@@ -205,6 +205,8 @@ impl RuneView {
         // Presses the text input left to UIKit come up the responder chain to this view, its
         // superview: they are still UIKit's.
         if !typing && self.typing() { return false; }
+        // SAFETY: a `UIResponder` method of this signature.
+        if down && !typing && !unsafe { msg_send![self, isFirstResponder] } { return false; }
         let mut read = Vec::new();
         // SAFETY: `presses` is the `NSSet<UIPress *>` UIKit passes; a press's `key` is a
         // `UIKey` or nil, whose properties have these types.

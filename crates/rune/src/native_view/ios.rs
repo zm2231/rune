@@ -16,32 +16,11 @@ fn rect(r: [f64; 4]) -> CGRect {
     CGRect { origin: CGPoint { x: r[0], y: r[1] }, size: CGSize { width: r[2], height: r[3] } }
 }
 
-fn view_class() -> &'static AnyClass { AnyClass::get(c"UIView").expect("UIKit is loaded") }
-
 fn class(name: &'static CStr, build: impl FnOnce(&mut ClassBuilder)) -> Option<&'static AnyClass> {
     if let Some(class) = AnyClass::get(name) { return Some(class); }
     let mut builder = ClassBuilder::new(name, AnyClass::get(c"UIView")?)?;
     build(&mut builder);
     Some(builder.register())
-}
-
-unsafe fn tab_presses(presses: &AnyObject) -> Option<bool> {
-    // SAFETY: `presses` is the `NSSet<UIPress *>` UIKit passes; a press's `key` is a `UIKey` or
-    // nil, whose properties have these types.
-    unsafe {
-        let all: Retained<AnyObject> = msg_send![presses, allObjects];
-        let count: usize = msg_send![&*all, count];
-        let mut back = None;
-        for index in 0..count {
-            let press: *mut AnyObject = msg_send![&*all, objectAtIndex: index];
-            let key: *mut AnyObject = msg_send![press, key];
-            let key = key.as_ref()?;
-            let usage: isize = msg_send![key, keyCode];
-            let flags: isize = msg_send![key, modifierFlags];
-            back = Some(super::tab_press(usage, flags)?);
-        }
-        back
-    }
 }
 
 unsafe fn fill_subviews(view: &AnyObject) {
@@ -68,38 +47,13 @@ fn container_class() -> Option<&'static AnyClass> {
         unsafe { fill_subviews(this) }
     }
     unsafe extern "C-unwind" fn run(_: &AnyObject, _: Sel, _: *mut AnyObject) { super::run_requests() }
-    unsafe extern "C-unwind" fn began(this: &AnyObject, _: Sel, presses: &AnyObject, event: *mut AnyObject) {
-        // SAFETY: UIKit calls this on the main thread with its own press set, passed on unchanged.
-        unsafe {
-            match tab_presses(presses) {
-                Some(back) => super::tabbed_out_where(back, |slot| slot.view.object().is_some_and(|v| std::ptr::eq(v, this))),
-                None => { let _: () = msg_send![super(this, view_class()), pressesBegan: presses, withEvent: event]; }
-            }
-        }
-    }
-    unsafe extern "C-unwind" fn ended(this: &AnyObject, _: Sel, presses: &AnyObject, event: *mut AnyObject) {
-        // SAFETY: as above.
-        unsafe {
-            if tab_presses(presses).is_none() { let _: () = msg_send![super(this, view_class()), pressesEnded: presses, withEvent: event]; }
-        }
-    }
-    unsafe extern "C-unwind" fn cancelled(this: &AnyObject, _: Sel, presses: &AnyObject, event: *mut AnyObject) {
-        // SAFETY: as above.
-        unsafe {
-            if tab_presses(presses).is_none() { let _: () = msg_send![super(this, view_class()), pressesCancelled: presses, withEvent: event]; }
-        }
-    }
     class(c"RuneNativeViewContainer", |b| {
-        // SAFETY: the signatures match -[UIView layoutSubviews], -[UIView didAddSubview:],
-        // UIResponder's pressesBegan:withEvent:, pressesEnded:withEvent: and
-        // pressesCancelled:withEvent:, and a method taking one object, the perform's nil argument, that returns nothing.
+        // SAFETY: the signatures match -[UIView layoutSubviews], -[UIView didAddSubview:] and a
+        // method taking one object, the perform's nil argument, that returns nothing.
         unsafe {
             b.add_method(sel!(runeNativeViewRun:), run as unsafe extern "C-unwind" fn(_, _, _));
             b.add_method(sel!(layoutSubviews), layout as unsafe extern "C-unwind" fn(_, _));
             b.add_method(sel!(didAddSubview:), added as unsafe extern "C-unwind" fn(_, _, _));
-            b.add_method(sel!(pressesBegan:withEvent:), began as unsafe extern "C-unwind" fn(_, _, _, _));
-            b.add_method(sel!(pressesEnded:withEvent:), ended as unsafe extern "C-unwind" fn(_, _, _, _));
-            b.add_method(sel!(pressesCancelled:withEvent:), cancelled as unsafe extern "C-unwind" fn(_, _, _, _));
         }
     })
 }
@@ -113,7 +67,7 @@ fn root_class() -> Option<&'static AnyClass> {
             if hit.is_null() || std::ptr::eq(hit, this) { return std::ptr::null_mut(); }
             let touch = event.as_ref().is_some_and(|e| { let kind: isize = msg_send![e, type]; kind == 0 });
             if touch && let Some(hit) = hit.as_ref() {
-                super::press_where(|slot| slot.view.contains(hit));
+                super::focus_where(|slot| slot.view.contains(hit));
             }
             hit
         }

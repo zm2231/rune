@@ -56,13 +56,3 @@ fn a_host_that_refuses_the_keyboard_hands_it_back() {
     assert_eq!(run(&mut state, Event::Refused(WEB)), [Effect::Reclaim(WEB)]);
     assert_eq!(state, Keyboard::Rune);
 }
-
-#[test]
-fn a_hardware_tab_with_only_shift_leaves_a_host() {
-    let (tab, shift, command, caps) = (0x2B, 1 << 17, 1 << 20, 1 << 16);
-    assert_eq!(super::tab_press(tab, 0), Some(false));
-    assert_eq!(super::tab_press(tab, shift), Some(true));
-    assert_eq!(super::tab_press(tab, shift | caps), Some(true));
-    assert_eq!(super::tab_press(tab, command), None, "Command-Tab is the system's");
-    assert_eq!(super::tab_press(0x28, 0), None, "Return stays with the view");
-}

@@ -27,6 +27,7 @@
 //! home indicator, and its Light or Dark button switches the view's appearance.
 
 #![forbid(unsafe_code)]
+#![cfg_attr(target_os = "ios", allow(dead_code, unused_imports))]
 
 use std::time::Duration;
 

@@ -20,6 +20,7 @@ pub fn run<S: 'static>(app: App<S>, args: Args) -> Result<(), String> {
     run_configured(Box::new(move |_| vec![WindowSpec::from_app("main", app).into()]), args, accessory)
 }
 
+#[cfg(not(target_os = "ios"))]
 pub(crate) fn run_windows(factory: Factory, args: Args, options: crate::RunOptions) -> Result<(), String> {
     run_configured(factory, args, options.accessory)
 }

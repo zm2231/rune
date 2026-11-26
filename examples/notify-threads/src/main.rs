@@ -9,6 +9,7 @@ use rune_notify::{Attachment, Identity, Notification};
 const APP_ID: &str = "com.example.notifythreads";
 const THREAD: &str = "session-1";
 const IDS: [&str; 3] = ["notify-threads-1", "notify-threads-2", "notify-threads-3"];
+const WITHDRAWN: &str = "notify-threads-withdrawn";
 const PREVIEW: &[u8] = include_bytes!("../preview.png");
 
 struct State {
@@ -59,6 +60,11 @@ fn start(s: &mut State, sound: bool) {
     });
 }
 
+fn check_permission(handle: &AppHandle<State>) {
+    let handle = handle.clone();
+    rune_notify::authorization(move |a| handle.update(move |s, _| s.status = format!("Permission: {a:?}.")));
+}
+
 fn button(key: &'static str, label: &'static str, t: &tok::Theme, press: fn(&mut State)) -> El {
     el().key(key).role("button").label(label).focusable(true)
         .w_full().padding(12.0).radius(10.0).fill(t.card)
@@ -77,6 +83,12 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             rune_notify::remove(&IDS);
             s.status = "Cleared.".into();
         }))
+        .child(button("withdraw", "Post one and remove it at once", &t, |s| {
+            rune_notify::post(&Notification::new(WITHDRAWN, "This never shows").body("Removed before it was added"));
+            rune_notify::remove(&[WITHDRAWN]);
+            s.status = "Posted and removed one: nothing shows, even after allowing notifications.".into();
+        }))
+        .child(button("permission", "Check permission", &t, |s| check_permission(&s.handle)))
         .child(text(s.status.clone()).font(type_::BODY).color(t.text_secondary).wrap().w_full())
 }
 
@@ -90,6 +102,11 @@ fn main() {
     rune_notify::on_click(move |click| {
         let status = format!("Clicked {} in {}.", click.id, click.get("session").unwrap_or("no thread"));
         clicks.update(move |s, _| s.status = status);
+    });
+    let errors = handle.clone();
+    rune_notify::on_post_error(move |e| {
+        let status = format!("Not shown: {e}.");
+        errors.update(move |s, _| s.status = status);
     });
     app.init(move || State { handle, status: String::new() }).run();
 }

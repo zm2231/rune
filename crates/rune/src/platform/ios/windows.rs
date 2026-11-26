@@ -208,12 +208,7 @@ fn connected(windows: &mut Windows, scene: Scene, key: Option<&str>) -> Effects<
 fn asked(windows: &mut Windows, window: usize, ask: Ask) -> Effects<Effect> {
     match ask {
         Ask::Show | Ask::Focus => show(windows, window, ask == Ask::Focus),
-        Ask::Hide | Ask::Close => {
-            let mut effects = hide(windows, window, ask == Ask::Close);
-            let hidden = windows.state(window) == State::Hidden && !effects.is_empty();
-            if ask == Ask::Close && hidden { effects.push(Effect::Closed(window)); }
-            effects
-        }
+        Ask::Hide | Ask::Close => hide(windows, window, ask == Ask::Close),
     }
 }
 
@@ -245,10 +240,17 @@ fn hide(windows: &mut Windows, window: usize, close: bool) -> Effects<Effect> {
             windows.forget(window);
             show(windows, next, true)
         }
-        State::Scene(_) | State::Away | State::Leaving { .. } => {
+        State::Leaving { scene, close: pending } => {
+            windows.set(window, State::Leaving { scene, close: pending || close });
+            windows.forget(window);
+            gone(windows, window)
+        }
+        State::Scene(_) | State::Away => {
             windows.set(window, State::Hidden);
             windows.forget(window);
-            Effects::one(Effect::Destroy(window))
+            let mut effects = Effects::one(Effect::Destroy(window));
+            if close { effects.push(Effect::Closed(window)); }
+            effects
         }
         State::Activating => {
             windows.set(window, State::Cancelled);
@@ -261,6 +263,7 @@ fn hide(windows: &mut Windows, window: usize, close: bool) -> Effects<Effect> {
             let mut effects = Effects::one(Effect::Dismiss(window));
             windows.sheets.extend(&above);
             effects.extend(above.into_iter().map(Effect::Present));
+            if close { effects.push(Effect::Closed(window)); }
             effects
         }
         State::Hidden | State::Cancelled => Effects::none(),

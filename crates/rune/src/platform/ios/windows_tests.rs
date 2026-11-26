@@ -215,6 +215,15 @@ fn ipad_closing_the_front_window_again_ends_it_without_waiting() {
 }
 
 #[test]
+fn ipad_a_close_waiting_for_the_next_window_still_runs_on_close_when_a_hide_ends_it() {
+    let mut w = three_scenes();
+    effects(&mut w, Event::Foreground(2));
+    effects(&mut w, Event::Ask { window: 1, ask: Ask::Close });
+    assert_eq!(effects(&mut w, Event::Ask { window: 1, ask: Ask::Hide }), [Effect::Destroy(1), Effect::Closed(1)]);
+    assert!(effects(&mut w, Event::Foreground(1)).is_empty());
+}
+
+#[test]
 fn ipad_showing_a_leaving_window_keeps_its_scene() {
     let mut w = three_scenes();
     effects(&mut w, Event::Foreground(2));

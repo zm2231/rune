@@ -827,20 +827,20 @@ fn gpu_memory_policy_child() {
     const MIB: u64 = 1024 * 1024;
 
     let mode = crate::env::var("RUNE_TEST_GPU_MEMORY_POLICY").expect("policy test mode");
-    let expected_block = match mode.as_str() {
-        "default" => 8 * MIB,
+    let expected_blocks = match mode.as_str() {
+        "default" => [8 * MIB, 4 * MIB],
         "manual-setter" => {
-            crate::set_gpu_memory_policy(GpuMemoryPolicy::Manual { block_size: (4 * MIB)..(8 * MIB) });
-            4 * MIB
+            crate::set_gpu_memory_policy(GpuMemoryPolicy::Manual { block_size: (32 * MIB)..(64 * MIB) });
+            [32 * MIB, 16 * MIB]
         }
         "manual-app" => {
             let _app = crate::App::new(crate::AppSpec::new("test", (40.0, 30.0), || (), |_, _| crate::el()))
-                .gpu_memory_policy(GpuMemoryPolicy::Manual { block_size: (4 * MIB)..(8 * MIB) });
-            4 * MIB
+                .gpu_memory_policy(GpuMemoryPolicy::Manual { block_size: (32 * MIB)..(64 * MIB) });
+            [32 * MIB, 16 * MIB]
         }
         "performance" => {
             crate::set_gpu_memory_policy(GpuMemoryPolicy::Performance);
-            128 * MIB
+            [128 * MIB, 64 * MIB]
         }
         "parked-invalidation" => {
             #[cfg(not(target_os = "macos"))]
@@ -853,7 +853,7 @@ fn gpu_memory_policy_child() {
                 let (gpu, renderer) = super::super::prewarm::take().expect("unchanged policy keeps parked GPU");
                 super::super::prewarm::park(gpu, renderer, super::super::prewarm::PARKED);
                 // Changing the policy discards the parked device so it is never silently reused.
-                crate::set_gpu_memory_policy(GpuMemoryPolicy::Manual { block_size: (4 * MIB)..(8 * MIB) });
+                crate::set_gpu_memory_policy(GpuMemoryPolicy::Manual { block_size: (32 * MIB)..(64 * MIB) });
                 assert!(super::super::prewarm::take().is_none(), "changed policy must discard parked GPU");
             }
             return;
@@ -872,9 +872,9 @@ fn gpu_memory_policy_child() {
     if matches!(backend, wgpu::Backend::Dx12 | wgpu::Backend::Vulkan) {
         if let Some(report) = gpu.device.generate_allocator_report() {
             if let Some(max_block) = report.blocks.iter().map(|b| b.size).max() {
-                assert_eq!(
-                    max_block, expected_block,
-                    "mode={mode} backend={backend:?} expected max block size {expected_block}, got blocks: {:?}",
+                assert!(
+                    expected_blocks.contains(&max_block),
+                    "mode={mode} backend={backend:?} expected max block size in {expected_blocks:?} (device-only or host-visible memory), got blocks: {:?}",
                     report.blocks.iter().map(|b| b.size).collect::<Vec<_>>(),
                 );
             }
@@ -885,7 +885,7 @@ fn gpu_memory_policy_child() {
         let (large, errors) = rune_gpu::health::with_error_scopes(&gpu.device, || {
             gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("memory-policy-large"),
-                size: 10 * MIB,
+                size: 80 * MIB,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             })
@@ -900,7 +900,7 @@ fn gpu_memory_policy_child() {
 
 /// Verifies startup `GpuMemoryPolicy` end-to-end in isolated child processes so parallel tests
 /// never race on the process-wide policy or parked warm-up slot: default stays `MemoryUsage`,
-/// `set_gpu_memory_policy` and `App::gpu_memory_policy` apply `Manual` (4..8 MiB, with larger
+/// `set_gpu_memory_policy` and `App::gpu_memory_policy` apply `Manual` (32..64 MiB, with larger
 /// dedicated resources still succeeding) and `Performance` to created devices, and changing the
 /// policy discards a parked warm-up device.
 #[cfg(not(target_arch = "wasm32"))]

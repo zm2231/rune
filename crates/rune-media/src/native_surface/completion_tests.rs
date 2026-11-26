@@ -315,6 +315,57 @@ fn dropping_surface_renderer_with_timestamps_joins_completion_thread_without_dea
     drop_joins_completion_thread(true);
 }
 
+fn completion_follows_frame_release(with_timestamps: bool) {
+    let Some(gpu) = Gpu::headless_wgpu() else { return };
+    let surface = NativeSurface::new();
+    surface.push_bytes(synthetic(16, 16, 0), 1).unwrap();
+    let frame = Arc::downgrade(&surface.latest().unwrap());
+    let (go_tx, go_rx) = mpsc::channel::<()>();
+    let (released_tx, released_rx) = mpsc::channel();
+    let go_rx = Mutex::new(go_rx);
+    surface.set_observer(Arc::new(move |t| {
+        if t.completed_at.is_some() {
+            go_rx.lock().unwrap().recv().ok();
+            released_tx.send(frame.upgrade().is_none()).ok();
+        }
+    }));
+
+    let mut renderer = SurfaceRenderer::new(&gpu.device, OFFSCREEN_FORMAT);
+    renderer.prepare(&gpu.device, &gpu.queue, &[draw(&surface, [0.0, 0.0, 16.0, 16.0])], (16, 16));
+    let target = Offscreen::new(&gpu.device, 16, 16);
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    {
+        let timestamp_writes = with_timestamps.then(|| renderer.timestamp_writes()).flatten();
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target.view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+            })],
+            timestamp_writes,
+            ..Default::default()
+        });
+        renderer.draw(&mut pass, 0);
+    }
+    renderer.submit(&gpu.queue, encoder);
+    surface.clear();
+    renderer.prepare(&gpu.device, &gpu.queue, &[], (16, 16));
+    go_tx.send(()).unwrap();
+    let released = gpu.wait(&released_rx, WAIT_TIMEOUT).expect("frame completion");
+    assert!(released, "completion was reported while the finished submission still held its frame");
+}
+
+#[test]
+fn completion_is_reported_after_the_submission_lets_go_of_its_frame() {
+    completion_follows_frame_release(false);
+}
+
+#[test]
+fn completion_with_timestamps_is_reported_after_the_submission_lets_go_of_its_frame() {
+    completion_follows_frame_release(true);
+}
+
 #[test]
 fn parked_work_is_submitted_at_once_when_no_surface_is_being_configured() {
     let (gate, parked, submitted) = (Gate::new(), Parked::default(), Mutex::new(Vec::new()));

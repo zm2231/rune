@@ -3,8 +3,8 @@
 //! permission; until they allow it, posts are dropped. A notification's buttons and text box are a
 //! category of its own (one per set of actions, registered with the center before the post); a
 //! press comes back as the click, with the action and the words typed, without the app coming
-//! forward (the actions don't ask for the foreground). Attachments are copied into the temp folder
-//! first, because `UNNotificationAttachment` moves the file it is given into the system's store.
+//! forward (the actions don't ask for the foreground). Attachments are copied into the app's
+//! `NSTemporaryDirectory()` first (inside its container on iOS), because `UNNotificationAttachment` moves the file it is given into the system's store.
 
 #![allow(unsafe_code)]
 
@@ -16,6 +16,33 @@ use objc2::{class, msg_send, sel};
 
 #[link(name = "UserNotifications", kind = "framework")]
 unsafe extern "C" {}
+
+#[link(name = "Foundation", kind = "framework")]
+unsafe extern "C" {
+    fn NSTemporaryDirectory() -> *mut AnyObject;
+    fn NSLog(format: *mut AnyObject, ...);
+}
+
+fn debug_log(message: &str) {
+    if cfg!(debug_assertions) {
+        // SAFETY: `%@` takes the one `NSString` argument; the pool owns both autoreleased strings.
+        objc2::rc::autoreleasepool(|_| unsafe { NSLog(ns("rune-notify: %@"), ns(message)) });
+    }
+}
+
+unsafe fn described(error: *mut AnyObject) -> String {
+    if error.is_null() {
+        return "no error given".into();
+    }
+    // SAFETY: caller passes a live `NSError`.
+    unsafe { string(msg_send![error, localizedDescription]) }.unwrap_or_default()
+}
+
+fn staging_dir() -> std::path::PathBuf {
+    // SAFETY: `NSTemporaryDirectory` returns an autoreleased `NSString`, read inside this pool.
+    let dir = objc2::rc::autoreleasepool(|_| unsafe { string(NSTemporaryDirectory()) });
+    dir.map_or_else(std::env::temp_dir, std::path::PathBuf::from).join("rune-notify")
+}
 
 // UNAuthorizationOptionBadge | Sound | Alert. Notifications never set `content.badge`; the badge
 // option keeps macOS from suppressing `NSDockTile.badgeLabel` (`WindowHandle::set_taskbar`). The
@@ -91,7 +118,13 @@ unsafe fn add(n: &Notification) {
             content: &*content,
             trigger: std::ptr::null::<AnyObject>()
         ];
-        let _: () = msg_send![center(), addNotificationRequest: request, withCompletionHandler: std::ptr::null::<Block<dyn Fn(*mut AnyObject)>>()];
+        let id = n.id.clone();
+        let done = RcBlock::new(move |error: *mut AnyObject| {
+            if !error.is_null() {
+                debug_log(&format!("{id} was not posted: {}", described(error)));
+            }
+        });
+        let _: () = msg_send![center(), addNotificationRequest: request, withCompletionHandler: &*done];
     });
 }
 
@@ -123,12 +156,18 @@ pub(super) unsafe fn content(n: &Notification) -> Retained<AnyObject> {
 }
 
 unsafe fn attach(i: usize, a: &attachment::Attachment) -> Option<*mut AnyObject> {
-    let copy = attachment::stage(a, &std::env::temp_dir().join("rune-notify")).ok()?;
+    let copy = match attachment::stage(a, &staging_dir()) {
+        Ok(copy) => copy,
+        Err(e) => {
+            debug_log(&format!("attachment left out: {e}"));
+            return None;
+        }
+    };
+    let mut error: *mut AnyObject = std::ptr::null_mut();
     // SAFETY: caller holds an autorelease pool; `error` is a valid out pointer for
     // `attachmentWithIdentifier:URL:options:error:`.
     let made: *mut AnyObject = unsafe {
         let url: *mut AnyObject = msg_send![class!(NSURL), fileURLWithPath: ns(&copy.to_string_lossy())];
-        let mut error: *mut AnyObject = std::ptr::null_mut();
         msg_send![
             class!(UNNotificationAttachment),
             attachmentWithIdentifier: ns(&format!("rune.{i}")),
@@ -138,6 +177,8 @@ unsafe fn attach(i: usize, a: &attachment::Attachment) -> Option<*mut AnyObject>
         ]
     };
     if made.is_null() {
+        // SAFETY: a nil attachment comes with its `NSError`, or none.
+        debug_log(&format!("{} refused as an attachment: {}", a.path().display(), unsafe { described(error) }));
         std::fs::remove_file(&copy).ok();
         return None;
     }

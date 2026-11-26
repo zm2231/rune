@@ -5,6 +5,8 @@
 
 #![forbid(unsafe_code)]
 
+mod call;
+
 use std::cell::{Cell, OnceCell};
 use std::time::Duration;
 
@@ -12,7 +14,7 @@ use rune::tok::{self, motion, type_};
 use rune::{App, AppSpec, Cx, El, NativeView, ScrollSpec, TextEdit, Tx, WindowHandle, col, el, row, text, text_input};
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-const URL: &str = "https://en.wikipedia.org/wiki/Special:Random";
+pub(crate) const URL: &str = "https://en.wikipedia.org/wiki/Special:Random";
 
 struct State {
     slot: NativeView,
@@ -24,7 +26,6 @@ struct State {
     page_at: Option<f64>,
     seconds: u64,
     views: Cell<u64>,
-    call: bool,
 }
 
 thread_local! {
@@ -43,7 +44,6 @@ impl Default for State {
             page_at: None,
             seconds: 0,
             views: Cell::new(0),
-            call: std::env::var_os("NATIVE_VIEW_CALL").is_some(),
         }
     }
 }
@@ -71,11 +71,10 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .child(text_input(&s.note, type_::BODY).key("note").label("Note").single_line()
             .placeholder("Type here, then in the page", t.text_secondary).color(t.text)
             .w_full().padding(10.0).radius(8.0).fill(t.bg).on_edit(|s: &mut State| &mut s.note));
-    let sidebar = if s.call { sidebar.child(el().key("hidden-page").size(1.0, 1.0).opacity(0.01).native_view(&s.slot)) } else { sidebar };
     let page_h = if s.tall { 560.0 } else { 380.0 };
     let card = col().key("card").w_full().h(if s.open { page_h } else { 0.0 }).clip_soft(0.0).radius(14.0)
         .motion(motion::SNAPPY)
-        .child(if s.call { el().key("page").w_full().h(page_h).radius(14.0) } else { el().key("page").w_full().h(page_h).radius(14.0).native_view(&s.slot) });
+        .child(el().key("page").w_full().h(page_h).radius(14.0).native_view(&s.slot));
     let content = (1..=12).fold(
         col().w_full().gap(16.0).padding(24.0)
             .child(text("A page in a pane").font(type_::TITLE).color(t.text))
@@ -117,14 +116,15 @@ fn print_counts(s: &State) {
 }
 
 fn main() {
-    let call = std::env::var_os("NATIVE_VIEW_CALL").is_some();
     App::new(AppSpec::<State> {
         poll: Some(poll),
         scenes: &[("collapsed", |s| s.open = false), ("tall", |s| s.tall = true)],
         ..AppSpec::new("Native view", (900.0, 640.0), State::default, view)
     })
-    .window_options(rune::WindowOptions { transparent: call, ..Default::default() })
-    .on_ready(|window| WINDOW.with(|w| { let _ = w.set(window.clone()); }))
+    .on_ready(|window| {
+        WINDOW.with(|w| { let _ = w.set(window.clone()); });
+        if std::env::var_os("NATIVE_VIEW_CALL").is_some() { call::open(window); }
+    })
     .run();
 }
 

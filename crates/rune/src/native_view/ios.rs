@@ -47,15 +47,55 @@ fn container_class() -> Option<&'static AnyClass> {
         unsafe { fill_subviews(this) }
     }
     unsafe extern "C-unwind" fn run(_: &AnyObject, _: Sel, _: *mut AnyObject) { super::run_requests() }
+    unsafe extern "C-unwind" fn commands(_: &AnyObject, _: Sel) -> *mut AnyObject {
+        TAB_COMMANDS.with(|list| list.as_deref().map_or(std::ptr::null_mut(), |l| std::ptr::from_ref(l).cast_mut()))
+    }
+    unsafe extern "C-unwind" fn can(this: &AnyObject, _: Sel, action: Sel, sender: *mut AnyObject) -> Bool {
+        if action == sel!(runeTab:) || action == sel!(runeBackTab:) {
+            return Bool::new(super::takes_tab_where(|slot| is(slot, this)));
+        }
+        // SAFETY: UIResponder's own answer for every other action, with UIKit's arguments.
+        unsafe { msg_send![super(this, AnyClass::get(c"UIView").expect("UIKit is loaded")), canPerformAction: action, withSender: sender] }
+    }
+    unsafe extern "C-unwind" fn tab(this: &AnyObject, _: Sel, _: *mut AnyObject) { super::tab_key_where(false, |slot| is(slot, this)) }
+    unsafe extern "C-unwind" fn back_tab(this: &AnyObject, _: Sel, _: *mut AnyObject) { super::tab_key_where(true, |slot| is(slot, this)) }
     class(c"RuneNativeViewContainer", |b| {
-        // SAFETY: the signatures match -[UIView layoutSubviews], -[UIView didAddSubview:] and a
-        // method taking one object, the perform's nil argument, that returns nothing.
+        // SAFETY: the signatures match -[UIView layoutSubviews], -[UIView didAddSubview:],
+        // -[UIResponder keyCommands], -[UIResponder canPerformAction:withSender:], and methods
+        // taking one object (the perform's nil argument, a key command) that return nothing.
         unsafe {
+            b.add_method(sel!(keyCommands), commands as unsafe extern "C-unwind" fn(_, _) -> _);
+            b.add_method(sel!(canPerformAction:withSender:), can as unsafe extern "C-unwind" fn(_, _, _, _) -> _);
+            b.add_method(sel!(runeTab:), tab as unsafe extern "C-unwind" fn(_, _, _));
+            b.add_method(sel!(runeBackTab:), back_tab as unsafe extern "C-unwind" fn(_, _, _));
             b.add_method(sel!(runeNativeViewRun:), run as unsafe extern "C-unwind" fn(_, _, _));
             b.add_method(sel!(layoutSubviews), layout as unsafe extern "C-unwind" fn(_, _));
             b.add_method(sel!(didAddSubview:), added as unsafe extern "C-unwind" fn(_, _, _));
         }
     })
+}
+
+fn is(slot: &super::Slot, view: &AnyObject) -> bool { slot.view.object().is_some_and(|v| std::ptr::eq(v, view)) }
+
+thread_local! {
+    static TAB_COMMANDS: Option<Retained<AnyObject>> = tab_commands();
+}
+
+fn tab_commands() -> Option<Retained<AnyObject>> {
+    const SHIFT: isize = 1 << 17;
+    let tab = objc2_foundation::NSString::from_str("\t");
+    // SAFETY: UIKeyCommand's and NSArray's class constructors on the main thread, each returning
+    // an autoreleased object that `Retained::retain` keeps.
+    unsafe {
+        let class = AnyClass::get(c"UIKeyCommand")?;
+        let fwd: *mut AnyObject = msg_send![class, keyCommandWithInput: &*tab, modifierFlags: 0isize, action: sel!(runeTab:)];
+        let back: *mut AnyObject = msg_send![class, keyCommandWithInput: &*tab, modifierFlags: SHIFT, action: sel!(runeBackTab:)];
+        for command in [fwd, back] {
+            if let Some(command) = command.as_ref() { let _: () = msg_send![command, setWantsPriorityOverSystemBehavior: Bool::YES]; }
+        }
+        let list: *mut AnyObject = msg_send![AnyClass::get(c"NSArray")?, arrayWithObjects: [fwd, back].as_ptr(), count: 2usize];
+        Retained::retain(list)
+    }
 }
 
 fn root_class() -> Option<&'static AnyClass> {

@@ -1,6 +1,6 @@
 //! A web page hosted in a scrolling Rune pane with `El::native_view`: the page tracks its card
 //! through scrolls, a spring collapse and window resizes. Tab moves from the sidebar into the
-//! page and back out; on iOS a page script reports Tab leaving the page. `cargo run -p
+//! page and back out; on iOS a page script moves Tab through the page. `cargo run -p
 //! native-view` on macOS; `-- --tab-lab` loads a local page of form fields that lists each key
 //! and focus change it sees, to check Tab handoff against; elsewhere the card lays out as an
 //! empty box. `-- --snap target/native-view.png` renders it headless.
@@ -14,22 +14,19 @@ use rune::{AppSpec, Cx, El, NativeView, ScrollSpec, TextEdit, Tx, col, el, row, 
 const URL: &str = "https://en.wikipedia.org/wiki/Special:Random";
 
 #[cfg(target_os = "ios")]
-const TAB_OUT: &str = r#"addEventListener("keydown", e => {
-  if (e.key !== "Tab" || e.altKey || e.ctrlKey || e.metaKey) return;
-  const from = document.activeElement, back = e.shiftKey;
-  setTimeout(() => {
-    if (e.defaultPrevented) return;
-    const to = document.activeElement;
-    const placed = el => el && el !== document.body && el !== document.documentElement;
-    const moved = placed(to) && to !== from;
-    const wrapped = moved && placed(from) && (back
-      ? from.compareDocumentPosition(to) & Node.DOCUMENT_POSITION_FOLLOWING
-      : to.compareDocumentPosition(from) & Node.DOCUMENT_POSITION_FOLLOWING);
-    if (moved && !wrapped) return;
-    if (placed(to)) to.blur();
-    window.ipc.postMessage(back ? "tab-out-back" : "tab-out");
-  }, 0);
-}, true);"#;
+const TAB_STEP: &str = r#"window.__runeTab = back => {
+  const stops = [...document.querySelectorAll('a[href], area[href], button, input, select, textarea, summary, [contenteditable]:not([contenteditable="false"]), [tabindex]')]
+    .filter(el => el.tabIndex >= 0 && !el.disabled && el.type !== "hidden" && el.getClientRects().length > 0);
+  const rank = el => el.tabIndex > 0 ? el.tabIndex : Infinity;
+  const order = stops.map((el, i) => [el, i]).sort(([a, i], [b, j]) => (rank(a) - rank(b)) || (i - j)).map(([el]) => el);
+  const at = order.indexOf(document.activeElement), step = back ? -1 : 1;
+  for (let k = at < 0 ? (back ? order.length - 1 : 0) : at + step; k >= 0 && k < order.length; k += step) {
+    order[k].focus();
+    if (document.activeElement === order[k]) return;
+  }
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  window.ipc.postMessage(back ? "tab-out-back" : "tab-out");
+};"#;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 const TAB_LAB: &str = r##"<!doctype html>
@@ -60,7 +57,7 @@ addEventListener("blur", () => say("page blur"));
 struct State {
     slot: NativeView,
     #[cfg(any(target_os = "macos", target_os = "ios"))]
-    web: Option<wry::WebView>,
+    web: Option<std::rc::Rc<wry::WebView>>,
     open: bool,
     tall: bool,
     note: TextEdit,
@@ -122,7 +119,7 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
         #[cfg(target_os = "ios")]
         let builder = {
             let slot = s.slot.clone();
-            builder.with_initialization_script(TAB_OUT).with_ipc_handler(move |message: wry::http::Request<String>| {
+            builder.with_initialization_script(TAB_STEP).with_ipc_handler(move |message: wry::http::Request<String>| {
                 match message.body().as_str() {
                     "tab-out" => slot.tabbed_out(false),
                     "tab-out-back" => slot.tabbed_out(true),
@@ -132,7 +129,17 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
         };
         let builder = if std::env::args().any(|a| a == "--tab-lab") { builder.with_html(TAB_LAB) } else { builder.with_url(URL) };
         match builder.build_as_child(&s.slot) {
-            Ok(web) => s.web = Some(web),
+            Ok(web) => {
+                let web = std::rc::Rc::new(web);
+                #[cfg(target_os = "ios")]
+                {
+                    let page = std::rc::Rc::downgrade(&web);
+                    s.slot.on_tab(move |back| {
+                        if let Some(web) = page.upgrade() { let _ = web.evaluate_script(if back { "__runeTab(true)" } else { "__runeTab(false)" }); }
+                    });
+                }
+                s.web = Some(web);
+            }
             Err(e) => eprintln!("native-view: no web view: {e}"),
         }
     }

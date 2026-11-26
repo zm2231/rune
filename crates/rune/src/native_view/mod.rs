@@ -67,8 +67,11 @@ pub(crate) struct Slot {
     tabbed: Cell<Option<bool>>,
     refused: Cell<bool>,
     request: Cell<Option<Request>>,
+    tab_key: RefCell<Option<TabKey>>,
     wake: RefCell<Option<Arc<crate::live::Wake>>>,
 }
+
+type TabKey = Rc<dyn Fn(bool)>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Request {
@@ -98,6 +101,7 @@ impl NativeView {
             tabbed: Cell::new(None),
             refused: Cell::new(false),
             request: Cell::new(None),
+            tab_key: RefCell::new(None),
             wake: RefCell::new(None),
         });
         SLOTS.with(|s| {
@@ -130,10 +134,20 @@ impl NativeView {
     /// (before) the hosting element in its Tab order, and the keyboard comes back to Rune.
     ///
     /// On macOS, AppKit views, `WKWebView` among them, report this themselves through the
-    /// window's key view loop. On iOS the app reports it: for a `WKWebView`, from a page script
-    /// that sees Tab leave the page's last element (Shift-Tab its first) or wrap around, posting
-    /// a message the app's handler turns into this call, as `examples/native-view` does.
+    /// window's key view loop. On iOS the app reports it, from the [`NativeView::on_tab`]
+    /// handler that moves Tab through the view, when Tab runs past either end.
     pub fn tabbed_out(&self, back: bool) { self.slot.tab_out(back); }
+
+    /// On iOS, gives a hardware Tab (`false`) or Shift-Tab (`true`) pressed while the view built
+    /// into the slot has the keyboard to `handle`, instead of to the view.
+    ///
+    /// UIKit doesn't pass Tab on to a hosted `WKWebView`'s page while one of its fields is
+    /// edited, so the page can't move focus or leave by itself. With a handler, the app moves
+    /// focus inside the view, for a web view with a script that focuses the page's next or
+    /// previous element, and calls [`NativeView::tabbed_out`] past either end, as
+    /// `examples/native-view` does. The page's own Tab handlers then don't see Tab. Without one,
+    /// Tab stays the view's. Never called elsewhere: on macOS the key view loop moves Tab.
+    pub fn on_tab(&self, handle: impl Fn(bool) + 'static) { *self.slot.tab_key.borrow_mut() = Some(Rc::new(handle)); }
 }
 
 impl std::fmt::Debug for NativeView {
@@ -195,6 +209,21 @@ impl Slot {
 pub(crate) fn press_where(hit: impl Fn(&Slot) -> bool) {
     let slots: Vec<Rc<Slot>> = SLOTS.with(|s| s.borrow().values().filter_map(Weak::upgrade).collect());
     for slot in slots.iter().filter(|s| hit(s)) { slot.press(); }
+}
+
+#[cfg(target_os = "ios")]
+pub(crate) fn takes_tab_where(hit: impl Fn(&Slot) -> bool) -> bool {
+    let slots: Vec<Rc<Slot>> = SLOTS.with(|s| s.borrow().values().filter_map(Weak::upgrade).collect());
+    slots.iter().any(|s| hit(s) && s.tab_key.borrow().is_some() && s.view.has_focus())
+}
+
+#[cfg(target_os = "ios")]
+pub(crate) fn tab_key_where(back: bool, hit: impl Fn(&Slot) -> bool) {
+    let slots: Vec<Rc<Slot>> = SLOTS.with(|s| s.borrow().values().filter_map(Weak::upgrade).collect());
+    for slot in slots.iter().filter(|s| hit(s)) {
+        let handle = slot.tab_key.borrow().clone();
+        if let Some(handle) = handle { handle(back); }
+    }
 }
 
 #[cfg(target_os = "ios")]
@@ -268,10 +297,10 @@ impl El {
     /// On macOS this follows the window's key view loop: a `WKWebView` starts at its first
     /// element on Tab, or its last on Shift-Tab, and hands Tab back past its ends by itself.
     ///
-    /// On iOS the view gets the keyboard with nothing inside it focused; a `WKWebView` then moves
-    /// Tab between its page's elements as Safari does. UIKit doesn't tell the app when Tab
-    /// leaves the page, so the app reports it with [`NativeView::tabbed_out`]. A tap inside the
-    /// view also gives it the keyboard.
+    /// On iOS the view gets the keyboard with nothing inside it focused, and UIKit doesn't pass
+    /// Tab on to a `WKWebView`'s page while one of its fields is edited. The app moves Tab
+    /// through the view from [`NativeView::on_tab`] and reports leaving it with
+    /// [`NativeView::tabbed_out`]. A tap inside the view also gives it the keyboard.
     ///
     /// In macOS windows and iOS views only; overlays don't host them, and elsewhere the element
     /// draws as an empty box, its rects still listed in

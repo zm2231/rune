@@ -13,7 +13,7 @@ use std::cell::{Cell, OnceCell};
 use std::time::Duration;
 
 use rune::tok::{self, motion, type_};
-use rune::{App, AppSpec, Cx, El, NativeView, ScrollSpec, TextEdit, Tx, WindowHandle, col, el, row, text, text_input};
+use rune::{App, AppSpec, Cx, El, NativeView, ScrollSpec, SizeClass, TextEdit, Tx, WindowHandle, col, el, row, text, text_input};
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub(crate) const URL: &str = "https://en.wikipedia.org/wiki/Special:Random";
@@ -71,28 +71,40 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         (Some(_), false) => format!("Page up for {} s", s.seconds),
         (None, _) => "No page yet".into(),
     };
-    let sidebar = col().key("sidebar").w(200.0).h_full().gap(10.0).padding(16.0).fill(t.card)
-        .child(text("Native view").font(type_::TITLE).color(t.text))
-        .child(text(seconds).key("seconds").font(type_::BODY).color(t.text_secondary))
-        .child(button("collapse", if s.open { "Collapse" } else { "Expand" }, &t, |s| s.open = !s.open))
-        .child(button("height", if s.tall { "Shorter" } else { "Taller" }, &t, |s| s.tall = !s.tall))
-        .child(text_input(&s.note, type_::BODY).key("note").label("Note").single_line()
-            .placeholder("Type here, then in the page", t.text_secondary).color(t.text)
-            .w_full().padding(10.0).radius(8.0).fill(t.bg).on_edit(|s: &mut State| &mut s.note));
+    let [top, right, bottom, left] = cx.safe_area();
+    let compact = cx.horizontal_size_class() == Some(SizeClass::Compact);
+    let collapse = button("collapse", if s.open { "Collapse" } else { "Expand" }, &t, |s| s.open = !s.open);
+    let height = button("height", if s.tall { "Shorter" } else { "Taller" }, &t, |s| s.tall = !s.tall);
+    let note = text_input(&s.note, type_::BODY).key("note").label("Note").single_line()
+        .placeholder("Type here, then in the page", t.text_secondary).color(t.text)
+        .w_full().padding(10.0).radius(8.0).fill(t.bg).on_edit(|s: &mut State| &mut s.note);
+    let title = text("Native view").font(type_::TITLE).color(t.text);
+    let seconds = text(seconds).key("seconds").font(type_::BODY).color(t.text_secondary);
+    let controls = if compact {
+        col().key("controls").w_full().gap(10.0).padding(16.0).fill(t.card)
+            .child(title)
+            .child(seconds)
+            .child(row().gap(10.0).child(collapse).child(height))
+            .child(note)
+    } else {
+        col().key("sidebar").w(200.0).h_full().gap(10.0).padding(16.0).fill(t.card)
+            .child(title).child(seconds).child(collapse).child(height).child(note)
+    };
     let page_h = if s.tall { 560.0 } else { 380.0 };
     let card = col().key("card").w_full().h(if s.open { page_h } else { 0.0 }).clip_soft(0.0).radius(14.0)
         .motion(motion::SNAPPY)
         .child(el().key("page").w_full().h(page_h).radius(14.0).native_view(&s.slot));
+    let inset = if compact { 16.0 } else { 24.0 };
     let content = (1..=12).fold(
-        col().w_full().gap(16.0).padding(24.0)
+        col().w_full().gap(16.0).padding(inset).pb(inset + bottom)
             .child(text("A page in a pane").font(type_::TITLE).color(t.text))
             .child(paragraph(0, &t))
             .child(card),
         |list, n| list.child(paragraph(n, &t)),
     );
-    row().w_full().h_full().fill(t.bg)
-        .child(sidebar)
-        .child(col().key("pane").grow(1.0).shrink().h_full().scroll(ScrollSpec { stick_bottom: false }).child(content))
+    let pane = col().key("pane").grow(1.0).shrink().scroll(ScrollSpec { stick_bottom: false }).child(content);
+    let root = if compact { col().child(controls).child(pane.w_full()) } else { row().child(controls).child(pane.h_full()) };
+    root.w_full().h_full().fill(t.bg).pt(top).pr(right).pl(left)
 }
 
 fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
@@ -150,7 +162,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rune::{Env, Runtime};
+    use rune::{Env, Runtime, SizeClasses};
 
     fn settle(rt: &mut Runtime<State>) {
         for k in 1..=90 { rt.frame(f64::from(k) / 60.0); }
@@ -177,5 +189,18 @@ mod tests {
         rt.pointer_up(x, y);
         settle(&mut rt);
         assert_eq!(rt.native_views()[0].clip, shown.clip);
+    }
+
+    #[test]
+    fn on_a_phone_the_controls_sit_below_the_status_bar_above_a_full_width_page() {
+        let mut rt = Runtime::new(State::default(), view, (393.0, 852.0), Env { system_dark: false, scale: 3.0 });
+        rt.set_safe_area([59.0, 0.0, 34.0, 0.0]);
+        rt.set_size_classes(SizeClasses { horizontal: Some(SizeClass::Compact), vertical: Some(SizeClass::Regular) });
+        rt.frame(0.0);
+        let (_, title_y) = rt.find("collapse").unwrap();
+        assert!(title_y > 59.0, "controls start below the status bar");
+        let [x, y, w, _] = rt.native_views()[0].rect.map(|px| px / 3.0);
+        assert!(y > title_y, "the page sits below the controls");
+        assert!(w > 340.0 && x + w <= 393.0, "the page spans the phone's width");
     }
 }

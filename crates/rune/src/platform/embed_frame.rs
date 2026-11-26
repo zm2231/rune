@@ -83,6 +83,8 @@ pub(crate) struct Serves {
     pub(crate) file_dialogs: bool,
     /// The host shows share sheets itself (`LayerHost::with_share_sheets`), not refusing them.
     pub(crate) shares: bool,
+    /// The host takes window close requests itself (`LayerHost::with_shell`), not dropping them.
+    pub(crate) shell: bool,
 }
 
 /// Surface and draw callbacks supplied by [`super::embed::LayerHost`] (or a fake surface in
@@ -295,7 +297,7 @@ pub(crate) fn flush_requests(rt: &mut RuntimeCore, app: &mut dyn AppDriver, serv
     if !serves.shares {
         rt.refuse_share("share sheets are unsupported in embedded views");
     }
-    rt.shell_request = None;
+    if !serves.shell { rt.shell_request = None; }
     rt.host.user_close_request = false;
     rt.ignore_minimize("an embedded layer");
     rt.host.window_frame = None;

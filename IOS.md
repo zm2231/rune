@@ -122,8 +122,13 @@ What works:
   frees the caches its last frame didn't draw from (text layouts, glyphs, image and layer
   textures). Rune's part draws nothing and submits nothing to the GPU, so it does the same in
   the background and out of its window, and makes what went again when it next shows. An
-  `on_rest` that changes what the view shows gets a frame at once when the view is in front. An
-  app that embeds a `LayerHost` itself calls `LayerHost::trim_memory`.
+  `on_rest` that changes what the view shows gets a frame at once when the view is in front. A
+  view out of its window (a hidden window, a dismissed sheet, a hidden overlay) also gives back
+  its renderer and its drawables, as a desktop window that releases its GPU when hidden does,
+  and makes them again with its next frame. An app that embeds a `LayerHost` itself calls
+  `LayerHost::trim_memory`.
+- **Windows and overlays.** An app's other windows and its overlays show
+  ([Windows and overlays](#windows-and-overlays)).
 - **Links and files.** `Tx::open_url` opens a link in the app that owns its scheme, and
   `Tx::open_url_then` hears whether one took it, on the frame after the system says.
   A file dialog opens in its options' `directory` when the system can show that folder.
@@ -147,15 +152,16 @@ What doesn't yet:
 - An App's menu items in the menu bar of a UIKit or SwiftUI app that embeds a Rune view. That
   app's own delegate builds its main menu, so on an iPad only a `keys_first` item's shortcut
   runs there; on an iPhone every item's does.
-- More than one surface an app: a `RuneView` is one view, so `App::window`'s other windows,
-  `App::overlay`'s overlays and `rune::open_window`'s windows never open. An app started with
-  `rune::run_windows` shows the first window its factory returns, which is handed the main
-  screen as its one display; the factory's other windows never open. Requests of a window
-  are dropped: `AppHandle`'s `open`, `show`, `activate`, `hide`, `close`, `focus`, `minimize`,
-  `set_position`, `place`, `set_dock_icon`, `quit` and `relaunch`, a handler's
-  `Tx::close_window`, `Tx::minimize`, `Tx::quit` and `Tx::relaunch`, and the handle `on_ready`
-  is given. The first dropped request of each kind prints one `rune: ... ignored: ...` line on
-  stderr, which Xcode's console and `devicectl --console` show.
+- What no iOS window does: `AppHandle`'s `minimize`, `set_position`, `place`, `set_dock_icon`,
+  `quit` and `relaunch`, and a handler's `Tx::minimize`, `Tx::quit` and `Tx::relaunch`, are
+  dropped. A Rune view a UIKit or SwiftUI app embeds is no window either, so there `open`,
+  `show`, `activate`, `hide`, `close` and `focus`, `Tx::close_window`, `App::window`'s
+  windows and `rune::open_window`'s are dropped too. The first dropped request of each kind
+  prints one `rune: ... ignored: ...` line on stderr, which Xcode's console and
+  `devicectl --console` show.
+- Overlays' desktop-only options: `DisplayTarget` and `follow_pointer` (a scene has one
+  screen), `OverlayHandle::send_pointer` and `screen_to_local`, capture exclusion, the window
+  number and activation tokens (answered `None`).
 - Chinese in the system's own font. iOS's Chinese font is PingFang, whose glyphs are in a
   table (`hvgl`) Rune has no reader for. A Chinese character goes to the first other font in
   CoreText's cascade that has it (a Japanese font, for a character Japanese shares), and to no
@@ -208,9 +214,72 @@ rest.
 iOS announces termination only to an app that is running when it ends, never to a suspended one,
 so `on_quit` is a last chance: save when `on_visibility` says false. An app ended while in front
 loses the focus and hides before `on_quit`, which a desktop app that quits does not.
-`App::on_close` and `App::on_reopen` are never called, since a view is no window to close and
-iOS reopens no running app. `App::on_ime` hears the keyboard for an editor the app draws itself
+`App::on_close` runs when the user closes a window ([Windows and
+overlays](#windows-and-overlays)); a view a UIKit app embeds never hears it. `App::on_reopen` is
+never called: iOS reopens no running app. `App::on_ime` hears the keyboard for an editor the app draws itself
 (`El::ime_cursor`).
+
+## Windows and overlays
+
+An app `rune::run_windows` or `rune::run` starts has every window its factory returns, its apps
+add with `App::window`, and its handlers open with `rune::open_window`. The first is the
+primary. A window keeps its view and its state from the first time it shows until the app
+ends: hiding or closing it takes it off screen, and showing it again brings back the same
+state, as `App::window`'s windows do on the desktop. `AppHandle`'s and `WindowHandle`'s `open`,
+`show`, `activate`, `hide`, `close` and `focus`, and `Tx::close_window`, act on it.
+
+**iPad.** An app whose bundle declares several scenes (`scripts/ios-app --multiple-scenes`,
+which sets `UIApplicationSupportsMultipleScenes` and declares the `rune.window` activity type
+in `NSUserActivityTypes`) shows each window in a scene of its own, which the user arranges as
+any app's windows: side by side, in Stage Manager, or one at a time. Showing a window asks the
+system for its scene, focusing one on screen brings its scene forward, and hiding or closing
+one takes the window out of its scene and asks the system to end the scene. When the window
+hidden or closed is the only one of the app's on screen, the window the user last had in front
+comes forward first (the primary when no other is left, asked for again if the user closed
+it), so the app stays on screen instead of going to the Home Screen; the closed window's
+scene is asked to end once the system has moved it behind, and `App::on_close` runs then.
+Asking to hide or close it again before that does both at once. iPadOS may keep a scene it
+was asked to end, in the background and in the app switcher: showing the window again then
+brings that scene back with the window in it, and a kept scene the user brings back from the
+switcher gets its window too. A scene's session carries its window's key, so when the system
+restores an app's scenes at launch each comes back with its window. Windows that start visible
+(`WindowOptions::visible`) open after the primary draws its first frame, on a fresh launch
+only: once the system restores scenes, it decides which windows come back, and a window the
+user closed stays closed. A restored scene whose window the app no longer has is asked to end.
+
+**iPhone, and an iPad app with one scene.** The primary fills the scene and can't hide: a
+request to hide or close it is dropped. Every other window shows as a page sheet over the
+window on top, stacked in the order they showed; windows that start visible are presented
+after the primary's first frame on every launch. Hiding a sheet that has others above it
+presents those again over the one below.
+
+**The user closing a window** (closing its scene for good, or swiping its sheet down) runs its
+`App::on_close`, as on the desktop. A scene the system disconnects to save memory is not
+closed: its window comes back when the system connects the scene again.
+
+**Overlays.** `App::overlay`'s overlays show over the window of the app that made them, above
+its content and in `OverlayLevel` order, and go with it: off screen with a hidden window, into
+the background with its scene. An overlay a Rune view a UIKit app embeds makes shows over that
+view. Placement is in the window's points:
+
+- A screen edge (`OverlaySpec`'s edge, margin, align and inset, or `OverlayPlacement::Edge`)
+  measures from the safe area, so a top overlay sits below the status bar or Dynamic Island
+  and a bottom one above the home indicator and the keyboard.
+- `OverlayPlacement::Rect` is in the window's points, the space `El::on_screen_layout` reports.
+- `OverlayPlacement::FullScreen` covers the window.
+- A content-sized overlay (`ContentSizing`) takes the size its content measures.
+
+It moves with the window's rotation and resizing. `show`, `hide`, `fade_in` and `fade_out`
+show and hide it, fading its alpha. A touch goes through an overlay that takes none
+(`OverlayInput::None`, or a bare spec that isn't `interactive`) to the window under it; one
+that takes all (`OverlayInput::All`, or an `interactive` spec) keeps every touch in its rect;
+`OverlayInput::Regions` keeps only touches on its `El::hit` elements. An overlay with
+`KeyPolicy::OnDemand` or `Exclusive` takes a hardware keyboard on `request_keys` or a touch,
+and `release_keys` gives it back to the window. `Availability` is `Available` once the overlay
+first shows. VoiceOver reads a shown overlay's elements after the window's.
+
+The pop-overs, menus, selects, hover cards and toasts of `rune-kit` draw inside the window
+(`El::anchored`) and are no overlays: they look and behave the same on every platform.
 
 ## Build and run in a simulator
 

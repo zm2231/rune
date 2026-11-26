@@ -26,7 +26,7 @@ pub enum WheelDelta {
 }
 
 impl WheelDelta {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
     #[inline]
     pub(crate) fn is_finite(self) -> bool {
         match self {
@@ -114,7 +114,7 @@ impl PointerInput {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
     #[inline]
     pub(crate) fn is_finite(self) -> bool {
         match self {

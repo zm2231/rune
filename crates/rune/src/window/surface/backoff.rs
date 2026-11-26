@@ -49,6 +49,7 @@ pub(crate) enum BackoffEvent {
     Uncovered,
     /// An overlay is shown or uncovered with a wait still set. It stands, so a covered frame's
     /// re-check runs on time, and the occluded wait starts over.
+    #[cfg_attr(target_os = "ios", allow(dead_code))]
     Revealed,
     /// A frame presented: nothing waits, and both waits start over.
     Presented,

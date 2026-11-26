@@ -126,7 +126,7 @@ impl RuntimeCore {
     }
 
     /// The last focus change the window reported was a gain.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
     pub(crate) fn window_has_focus(&self) -> bool { self.host.window_focused == Some(true) }
 
     /// The window gets no more keys: it lost focus or hid, which may never report a blur. The

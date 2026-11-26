@@ -1,6 +1,7 @@
-//! An app that owns the screen: `UIApplicationMain`, one window scene, and a `RuneView` that
-//! fills its window. The scene's configuration is made in code, so an app's `Info.plist` needs
-//! a `UIApplicationSceneManifest` but no scene configuration in it and no storyboard.
+//! An app that owns the screen: `UIApplicationMain`, its window scenes, and a `RuneView` that
+//! fills each window (`scenes`). The scene's configuration is made in code, so an app's
+//! `Info.plist` needs a `UIApplicationSceneManifest` but no scene configuration in it and no
+//! storyboard.
 //!
 //! The links the scene is handed go to `App::on_open_url` the way a desktop window's do
 //! (`open_url::incoming`): the ones the app was launched with (`scene:willConnectToSession:options:`)
@@ -9,18 +10,17 @@
 
 #![allow(unsafe_code)]
 
-use std::cell::RefCell;
 use std::ffi::{c_char, c_int};
 
 use objc2_foundation::NSString;
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
-use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, extern_protocol, msg_send};
+use objc2::{ClassType, MainThreadMarker, MainThreadOnly, class, define_class, extern_protocol, msg_send};
 
-use super::controller::RuneViewController;
 use super::links::{self, Activity};
-use super::surface::{self, Mount};
-use super::view::{RuneView, UIResponder};
+use super::mount::Entry;
+use super::scenes;
+use super::view::UIResponder;
 use crate::app::App;
 
 // SAFETY: the function has this C signature in UIKit's headers.
@@ -33,11 +33,6 @@ unsafe extern "C" {
 unsafe extern "C" {
     fn _NSGetArgc() -> *mut c_int;
     fn _NSGetArgv() -> *mut *mut *mut c_char;
-}
-
-thread_local! {
-    /// The app `run` was given, until its scene connects.
-    static MOUNT: RefCell<Option<Mount>> = const { RefCell::new(None) };
 }
 
 extern_protocol!(
@@ -85,20 +80,22 @@ define_class!(
                 configuration
             }
         }
+
+        #[unsafe(method(application:didDiscardSceneSessions:))]
+        fn discarded(&self, _application: &AnyObject, sessions: &AnyObject) {
+            // SAFETY: `sessions` is an `NSSet<UISceneSession *>`.
+            for session in unsafe { members(sessions) } {
+                if let Some(key) = scenes::session_key(&session) { scenes::discarded(key); }
+            }
+        }
     }
 );
-
-/// The scene's window, kept for as long as the scene has it.
-struct SceneIvars {
-    window: RefCell<Option<Retained<AnyObject>>>,
-}
 
 define_class!(
     // SAFETY: `UIResponder` is made to be subclassed, and `SceneDelegate` has no `Drop`.
     #[unsafe(super(UIResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "RuneSceneDelegate"]
-    #[ivars = SceneIvars]
     struct SceneDelegate;
 
     // SAFETY: the superclass chain ends in `NSObject`, which implements the protocol.
@@ -108,15 +105,8 @@ define_class!(
     unsafe impl WindowSceneDelegate for SceneDelegate {}
 
     impl SceneDelegate {
-        #[unsafe(method_id(init))]
-        fn init(this: Allocated<Self>) -> Option<Retained<Self>> {
-            let this = this.set_ivars(SceneIvars { window: RefCell::new(None) });
-            // SAFETY: `init` is `UIResponder`'s designated initializer.
-            unsafe { msg_send![super(this), init] }
-        }
-
         #[unsafe(method(scene:willConnectToSession:options:))]
-        fn will_connect(&self, scene: &AnyObject, _session: &AnyObject, options: &AnyObject) {
+        fn will_connect(&self, scene: &AnyObject, session: &AnyObject, options: &AnyObject) {
             // The links a launch carries arrive here, in the connection's options.
             // SAFETY: `options` is a `UISceneConnectionOptions`, whose `URLContexts` is an
             // `NSSet<UIOpenURLContext *>` and whose `userActivities` an `NSSet<NSUserActivity *>`.
@@ -124,26 +114,12 @@ define_class!(
                 let contexts: Option<Retained<AnyObject>> = msg_send![options, URLContexts];
                 let activities: Option<Retained<AnyObject>> = msg_send![options, userActivities];
                 let activities = activities.map(|activities| members(&activities)).unwrap_or_default();
-                (contexts.map(|contexts| opened(&contexts)).unwrap_or_default(), activities.iter().map(|activity| read(activity)).collect())
+                (contexts.map(|contexts| opened(&contexts)).unwrap_or_default(), activities)
             };
-            receive(urls, activities);
-            // One app, one window: a second scene has nothing to show.
-            let Some(mount) = MOUNT.take() else { return };
-            let view = RuneView::new(MainThreadMarker::from(self), mount);
-            // SAFETY: the scene of a window-scene session is a `UIWindowScene`; a view
-            // controller's view and a window's root controller are settable objects.
-            let window = unsafe {
-                let window: Allocated<AnyObject> = msg_send![class!(UIWindow), alloc];
-                let window: Retained<AnyObject> = msg_send![window, initWithWindowScene: scene];
-                let controller = RuneViewController::new(MainThreadMarker::from(self));
-                let _: () = msg_send![&*controller, setView: &*view];
-                let _: () = msg_send![&*window, setRootViewController: &*controller];
-                let _: () = msg_send![&*window, makeKeyAndVisible];
-                // The app's one view hears a hardware keyboard from the start.
-                let _: bool = msg_send![&*view, becomeFirstResponder];
-                window
-            };
-            *self.ivars().window.borrow_mut() = Some(window);
+            let key = scenes::session_key(session).or_else(|| activities.iter().find_map(|activity| scenes::activity_key(activity)));
+            // SAFETY: each member of `userActivities` is an `NSUserActivity`.
+            receive(urls, activities.iter().map(|activity| unsafe { read(activity) }).collect());
+            scenes::connected(scene, key);
         }
 
         /// Links with a scheme the bundle declares, opened while the app runs.
@@ -161,8 +137,18 @@ define_class!(
         }
 
         #[unsafe(method(sceneDidDisconnect:))]
-        fn did_disconnect(&self, _scene: &AnyObject) {
-            self.ivars().window.borrow_mut().take();
+        fn did_disconnect(&self, scene: &AnyObject) {
+            scenes::disconnected(scene);
+        }
+
+        #[unsafe(method(sceneWillEnterForeground:))]
+        fn will_enter_foreground(&self, scene: &AnyObject) {
+            scenes::foreground(scene);
+        }
+
+        #[unsafe(method(sceneDidEnterBackground:))]
+        fn did_enter_background(&self, scene: &AnyObject) {
+            scenes::background(scene);
         }
     }
 );
@@ -171,7 +157,7 @@ define_class!(
 ///
 /// # Safety
 /// `set` is an `NSSet`.
-unsafe fn members(set: &AnyObject) -> Vec<Retained<AnyObject>> {
+pub(super) unsafe fn members(set: &AnyObject) -> Vec<Retained<AnyObject>> {
     // SAFETY: `allObjects` is an `NSArray`, whose indexes below `count` hold objects.
     unsafe {
         let all: Retained<AnyObject> = msg_send![set, allObjects];
@@ -216,25 +202,20 @@ fn receive(urls: Vec<String>, activities: Vec<Activity>) {
     for link in links::incoming(urls, activities) { crate::open_url::incoming::receive(link); }
 }
 
-/// Runs `app` as the whole iOS app. Returns only when it can't start: `UIApplicationMain`
-/// never does.
+/// Runs `app` as the whole iOS app, with the windows it adds. Returns only when it can't start:
+/// `UIApplicationMain` never does.
 pub(crate) fn run<S: 'static>(app: App<S>) -> Result<(), String> {
-    if MainThreadMarker::new().is_none() {
-        return Err("an iOS app runs from the main thread".into());
-    }
-    run_mounted(surface::mount(app))
+    run_windows(Box::new(move |_| vec![crate::WindowSpec::from_app("main", app).into()]))
 }
 
-/// Runs the first window a `run_windows` factory returns as the whole iOS app, as `run` runs
-/// an app: the screen is one window, so the factory's other windows never open.
+/// Runs the windows a `run_windows` factory returns as the whole iOS app: the first is the
+/// primary, which fills the launch scene, and the others show as `scenes` says.
 pub(crate) fn run_windows(factory: Box<dyn FnOnce(&[crate::Display]) -> Vec<crate::AnyWindowSpec>>) -> Result<(), String> {
     let Some(mtm) = MainThreadMarker::new() else { return Err("an iOS app runs from the main thread".into()) };
-    let mut windows = crate::windows::flatten(factory(&[screen(mtm)])).into_iter();
-    let first = windows.next().ok_or("the app created no windows")?;
-    if windows.next().is_some() {
-        eprintln!("rune: run_windows' windows after the first ignored: an iOS app shows one window");
-    }
-    run_mounted(first.mount())
+    let windows = crate::windows::flatten(factory(&[screen(mtm)]));
+    crate::windows::validate(&windows)?;
+    if windows.is_empty() { return Err("the app created no windows".into()); }
+    run_entries(windows.into_iter().map(crate::AnyWindowSpec::entry).collect())
 }
 
 /// The main screen as a display: its whole size in pixels at its native scale.
@@ -250,9 +231,9 @@ fn screen(_: MainThreadMarker) -> crate::Display {
     crate::Display { id: None, name: None, position: (0, 0), size: (bounds.size.width as u32, bounds.size.height as u32), scale, primary: true }
 }
 
-fn run_mounted(mount: Mount) -> Result<(), String> {
-    MOUNT.set(Some(mount));
-    // The app's one view listens by now if it has the hook; without it a link is dropped.
+fn run_entries(entries: Vec<Entry>) -> Result<(), String> {
+    scenes::start(entries);
+    // The app's views listen by now if they have the hook; without it a link is dropped.
     crate::open_url::incoming::settle();
     // UIKit finds the delegates by name, so their classes are registered first.
     let _ = (AppDelegate::class(), SceneDelegate::class());

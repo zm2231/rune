@@ -165,7 +165,7 @@ pub struct MaterialFrame<'a> {
 }
 
 impl<'a> MaterialFrame<'a> {
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    #[cfg_attr(any(target_arch = "wasm32", target_os = "ios"), allow(dead_code))]
     pub(crate) fn new(draws: &'a [MaterialDraw], scale: f32) -> Self { Self { draws, scale } }
 
     /// The frame's material elements in paint order, in physical pixels; empty when none are
@@ -197,7 +197,7 @@ impl<S: 'static> crate::Runtime<S> {
 /// The native material draws and window backing scale to hand to the platform material host.
 /// `MaterialDraw` rects and radii are in physical device pixels, while native material views
 /// sit in window points, so this uses `window_scale()` rather than `env.scale` (`window_scale * zoom`).
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg_attr(any(target_arch = "wasm32", target_os = "ios"), allow(dead_code))]
 pub(crate) fn present_draws(rt: &crate::runtime::RuntimeCore) -> (&[MaterialDraw], f32) {
     (rt.paint.materials(), rt.window_scale())
 }
@@ -215,7 +215,7 @@ pub(crate) fn windows_present_draws(rt: &crate::runtime::RuntimeCore) -> &[Mater
 pub(crate) type OnMaterials = Box<dyn FnMut(MaterialFrame<'_>)>;
 
 /// Hands a frame about to present to `ConfiguredOverlay::on_materials`, when one is set.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg_attr(any(target_arch = "wasm32", target_os = "ios"), allow(dead_code))]
 pub(crate) fn announce(hook: &mut Option<OnMaterials>, rt: &crate::runtime::RuntimeCore) {
     if let Some(hook) = hook {
         let (draws, scale) = present_draws(rt);

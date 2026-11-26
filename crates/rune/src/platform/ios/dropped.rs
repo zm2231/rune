@@ -1,8 +1,8 @@
-//! What an app asks for that a `RuneView` cannot do. A view is one app's one surface: it opens
-//! no other windows and no overlays, and it is no window to show, move, minimise or quit. Such
-//! a request is dropped, whether a handle made it from another thread or a handler from its
-//! `Tx`, and the first of each kind a view drops says so on stderr, once, so an app ported
-//! from the desktop hears why nothing happened.
+//! What an app asks for that iOS cannot do. No window moves, minimises, has a Dock icon or
+//! quits, and a `RuneView` a UIKit app embeds is no window at all: it opens no other windows
+//! and has none to show, hide or close. Such a request is dropped, whether a handle made it
+//! from another thread or a handler from its `Tx`, and the first of each kind a view drops says
+//! so on stderr, once, so an app ported from the desktop hears why nothing happened.
 
 use crate::Shell;
 use crate::app::WindowRequests;
@@ -10,15 +10,14 @@ use crate::app::WindowRequests;
 /// A kind of request a view drops.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
-    /// `App::window`'s windows.
+    /// `App::window`'s windows, in an embedded view.
     Windows,
-    /// `App::overlay`'s overlays.
-    Overlays,
-    /// `rune::open_window`'s windows.
+    /// `rune::open_window`'s windows, in an embedded view.
     Opened,
-    /// `AppHandle::open`, `show`, `activate`, `hide` and `close`, and `Tx::close_window`.
+    /// `AppHandle::open`, `show`, `activate`, `hide` and `close`, and `Tx::close_window`, in an
+    /// embedded view.
     Window,
-    /// `AppHandle::focus` and `minimize`, and `Tx::minimize`.
+    /// `AppHandle::minimize` and `Tx::minimize`, and `AppHandle::focus` in an embedded view.
     Activation,
     /// `AppHandle::set_position` and `place`.
     Position,
@@ -32,17 +31,16 @@ pub(crate) enum Kind {
 
 impl Kind {
     #[cfg(test)]
-    pub(crate) const ALL: [Kind; 8] = [Kind::Windows, Kind::Overlays, Kind::Opened, Kind::Window, Kind::Activation, Kind::Position, Kind::Dock, Kind::Quit];
+    pub(crate) const ALL: [Kind; 7] = [Kind::Windows, Kind::Opened, Kind::Window, Kind::Activation, Kind::Position, Kind::Dock, Kind::Quit];
 
     /// What stderr says of the first request of this kind, after `rune: `.
     pub(crate) fn message(self) -> &'static str {
         match self {
-            Kind::Windows => "App::window ignored: an iOS view shows one app, so its other windows never open",
-            Kind::Overlays => "App::overlay ignored: an iOS view has no overlays, so they never show",
-            Kind::Opened => "rune::open_window ignored: an iOS view shows one app, so the window never opens",
-            Kind::Window => "AppHandle's open, show, activate, hide and close and Tx::close_window ignored: an iOS view is no window",
-            Kind::Activation => "AppHandle's focus and minimize and Tx::minimize ignored: an iOS view is no window",
-            Kind::Position => "AppHandle's set_position and place ignored: an iOS view is no window",
+            Kind::Windows => "App::window ignored: an embedded iOS view shows one app, so its other windows never open",
+            Kind::Opened => "rune::open_window ignored: an embedded iOS view shows one app, so the window never opens",
+            Kind::Window => "AppHandle's open, show, activate, hide and close and Tx::close_window ignored: an embedded iOS view is no window",
+            Kind::Activation => "AppHandle's minimize and Tx::minimize ignored: an iOS window doesn't minimise, and an embedded view takes no focus requests",
+            Kind::Position => "AppHandle's set_position and place ignored: iOS places its windows itself",
             Kind::Dock => "AppHandle::set_dock_icon ignored: iOS has no Dock",
             Kind::Quit => "quit and relaunch (AppHandle's and Tx's) ignored: an iOS app ends when the system ends it",
         }
@@ -63,25 +61,26 @@ impl Reported {
     }
 }
 
-/// Each kind of request a handle makes, and whether `requests` holds one. Updates and wakes
-/// are not among them: a view runs those.
-pub(crate) fn asked(requests: &WindowRequests) -> [(Kind, bool); 5] {
+/// Each kind of request a handle makes, and whether `requests` holds one the view drops. Updates
+/// and wakes are not among them: a view runs those.
+pub(crate) fn asked(requests: &WindowRequests, managed: bool) -> [(Kind, bool); 5] {
+    let focus = requests.activation == Some(crate::app::Activation::Focus);
     [
-        (Kind::Window, requests.window.is_some()),
-        (Kind::Activation, requests.activation.is_some()),
+        (Kind::Window, !managed && requests.window.is_some()),
+        (Kind::Activation, requests.activation.is_some() && !(managed && focus)),
         (Kind::Position, requests.position.is_some() || requests.place.is_some()),
         (Kind::Dock, requests.dock.is_some()),
         (Kind::Quit, requests.quit.is_some()),
     ]
 }
 
-/// Each kind of request handlers make of their window, and whether a frame left one: the
-/// runtime's latched close, quit or relaunch, a minimize, and how many windows
+/// Each kind of request handlers make of their window, and whether a frame left one the view
+/// drops: the runtime's latched close, quit or relaunch, a minimize, and how many windows
 /// `rune::open_window` queued.
-pub(crate) fn asked_by_handlers(shell: Option<Shell>, minimize: bool, opened: usize) -> [(Kind, bool); 4] {
+pub(crate) fn asked_by_handlers(shell: Option<Shell>, minimize: bool, opened: usize, managed: bool) -> [(Kind, bool); 4] {
     [
         (Kind::Opened, opened > 0),
-        (Kind::Window, shell == Some(Shell::Close)),
+        (Kind::Window, !managed && shell == Some(Shell::Close)),
         (Kind::Activation, minimize),
         (Kind::Quit, matches!(shell, Some(Shell::Quit | Shell::Relaunch))),
     ]

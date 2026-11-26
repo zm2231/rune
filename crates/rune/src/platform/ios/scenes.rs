@@ -1,10 +1,12 @@
 #![allow(unsafe_code)]
 
 use std::cell::{Cell, RefCell};
+use std::ptr::NonNull;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use block2::RcBlock;
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, class, define_class, extern_protocol, msg_send};
@@ -22,7 +24,6 @@ use crate::runtime::Waker;
 pub(crate) const ACTIVITY: &str = "rune.window";
 const KEY: &str = "rune.window";
 const PAGE_SHEET: isize = 1;
-const DISMISS_STANDARD: isize = 1;
 
 extern_protocol!(
     #[name = "UIAdaptivePresentationControllerDelegate"]
@@ -409,21 +410,27 @@ fn activate(key: &str) {
         let info: Retained<AnyObject> = msg_send![class!(NSDictionary), dictionaryWithObject: &*NSString::from_str(key), forKey: &*NSString::from_str(KEY)];
         let _: () = msg_send![&*activity, setUserInfo: &*info];
         let app: Retained<AnyObject> = msg_send![class!(UIApplication), sharedApplication];
-        let _: () = msg_send![&*app, requestSceneSessionActivation: existing.as_deref(), userActivity: &*activity, options: None::<&AnyObject>, errorHandler: None::<&AnyObject>];
+        let failed = failure(format!("showing window {key:?}"));
+        let _: () = msg_send![&*app, requestSceneSessionActivation: existing.as_deref(), userActivity: &*activity, options: None::<&AnyObject>, errorHandler: &*failed];
     }
 }
 
 fn destroy(session: &AnyObject) {
+    let failed = failure(format!("ending the scene of window {:?}", session_key(session).unwrap_or_default()));
     // SAFETY: `requestSceneSessionDestruction:options:errorHandler:` takes a session, nullable
-    // options and a nullable block; the options' `windowDismissalAnimation` is a
-    // `UIWindowSceneDismissalAnimation`.
+    // options and a nullable block taking an `NSError`.
     unsafe {
-        let options: Allocated<AnyObject> = msg_send![class!(UIWindowSceneDestructionRequestOptions), alloc];
-        let options: Retained<AnyObject> = msg_send![options, init];
-        let _: () = msg_send![&*options, setWindowDismissalAnimation: DISMISS_STANDARD];
         let app: Retained<AnyObject> = msg_send![class!(UIApplication), sharedApplication];
-        let _: () = msg_send![&*app, requestSceneSessionDestruction: session, options: &*options, errorHandler: None::<&AnyObject>];
+        let _: () = msg_send![&*app, requestSceneSessionDestruction: session, options: None::<&AnyObject>, errorHandler: &*failed];
     }
+}
+
+fn failure(what: String) -> RcBlock<dyn Fn(NonNull<AnyObject>)> {
+    RcBlock::new(move |error: NonNull<AnyObject>| {
+        // SAFETY: the handler is given an `NSError`, whose `localizedDescription` is a string.
+        let why: Retained<NSString> = unsafe { msg_send![error.as_ref(), localizedDescription] };
+        eprintln!("rune: {what} failed: {why}");
+    })
 }
 
 pub(crate) fn activity_key(activity: &AnyObject) -> Option<String> {

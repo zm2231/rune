@@ -16,6 +16,7 @@ pub(crate) enum State {
     #[default]
     Idle,
     Dragging { touch: u64, fixed: usize, at: usize, grip: (f32, f32) },
+    Holding { at: usize },
     MenuOwed,
 }
 
@@ -24,6 +25,9 @@ pub(crate) enum Event {
     Down { touch: u64, at: (f32, f32), ends: Option<Ends> },
     Move { touch: u64, at: (f32, f32), nearest: usize },
     Up { touch: u64, cancelled: bool },
+    Hold { at: (f32, f32), nearest: usize, selection: Range<usize> },
+    HoldMove { at: (f32, f32), nearest: usize },
+    HoldEnd { cancelled: bool },
     Frame,
 }
 
@@ -39,6 +43,10 @@ pub(crate) enum Effect {
 impl State {
     pub(crate) fn dragging(&self) -> bool {
         matches!(self, State::Dragging { .. })
+    }
+
+    pub(crate) fn holding(&self) -> bool {
+        matches!(self, State::Holding { .. })
     }
 
     pub(crate) fn aim(&self, (x, y): (f32, f32)) -> Option<(f32, f32)> {
@@ -84,6 +92,22 @@ pub(crate) fn step(state: &mut State, event: Event) -> Effects<Effect> {
         (State::Dragging { touch, .. }, Event::Up { touch: lifted, cancelled }) if touch == lifted => {
             if !cancelled { *state = State::MenuOwed; }
             Effects::one(Effect::LoupeEnd)
+        }
+        (State::Idle | State::MenuOwed, Event::Hold { at, nearest, selection }) if selection.is_empty() || !(selection.start..=selection.end).contains(&nearest) => {
+            *state = State::Holding { at: nearest };
+            Effects::two(Effect::Select(nearest..nearest), Effect::LoupeBegin(at))
+        }
+        (State::Holding { at }, Event::HoldMove { at: point, nearest }) => {
+            *state = State::Holding { at: nearest };
+            if nearest == at { Effects::one(Effect::LoupeMove(point)) } else { Effects::two(Effect::LoupeMove(point), Effect::Select(nearest..nearest)) }
+        }
+        (State::Holding { .. }, Event::HoldEnd { cancelled }) => {
+            if !cancelled { *state = State::MenuOwed; }
+            Effects::one(Effect::LoupeEnd)
+        }
+        (holding @ State::Holding { .. }, _) => {
+            *state = holding;
+            Effects::none()
         }
         (State::MenuOwed, Event::Frame) => Effects::one(Effect::Menu),
         (State::MenuOwed, Event::Move { .. } | Event::Up { .. }) => {

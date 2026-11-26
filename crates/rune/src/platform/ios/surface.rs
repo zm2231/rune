@@ -67,6 +67,7 @@ pub(crate) trait Surface {
     fn rotate(&mut self, degrees: f32, x: f32, y: f32, phase: GesturePhase);
     /// Whether a secondary press at (x, y) would open a menu or reach a handler.
     fn takes_secondary(&self, x: f32, y: f32) -> bool;
+    fn on_focused_field(&self, x: f32, y: f32) -> bool;
     /// A secondary press at (x, y): a long press.
     fn secondary(&mut self, x: f32, y: f32);
 
@@ -257,6 +258,11 @@ impl<S: 'static> Surface for Hosted<S> {
     fn takes_secondary(&self, x: f32, y: f32) -> bool {
         let (x, y) = self.in_view(x, y);
         self.host.runtime().core().takes_secondary(x, y)
+    }
+
+    fn on_focused_field(&self, x: f32, y: f32) -> bool {
+        let (x, y) = self.in_view(x, y);
+        self.host.runtime().core().on_focused_field(x, y)
     }
 
     fn secondary(&mut self, x: f32, y: f32) {

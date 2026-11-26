@@ -73,3 +73,32 @@ fn a_second_finger_during_a_drag_changes_nothing() {
     assert_eq!(step(&mut state, Event::Move { touch: 2, at: (20.0, 10.0), nearest: 0 }), Effects::none());
     assert!(state.dragging());
 }
+
+#[test]
+fn a_hold_on_the_field_moves_the_caret_under_the_loupe_and_lifting_opens_the_menu() {
+    let mut state = State::default();
+    assert_eq!(step(&mut state, Event::Hold { at: (60.0, 60.0), nearest: 3, selection: 9..9 }), Effects::two(Effect::Select(3..3), Effect::LoupeBegin((60.0, 60.0))));
+    assert!(state.holding());
+    assert_eq!(step(&mut state, Event::HoldMove { at: (64.0, 60.0), nearest: 3 }), Effects::one(Effect::LoupeMove((64.0, 60.0))));
+    assert_eq!(step(&mut state, Event::HoldMove { at: (90.0, 60.0), nearest: 6 }), Effects::two(Effect::LoupeMove((90.0, 60.0)), Effect::Select(6..6)));
+    assert_eq!(step(&mut state, Event::Frame), Effects::none(), "no menu while the finger is down");
+    assert_eq!(step(&mut state, Event::HoldEnd { cancelled: false }), Effects::one(Effect::LoupeEnd));
+    assert_eq!(step(&mut state, Event::Frame), Effects::one(Effect::Menu));
+    assert_eq!(state, State::Idle);
+}
+
+#[test]
+fn a_hold_inside_a_selection_is_left_to_the_selections_menu() {
+    let mut state = State::default();
+    assert_eq!(step(&mut state, Event::Hold { at: (60.0, 60.0), nearest: 5, selection: 4..9 }), Effects::none());
+    assert_eq!(state, State::Idle);
+    assert_eq!(step(&mut state, Event::Hold { at: (10.0, 60.0), nearest: 1, selection: 4..9 }), Effects::two(Effect::Select(1..1), Effect::LoupeBegin((10.0, 60.0))));
+}
+
+#[test]
+fn a_cancelled_hold_ends_the_loupe_without_a_menu() {
+    let mut state = State::default();
+    step(&mut state, Event::Hold { at: (60.0, 60.0), nearest: 3, selection: 3..3 });
+    assert_eq!(step(&mut state, Event::HoldEnd { cancelled: true }), Effects::one(Effect::LoupeEnd));
+    assert_eq!(step(&mut state, Event::Frame), Effects::none());
+}

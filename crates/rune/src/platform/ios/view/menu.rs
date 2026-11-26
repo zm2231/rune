@@ -19,9 +19,12 @@ use super::{MainOnly, RuneView};
 use crate::machine::Attempt;
 use crate::platform::main_queue::after_main;
 use crate::popup_menu::{PopupEntry, PopupMenu, Show};
+use crate::runtime::TouchPhase;
 
-/// `UIGestureRecognizerStateBegan`.
+/// `UIGestureRecognizerStateBegan`, `Changed` and `Ended`.
 const BEGAN: isize = 1;
+const CHANGED: isize = 2;
+const ENDED: isize = 3;
 /// `UIMenuElementAttributesDisabled`.
 const DISABLED: usize = 1 << 0;
 /// `UIMenuElementStateOn`.
@@ -39,13 +42,27 @@ impl RuneView {
         self.with_surface(|surface| surface.takes_secondary(at.x as f32, at.y as f32)).unwrap_or(false)
     }
 
-    /// The long press began: UIKit has cancelled the finger's touch, and the runtime hears a
-    /// secondary press where it rests.
+    /// The long press began: UIKit has cancelled the finger's touch. On the focused field's
+    /// text the caret follows the finger under the loupe until it lifts; elsewhere the runtime
+    /// hears a secondary press where it rests.
     pub(super) fn long_pressed(&self, recognizer: &AnyObject) {
         // SAFETY: a recognizer's `state` is an `NSInteger` enum and its location a `CGPoint`.
         let (state, at): (isize, CGPoint) = unsafe { (msg_send![recognizer, state], msg_send![recognizer, locationInView: self]) };
-        if state != BEGAN { return; }
-        self.with_surface(|surface| surface.secondary(at.x as f32, at.y as f32));
+        let at = (at.x as f32, at.y as f32);
+        let input = self.ivars().text.borrow().clone();
+        let phase = match state {
+            BEGAN => TouchPhase::Started,
+            CHANGED => TouchPhase::Moved,
+            ENDED => TouchPhase::Ended,
+            _ => TouchPhase::Cancelled,
+        };
+        if phase != TouchPhase::Started {
+            if let Some(input) = input { input.hold(phase, at); }
+            return;
+        }
+        let on_field = self.with_surface(|surface| surface.on_focused_field(at.0, at.1)).unwrap_or(false);
+        if on_field && input.is_some_and(|input| input.hold(phase, at)) { return; }
+        self.with_surface(|surface| surface.secondary(at.0, at.1));
         self.pace(Event::Wake);
     }
 
@@ -72,9 +89,15 @@ impl RuneView {
         if let Some(caret) = self.caret() { self.menu_step(edit_menu::Event::Caret(caret)); }
     }
 
-    /// The focused field's caret, where the keyboard's text input has it.
+    pub(crate) fn hide_menu(&self) {
+        let interaction = self.ivars().edit_menu.borrow().clone();
+        // SAFETY: `UIEditMenuInteraction`'s `dismissMenu` takes nothing.
+        if let Some(interaction) = interaction { unsafe { let _: () = msg_send![&*interaction, dismissMenu]; } }
+    }
+
+    /// What the focused field's menu points at, where the keyboard's text input has it.
     fn caret(&self) -> Option<edit_menu::Rect> {
-        let rect = self.ivars().text.borrow().as_ref().map(|input| input.last_caret()).filter(|rect| rect.size.height > 0.0)?;
+        let rect = self.ivars().text.borrow().as_ref().map(|input| input.menu_anchor()).filter(|rect| rect.size.height > 0.0)?;
         Some([rect.origin.x, rect.origin.y, rect.size.width, rect.size.height])
     }
 

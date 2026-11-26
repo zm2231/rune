@@ -27,10 +27,13 @@ What works:
   return, predictions, autocorrection, dictation and marked text edit the field; a secure
   field shows the keyboard none of its text. The keyboard is told where the field's
   characters are, so the space bar's trackpad moves the caret.
-- **Selection handles.** On iOS 17 and later, text selected in the focused field (a double
-  tap, Select or Select All) shows the system's handles. A finger on a handle drags that end
-  of the selection under the system's loupe, and lifting it opens the field's menu for what is
-  selected. The field draws its own caret and highlight; on iOS 16 there are no handles.
+- **Selection handles and loupe.** On iOS 17 and later, text selected in the focused field
+  (Select or Select All) shows the system's handles. A finger on a handle drags that end of
+  the selection under the system's loupe; the field's menu hides while it does and opens again
+  for what is selected when the finger lifts. A finger held on the focused field's text moves
+  the caret under the loupe, and its menu opens when the finger lifts, as in a UIKit field.
+  The menu sits clear of the handles, so a finger on either one reaches it. The field draws
+  its own caret and highlight; on iOS 16 there are no handles or loupe.
 - **Keyboard traits.** The focused field answers UIKit's `UITextInputTraits`: `El::input_mode`
   is its `keyboardType` (a number pad on an iPhone, the decimal and phone pads, the email, URL
   and search keyboards), `El::autocomplete` its `textContentType`, and `El::autocapitalize`,

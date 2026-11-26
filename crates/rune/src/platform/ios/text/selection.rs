@@ -2,11 +2,13 @@
 
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyClass, AnyObject, NSObject};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, extern_class, msg_send};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, extern_class, msg_send};
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
 use objc2_foundation::NSArray;
 
 const WRITING_NATURAL: isize = -1;
+const FILL_SUPERVIEW: usize = 2 | 16;
+pub(crate) const MENU_CLEARANCE: f32 = 48.0;
 
 extern_class!(
     // SAFETY: UIKit's class of this name is an `NSObject` subclass that UIKit keeps to the main
@@ -79,13 +81,20 @@ impl Display {
     pub(crate) fn show(&mut self, input: &AnyObject, host: &AnyObject, on: bool) {
         if on && self.interaction.is_none() {
             let Some(class) = AnyClass::get(c"UITextSelectionDisplayInteraction") else { return };
-            // SAFETY: the interaction takes a `UITextInput` and a delegate whose methods are all
-            // optional; both are the text input, which the host view keeps for as long as it
-            // keeps the interaction.
+            // SAFETY: a plain view that fills the host and takes no touches, so nothing the
+            // interaction adds to it can take a finger from the host. The interaction takes a
+            // `UITextInput` and a delegate whose methods are all optional; both are the text
+            // input, which the host keeps for as long as it keeps the container.
             self.interaction = Some(unsafe {
+                let container: Retained<AnyObject> = msg_send![class!(UIView), new];
+                let bounds: CGRect = msg_send![host, bounds];
+                let _: () = msg_send![&*container, setFrame: bounds];
+                let _: () = msg_send![&*container, setAutoresizingMask: FILL_SUPERVIEW];
+                let _: () = msg_send![&*container, setUserInteractionEnabled: false];
+                let _: () = msg_send![host, addSubview: &*container];
                 let interaction: Allocated<AnyObject> = msg_send![class, alloc];
                 let interaction: Retained<AnyObject> = msg_send![interaction, initWithTextInput: input, delegate: input];
-                let _: () = msg_send![host, addInteraction: &*interaction];
+                let _: () = msg_send![&*container, addInteraction: &*interaction];
                 interaction
             });
         }

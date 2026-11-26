@@ -5,6 +5,7 @@ use super::*;
 mod prepare;
 pub(super) mod apply;
 pub(super) mod apply_scratch;
+mod bold_text;
 mod device;
 pub(super) mod flatten;
 pub(in crate::runtime) mod inline;
@@ -447,6 +448,7 @@ pub(super) struct Measurement<'a> {
     pub(super) system_accent: crate::SystemAccent,
     pub(super) system_contrast: Option<crate::SystemContrast>,
     pub(super) system_increased_contrast: bool,
+    pub(super) system_bold_text: bool,
     pub(super) system_scroll_bars: crate::platform::scroll_bars::SystemScrollBars,
     pub(super) system_languages: Option<Rc<[String]>>,
     pub(super) languages_gen: u64,

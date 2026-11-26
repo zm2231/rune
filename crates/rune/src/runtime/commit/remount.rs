@@ -514,6 +514,7 @@ impl Measurement<'_> {
                             path_ids: &mut *self.path_ids,
                             next_id: &mut *self.next_id,
                             foreground: self.defaults.foreground,
+                            bold_text: self.defaults.bold_text,
                             missed_virtual_memo: false,
                         };
                         let (kid_slot, kid_dirty) = flatten_with_buf(
@@ -632,6 +633,7 @@ impl Measurement<'_> {
                                 path_ids: &mut *self.path_ids,
                                 next_id: &mut *self.next_id,
                                 foreground: self.defaults.foreground,
+                                bold_text: self.defaults.bold_text,
                                 missed_virtual_memo: false,
                             };
                             let (kid_slot, kid_dirty) = flatten_with_buf(

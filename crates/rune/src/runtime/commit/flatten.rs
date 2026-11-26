@@ -691,7 +691,7 @@ fn flatten_node<E: FlattenEl>(
     let record_built = parent_sx.is_none().then(|| {
         let built = el_ref.memo_built().filter(|b| b.reusable && memo_reuse::same_root_el(el_ref, b, false))
             .or_else(|| el_ref.cold.expanded_memo.as_ref().filter(|b| b.reusable && memo_reuse::same_root_el(el_ref, b, true)))?;
-        let (inherited, hover_within) = memo_reuse::inherited_for(parent, nodes, motion, in_row, scale, memo_ctx.foreground);
+        let (inherited, hover_within) = memo_reuse::inherited_for(parent, nodes, motion, in_row, scale, memo_ctx.foreground, memo_ctx.bold_text);
         Some((built.id, inherited, hover_within))
     }).flatten();
     let prev_len = path_buf.len();
@@ -720,6 +720,9 @@ fn flatten_node<E: FlattenEl>(
     let mirror = dir_effect == crate::el::DirEffect::Mirror;
     let (mut s, mut input) = el.new_scratch();
     if let Some(sx) = parent_sx { apply_scroll_x_child(el.style_mut(&mut s), sx); }
+    if memo_ctx.bold_text && let Some(text) = el.text_mut(&mut s) {
+        super::bold_text::embolden(text);
+    }
     let (measure, secure_measure) = {
         let text = el.text_mut(&mut s);
         if text.is_some() { prepare_text(text, input.as_deref(), scale, directed.then_some(flow)) } else { (None, false) }

@@ -261,6 +261,8 @@ fn view(s: &G, cx: &mut Cx<G>) -> El {
     if s.reduced {
         cx.reduced_motion(true);
     }
+    cx.zoom(cx.system_text_scale());
+    cx.bold_text(cx.system_bold_text());
     let k = kit(s, cx.system_dark());
     if s.story == "rune-tooltip--help-arrow" {
         cx.help_look(

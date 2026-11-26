@@ -294,6 +294,11 @@ define_class!(
             self.text_size_changed();
         }
 
+        #[unsafe(method(runeDisplayOptions:))]
+        fn display_options(&self, _notification: &AnyObject) {
+            self.display_options_changed();
+        }
+
         #[unsafe(method(runeReduceMotion:))]
         fn reduce_motion(&self, _notification: &AnyObject) {
             self.reduce_motion_changed();

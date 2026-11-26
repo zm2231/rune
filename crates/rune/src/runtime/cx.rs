@@ -32,6 +32,7 @@ pub(crate) struct ViewDefaults {
     pub(crate) force_focus_rings: bool,
     /// [`Cx::mark_texts`].
     pub(crate) marks: Rc<[super::TextMark]>,
+    pub(crate) bold_text: bool,
 }
 
 pub use rune_core::Waker;
@@ -70,6 +71,7 @@ pub(crate) struct CxCore {
     pub(super) system_accent: crate::SystemAccent,
     pub(super) system_contrast: Option<crate::SystemContrast>,
     pub(super) system_increased_contrast: bool,
+    pub(super) system_bold_text: bool,
     pub(super) system_scroll_bars: crate::platform::scroll_bars::SystemScrollBars,
     pub(super) system_languages: Option<Rc<[String]>>,
     pub(super) system_reduced_motion: bool,
@@ -138,6 +140,7 @@ impl CxCore {
     pub(crate) fn renderer_kind(&self) -> crate::RendererKind { self.renderer_kind }
     pub(crate) fn caption_color(&mut self, color: Color) { self.caption_color = Some(color); }
     pub(crate) fn foreground(&mut self, color: Color) { self.defaults.foreground = Some(color); }
+    pub(crate) fn bold_text(&mut self, on: bool) { self.defaults.bold_text = on; }
     pub(crate) fn focus_ring(&mut self, width: f32, offset: f32, color: Color) {
         self.defaults.focus_ring = Some(crate::el::Outline { width, offset, color });
     }
@@ -165,6 +168,7 @@ impl CxCore {
     }
     pub(crate) fn system_contrast(&self) -> Option<crate::SystemContrast> { self.system_contrast }
     pub(crate) fn system_increased_contrast(&self) -> bool { self.system_increased_contrast }
+    pub(crate) fn system_bold_text(&self) -> bool { self.system_bold_text }
     pub(crate) fn system_reduced_motion(&self) -> bool { self.system_reduced_motion }
     pub(crate) fn pointer_locked(&self) -> bool { self.pointer_locked }
     pub(crate) fn system_languages(&self) -> &[String] {
@@ -609,11 +613,15 @@ impl<S> Cx<S> {
     /// (CSS `forced-colors: active`). None otherwise. A change re-runs the view.
     #[inline(always)]
     pub fn system_contrast(&self) -> Option<crate::SystemContrast> { self.core.system_contrast() }
-    /// Whether the system asks for more contrast: macOS's Increase Contrast, or a Windows contrast
+    /// Whether the system asks for more contrast: macOS's or iOS's Increase Contrast, or a Windows contrast
     /// theme (when [`Self::system_contrast`] is also there). A view can draw its stronger edges for
     /// it while keeping its own colours. A change re-runs the view.
     #[inline(always)]
     pub fn system_increased_contrast(&self) -> bool { self.core.system_increased_contrast() }
+    /// Whether the system asks for heavier text: iOS's Bold Text. False on platforms that
+    /// report none. Apply it with [`Self::bold_text`]. A change re-runs the view.
+    #[inline(always)]
+    pub fn system_bold_text(&self) -> bool { self.core.system_bold_text() }
     /// The host's OS accessibility preference, independent of this commit's override.
     #[inline(always)]
     pub fn system_reduced_motion(&self) -> bool { self.core.system_reduced_motion() }
@@ -726,6 +734,12 @@ impl<S> Cx<S> {
     /// the zoomed view's points; [`Self::chrome_insets`] and [`Self::titlebar_inset`] too.
     #[inline(always)]
     pub fn zoom(&mut self, k: f32) { self.core.zoom(k); }
+    /// Draws every text one weight step heavier, as iOS's Bold Text does: regular and medium
+    /// gain two hundred, semibold and heavier one hundred, up to black. Pass
+    /// [`Self::system_bold_text`] to follow the system. Set it on every run of the view; a
+    /// `memo` whose text takes it rebuilds when it changes.
+    #[inline(always)]
+    pub fn bold_text(&mut self, on: bool) { self.core.bold_text(on); }
     /// The focused text field's caret line in window points `[x, y, w, h]`, as last drawn (after
     /// scrolling, at the cursor inside an IME composition), when that field is keyed `key` or sits
     /// inside an element keyed `key`. A view that reads it re-runs when the caret moves, so a

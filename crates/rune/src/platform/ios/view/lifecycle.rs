@@ -26,7 +26,7 @@ use super::super::keys;
 use super::super::lifecycle::{self, Phase};
 use super::super::pacing::Event;
 use super::{RuneView, Stage};
-use crate::platform::preferences::{reduced_motion, text_scale};
+use crate::platform::preferences::{bold_text, increased_contrast, reduced_motion, text_scale};
 
 // SAFETY: UIKit's headers declare each as an `NSNotificationName` or an `NSString`, an object
 // that lives for the process.
@@ -46,6 +46,8 @@ unsafe extern "C" {
     static UIKeyboardFrameEndUserInfoKey: &'static AnyObject;
     static UIAccessibilityReduceMotionStatusDidChangeNotification: &'static AnyObject;
     static UIContentSizeCategoryDidChangeNotification: &'static AnyObject;
+    static UIAccessibilityBoldTextStatusDidChangeNotification: &'static AnyObject;
+    static UIAccessibilityDarkerSystemColorsStatusDidChangeNotification: &'static AnyObject;
 }
 
 /// `UIUserInterfaceStyleLight` and `UIUserInterfaceStyleDark`.
@@ -118,6 +120,8 @@ impl RuneView {
                         if let Some(accent) = accent { surface.set_accent(accent); }
                         surface.set_reduced_motion(reduced_motion());
                         surface.set_text_scale(text_scale());
+                        surface.set_bold_text(bold_text());
+                        surface.set_increased_contrast(increased_contrast());
                         // A client that asked before the app started still gets its tree.
                         if self.ivars().accessibility.borrow().asked() { surface.accessibility_wanted(); }
                         Stage::Live(surface)
@@ -203,6 +207,9 @@ impl RuneView {
             let _: () = msg_send![&*centre, addObserver: self, selector: sel!(runeKeyboard:), name: UIKeyboardWillChangeFrameNotification, object: None::<&AnyObject>];
             let _: () = msg_send![&*centre, addObserver: self, selector: sel!(runeReduceMotion:), name: UIAccessibilityReduceMotionStatusDidChangeNotification, object: None::<&AnyObject>];
             let _: () = msg_send![&*centre, addObserver: self, selector: sel!(runeTextSize:), name: UIContentSizeCategoryDidChangeNotification, object: None::<&AnyObject>];
+            for name in [UIAccessibilityBoldTextStatusDidChangeNotification, UIAccessibilityDarkerSystemColorsStatusDidChangeNotification] {
+                let _: () = msg_send![&*centre, addObserver: self, selector: sel!(runeDisplayOptions:), name: name, object: None::<&AnyObject>];
+            }
             self.lifecycle(lifecycle::Event::Attached(phase));
             self.pace(Event::Attached { foreground: phase != Phase::Background });
             // A reader already running reads the first frame.
@@ -257,6 +264,14 @@ impl RuneView {
     /// The text size setting changed.
     pub(super) fn text_size_changed(&self) {
         self.with_surface(|surface| surface.set_text_scale(text_scale()));
+        self.pace(Event::Wake);
+    }
+
+    pub(super) fn display_options_changed(&self) {
+        self.with_surface(|surface| {
+            surface.set_bold_text(bold_text());
+            surface.set_increased_contrast(increased_contrast());
+        });
         self.pace(Event::Wake);
     }
 

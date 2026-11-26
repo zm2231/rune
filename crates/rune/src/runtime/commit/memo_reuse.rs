@@ -19,6 +19,7 @@ pub(crate) struct InheritedFlatten {
     pub(in crate::runtime) scale_bits: u32,
     /// The window's foreground (`Cx::foreground`), which a memo's uncoloured text took.
     pub(in crate::runtime) foreground: Option<Color>,
+    pub(in crate::runtime) bold_text: bool,
 }
 
 pub(crate) struct FlattenedMemo {
@@ -138,6 +139,7 @@ pub(in crate::runtime) struct MemoFlattenCtx<'a> {
     pub(in crate::runtime) next_id: &'a mut u64,
     /// What text, icons and text fields without their own colour draw in (`Cx::foreground`).
     pub(in crate::runtime) foreground: Option<Color>,
+    pub(in crate::runtime) bold_text: bool,
     /// Set when flattening falls through on an unexpanded `HAS_VIRTUAL` memo placeholder whose
     /// virtual lists `keeps_windows` skipped populating.
     pub(in crate::runtime) missed_virtual_memo: bool,
@@ -507,6 +509,7 @@ pub(in crate::runtime) fn inherited_for(
     in_row: RowLayout,
     scale: f32,
     foreground: Option<Color>,
+    bold_text: bool,
 ) -> (InheritedFlatten, Option<Rc<(Anim, Anim)>>) {
     let parent_is_stack = parent.is_some_and(|p| nodes[p].growth.is_some());
     let instant_changes = parent.is_some_and(|p| nodes[p].instant_changes);
@@ -526,6 +529,7 @@ pub(in crate::runtime) fn inherited_for(
             trace_namespace,
             scale_bits: scale.to_bits(),
             foreground,
+            bold_text,
         },
         hover_within,
     )
@@ -572,7 +576,7 @@ pub(in crate::runtime) fn try_reuse_memo(
     if old_slice[0].is_moved_stub() || old_slice[0].path.is_empty() || old_slice[0].id != flat.root_id || old_slice[flat.len - 1].id != flat.last_id {
         return None;
     }
-    let (inherited, hover_within) = inherited_for(parent, nodes, motion, in_row, scale, ctx.foreground);
+    let (inherited, hover_within) = inherited_for(parent, nodes, motion, in_row, scale, ctx.foreground, ctx.bold_text);
     // By value: a view that sets `hover_motion_within` above the memo builds a new pair each time.
     if flat.inherited != inherited || flat.hover_within.as_deref() != hover_within.as_deref() {
         return None;

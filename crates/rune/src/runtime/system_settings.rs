@@ -113,6 +113,13 @@ impl window_requests::HostState {
     }
 
     #[inline]
+    pub(super) fn set_system_bold_text(&mut self, on: bool) -> bool {
+        if on == self.system_bold_text { return false; }
+        self.system_bold_text = on;
+        true
+    }
+
+    #[inline]
     pub(super) fn set_system_reduced_motion(&mut self, reduced: bool) -> bool {
         if self.system_reduced_motion == reduced { return false; }
         self.system_reduced_motion = reduced;
@@ -376,6 +383,10 @@ impl RuntimeCore {
     #[inline]
     pub fn set_system_increased_contrast(&mut self, on: bool) {
         if self.host.set_system_increased_contrast(on) { self.commit.dirty = true; }
+    }
+    #[inline]
+    pub fn set_system_bold_text(&mut self, on: bool) {
+        if self.host.set_system_bold_text(on) { self.commit.dirty = true; }
     }
     #[inline]
     pub fn set_system_reduced_motion(&mut self, reduced: bool) {

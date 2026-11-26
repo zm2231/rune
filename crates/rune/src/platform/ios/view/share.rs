@@ -1,8 +1,3 @@
-//! The share sheet (`Tx::share`): UIKit's `UIActivityViewController`. On an iPad it is a
-//! popover pointing at the share's anchor, or at the view's centre when the anchor's element
-//! is gone; on an iPhone a sheet from the bottom. It answers with the activity the user chose,
-//! or none when they closed it.
-
 #![allow(unsafe_code)]
 
 use block2::RcBlock;

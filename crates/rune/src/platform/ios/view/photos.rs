@@ -1,9 +1,3 @@
-//! The photo picker (`Tx::pick_media`): PhotosUI's `PHPickerViewController`, which runs out of
-//! the app's process and needs no permission to the photo library. The picker lends each
-//! item as a file that is gone once its handler returns, so the handler copies it into the
-//! app's temporary folder, on the thread the picker calls it on. Once every item is copied
-//! the paths go to the app in the order picked.
-
 #![allow(unsafe_code)]
 
 use std::path::{Path, PathBuf};
@@ -29,14 +23,12 @@ unsafe extern "C" {}
 const IMAGE: &str = "public.image";
 const MOVIE: &str = "public.movie";
 
-/// The items still copying, and where each one landed, in the order picked.
 struct Copies {
     left: usize,
     paths: Vec<Option<PathBuf>>,
 }
 
 impl RuneView {
-    /// Shows the photo picker for dialog `id`. A view on no screen answers with an error.
     pub(super) fn pick_media(&self, id: u64, picker: &MediaPicker) {
         let Some(screen) = self.view_controller() else {
             self.with_surface(|surface| surface.file_dialog_answer(id, Err("the view is on no screen".into())));
@@ -58,7 +50,6 @@ impl RuneView {
         }
     }
 
-    /// The picker closed with `results`, an `NSArray<PHPickerResult *>`, empty when cancelled.
     pub(super) fn media_picked(&self, picker: &AnyObject, results: &AnyObject) {
         // SAFETY: the picker is a view controller the view presented; it dismisses itself
         // with no completion block. `count` is an `NSUInteger`.
@@ -101,7 +92,6 @@ impl RuneView {
     }
 }
 
-/// The picker's filter for `kind`.
 fn filter(kind: MediaKind) -> Retained<AnyObject> {
     // SAFETY: `imagesFilter` and `videosFilter` return filters, and
     // `anyFilterMatchingSubfilters:` takes an array of them.
@@ -121,7 +111,6 @@ fn filter(kind: MediaKind) -> Retained<AnyObject> {
     }
 }
 
-/// Copies the file the picker lent into `folder`, keeping its name.
 fn copy(url: &NSURL, folder: &Path) -> Option<PathBuf> {
     let from = PathBuf::from(url.path()?.to_string());
     let to = folder.join(from.file_name()?);
@@ -130,7 +119,6 @@ fn copy(url: &NSURL, folder: &Path) -> Option<PathBuf> {
     Some(to)
 }
 
-/// Item `index` is copied, or failed: once none is left the paths go to the view.
 fn finish(copies: &Mutex<Copies>, view: &Arc<MainOnly>, id: u64, index: usize, path: Option<PathBuf>) {
     let mut copies = copies.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     copies.paths[index] = path;

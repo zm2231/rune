@@ -3,8 +3,10 @@
 //! elsewhere the card lays out as an empty box. `-- --snap target/native-view.png` renders it
 //! headless.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
+#[cfg(target_os = "macos")]
+mod ax_check;
 mod call;
 
 use std::cell::{Cell, OnceCell};
@@ -137,6 +139,8 @@ fn main() {
     app.on_ready(|window| {
         WINDOW.with(|w| { let _ = w.set(window.clone()); });
         if std::env::var_os("NATIVE_VIEW_CALL").is_some() { call::open(window); }
+        #[cfg(target_os = "macos")]
+        if background() { ax_check::start(); }
     })
     .run();
 }

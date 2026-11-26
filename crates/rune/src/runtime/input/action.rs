@@ -76,6 +76,8 @@ pub(in crate::runtime) enum Action {
     FileDialog(u64, crate::file_dialog::DialogOutcome),
     /// A `Tx::open_url_then` callback and what came of the open.
     UrlOpened(crate::open_url::OpenedFn, Result<(), crate::open_url::OpenUrlError>),
+    /// A `Tx::share` callback and what the user did.
+    Shared(crate::share::DoneFn, crate::share::ShareResult),
     Focus(String, f32, f32),
     /// A text field's menu: the field, the window point it opens at, and the window point where a
     /// press asked for it (none from the keyboard).
@@ -116,7 +118,7 @@ impl ActionQueue {
         let input = !matches!(action, Action::Layout(..) | Action::ScreenLayout(..) | Action::DrawnLayout(..)
             | Action::Visible(..) | Action::VisibleRows(..) | Action::AtBottom(..) | Action::FarFromBottom(..)
             | Action::WindowFocus(_) | Action::Physical(crate::PhysicalInput::FocusLost, _) | Action::FinishIme
-            | Action::ClipboardRead(..) | Action::CopyImageDone(..) | Action::UrlOpened(..) | Action::SelectionChange(..)) || at.is_some();
+            | Action::ClipboardRead(..) | Action::CopyImageDone(..) | Action::UrlOpened(..) | Action::Shared(..) | Action::SelectionChange(..)) || at.is_some();
         self.0.push(Queued { action, at, input });
     }
     /// A stationary pointer was re-hit after layout; no pointer event asked for that hover.
@@ -241,6 +243,7 @@ fn handler_name(action: &Action) -> &'static str {
         Action::CopyImageDone(..) => "a `copy_image_then` callback",
         Action::FileDialog(..) => "a file dialog callback",
         Action::UrlOpened(..) => "an `open_url_then` callback",
+        Action::Shared(..) => "a `share` callback",
         _ => "a handler",
     })
 }
@@ -289,6 +292,7 @@ pub(crate) fn merge(tx: &mut Tx, one: Tx) {
         tx.popup_menu_resolution = one.popup_menu_resolution;
     }
     tx.file_dialogs.extend(one.file_dialogs);
+    tx.shares.extend(one.shares);
     if let Some(request) = one.window_frame { tx.window_frame = Some(tx.window_frame.unwrap_or_default().merge(request)); }
     if one.clear_secret && tx.copy.as_ref().is_some_and(crate::ClipboardWrite::is_secret) { tx.copy = None; }
     tx.clear_secret |= one.clear_secret;
@@ -683,6 +687,10 @@ impl RuntimeCore {
                 }
             }
             Action::UrlOpened(f, result) => {
+                f(app.states(), result, &mut one);
+                true
+            }
+            Action::Shared(f, result) => {
                 f(app.states(), result, &mut one);
                 true
             }

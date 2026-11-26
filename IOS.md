@@ -81,6 +81,11 @@ What works:
   for `El::on_physical_input`.
 - **App menus.** In an app `rune::run` started, `App::menu_item` items join an iPad's menu bar
   and its ⌘ list; on an iPhone their shortcuts run them when no handler takes the key.
+- **Share sheet.** `Tx::share` shows `UIActivityViewController` with the share's text, link
+  and files. On an iPad it is a popover pointing at the share's anchor (an element's key or a
+  point), or at the view's centre when that element is gone. The callback gets the activity
+  the user chose (`com.apple.UIKit.activity.Mail` and the like), or `None` when they closed
+  the sheet.
 - **Clipboard and menus.** Copy, cut and paste use the system pasteboard. A menu from
   `Tx::popup_menu` (a field's Cut, Copy and Paste among them) shows as the system's edit menu.
 - **Accessibility.** VoiceOver, Switch Control and Voice Control read the same accessibility

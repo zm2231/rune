@@ -131,6 +131,7 @@ pub struct Tx {
     /// superseding any earlier action's stale `popup_menu_resolution` in the same frame.
     pub(crate) popup_menu_opened: bool,
     pub(crate) file_dialogs: Vec<crate::file_dialog::Call>,
+    pub(crate) shares: Vec<crate::share::Call>,
     pub(crate) window_frame: Option<crate::window::frame::FrameRequest>,
     /// The mouse button driving this press or drag (`Tx::button`).
     pub(crate) button: crate::PointerButton,

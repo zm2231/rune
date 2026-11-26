@@ -561,6 +561,7 @@ pub(crate) fn tree_json_core(rt: &crate::runtime::RuntimeCore, real_t: f64) -> V
     });
     if let Some(menu) = rt.popup_json() { tree["popupMenu"] = menu; }
     if let Some(dialog) = rt.file_dialog_json() { tree["fileDialog"] = dialog; }
+    if let Some(share) = rt.share_json() { tree["share"] = share; }
     // Where the input method's candidate window opens: the window's IME area, in view points.
     if let Some(area) = rt.ime_area { tree["imeArea"] = area.map(r2).to_vec().into(); }
     // The focused field's open composition, not yet part of its text.

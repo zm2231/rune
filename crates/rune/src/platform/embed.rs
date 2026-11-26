@@ -93,6 +93,8 @@ struct LayerHostCore {
     popup_menus: bool,
     /// The host shows file dialogs itself.
     file_dialogs: bool,
+    /// The host shows share sheets itself.
+    shares: bool,
     surface_health: EmbedSurfaceHealth,
 }
 
@@ -135,6 +137,7 @@ impl LayerHostCore {
             clipboard: None,
             popup_menus: false,
             file_dialogs: false,
+            shares: false,
             surface_health: EmbedSurfaceHealth::default(),
         };
         Ok((core, size, scale, now))
@@ -342,6 +345,14 @@ impl<S: 'static> LayerHost<S> {
         self
     }
 
+    /// The host shows the share sheets handlers ask for ([`Tx::share`](crate::Tx::share)),
+    /// taking each with the runtime's share request. Without this they are refused.
+    #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+    pub(crate) fn with_share_sheets(mut self) -> Self {
+        self.core.shares = true;
+        self
+    }
+
     /// Links a handler opens with [`Tx::open_url`](crate::Tx::open_url) open in the system, as
     /// from an app's own window, once the handler's frame is done. Without this nothing opens:
     /// the host takes the checked links with [`Runtime::take_url_requests`] and opens them
@@ -471,7 +482,7 @@ impl<S: 'static> EmbedSurface for LayerHost<S> {
     fn missed(&mut self, missed: Missed, now: Instant) -> bool { self.core.missed(missed, now) }
     fn retry_after(&self, now: Instant) -> Option<f64> { self.core.retry_after(now) }
     fn presented(&mut self, ticking: bool) { self.core.presented(ticking) }
-    fn serves(&self) -> Serves { Serves { clipboard: self.core.clipboard.is_some(), popup_menus: self.core.popup_menus, file_dialogs: self.core.file_dialogs } }
+    fn serves(&self) -> Serves { Serves { clipboard: self.core.clipboard.is_some(), popup_menus: self.core.popup_menus, file_dialogs: self.core.file_dialogs, shares: self.core.shares } }
     fn receive_clipboard(&mut self) {
         if let Some(clipboard) = &self.core.clipboard { clipboard.receive_core(self.rt.core_mut()); }
     }

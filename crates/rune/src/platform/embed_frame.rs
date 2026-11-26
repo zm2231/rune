@@ -81,6 +81,8 @@ pub(crate) struct Serves {
     pub(crate) popup_menus: bool,
     /// The host shows file dialogs itself (`LayerHost::with_file_dialogs`), not refusing them.
     pub(crate) file_dialogs: bool,
+    /// The host shows share sheets itself (`LayerHost::with_share_sheets`), not refusing them.
+    pub(crate) shares: bool,
 }
 
 /// Surface and draw callbacks supplied by [`super::embed::LayerHost`] (or a fake surface in
@@ -283,6 +285,9 @@ pub(crate) fn flush_requests(rt: &mut RuntimeCore, app: &mut dyn AppDriver, serv
     }
     if !serves.file_dialogs {
         rt.refuse_file_dialog("native file dialogs are unsupported in embedded views");
+    }
+    if !serves.shares {
+        rt.refuse_share("share sheets are unsupported in embedded views");
     }
     rt.shell_request = None;
     rt.host.user_close_request = false;

@@ -78,6 +78,7 @@ pub(crate) trait Surface {
     fn popup_pick(&mut self, picked: Option<String>);
     /// The file dialog to show, once the frame that asked for it is done.
     fn file_dialog(&mut self) -> Option<crate::file_dialog::Shown>;
+    fn share(&mut self) -> Option<crate::share::Shown>;
     /// The dialog's answer: the chosen file, none when cancelled, or why it could not show.
     fn file_dialog_answer(&mut self, id: u64, answer: Result<DialogAnswer, String>);
 
@@ -300,6 +301,11 @@ impl<S: 'static> Surface for Hosted<S> {
         self.field_step(field_touch::Event::Answered { select_all: picked.as_deref() == Some("select-all") });
     }
 
+    fn share(&mut self) -> Option<crate::share::Shown> {
+        let wake = self.wake.clone();
+        self.host.runtime_mut().core_mut().take_share(wake)
+    }
+
     fn file_dialog(&mut self) -> Option<crate::file_dialog::Shown> {
         self.host.runtime_mut().core_mut().take_file_dialog()
     }
@@ -450,7 +456,7 @@ pub(crate) fn mount<S: 'static>(mut app: App<S>) -> Mount {
         // view calls this on the main thread.
         let host = unsafe { LayerHost::from_core_animation_layer(layer, &spec, state, size, scale, dark, wake.clone())? };
         // The view is the app's whole host here: links open in the system, as from a window.
-        let mut host = host.with_system_clipboard(wake.clone()).with_popup_menus().with_file_dialogs().with_system_links();
+        let mut host = host.with_system_clipboard(wake.clone()).with_popup_menus().with_file_dialogs().with_share_sheets().with_system_links();
         host.runtime_mut().configure(config);
         host.runtime_mut().core_mut().answer_links_later(wake.clone());
         // `configure` handed the runtime the app's hooks, as a window's host does. The app is

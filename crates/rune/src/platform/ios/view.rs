@@ -32,6 +32,7 @@ mod lifecycle;
 mod link;
 mod menu;
 mod photos;
+mod share;
 mod tint;
 mod top;
 
@@ -436,8 +437,8 @@ impl RuneView {
     /// Draws the frame the display link's next refresh shows, and tells the pacing how it went.
     fn draw(&self) {
         let Some(target) = self.frame_target() else { return };
-        let drawn = self.with_surface(|surface| (surface.frame(target), surface.text(), surface.accessibility(), surface.popup(), surface.file_dialog()));
-        let Some((frame, text, tree, popup, file)) = drawn else {
+        let drawn = self.with_surface(|surface| (surface.frame(target), surface.text(), surface.accessibility(), surface.popup(), surface.file_dialog(), surface.share()));
+        let Some((frame, text, tree, popup, file, share)) = drawn else {
             self.pace(Event::Frame { animating: false, wake_after: None });
             return;
         };
@@ -453,6 +454,7 @@ impl RuneView {
             Some((id, kind, multiple, options, None)) => self.pick_file(id, kind, multiple, &options),
             None => {}
         }
+        if let Some(share) = share { self.show_share(share); }
         if let Some((tree, zoom)) = tree {
             let posts = self.ivars().accessibility.borrow_mut().apply(self.mtm(), self, tree, zoom);
             posts.post();

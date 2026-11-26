@@ -86,6 +86,8 @@ pub(crate) struct HostState {
     url_scheme_requests: Vec<String>,
     /// True when attached to a live window, overlay or web canvas, not a headless or scripted run.
     pub(crate) open_urls_natively: bool,
+    /// The share sheet asked for (`Tx::share`).
+    pub(crate) sharing: crate::share::Sharing,
     /// Links the system answers after they open (`RuntimeCore::answer_links_later`).
     #[cfg(any(test, target_os = "ios"))]
     pub(crate) late_links: Option<crate::open_url::later::Later>,
@@ -179,6 +181,7 @@ impl HostState {
             path_requests: Vec::new(),
             url_scheme_requests: Vec::new(),
             open_urls_natively: false,
+            sharing: Default::default(),
             #[cfg(any(test, target_os = "ios"))]
             late_links: None,
             popups: Default::default(),

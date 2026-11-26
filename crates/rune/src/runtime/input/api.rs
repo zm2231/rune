@@ -527,6 +527,13 @@ impl<S: 'static> Runtime<S> {
     #[cfg(test)]
     #[inline(always)]
     pub(crate) fn file_dialog_json(&self) -> Option<serde_json::Value> { self.core().file_dialog_json() }
+    #[inline(always)]
+    pub(crate) fn share_json(&self) -> Option<serde_json::Value> { self.core().share_json() }
+    /// Answers the share sheet [`Tx::share`](crate::Tx::share) asked for, as if the user
+    /// shared (`Ok(Some(where))`), closed it (`Ok(None)`), or it failed. Its callback runs on
+    /// the next frame. For tests and headless drivers; a system sheet answers itself.
+    #[inline(always)]
+    pub fn resolve_share(&mut self, result: crate::ShareResult) -> Result<(), crate::ShareError> { self.core_mut().resolve_share(result) }
 
     #[inline(always)]
     pub fn text_selection(&self) -> Option<(&str, std::ops::Range<usize>)> { self.core().text_selection() }

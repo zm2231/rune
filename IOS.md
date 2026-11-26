@@ -114,6 +114,10 @@ What works:
   A save asks nothing before it replaces: the answer is only a path, and a file of that name
   already in the folder is replaced by what the app writes there. A dialog's `title` isn't
   shown: the picker has none.
+  `Tx::pick_media` shows the system's photo picker, which asks for no permission to the photo
+  library: each photo or video picked is copied into the app's temporary folder, which the
+  system may empty while the app isn't running, and the app gets the copies' paths in the order
+  picked.
   An iOS app has no Downloads folder, so `AppDirs::downloads` is `None`: save through
   `Tx::save_file`.
 

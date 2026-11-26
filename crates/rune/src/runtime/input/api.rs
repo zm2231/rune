@@ -509,7 +509,7 @@ impl<S: 'static> Runtime<S> {
     }
     #[cfg(test)]
     #[inline(always)]
-    pub(crate) fn take_file_dialog(&mut self) -> Option<(u64, FileDialogKind, bool, FileDialogOptions)> {
+    pub(crate) fn take_file_dialog(&mut self) -> Option<crate::file_dialog::Shown> {
         self.core_mut().take_file_dialog()
     }
     #[cfg(test)]

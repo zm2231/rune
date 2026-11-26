@@ -66,13 +66,14 @@ impl RuntimeCore {
             kind: request.kind,
             multiple: request.multiple,
             options: request.options,
+            media: request.media,
         });
     }
 
     /// The dialog for the host to show, marked shown. Nothing while it shows.
-    pub(crate) fn take_file_dialog(&mut self) -> Option<(u64, FileDialogKind, bool, FileDialogOptions)> {
+    pub(crate) fn take_file_dialog(&mut self) -> Option<crate::file_dialog::Shown> {
         let d = self.host.file_dialog.show()?;
-        Some((d.id, d.kind, d.multiple, d.options.clone()))
+        Some((d.id, d.kind, d.multiple, d.options.clone(), d.media.clone()))
     }
 
     /// Queues dialog `id`'s answer for the next frame, closing it.

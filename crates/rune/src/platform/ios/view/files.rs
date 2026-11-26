@@ -118,7 +118,7 @@ impl RuneView {
     }
 
     /// The view controller whose screen the view is on: the first one up the responder chain.
-    fn view_controller(&self) -> Option<Retained<AnyObject>> {
+    pub(super) fn view_controller(&self) -> Option<Retained<AnyObject>> {
         // SAFETY: `nextResponder` is a responder or nil, and `isKindOfClass:` answers a `BOOL`.
         unsafe {
             let mut next: Option<Retained<AnyObject>> = msg_send![self, nextResponder];

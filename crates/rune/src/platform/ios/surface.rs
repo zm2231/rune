@@ -19,7 +19,7 @@ use super::text::undo::Offer;
 use crate::a11y::AccessibilityLink;
 use crate::app::{App, OnWindow, Shared};
 use crate::embed::{EmbedFrame, LayerHost};
-use crate::file_dialog::{DialogAnswer, FileDialogError, FileDialogKind, FileDialogOptions};
+use crate::file_dialog::{DialogAnswer, FileDialogError};
 use crate::popup_menu::Show;
 use crate::runtime::{TouchPhase, Waker};
 use crate::time::Instant;
@@ -77,7 +77,7 @@ pub(crate) trait Surface {
     /// The menu showing was answered with an item's id, or dismissed.
     fn popup_pick(&mut self, picked: Option<String>);
     /// The file dialog to show, once the frame that asked for it is done.
-    fn file_dialog(&mut self) -> Option<(u64, FileDialogKind, bool, FileDialogOptions)>;
+    fn file_dialog(&mut self) -> Option<crate::file_dialog::Shown>;
     /// The dialog's answer: the chosen file, none when cancelled, or why it could not show.
     fn file_dialog_answer(&mut self, id: u64, answer: Result<DialogAnswer, String>);
 
@@ -300,7 +300,7 @@ impl<S: 'static> Surface for Hosted<S> {
         self.field_step(field_touch::Event::Answered { select_all: picked.as_deref() == Some("select-all") });
     }
 
-    fn file_dialog(&mut self) -> Option<(u64, FileDialogKind, bool, FileDialogOptions)> {
+    fn file_dialog(&mut self) -> Option<crate::file_dialog::Shown> {
         self.host.runtime_mut().core_mut().take_file_dialog()
     }
 

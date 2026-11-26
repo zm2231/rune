@@ -164,6 +164,8 @@ pub use file_dialog::FileDialogKind;
 pub use file_dialog::FileDialogOptions;
 pub use file_dialog::FileDialogResult;
 pub use file_dialog::FileDialogs;
+pub use file_dialog::MediaKind;
+pub use file_dialog::MediaPicker;
 pub use file_dialog::ScriptedFileDialog;
 pub use frame::encoded::FrameEncoded;
 pub use frame::encoded::FrameOutcome;

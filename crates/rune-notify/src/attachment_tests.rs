@@ -104,9 +104,16 @@ fn a_file_changed_since_it_was_checked_is_not_staged() {
     assert!(matches!(stage(&a, &staged), Err(AttachmentError::Unreadable { .. })));
 }
 
+#[cfg(unix)]
 #[test]
-fn file_uris_escape_and_keep_a_windows_drive() {
+fn unix_file_uris_escape_every_reserved_byte() {
     assert_eq!(file_uri(Path::new("/tmp/a b/shot#1.png")), "file:///tmp/a%20b/shot%231.png");
+    assert_eq!(file_uri(Path::new("/tmp/a\\b.png")), "file:///tmp/a%5Cb.png");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_file_uris_keep_the_drive() {
     assert_eq!(file_uri(Path::new(r"C:\Data\a b\shot.png")), "file:///C:/Data/a%20b/shot.png");
 }
 

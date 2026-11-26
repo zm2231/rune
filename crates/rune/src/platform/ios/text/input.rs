@@ -713,6 +713,10 @@ impl RuneTextInput {
         Some(Ends { selection, start, end })
     }
 
+    pub(crate) fn dragging_handle(&self) -> bool {
+        self.ivars().handles.borrow().dragging()
+    }
+
     pub(crate) fn touch(&self, touch: u64, phase: TouchPhase, at: (f32, f32)) -> bool {
         let dragging = self.ivars().handles.borrow().dragging();
         let (event, caret) = match phase {

@@ -35,6 +35,7 @@ impl RuneView {
     pub(super) fn long_press_begins(&self, recognizer: &AnyObject) -> bool {
         // SAFETY: a recognizer's location in a view is a `CGPoint`.
         let at: CGPoint = unsafe { msg_send![recognizer, locationInView: self] };
+        if self.ivars().text.borrow().as_ref().is_some_and(|text| text.dragging_handle()) { return false; }
         self.with_surface(|surface| surface.takes_secondary(at.x as f32, at.y as f32)).unwrap_or(false)
     }
 

@@ -467,7 +467,7 @@ impl RuntimeCore {
                     (Mode::Drag, false)
                 }
                 // An at-once drag in an edge zone waits for the slop, but still has no long press.
-                None => (Mode::Pending { scroll, edge }, !(has_edge && self.press_drags_at_once())),
+                None => (Mode::Pending { scroll, edge }, !(has_edge && self.press_drags_at_once()) && self.takes_secondary(x, y)),
             }
         };
         let hold_event = if start_hold {

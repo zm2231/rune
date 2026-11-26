@@ -319,3 +319,40 @@ fn only_the_focused_text_field_is_editing_and_it_stops_when_focus_moves_away() {
     mirror.apply(TreeUpdate { focus: NodeId(4), ..part(vec![]) });
     assert_eq!(editing(&mirror), Vec::<u64>::new(), "a password field never forwards its text");
 }
+
+#[test]
+fn a_password_reads_as_its_dots_or_its_placeholder_and_never_its_text() {
+    use crate::{Cx, Env, Runtime, TextEdit, col, text_input};
+    struct Form { pw: TextEdit }
+    let view = |s: &Form, _: &mut Cx<Form>| {
+        col().child(text_input(&s.pw, crate::tok::type_::BODY).key("pw").single_line().label("Password")
+            .placeholder("Enter a password", crate::Color::WHITE).w(200.0).on_edit(|s: &mut Form| &mut s.pw))
+    };
+    let mut rt = Runtime::new(Form { pw: TextEdit::new("hunter2").secure() }, view, (400.0, 200.0), Env::new(true, 1.0));
+    let read = |rt: &mut Runtime<Form>| {
+        rt.frame(0.0);
+        let json = rt.ios_accessibility_json();
+        assert!(!json.to_string().contains("hunter2"), "{json}");
+        let pw = json.as_array().unwrap().iter().find(|e| e["key"] == "pw").cloned().unwrap();
+        (pw["label"].as_str().map(str::to_owned), pw["value"].as_str().map(str::to_owned))
+    };
+    assert_eq!(read(&mut rt), (Some("Password".into()), Some("•••••••".into())));
+    rt.update(|s, _| s.pw.set_revealed(true));
+    assert_eq!(read(&mut rt), (Some("Password".into()), Some("•••••••".into())), "revealed on screen, still dots to a reader");
+    rt.update(|s, _| s.pw = TextEdit::new("").secure());
+    assert_eq!(read(&mut rt), (Some("Password".into()), Some("Enter a password".into())));
+}
+
+#[test]
+fn typing_a_password_changes_its_dots_with_no_change_to_the_tree() {
+    let mut mirror = Mirror::default();
+    mirror.apply(whole(fields()));
+    let value = |mirror: &Mirror| mirror.elements().iter().find(|e| e.id == 4).and_then(|e| e.value.clone());
+    assert!(mirror.set_masks(vec![(4, "•••".into())]));
+    mirror.refresh();
+    assert_eq!(value(&mirror).as_deref(), Some("•••"));
+    assert!(!mirror.set_masks(vec![(4, "•••".into())]), "the same dots are no change");
+    assert!(mirror.set_masks(Vec::new()));
+    mirror.refresh();
+    assert_eq!(value(&mirror), None);
+}

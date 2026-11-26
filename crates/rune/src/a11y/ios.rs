@@ -98,10 +98,23 @@ pub(crate) struct Mirror {
     said: HashMap<u64, String>,
     focus: Option<u64>,
     paging: Option<(u64, Axis)>,
+    masks: HashMap<u64, String>,
 }
 
 impl Mirror {
     pub(crate) fn elements(&self) -> &[Element] { &self.elements }
+
+    pub(crate) fn set_masks(&mut self, masks: Vec<(u64, String)>) -> bool {
+        let masks: HashMap<u64, String> = masks.into_iter().collect();
+        if masks == self.masks { return false }
+        self.masks = masks;
+        true
+    }
+
+    pub(crate) fn refresh(&mut self) -> Changes {
+        let Some(focus) = self.focus.filter(|_| self.root.is_some()) else { return Changes::default() };
+        self.apply(TreeUpdate { nodes: Vec::new(), tree: None, tree_id: TreeId::ROOT, focus: NodeId(focus) })
+    }
 
     /// Takes the tree's changes and flattens it again.
     pub(crate) fn apply(&mut self, update: TreeUpdate) -> Changes {
@@ -111,7 +124,7 @@ impl Mirror {
         let focus = update.focus.0;
         if let Some(tree) = &update.tree { self.root = Some(tree.root); }
         for (id, node) in update.nodes { self.nodes.insert(id.0, node); }
-        let mut walk = Walk { nodes: &self.nodes, focus, elements: Vec::new(), live: Vec::new(), seen: Vec::new() };
+        let mut walk = Walk { nodes: &self.nodes, masks: &self.masks, focus, elements: Vec::new(), live: Vec::new(), seen: Vec::new() };
         if let Some(root) = self.root { walk.node(root, [0.0, 0.0], true, None, None); }
         let Walk { elements, live, seen, .. } = walk;
         let seen: crate::runtime::HashSet<u64> = seen.into_iter().collect();
@@ -192,6 +205,7 @@ impl Mirror {
 struct Walk<'a> {
     focus: u64,
     nodes: &'a HashMap<u64, Node>,
+    masks: &'a HashMap<u64, String>,
     elements: Vec<Element>,
     live: Vec<(u64, String)>,
     seen: Vec<u64>,
@@ -211,7 +225,7 @@ impl Walk<'_> {
         }
         let scrolls = if SCROLLS.iter().any(|a| n.supports_action(*a)) { Some(id.0) } else { scrolls };
         let shown = bounds.map(|b| clip.map_or(b, |clip| within(b, clip)));
-        let element = if hidden { None } else { shown.and_then(|shown| element(id.0, n, name, shown, scrolls, self.focus)) };
+        let element = if hidden { None } else { shown.and_then(|shown| element(id.0, n, name, self.masks.get(&id.0).map(String::as_str), shown, scrolls, self.focus)) };
         let clip = if n.clips_children() && !root { shown.or(clip) } else { clip };
         let leaf = element.is_some();
         self.elements.extend(element);
@@ -256,7 +270,7 @@ fn within(b: [f64; 4], clip: [f64; 4]) -> [f64; 4] {
 
 /// The element `n` is, or none for a container and for text with nothing to say. `shown` is
 /// the part of it in view: left, top, right, bottom in the app's points.
-fn element(id: u64, n: &Node, name: Option<String>, shown: [f64; 4], scrolls: Option<u64>, focus: u64) -> Option<Element> {
+fn element(id: u64, n: &Node, name: Option<String>, mask: Option<&str>, shown: [f64; 4], scrolls: Option<u64>, focus: u64) -> Option<Element> {
     use traits::*;
     let role = n.role();
     let control = match role {
@@ -291,6 +305,7 @@ fn element(id: u64, n: &Node, name: Option<String>, shown: [f64; 4], scrolls: Op
         Some(Toggled::True) => Some("1".to_owned()),
         Some(Toggled::False) => Some("0".to_owned()),
         Some(Toggled::Mixed) => Some("2".to_owned()),
+        None if role == Role::PasswordInput => mask.map(str::to_owned),
         None if text_field || traits & ADJUSTABLE != 0 || traits & UPDATES != 0 => {
             n.value().map(str::to_owned).or_else(|| n.numeric_value().map(|x| format!("{x}")))
         }
@@ -307,6 +322,15 @@ fn element(id: u64, n: &Node, name: Option<String>, shown: [f64; 4], scrolls: Op
     let value = value.filter(|v| !v.is_empty());
     let menu = n.supports_action(Action::ShowContextMenu);
     Some(Element { id, label, value, hint: n.description().map(str::to_owned), traits, rect, expanded: n.is_expanded(), menu, editing: id == focus && traits & TEXT_FIELD != 0, scrolls })
+}
+
+impl crate::runtime::RuntimeCore {
+    pub fn ios_accessibility_json(&self) -> serde_json::Value {
+        let mut mirror = Mirror::default();
+        mirror.set_masks(self.a11y_masks());
+        mirror.apply(self.accessibility_tree());
+        mirror.json()
+    }
 }
 
 #[cfg(test)]

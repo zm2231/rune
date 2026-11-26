@@ -14,13 +14,14 @@ mod field;
 
 use std::cell::{Cell, RefCell};
 
-use accesskit::{ActionRequest, TreeUpdate};
+use accesskit::ActionRequest;
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
 use objc2_foundation::NSString;
 use objc2::rc::{Allocated, Retained, Weak};
 use objc2::runtime::{AnyObject, AnyProtocol, NSObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, extern_class, msg_send, sel};
 
+use super::surface::Reading;
 use super::text::input::RuneTextInput;
 use super::view::RuneView;
 use crate::a11y::ios::{Element, Gesture, Mirror, Toward, traits};
@@ -293,10 +294,15 @@ impl Accessibility {
     /// Takes the tree's changes: elements are made, described again or dropped, and the
     /// reader is told what moved and what was said. Returns what to post once the view's own
     /// state is no longer borrowed.
-    /// `zoom` scales the tree's points to the view's.
-    pub(crate) fn apply(&mut self, mtm: MainThreadMarker, host: &RuneView, update: TreeUpdate, zoom: f32) -> Posts {
+    pub(crate) fn apply(&mut self, mtm: MainThreadMarker, host: &RuneView, reading: Reading) -> Posts {
         let first = self.mirror.elements().is_empty();
-        let changes = self.mirror.apply(update);
+        let masked = reading.masks.is_some_and(|masks| self.mirror.set_masks(masks));
+        let changes = match reading.tree {
+            Some(update) => self.mirror.apply(update),
+            None if masked => self.mirror.refresh(),
+            None => return Posts::default(),
+        };
+        let zoom = reading.zoom;
         let mut made = HashMap::default();
         // SAFETY: `+[NSMutableArray array]` takes nothing and returns a new array, never nil.
         let list: Retained<AnyObject> = unsafe { msg_send![class!(NSMutableArray), array] };
@@ -316,6 +322,7 @@ impl Accessibility {
 }
 
 /// What to tell the reader after an update.
+#[derive(Default)]
 pub(crate) struct Posts {
     screen: bool,
     layout: bool,

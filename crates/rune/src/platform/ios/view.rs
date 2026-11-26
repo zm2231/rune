@@ -436,8 +436,8 @@ impl RuneView {
             None => self.menu_follow_caret(),
         }
         if let Some((id, kind, multiple, options)) = file { self.pick_file(id, kind, multiple, &options); }
-        if let Some((tree, zoom)) = tree {
-            let posts = self.ivars().accessibility.borrow_mut().apply(self.mtm(), self, tree, zoom);
+        if let Some(reading) = tree {
+            let posts = self.ivars().accessibility.borrow_mut().apply(self.mtm(), self, reading);
             posts.post();
         }
         self.pace(Event::Frame { animating: frame.animating, wake_after: frame.wake_after_secs });

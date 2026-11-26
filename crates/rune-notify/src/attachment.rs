@@ -178,18 +178,22 @@ pub(crate) fn stage(a: &Attachment, dir: &Path) -> Result<PathBuf, AttachmentErr
 
 #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
 pub(crate) fn file_uri(path: &Path) -> String {
-    let s = path.to_string_lossy().replace('\\', "/");
-    let s = s.strip_prefix("//?/").unwrap_or(&s);
-    let (drive, rest) = match s.as_bytes() {
+    #[cfg(unix)]
+    let bytes = std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()).to_vec();
+    #[cfg(not(unix))]
+    let bytes = path.to_string_lossy().into_owned().into_bytes();
+    let bytes: Vec<u8> = bytes.into_iter().map(|b| if b == b'\\' { b'/' } else { b }).collect();
+    let s = bytes.strip_prefix(b"//?/").unwrap_or(&bytes);
+    let (drive, rest) = match s {
         [d, b':', ..] if d.is_ascii_alphabetic() => (&s[..2], &s[2..]),
-        _ => ("", s),
+        _ => (&[][..], s),
     };
     let mut out = String::from("file://");
     if !drive.is_empty() {
         out.push('/');
-        out.push_str(drive);
+        out.push_str(&String::from_utf8_lossy(drive));
     }
-    for b in rest.bytes() {
+    for &b in rest {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/') {
             out.push(b as char);
         } else {

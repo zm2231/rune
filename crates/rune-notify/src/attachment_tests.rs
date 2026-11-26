@@ -109,3 +109,11 @@ fn file_uris_escape_and_keep_a_windows_drive() {
     assert_eq!(file_uri(Path::new("/tmp/a b/shot#1.png")), "file:///tmp/a%20b/shot%231.png");
     assert_eq!(file_uri(Path::new(r"C:\Data\a b\shot.png")), "file:///C:/Data/a%20b/shot.png");
 }
+
+#[cfg(unix)]
+#[test]
+fn file_uris_keep_bytes_that_are_not_utf8() {
+    use std::os::unix::ffi::OsStringExt;
+    let path = PathBuf::from(std::ffi::OsString::from_vec(b"/tmp/shot\xff.png".to_vec()));
+    assert_eq!(file_uri(&path), "file:///tmp/shot%FF.png");
+}

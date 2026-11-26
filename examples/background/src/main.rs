@@ -14,6 +14,7 @@
 //! # `hud show|hide|top|bottom|recording|transcribing|status` drives a recording-HUD overlay;
 //! # `capsule show|hide|left|wide|status` a clickable corner capsule;
 //! # `tray tooltip <text> | title [text] | label <text> | icon normal|alert | icon-name [name] | rect` drives live tray updates
+//! # `badge <n>` sets the window's taskbar badge (the Dock's on macOS)
 //! cargo run -p background -- --snap /tmp/background.png
 //! ```
 
@@ -28,8 +29,9 @@ use std::time::Duration;
 
 use rune::tok::{self, radius, space, type_};
 use rune::{
-    App, AppHandle, Availability, Cx, El, Key, KeyEvent, OverlayHandle, OverlayOptions, TextEdit,
-    Tray, TrayEvent, TrayIcon, TrayItem, TraySpec, Tx, col, el, row, text, text_input,
+    App, AppHandle, Availability, Cx, El, Key, KeyEvent, OverlayHandle, OverlayOptions, Taskbar,
+    TextEdit, Tray, TrayEvent, TrayIcon, TrayItem, TraySpec, Tx, WindowHandle, col, el, row, text,
+    text_input,
 };
 
 struct Background {
@@ -200,6 +202,8 @@ fn capsule(presses: &u32, _: &mut Cx<u32>) -> El {
 }
 
 fn main() {
+    let window_slot: Arc<Mutex<Option<WindowHandle>>> = Arc::new(Mutex::new(None));
+    let window_for_hook = window_slot.clone();
     let mut app = App::new(rune::AppSpec::<Background> {
         scenes: &[("ticked", |s| s.ticks = 42)],
         on_key: Some(on_key),
@@ -207,7 +211,8 @@ fn main() {
     })
     .keep_running()
     .on_close(on_close)
-    .on_window(|window| {
+    .on_window(move |window| {
+        *window_for_hook.lock().unwrap_or_else(|e| e.into_inner()) = Some(window.clone());
         let native = window.with_raw_handle(|handle| format!("{:?}", handle.as_raw())).unwrap_or_default();
         let display = window.with_raw_display_handle(|handle| format!("{:?}", handle.as_raw())).unwrap_or_default();
         eprintln!(
@@ -388,6 +393,13 @@ fn main() {
                         tray.set_accessibility_label(label.join(" "));
                     }
                 }
+                (Some("badge"), Some(count)) => {
+                    let count = count.parse::<u32>().unwrap_or(0);
+                    let window = window_slot.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    if let Some(window) = window {
+                        commands.update(move |_, _| window.set_taskbar(Taskbar::new().badge(count, format!("{count} waiting"))));
+                    }
+                }
                 (Some("tray"), Some("icon")) => {
                     let alert = words.next() == Some("alert");
                     alert_cmd.store(alert, Ordering::Relaxed);
@@ -411,7 +423,7 @@ fn main() {
                     }
                 }
                 (Some(other), _) => {
-                    eprintln!("background: unknown command {other:?} (open | show | hide | focus | position X Y | activate TOKEN | close | dock on|off | hud show|hide|top|bottom|recording|transcribing|status | capsule show|hide|left|wide|status | tray tooltip|title|label|icon|icon-name|rect | quit)")
+                    eprintln!("background: unknown command {other:?} (open | show | hide | focus | position X Y | activate TOKEN | close | dock on|off | hud show|hide|top|bottom|recording|transcribing|status | capsule show|hide|left|wide|status | tray tooltip|title|label|icon|icon-name|rect | badge N | quit)")
                 }
                 (None, _) => {}
             }

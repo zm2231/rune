@@ -1,0 +1,1 @@
+- macOS: a window's count in the Dock badge (`WindowHandle::set_taskbar`) goes when the window is destroyed, so a window made again (an app that releases its GPU when closed, or a lost surface) no longer leaves its old count in the sum. A recreated window starts with no count, as a new Windows taskbar button does; set it again. `examples/background` takes `badge <n>` on stdin.

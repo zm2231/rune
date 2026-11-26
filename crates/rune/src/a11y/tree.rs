@@ -75,6 +75,7 @@ pub(crate) struct A11yTree {
     /// First activation found the runtime out of date (or unbuilt), so one covered wake must
     /// build the view once to make the initial tree current.
     activation_build: bool,
+    pub(super) covered: super::covered::CoveredBuild,
     /// The last whole tree held back the announcer's words: an adapter raises no events for the
     /// tree it starts from, so words said as a reader attached (a request arriving as it starts)
     /// would never be spoken. The next update sends them as a change.

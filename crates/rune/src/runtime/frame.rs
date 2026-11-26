@@ -220,25 +220,39 @@ impl RuntimeCore {
     }
 
     /// [`Runtime::hidden_wake`] for a shown window that can't draw (covered, minimised, on a
-    /// locked or sleeping display). Like Chrome Blink's occluded lifecycle, ordinary updates do
-    /// not rebuild the view while covered even with an assistive client attached; the tree
-    /// catches up in one frame when the window uncovers. Three exceptions still build at once,
-    /// without drawing or motion: an assistive client's own action (handled by `hidden_wake`
-    /// via pending input), the window's first activation when out of date, and a programmatic
-    /// focus request (`Tx::focus`, `Tx::focus_when_shown`, `Tx::return_focus`, `Tx::blur`).
+    /// locked or sleeping display). Without an assistive client, ordinary updates don't rebuild
+    /// the view while covered; it catches up in one frame when the window uncovers. With one
+    /// attached, what changed builds without drawing or motion, at most once per
+    /// `COVERED_BUILD_INTERVAL` and with a wake for the last change, so the tree it reads lags
+    /// the state by at most that interval. An assistive client's own action (queued input, in
+    /// `hidden_wake`), the first activation when out of date, and a programmatic focus request
+    /// (`Tx::focus`, `Tx::focus_when_shown`, `Tx::return_focus`, `Tx::blur`) build at once.
     /// Returns what `hidden_wake` does.
     pub(crate) fn covered_wake(&mut self, app: &mut dyn AppDriver) -> bool {
         let stale = self.hidden_wake(app);
-        if self.host.a11y.is_some()
-            && (self.a11y_activation_build_pending() || self.has_focus_request())
-            && (self.needs_commit() || self.commit.commits == 0)
-        {
+        let urgent = self.a11y_activation_build_pending() || self.has_focus_request();
+        if self.covered_a11y_build(urgent) {
             let wake_clock = self.polled_at();
             self.frame.set_follow_up_poll(wake_clock);
             self.hidden_timer_frame(app);
             self.drain_hidden_input(app, wake_clock);
         }
         stale
+    }
+
+    fn covered_a11y_build(&mut self, urgent: bool) -> bool {
+        use crate::a11y::covered::{CoveredBuildEffect, CoveredBuildEvent};
+        let stale = self.needs_commit() || self.commit.commits == 0;
+        let now = self.clock;
+        let Some(tree) = self.host.a11y_mut() else { return false };
+        let mut build = false;
+        for effect in tree.covered_step(CoveredBuildEvent::Wake { now, stale, urgent }) {
+            match effect {
+                CoveredBuildEffect::Build => build = true,
+                CoveredBuildEffect::WakeAt(due) => self.wake_at(due),
+            }
+        }
+        build
     }
 
     /// Whether the app has a latched or pending programmatic focus request.

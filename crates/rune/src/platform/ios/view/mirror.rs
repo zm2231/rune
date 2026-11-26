@@ -3,7 +3,7 @@
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, extern_class, msg_send};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, extern_class, msg_send};
 
 use super::super::pacing::Event;
 use super::lifecycle::EdgeInsets;
@@ -18,6 +18,8 @@ extern_class!(
 );
 
 const ALWAYS_INSETS: isize = 3;
+const EDGE_TOP: usize = 1;
+const EDGE_TOP_AND_BOTTOM: usize = 1 | 4;
 
 define_class!(
     // SAFETY: `UIScrollView` is made to be subclassed, and `Mirror` has no `Drop`.
@@ -72,6 +74,33 @@ impl RuneView {
         unsafe {
             let _: () = msg_send![&*mirror, setContentSize: wanted.0];
             let _: () = msg_send![&*mirror, setContentOffset: wanted.1];
+        }
+    }
+
+    pub(super) fn offer_mirror(&self) {
+        let Some(mirror) = self.ivars().mirror.borrow().clone() else { return };
+        let Some(controller) = self.controller() else { return };
+        // SAFETY: `UIViewController` takes and answers a nullable `UIScrollView` for an
+        // `NSDirectionalRectEdge`, a single edge when asking; the mirror is one.
+        unsafe {
+            let current: Option<Retained<AnyObject>> = msg_send![&*controller, contentScrollViewForEdge: EDGE_TOP];
+            if current.is_none() {
+                let _: () = msg_send![&*controller, setContentScrollView: &*mirror, forEdge: EDGE_TOP_AND_BOTTOM];
+            }
+        }
+    }
+
+    fn controller(&self) -> Option<Retained<AnyObject>> {
+        // SAFETY: `nextResponder` is a nullable `UIResponder`, and `isKindOfClass:` takes a class
+        // and answers a `BOOL`.
+        unsafe {
+            let mut responder: Option<Retained<AnyObject>> = msg_send![self, nextResponder];
+            while let Some(next) = responder {
+                let found: bool = msg_send![&*next, isKindOfClass: class!(UIViewController)];
+                if found { return Some(next); }
+                responder = msg_send![&*next, nextResponder];
+            }
+            None
         }
     }
 

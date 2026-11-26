@@ -198,6 +198,7 @@ define_class!(
             // SAFETY: `UIView` implements it with this signature.
             let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
             self.moved_to_window();
+            self.offer_mirror();
         }
 
         #[unsafe(method(traitCollectionDidChange:))]

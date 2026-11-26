@@ -370,3 +370,41 @@ fn a_shift_leaves_a_list_at_rest_at_its_top_there() {
     rt.shift_main_scroll(25.0);
     assert_eq!(offset(&rt, "list"), 325.0);
 }
+
+#[test]
+fn a_shift_carries_a_coasting_list_on_from_its_new_place() {
+    let mut rt = scene(Scene::Titled);
+    let list = rt.tree.nodes.iter().find(|n| n.key.as_deref() == Some("list")).map(|n| n.id).expect("list");
+    let vertical = rt.touch_scroll_start(150.0, 300.0);
+    rt.touch_scroll_pan(150.0, 300.0, false, vertical);
+    rt.touch_scroll_move(list, -200.0);
+    rt.touch_scroll_end(Some(list), -1500.0);
+    rt.frame(1.0 / 120.0);
+    let before = offset(&rt, "list");
+    rt.shift_main_scroll(-30.0);
+    assert_eq!(offset(&rt, "list"), before - 30.0);
+    rt.frame(1.0 / 120.0);
+    let after = offset(&rt, "list");
+    assert!(after > before - 30.0 && after < before + 20.0, "it coasts on from where the shift left it: {before} then {after}");
+}
+
+#[test]
+fn a_gliding_list_still_lands_on_its_top_after_a_shift() {
+    let mut rt = scene(Scene::List);
+    down(&mut rt, (150.0, 300.0), 900.0);
+    assert!(rt.scroll_main_to_top());
+    rt.frame(1.0 / 120.0);
+    rt.shift_main_scroll(-40.0);
+    idle(&mut rt);
+    assert_eq!(offset(&rt, "list"), 0.0);
+}
+
+#[test]
+fn a_list_that_follows_its_end_follows_it_after_a_shift() {
+    let mut rt = scene(Scene::Chat);
+    let end = state(&rt, "list").max;
+    assert_eq!(offset(&rt, "list"), end);
+    rt.shift_main_scroll(-30.0);
+    idle(&mut rt);
+    assert_eq!(offset(&rt, "list"), state(&rt, "list").max, "back on its end");
+}

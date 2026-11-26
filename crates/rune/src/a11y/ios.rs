@@ -294,6 +294,7 @@ fn element(id: u64, n: &Node, name: Option<String>, shown: [f64; 4], scrolls: Op
     // An empty field is read by its placeholder, as UIKit's own are.
     let (label, value) = match (name, n.placeholder()) {
         (None, Some(placeholder)) => (placeholder.to_owned(), value),
+        (Some(name), Some(placeholder)) if name == placeholder && value.as_deref().is_none_or(str::is_empty) => (name, None),
         (name, Some(placeholder)) if value.as_deref().is_none_or(str::is_empty) => (name.unwrap_or_default(), Some(placeholder.to_owned())),
         (name, _) => (name.unwrap_or_default(), value),
     };

@@ -271,3 +271,13 @@ fn a_context_menu_is_a_custom_action_and_a_disclosure_says_whether_it_is_open() 
     assert_eq!((mirror.elements()[1].expanded, mirror.elements()[1].menu), (None, false));
     assert_eq!(mirror.request(3, Gesture::Menu), None);
 }
+
+#[test]
+fn an_empty_field_named_by_its_placeholder_says_it_once() {
+    let mut field = node(Role::TextInput, [0.0, 0.0, 200.0, 40.0], &[]);
+    field.set_label("Search");
+    field.set_placeholder("Search");
+    let mut mirror = Mirror::default();
+    mirror.apply(whole(vec![(1, node(Role::Window, [0.0, 0.0, 400.0, 800.0], &[2])), (2, field)]));
+    assert_eq!((mirror.elements()[0].label.as_str(), mirror.elements()[0].value.as_deref()), ("Search", None));
+}

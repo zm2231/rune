@@ -45,7 +45,9 @@ fn traits_for(node: &Value) -> Vec<&'static str> {
         "link" => want.push("link"),
         "slider" | "spin-button" => want.push("adjustable"),
         "heading" => want.extend(["static-text", "header"]),
-        "search-input" => want.push("search"),
+        "search-input" => want.extend(["search", "text-field"]),
+        "text-input" | "multiline-text-input" => want.push("text-field"),
+        "password-input" => want.push("secure-text-field"),
         r if CONTROLS[..10].contains(&r) || has(&node["actions"], "click") && !role.ends_with("input") => want.push("button"),
         _ => {}
     }

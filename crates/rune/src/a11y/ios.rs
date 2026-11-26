@@ -25,11 +25,13 @@ pub(crate) mod traits {
     pub(crate) const TOGGLE: u16 = 1 << 8;
     pub(crate) const SEARCH: u16 = 1 << 9;
     pub(crate) const UPDATES: u16 = 1 << 10;
+    pub(crate) const TEXT_FIELD: u16 = 1 << 11;
+    pub(crate) const SECURE_TEXT_FIELD: u16 = 1 << 12;
 
-    const NAMES: [(u16, &str); 11] = [
+    const NAMES: [(u16, &str); 13] = [
         (BUTTON, "button"), (LINK, "link"), (IMAGE, "image"), (SELECTED, "selected"), (STATIC_TEXT, "static-text"),
         (DISABLED, "disabled"), (ADJUSTABLE, "adjustable"), (HEADER, "header"), (TOGGLE, "toggle"), (SEARCH, "search"),
-        (UPDATES, "updates"),
+        (UPDATES, "updates"), (TEXT_FIELD, "text-field"), (SECURE_TEXT_FIELD, "secure-text-field"),
     ];
 
     pub(crate) fn names(bits: u16) -> Vec<&'static str> {
@@ -50,6 +52,7 @@ pub(crate) struct Element {
     pub(crate) rect: [f32; 4],
     pub(crate) expanded: Option<bool>,
     pub(crate) menu: bool,
+    pub(crate) editing: bool,
     /// The nearest scroll view around it, for a reader's scroll gesture.
     scrolls: Option<u64>,
 }
@@ -108,7 +111,7 @@ impl Mirror {
         let focus = update.focus.0;
         if let Some(tree) = &update.tree { self.root = Some(tree.root); }
         for (id, node) in update.nodes { self.nodes.insert(id.0, node); }
-        let mut walk = Walk { nodes: &self.nodes, elements: Vec::new(), live: Vec::new(), seen: Vec::new() };
+        let mut walk = Walk { nodes: &self.nodes, focus, elements: Vec::new(), live: Vec::new(), seen: Vec::new() };
         if let Some(root) = self.root { walk.node(root, [0.0, 0.0], true, None, None); }
         let Walk { elements, live, seen, .. } = walk;
         let seen: crate::runtime::HashSet<u64> = seen.into_iter().collect();
@@ -187,6 +190,7 @@ impl Mirror {
 }
 
 struct Walk<'a> {
+    focus: u64,
     nodes: &'a HashMap<u64, Node>,
     elements: Vec<Element>,
     live: Vec<(u64, String)>,
@@ -207,7 +211,7 @@ impl Walk<'_> {
         }
         let scrolls = if SCROLLS.iter().any(|a| n.supports_action(*a)) { Some(id.0) } else { scrolls };
         let shown = bounds.map(|b| clip.map_or(b, |clip| within(b, clip)));
-        let element = if hidden { None } else { shown.and_then(|shown| element(id.0, n, name, shown, scrolls)) };
+        let element = if hidden { None } else { shown.and_then(|shown| element(id.0, n, name, shown, scrolls, self.focus)) };
         let clip = if n.clips_children() && !root { shown.or(clip) } else { clip };
         let leaf = element.is_some();
         self.elements.extend(element);
@@ -252,7 +256,7 @@ fn within(b: [f64; 4], clip: [f64; 4]) -> [f64; 4] {
 
 /// The element `n` is, or none for a container and for text with nothing to say. `shown` is
 /// the part of it in view: left, top, right, bottom in the app's points.
-fn element(id: u64, n: &Node, name: Option<String>, shown: [f64; 4], scrolls: Option<u64>) -> Option<Element> {
+fn element(id: u64, n: &Node, name: Option<String>, shown: [f64; 4], scrolls: Option<u64>, focus: u64) -> Option<Element> {
     use traits::*;
     let role = n.role();
     let control = match role {
@@ -261,8 +265,9 @@ fn element(id: u64, n: &Node, name: Option<String>, shown: [f64; 4], scrolls: Op
         Role::CheckBox | Role::Switch | Role::MenuItemCheckBox => BUTTON | TOGGLE,
         Role::Link => LINK,
         Role::Slider | Role::SpinButton => ADJUSTABLE,
-        Role::SearchInput => SEARCH,
-        Role::TextInput | Role::MultilineTextInput | Role::PasswordInput => 0,
+        Role::SearchInput => SEARCH | TEXT_FIELD,
+        Role::TextInput | Role::MultilineTextInput => TEXT_FIELD,
+        Role::PasswordInput => SECURE_TEXT_FIELD,
         _ if n.supports_action(Action::Click) => BUTTON,
         _ => {
             let kind = match role {
@@ -301,7 +306,7 @@ fn element(id: u64, n: &Node, name: Option<String>, shown: [f64; 4], scrolls: Op
     let rect = [shown[0] as f32, shown[1] as f32, (shown[2] - shown[0]) as f32, (shown[3] - shown[1]) as f32];
     let value = value.filter(|v| !v.is_empty());
     let menu = n.supports_action(Action::ShowContextMenu);
-    Some(Element { id, label, value, hint: n.description().map(str::to_owned), traits, rect, expanded: n.is_expanded(), menu, scrolls })
+    Some(Element { id, label, value, hint: n.description().map(str::to_owned), traits, rect, expanded: n.is_expanded(), menu, editing: id == focus && traits & TEXT_FIELD != 0, scrolls })
 }
 
 #[cfg(test)]

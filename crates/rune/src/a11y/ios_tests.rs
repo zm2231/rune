@@ -281,3 +281,41 @@ fn an_empty_field_named_by_its_placeholder_says_it_once() {
     mirror.apply(whole(vec![(1, node(Role::Window, [0.0, 0.0, 400.0, 800.0], &[2])), (2, field)]));
     assert_eq!((mirror.elements()[0].label.as_str(), mirror.elements()[0].value.as_deref()), ("Search", None));
 }
+
+fn fields() -> Vec<(u64, Node)> {
+    let field = |role, label: &str, y| {
+        let mut n = node(role, [0.0, y, 200.0, 40.0], &[]);
+        n.set_label(label);
+        n.add_action(Action::Focus);
+        n
+    };
+    vec![
+        (1, node(Role::Window, [0.0, 0.0, 400.0, 800.0], &[2, 3, 4, 5])),
+        (2, field(Role::TextInput, "Name", 0.0)),
+        (3, field(Role::MultilineTextInput, "Notes", 50.0)),
+        (4, field(Role::PasswordInput, "Password", 100.0)),
+        (5, field(Role::SearchInput, "Search", 150.0)),
+    ]
+}
+
+#[test]
+fn text_fields_say_they_are_text_fields_and_a_password_a_secure_one() {
+    let mut mirror = Mirror::default();
+    mirror.apply(whole(fields()));
+    let kinds: Vec<_> = mirror.elements().iter().map(|e| traits::names(e.traits)).collect();
+    assert_eq!(kinds, [vec!["text-field"], vec!["text-field"], vec!["secure-text-field"], vec!["search", "text-field"]]);
+}
+
+#[test]
+fn only_the_focused_text_field_is_editing_and_it_stops_when_focus_moves_away() {
+    let mut mirror = Mirror::default();
+    let editing = |mirror: &Mirror| mirror.elements().iter().filter(|e| e.editing).map(|e| e.id).collect::<Vec<_>>();
+    mirror.apply(TreeUpdate { focus: NodeId(2), ..whole(fields()) });
+    assert_eq!(editing(&mirror), [2]);
+    mirror.apply(TreeUpdate { focus: NodeId(3), ..part(vec![]) });
+    assert_eq!(editing(&mirror), [3], "focus moved to another field mid-session");
+    mirror.apply(TreeUpdate { focus: NodeId(1), ..part(vec![]) });
+    assert_eq!(editing(&mirror), Vec::<u64>::new(), "focus left every field");
+    mirror.apply(TreeUpdate { focus: NodeId(4), ..part(vec![]) });
+    assert_eq!(editing(&mirror), Vec::<u64>::new(), "a password field never forwards its text");
+}

@@ -658,6 +658,13 @@ impl RuneTextInput {
         }
     }
 
+    /// Whether the keyboard edits a field through this input now, and the field is not a
+    /// password.
+    pub(crate) fn readable(&self) -> bool {
+        // SAFETY: a `UIResponder` method of this signature.
+        !self.ivars().secure.get() && unsafe { msg_send![self, isFirstResponder] }
+    }
+
     /// After a frame: whether a field wants the keyboard, what it holds, where its caret is in
     /// the host's points, whether it is a password, what it asks of the keyboard and what it
     /// can undo and redo. Takes or gives up the keyboard, and tells it when the runtime's text

@@ -10,15 +10,18 @@
 
 #![allow(unsafe_code)]
 
+mod field;
+
 use std::cell::{Cell, RefCell};
 
 use accesskit::{ActionRequest, TreeUpdate};
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
 use objc2_foundation::NSString;
 use objc2::rc::{Allocated, Retained, Weak};
-use objc2::runtime::{AnyObject, NSObject};
+use objc2::runtime::{AnyObject, AnyProtocol, NSObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, extern_class, msg_send, sel};
 
+use super::text::input::RuneTextInput;
 use super::view::RuneView;
 use crate::a11y::ios::{Element, Gesture, Mirror, Toward, traits};
 use crate::runtime::HashMap;
@@ -56,7 +59,7 @@ fn toggle_trait() -> u64 {
 }
 
 /// The mirror's traits as UIKit's.
-fn ui_traits(bits: u16) -> u64 {
+fn ui_traits(mtm: MainThreadMarker, bits: u16) -> u64 {
     // SAFETY: constants UIKit exports.
     let map = unsafe {
         [
@@ -71,6 +74,8 @@ fn ui_traits(bits: u16) -> u64 {
             (traits::SEARCH, UIAccessibilityTraitSearchField),
             (traits::UPDATES, UIAccessibilityTraitUpdatesFrequently),
             (traits::TOGGLE, toggle_trait()),
+            (traits::TEXT_FIELD, field::field_traits(mtm, false)),
+            (traits::SECURE_TEXT_FIELD, field::field_traits(mtm, true)),
         ]
     };
     map.iter().filter(|(bit, _)| bits & bit != 0).fold(0, |all, (_, ui)| all | ui)
@@ -103,6 +108,7 @@ struct ElementIvars {
     host: Weak<RuneView>,
     expanded: Cell<isize>,
     menu: Cell<bool>,
+    editing: Cell<bool>,
     actions: RefCell<Option<Retained<AnyObject>>>,
 }
 
@@ -155,6 +161,30 @@ define_class!(
             self.ivars().expanded.get()
         }
 
+        #[unsafe(method(respondsToSelector:))]
+        fn responds(&self, sel: Sel) -> bool {
+            // SAFETY: `NSObject`'s method of this signature.
+            let own: bool = unsafe { msg_send![super(self), respondsToSelector: sel] };
+            own || self.text_input(sel).is_some()
+        }
+
+        #[unsafe(method(conformsToProtocol:))]
+        fn conforms(&self, protocol: &AnyProtocol) -> bool {
+            // SAFETY: `NSObject`'s method of this signature.
+            let own: bool = unsafe { msg_send![super(self), conformsToProtocol: protocol] };
+            own || (field::is_text_protocol(protocol) && self.editing_input().is_some())
+        }
+
+        #[unsafe(method(forwardingTargetForSelector:))]
+        fn forward(&self, sel: Sel) -> *mut AnyObject {
+            match self.text_input(sel) {
+                // The view holds the input, so it outlives the call it is forwarded.
+                Some(input) => Retained::as_ptr(&input).cast_mut().cast(),
+                // SAFETY: `NSObject`'s method of this signature.
+                None => unsafe { msg_send![super(self), forwardingTargetForSelector: sel] },
+            }
+        }
+
         #[unsafe(method(runeShowMenu:))]
         fn show_menu(&self, _action: &AnyObject) -> bool {
             self.did(Gesture::Menu)
@@ -164,7 +194,7 @@ define_class!(
 
 impl RuneElement {
     fn new(mtm: MainThreadMarker, host: &RuneView, id: u64) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(ElementIvars { id: Cell::new(id), host: Weak::new(host), expanded: Cell::new(0), menu: Cell::new(false), actions: RefCell::new(None) });
+        let this = Self::alloc(mtm).set_ivars(ElementIvars { id: Cell::new(id), host: Weak::new(host), expanded: Cell::new(0), menu: Cell::new(false), editing: Cell::new(false), actions: RefCell::new(None) });
         // SAFETY: `initWithAccessibilityContainer:` is the designated initializer, and the
         // container is the view the element belongs to.
         unsafe { msg_send![super(this), initWithAccessibilityContainer: host] }
@@ -176,6 +206,22 @@ impl RuneElement {
         ivars.host.load().is_some_and(|host| host.accessibility_gesture(ivars.id.get(), gesture))
     }
 
+    /// The view's text input, while this element's field is edited through it and is not a
+    /// password.
+    fn editing_input(&self) -> Option<Retained<RuneTextInput>> {
+        if !self.ivars().editing.get() { return None }
+        self.ivars().host.load()?.readable_input()
+    }
+
+    /// The text input that answers `sel` for this element, when `sel` is a text input method.
+    fn text_input(&self, sel: Sel) -> Option<Retained<RuneTextInput>> {
+        if !self.ivars().editing.get() || !field::forwards(sel) { return None }
+        let input = self.editing_input()?;
+        // SAFETY: `NSObject`'s method of this signature.
+        let answers: bool = unsafe { msg_send![&*input, respondsToSelector: sel] };
+        answers.then_some(input)
+    }
+
     /// Says what `element` says now. `zoom` scales its rect to the view's points.
     fn describe(&self, element: &Element, zoom: f32) {
         let text = |s: Option<&str>| s.map(NSString::from_str);
@@ -185,9 +231,10 @@ impl RuneElement {
             let _: () = msg_send![self, setAccessibilityLabel: &*NSString::from_str(&element.label)];
             let _: () = msg_send![self, setAccessibilityValue: text(element.value.as_deref()).as_deref()];
             let _: () = msg_send![self, setAccessibilityHint: text(element.hint.as_deref()).as_deref()];
-            let _: () = msg_send![self, setAccessibilityTraits: ui_traits(element.traits)];
+            let _: () = msg_send![self, setAccessibilityTraits: ui_traits(self.mtm(), element.traits)];
             let _: () = msg_send![self, setAccessibilityFrameInContainerSpace: CGRect::new(CGPoint::new(x, y), CGSize::new(w, h))];
         }
+        self.ivars().editing.set(element.editing);
         self.ivars().expanded.set(match element.expanded { None => 0, Some(true) => 1, Some(false) => 2 });
         if self.ivars().menu.replace(element.menu) != element.menu {
             self.set_menu(element.menu);

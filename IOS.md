@@ -384,6 +384,10 @@ thread: it returns null anywhere else. The view reports the safe area of where i
 that doesn't reach the screen's edges reads zero. `examples/web-hello` exports
 `web_hello_view` this way (`examples/web-hello/include/web_hello.h`).
 
+`examples/swiftui-host` is a whole SwiftUI app with an Xcode project. It puts a Rune list
+inside a native tab bar and navigation bar. The toolbar's buttons change Rune's state through
+`App::handle`, and a tap in Rune opens a SwiftUI sheet through a callback the app registers.
+
 ## Scroll to top
 
 UIKit tells scroll views of a tap on the status bar, not views, so a `RuneView` keeps a scroll

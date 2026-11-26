@@ -1,0 +1,275 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		5E0000000000000000000101 /* SwiftUIHostApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E0000000000000000000201 /* SwiftUIHostApp.swift */; };
+		5E0000000000000000000102 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E0000000000000000000202 /* ContentView.swift */; };
+		5E0000000000000000000103 /* Cards.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E0000000000000000000203 /* Cards.swift */; };
+		5E0000000000000000000104 /* RuneCards.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5E0000000000000000000204 /* RuneCards.xcframework */; };
+		5E0000000000000000000105 /* RuneView in Frameworks */ = {isa = PBXBuildFile; productRef = 5E0000000000000000000801 /* RuneView */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		5E0000000000000000000201 /* SwiftUIHostApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwiftUIHostApp.swift; sourceTree = "<group>"; };
+		5E0000000000000000000202 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		5E0000000000000000000203 /* Cards.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Cards.swift; sourceTree = "<group>"; };
+		5E0000000000000000000204 /* RuneCards.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = RuneCards.xcframework; path = ../../../target/ios/RuneCards.xcframework; sourceTree = SOURCE_ROOT; };
+		5E0000000000000000000205 /* SwiftUIHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SwiftUIHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		5E0000000000000000000301 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5E0000000000000000000104 /* RuneCards.xcframework in Frameworks */,
+				5E0000000000000000000105 /* RuneView in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		5E0000000000000000000401 = {
+			isa = PBXGroup;
+			children = (
+				5E0000000000000000000402 /* SwiftUIHost */,
+				5E0000000000000000000403 /* Frameworks */,
+				5E0000000000000000000404 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		5E0000000000000000000402 /* SwiftUIHost */ = {
+			isa = PBXGroup;
+			children = (
+				5E0000000000000000000201 /* SwiftUIHostApp.swift */,
+				5E0000000000000000000202 /* ContentView.swift */,
+				5E0000000000000000000203 /* Cards.swift */,
+			);
+			path = SwiftUIHost;
+			sourceTree = "<group>";
+		};
+		5E0000000000000000000403 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				5E0000000000000000000204 /* RuneCards.xcframework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		5E0000000000000000000404 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				5E0000000000000000000205 /* SwiftUIHost.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		5E0000000000000000000501 /* SwiftUIHost */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5E0000000000000000000702 /* Build configuration list for PBXNativeTarget "SwiftUIHost" */;
+			buildPhases = (
+				5E0000000000000000000601 /* Sources */,
+				5E0000000000000000000301 /* Frameworks */,
+				5E0000000000000000000602 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SwiftUIHost;
+			packageProductDependencies = (
+				5E0000000000000000000801 /* RuneView */,
+			);
+			productName = SwiftUIHost;
+			productReference = 5E0000000000000000000205 /* SwiftUIHost.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		5E0000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					5E0000000000000000000501 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = 5E0000000000000000000701 /* Build configuration list for PBXProject "SwiftUIHost" */;
+			compatibilityVersion = "Xcode 15.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 5E0000000000000000000401;
+			packageReferences = (
+				5E0000000000000000000901 /* XCLocalSwiftPackageReference "../../../ios/RuneView" */,
+			);
+			productRefGroup = 5E0000000000000000000404 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				5E0000000000000000000501 /* SwiftUIHost */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		5E0000000000000000000602 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		5E0000000000000000000601 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5E0000000000000000000101 /* SwiftUIHostApp.swift in Sources */,
+				5E0000000000000000000102 /* ContentView.swift in Sources */,
+				5E0000000000000000000103 /* Cards.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		5E0000000000000000000711 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		5E0000000000000000000712 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		5E0000000000000000000721 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CADisableMinimumFrameDurationOnPhone = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "SwiftUI Host";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.rune.swiftuihost;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		5E0000000000000000000722 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CADisableMinimumFrameDurationOnPhone = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "SwiftUI Host";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.rune.swiftuihost;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		5E0000000000000000000701 /* Build configuration list for PBXProject "SwiftUIHost" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5E0000000000000000000711 /* Debug */,
+				5E0000000000000000000712 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		5E0000000000000000000702 /* Build configuration list for PBXNativeTarget "SwiftUIHost" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5E0000000000000000000721 /* Debug */,
+				5E0000000000000000000722 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		5E0000000000000000000901 /* XCLocalSwiftPackageReference "../../../ios/RuneView" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../../../ios/RuneView;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		5E0000000000000000000801 /* RuneView */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = RuneView;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 5E0000000000000000000001 /* Project object */;
+}

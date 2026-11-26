@@ -54,7 +54,7 @@ impl RuneView {
             let controller: Allocated<AnyObject> = msg_send![class!(PHPickerViewController), alloc];
             let controller: Retained<AnyObject> = msg_send![controller, initWithConfiguration: &*config];
             let _: () = msg_send![&*controller, setDelegate: self];
-            let _: () = msg_send![&*screen, presentViewController: &*controller, animated: true, completion: std::ptr::null::<std::ffi::c_void>()];
+            let _: () = msg_send![&*screen, presentViewController: &*controller, animated: true, completion: None::<&block2::Block<dyn Fn()>>];
         }
     }
 
@@ -63,7 +63,7 @@ impl RuneView {
         // SAFETY: the picker is a view controller the view presented; it dismisses itself
         // with no completion block. `count` is an `NSUInteger`.
         let count: usize = unsafe {
-            let _: () = msg_send![picker, dismissViewControllerAnimated: true, completion: std::ptr::null::<std::ffi::c_void>()];
+            let _: () = msg_send![picker, dismissViewControllerAnimated: true, completion: None::<&block2::Block<dyn Fn()>>];
             msg_send![results, count]
         };
         let Some(id) = self.ivars().media_dialog.take() else { return };

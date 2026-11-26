@@ -59,7 +59,7 @@ impl RuneView {
                 let _: () = msg_send![&*popover, setSourceRect: rect];
                 if anchor.is_none() { let _: () = msg_send![&*popover, setPermittedArrowDirections: 0usize]; }
             }
-            let _: () = msg_send![&*screen, presentViewController: &*controller, animated: true, completion: std::ptr::null::<std::ffi::c_void>()];
+            let _: () = msg_send![&*screen, presentViewController: &*controller, animated: true, completion: None::<&block2::Block<dyn Fn()>>];
         }
     }
 }

@@ -75,7 +75,7 @@ impl RuneView {
             if let Some(directory) = options.directory.as_deref().and_then(|directory| directory.to_str()).filter(|directory| !directory.is_empty()) {
                 let _: () = msg_send![&*picker, setDirectoryURL: &*NSURL::fileURLWithPath_isDirectory(&NSString::from_str(directory), true)];
             }
-            let _: () = msg_send![&*screen, presentViewController: &*picker, animated: true, completion: std::ptr::null::<std::ffi::c_void>()];
+            let _: () = msg_send![&*screen, presentViewController: &*picker, animated: true, completion: None::<&block2::Block<dyn Fn()>>];
         }
     }
 

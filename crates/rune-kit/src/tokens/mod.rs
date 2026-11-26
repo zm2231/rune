@@ -1,5 +1,6 @@
 //! Semantic design tokens: [`Kit`], colour palettes, glyphs, CSS shadow parsing and defaults.
 
+mod contrast;
 pub mod css;
 pub mod glyphs;
 pub mod kit;

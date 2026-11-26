@@ -259,6 +259,18 @@ pub fn kit(s: &G, dark: bool) -> &'static Kit {
     rune_theme_opencode::kit(dark)
 }
 
+fn contrasted(k: &'static Kit) -> &'static Kit {
+    thread_local! {
+        static MADE: std::cell::RefCell<Vec<(*const Kit, &'static Kit)>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    MADE.with_borrow_mut(|made| {
+        if let Some((_, more)) = made.iter().find(|(from, _)| std::ptr::eq(*from, k)) { return *more; }
+        let more: &'static Kit = Box::leak(Box::new(k.increased_contrast()));
+        made.push((k, more));
+        more
+    })
+}
+
 fn view(s: &G, cx: &mut Cx<G>) -> El {
     if s.reduced {
         cx.reduced_motion(true);
@@ -266,6 +278,7 @@ fn view(s: &G, cx: &mut Cx<G>) -> El {
     cx.zoom(cx.system_text_scale());
     cx.bold_text(cx.system_bold_text());
     let k = kit(s, cx.system_dark());
+    let k = if cx.system_increased_contrast() { contrasted(k) } else { k };
     if s.story == "rune-tooltip--help-arrow" {
         cx.help_look(
             rune_kit::TooltipStyle::from_kit(k, rune_kit::TooltipAppearance::Compact)

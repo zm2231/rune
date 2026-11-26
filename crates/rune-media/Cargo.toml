@@ -21,6 +21,7 @@ rune-gpu = { workspace = true }
 rune-image = { workspace = true }
 rune-staging = { workspace = true }
 wgpu = { workspace = true, features = ["std", "parking_lot", "wgsl"] }
+rtrb = "0.4"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 pollster = { workspace = true }
@@ -32,10 +33,17 @@ wgpu = { workspace = true, features = ["webgpu"] }
 # wgpu's Metal backend on Apple targets alone: off Apple, wgpu compiles neither `wgpu-hal/metal`
 # nor `naga/msl-out`.
 wgpu = { workspace = true, features = ["metal"] }
-
-[target.'cfg(target_os = "macos")'.dependencies]
 block2 = { workspace = true }
 objc2 = { workspace = true }
+objc2-audio-toolbox = { version = "0.3", default-features = false, features = ["std", "AUComponent", "AudioComponent", "AudioOutputUnit", "AudioUnitProperties", "objc2-core-audio-types"] }
+objc2-core-audio-types = { version = "0.3", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2-avf-audio = { version = "0.3", default-features = false, features = ["std", "AVAudioSession", "AVAudioSessionTypes", "AVAudioSessionRoute", "block2"] }
+objc2-foundation = { workspace = true, features = ["std", "block2", "NSDictionary", "NSError", "NSNotification", "NSOperation", "NSString", "NSValue"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware", "block2", "objc2-core-audio-types"] }
 # Video playback (`Player`) and recording (`Recorder`): AVFoundation, CoreVideo, CoreMedia and CoreGraphics.
 objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "AVAsset", "AVAssetImageGenerator", "AVAssetTrack", "AVMediaFormat", "AVPlayer", "AVPlayerItem", "AVPlayerItemOutput", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media", "objc2-core-video"] }
 objc2-core-foundation = { workspace = true, features = ["std", "CFCGTypes", "CFDictionary", "CFNumber", "CFString", "objc2"] }

@@ -52,6 +52,7 @@ members = [
     "examples/showreel",
     "examples/video-player",
     "examples/video-tiles",
+    "examples/voice-loopback",
     "examples/cursed-settings",
     "examples/drag-out",
     "examples/sketch",

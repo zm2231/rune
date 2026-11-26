@@ -1,10 +1,11 @@
-//! Media playback, zero-copy native video surfaces and audio recording for Rune. Apps normally
+//! Media playback, zero-copy native video surfaces, audio recording and voice I/O for Rune. Apps normally
 //! reach these types through `rune`, which re-exports them.
 
 pub mod audio;
 pub mod native_surface;
 pub mod recorder;
 pub mod video;
+pub mod voice;
 
 pub use audio::AudioBackend;
 pub use audio::AudioEvent;
@@ -33,3 +34,12 @@ pub use video::ThumbnailPrecision;
 pub use video::ThumbnailRequest;
 pub use video::Thumbnails;
 pub use video::Video;
+pub use voice::FakeVoice;
+pub use voice::Voice;
+pub use voice::VoiceError;
+pub use voice::VoiceEvent;
+pub use voice::VoiceMic;
+pub use voice::VoiceSpeaker;
+pub use voice::VoiceSpec;
+pub use voice::VoiceState;
+pub use voice::VoiceStats;

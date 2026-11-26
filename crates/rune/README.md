@@ -3436,6 +3436,61 @@ for event in audio.take_events() { /* AudioEvent::Underrun | Ended | DeviceLost(
   - **Silent fallback**: `AudioOutput::open_silent` works on every platform (including
     `wasm32`, driven lazily against `rune_core::time::now()` with no threads).
 
+### Voice calls (`Voice`, `crates/rune-media/src/voice/`)
+
+`Voice` is full-duplex call audio. The microphone comes in with the speaker's own output, room
+noise and level differences already removed, and the speaker goes out. Both streams are mono
+`f32` PCM at a rate the app picks (8–48 kHz, for example 24 kHz for a realtime speech model).
+
+```rust
+let (voice, mut mic, mut speaker) = rune::Voice::open(rune::VoiceSpec::new(24_000).waker(waker))?;
+voice.start();
+
+// On the thread that talks to the network:
+let mut frames = [0.0f32; 480];
+let n = mic.read(&mut frames); // echo-cancelled microphone audio
+speaker.write(&reply_pcm);     // what the other side said
+
+// The person talks over the reply: drop what hasn't played, and see how much was heard.
+speaker.clear();
+let heard = speaker.played_frames();
+```
+
+- **Streams**: `VoiceMic` and `VoiceSpeaker` are the two ends of lock-free single-producer,
+  single-consumer rings. Each is `Send` and has one owner. `read` and `write` never block,
+  and return how many frames moved. The microphone buffers 200 ms by default (20 ms to 2 s);
+  frames the app doesn't read in time are dropped and counted. The speaker queues 2 s by
+  default (100 ms to 10 s), so a reply can arrive faster than it plays. `clear` drops
+  everything written before it on the next device callback. `played_frames` counts what
+  reached the speaker, cleared frames excluded.
+- **The audio thread**: device callbacks touch only the rings and a few atomics. They never
+  allocate, lock or wait on the app (`crates/rune-media/tests/voice_alloc.rs` runs 10,000
+  callbacks with zero allocations).
+- **Control**: `start`, `stop` and `set_muted` return at once. A thread per `Voice` runs the
+  device, and `state()` reports `Idle`, `Starting`, `Running`, `Reconnecting`, `Interrupted`
+  or `Failed`. `take_events()` reports `Started`, `Stopped`, `DeviceChanged`,
+  `Interrupted`, `Resumed` and `Failed`. Muting sends silence to `VoiceMic`, and the speaker
+  keeps playing. `stats()` counts frames and gives `start_to_audio`, the time from
+  `start()` to the device's first callback.
+- **Devices**: when the default input or output changes (headphones in or out, a headset
+  connecting), the stream waits 150 ms for the route to settle, rebuilds itself on the new
+  devices and reports `DeviceChanged`. Queued speaker audio is kept. A device that fails to
+  start is retried with backoff (100 ms doubling to 2 s, eight tries), and then `Failed`.
+- **macOS and iOS**: Apple's voice-processing I/O unit does the echo cancellation, noise
+  suppression and gain control. Other apps' audio is ducked as little as the system allows
+  (macOS 14 and iOS 17 or later). A bundled app needs `NSMicrophoneUsageDescription`, and
+  `Voice::open` fails without one instead of letting the system end the app. On macOS a
+  Hardened Runtime or sandboxed app also needs the `com.apple.security.device.audio-input`
+  entitlement. An unbundled binary run from a terminal asks on the terminal's behalf. The
+  iOS audio session is covered in "Voice calls" in `IOS.md`.
+- **Windows, Linux and the web**: `Voice::open` returns `VoiceError::Unsupported`.
+- **Tests**: `Voice::open_fake(spec, &FakeVoice)` runs on every platform without hardware.
+  `FakeVoice::tick(frames)` runs one device callback. The fake microphone hears what
+  `FakeVoice::say` queued plus the speaker's output at the `echo(gain, delay)` you set.
+  `change_devices`, `interrupt`, `end_interruption`, `reset_media`, `background` and
+  `foreground` drive the same transitions the system would.
+- **Try it**: `cargo run -p voice-loopback` on a Mac (see `examples/README.md`).
+
 ### Edge overlays (`App::overlay`, `overlay.rs`, `platform/layer_shell.rs`)
 
 `app.overlay(OverlaySpec { name, size, edge, margin, align, inset, interactive, view }, state)

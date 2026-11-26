@@ -59,6 +59,7 @@ pub(crate) trait Surface {
     /// The status bar was tapped: the main list goes to its top. True when there was one to
     /// send.
     fn scroll_to_top(&mut self) -> bool;
+    fn main_scroll(&self) -> Option<[f32; 2]>;
 
     // Gestures.
     /// Two fingers pinched: scale by `1.0 + delta` about (x, y) in the view's points.
@@ -243,6 +244,7 @@ impl<S: 'static> Surface for Hosted<S> {
     }
 
     fn scroll_to_top(&mut self) -> bool { self.host.runtime_mut().scroll_main_to_top() }
+    fn main_scroll(&self) -> Option<[f32; 2]> { self.host.runtime().main_scroll() }
 
     // Gestures.
     fn magnify(&mut self, delta: f32, x: f32, y: f32, phase: GesturePhase) {

@@ -31,6 +31,14 @@ impl<S: 'static> Runtime<S> {
         let (core, mut app) = self.split_mut();
         core.scroll_main_to_top(&mut app)
     }
+
+    pub fn main_scroll(&self) -> Option<[f32; 2]> {
+        let core = self.core();
+        let i = core.main_viewport()?;
+        let st = core.scroll.scrolls.get(&core.tree.nodes[i].id)?;
+        let zoom = core.zoom();
+        Some([st.offset as f32 * zoom, st.max as f32 * zoom])
+    }
 }
 
 impl RuntimeCore {

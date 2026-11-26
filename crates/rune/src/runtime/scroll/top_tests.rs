@@ -317,3 +317,15 @@ fn a_hand_takes_the_list_back_mid_glide() {
     assert_eq!(offset(&rt, "list"), held);
 }
 
+
+#[test]
+fn the_main_scroll_reports_the_lists_offset_and_reach() {
+    let mut rt = scene(Scene::Titled);
+    let [offset, max] = rt.main_scroll().expect("the list under the title bar");
+    assert_eq!((offset, max), (0.0, max_of(&rt, "list")));
+    down(&mut rt, (150.0, 300.0), 500.0);
+    assert_eq!(rt.main_scroll(), Some([500.0, max_of(&rt, "list")]));
+    assert_eq!(scene(Scene::Still).main_scroll(), None, "nothing scrolls");
+}
+
+fn max_of(rt: &Runtime<Scene>, key: &str) -> f32 { state(rt, key).max as f32 }

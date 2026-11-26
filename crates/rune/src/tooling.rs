@@ -330,6 +330,9 @@ fn run_window_factory(options: crate::RunOptions, args: Args, factory: Factory) 
         #[cfg(not(any(feature = "tooling", debug_assertions)))]
         Err(StartError::Window(WITHOUT_TOOLING.into()))
     } else {
+        #[cfg(target_os = "ios")]
+        { let _ = options; crate::platform::ios::run_windows(factory).map_err(StartError::Window) }
+        #[cfg(not(target_os = "ios"))]
         crate::window::run_windows(factory, args, options).map_err(StartError::Window)
     }
 }

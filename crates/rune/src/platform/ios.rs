@@ -23,6 +23,10 @@ pub(crate) mod zoom;
 
 #[cfg(target_os = "ios")]
 pub(crate) use app::run;
+#[cfg(target_os = "ios")]
+pub(crate) use app::run_windows;
+#[cfg(target_os = "ios")]
+pub(crate) use surface::{Mount, mount};
 
 /// A new `UIView *` that draws `app`, for a host that owns its own window: add it to a view
 /// hierarchy, or return it from a `UIViewRepresentable`. It fills its superview, starts the app

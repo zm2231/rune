@@ -27,6 +27,9 @@ impl AnyWindowSpec {
         self.0.desktop(args, selected, scale)
     }
 
+    #[cfg(target_os = "ios")]
+    pub(crate) fn mount(self) -> crate::platform::ios::Mount { self.0.mount() }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn start(self, inherited: crate::tooling::Args, cx: crate::window::Start<'_>) -> Option<Box<dyn crate::window::AnyHost>> {
         self.0.start(inherited, cx)
@@ -45,6 +48,8 @@ trait ErasedWindow {
     fn desktop(self: Box<Self>, args: &crate::tooling::Args, selected: bool, scale: f32) -> Box<dyn crate::desktop::Member>;
     #[cfg(not(target_arch = "wasm32"))]
     fn start(self: Box<Self>, inherited: crate::tooling::Args, cx: crate::window::Start<'_>) -> Option<Box<dyn crate::window::AnyHost>>;
+    #[cfg(target_os = "ios")]
+    fn mount(self: Box<Self>) -> crate::platform::ios::Mount;
 }
 
 struct Erased<S: 'static> {
@@ -78,6 +83,8 @@ impl<S: 'static> ErasedWindow for Erased<S> {
         let inherited = secondary_args(self.secondary, &self.spec.key, inherited);
         crate::window::start(self.spec, self.handle, !self.secondary, inherited, cx)
     }
+    #[cfg(target_os = "ios")]
+    fn mount(self: Box<Self>) -> crate::platform::ios::Mount { crate::platform::ios::mount(self.spec.app) }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

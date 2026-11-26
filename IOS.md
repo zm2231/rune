@@ -116,7 +116,9 @@ What doesn't yet:
   app's own delegate builds its main menu, so on an iPad only a `keys_first` item's shortcut
   runs there; on an iPhone every item's does.
 - More than one surface an app: a `RuneView` is one view, so `App::window`'s other windows,
-  `App::overlay`'s overlays and `rune::open_window`'s windows never open. Requests of a window
+  `App::overlay`'s overlays and `rune::open_window`'s windows never open. An app started with
+  `rune::run_windows` shows the first window its factory returns, which is handed the main
+  screen as its one display; the factory's other windows never open. Requests of a window
   are dropped: `AppHandle`'s `open`, `show`, `activate`, `hide`, `close`, `focus`, `minimize`,
   `set_position`, `place`, `set_dock_icon`, `quit` and `relaunch`, a handler's
   `Tx::close_window`, `Tx::minimize`, `Tx::quit` and `Tx::relaunch`, and the handle `on_ready`

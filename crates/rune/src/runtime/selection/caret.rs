@@ -336,14 +336,14 @@ impl RuntimeCore {
     /// Updates the visible vertical band of the host's visual viewport in window points (or `None`
     /// when the full layout viewport is visible) so `follow_caret` reveals focused fields above an
     /// on-screen keyboard without resizing the layout viewport.
-    #[cfg(any(target_arch = "wasm32", test))]
+    #[cfg(any(target_arch = "wasm32", target_os = "ios", test))]
     pub(crate) fn set_visual_viewport_y(&mut self, band: Option<(f32, f32)>) {
         self.host.visual_viewport_y = band;
     }
 
     /// Requests `follow_caret` on the next frame so an already-focused field scrolls into the
     /// visible band after an on-screen keyboard shrinks the visual viewport.
-    #[cfg(any(target_arch = "wasm32", test))]
+    #[cfg(any(target_arch = "wasm32", target_os = "ios", test))]
     pub(crate) fn request_caret_follow(&mut self) {
         self.edit.caret_follow = true;
     }

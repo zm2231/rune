@@ -234,7 +234,7 @@ impl RuneView {
         // SAFETY: the notification's `userInfo` holds the keyboard's final frame as an
         // `NSValue` of a `CGRect` in the screen's coordinates, which a nil source view
         // converts from; `bounds` is a `CGRect`.
-        let overlap = unsafe {
+        let (overlap, height) = unsafe {
             let info: Option<Retained<AnyObject>> = msg_send![notification, userInfo];
             let Some(info) = info else { return };
             let value: Option<Retained<AnyObject>> = msg_send![&*info, objectForKey: UIKeyboardFrameEndUserInfoKey];
@@ -242,11 +242,15 @@ impl RuneView {
             let frame: CGRect = msg_send![&*value, CGRectValue];
             let frame: CGRect = msg_send![self, convertRect: frame, fromView: None::<&AnyObject>];
             let bounds: CGRect = msg_send![self, bounds];
-            (bounds.origin.y + bounds.size.height - frame.origin.y).clamp(0.0, bounds.size.height)
+            ((bounds.origin.y + bounds.size.height - frame.origin.y).clamp(0.0, bounds.size.height), bounds.size.height)
         };
         self.ivars().keyboard.set(overlap as f32);
         let insets = self.safe_area();
-        self.with_surface(|surface| surface.set_safe_area(insets));
+        let visible = (overlap > 0.0).then_some((0.0, (height - overlap) as f32));
+        self.with_surface(|surface| {
+            surface.set_safe_area(insets);
+            surface.set_keyboard(visible);
+        });
         self.pace(Event::Wake);
     }
 

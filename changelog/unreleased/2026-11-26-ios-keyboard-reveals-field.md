@@ -1,0 +1,1 @@
+- **iOS: the soft keyboard scrolls the focused text field into view.** When the keyboard rises or changes height, the scroll views around the focused field scroll its caret into the part of the view the keyboard leaves, as a UIKit text field does. Before, a field low on the screen stayed under the keyboard unless it set `El::reveal_caret_on_focus`.

@@ -21,7 +21,8 @@ What works:
   device is not yet verified. See "Scroll to top" below.
 - **Pointer.** A mouse or trackpad on an iPad hovers, clicks, right-clicks and scrolls.
 - **Safe area.** `Cx::safe_area` holds what the status bar, the home indicator and the soft
-  keyboard take: pad a full-screen root by it.
+  keyboard take: pad a full-screen root by it. When the keyboard rises over the focused text
+  field, or moves, the field's scroll views scroll its caret into what the keyboard leaves.
 - **Text input.** The soft keyboard shows while a text field has the focus. Typing, delete,
   return, predictions, autocorrection, dictation and marked text edit the field; a secure
   field shows the keyboard none of its text. The keyboard is told where the field's

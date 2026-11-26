@@ -25,6 +25,7 @@ struct Main {
 #[derive(Default)]
 struct Details {
     count: u32,
+    closed: u32,
 }
 
 #[derive(Default)]
@@ -71,7 +72,7 @@ fn details_view(s: &Details, cx: &mut Cx<Details>) -> El {
     let [top, right, bottom, left] = cx.safe_area();
     col().w_full().h_full().center().gap(16.0).pt(top).pr(right).pb(bottom).pl(left).fill(t.bg)
         .child(text("Details").font(type_::TITLE).color(t.text))
-        .child(text(format!("Opened with count {}", s.count)).key("details-count").font(type_::BODY).color(t.text_secondary))
+        .child(text(format!("Count {}, closed {} times", s.count, s.closed)).key("details-count").font(type_::BODY).color(t.text_secondary))
         .child(row().gap(12.0)
             .child(button("details-add", "Add one".into(), &t, |s: &mut Details, _| s.count += 1))
             .child(button("details-close", "Close".into(), &t, |_: &mut Details, tx| tx.close_window())))
@@ -86,7 +87,8 @@ fn hud_view(s: &Hud, cx: &mut Cx<Hud>) -> El {
 
 fn app() -> App<Main> {
     let mut app = App::new(AppSpec::new("Windows", (420.0, 720.0), || Main { count: 0, tapped: None, hud_shown: false, details: None, hud: None }, main_view));
-    let details = WindowSpec::new("details", AppSpec::new("Details", (360.0, 280.0), Details::default, details_view))
+    let details = App::new(AppSpec::new("Details", (360.0, 280.0), Details::default, details_view)).on_close(|s: &mut Details, _| s.closed += 1);
+    let details = WindowSpec::from_app("details", details)
         .options(WindowOptions { visible: false, ..Default::default() });
     let (details, _) = app.window(details);
     let hud = OverlaySpec { margin: 8.0, interactive: true, ..OverlaySpec::new("HUD", (300.0, 56.0), hud_view) }

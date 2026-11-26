@@ -22,6 +22,7 @@ use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, Encode, Encoding, class, msg_send, sel};
 
 use super::super::accessibility::Accessibility;
+use super::super::controller::RuneViewController;
 use super::super::keys;
 use super::super::lifecycle::{self, Phase};
 use super::super::pacing::Event;
@@ -78,6 +79,14 @@ impl RuneView {
         // SAFETY: `overrideUserInterfaceStyle` is a `UIView` property of the `NSInteger` enum
         // `UIUserInterfaceStyle`, set on the main thread.
         unsafe { let _: () = msg_send![self, setOverrideUserInterfaceStyle: style]; }
+        // SAFETY: `nextResponder` is a nullable `UIResponder`; a `RuneViewController` is a
+        // `UIViewController`, whose `overrideUserInterfaceStyle` takes the same enum.
+        unsafe {
+            let next: Option<Retained<AnyObject>> = msg_send![self, nextResponder];
+            if let Some(controller) = next.filter(|next| RuneViewController::owns(Some(next))) {
+                let _: () = msg_send![&*controller, setOverrideUserInterfaceStyle: style];
+            }
+        }
     }
 
     fn dark(&self) -> bool {

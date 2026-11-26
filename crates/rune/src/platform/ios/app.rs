@@ -17,6 +17,7 @@ use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
 use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, extern_protocol, msg_send};
 
+use super::controller::RuneViewController;
 use super::links::{self, Activity};
 use super::surface::{self, Mount};
 use super::view::{RuneView, UIResponder};
@@ -134,7 +135,7 @@ define_class!(
             let window = unsafe {
                 let window: Allocated<AnyObject> = msg_send![class!(UIWindow), alloc];
                 let window: Retained<AnyObject> = msg_send![window, initWithWindowScene: scene];
-                let controller: Retained<AnyObject> = msg_send![class!(UIViewController), new];
+                let controller = RuneViewController::new(MainThreadMarker::from(self));
                 let _: () = msg_send![&*controller, setView: &*view];
                 let _: () = msg_send![&*window, setRootViewController: &*controller];
                 let _: () = msg_send![&*window, makeKeyAndVisible];

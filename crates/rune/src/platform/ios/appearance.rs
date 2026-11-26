@@ -28,6 +28,14 @@ impl Appearance {
     }
 }
 
+pub(crate) fn status_bar_style(interface_style: isize) -> isize {
+    match interface_style {
+        2 => 1,
+        1 => 3,
+        _ => 0,
+    }
+}
+
 pub(crate) fn style(scheme: ColorScheme) -> isize {
     match scheme {
         ColorScheme::System => 0,

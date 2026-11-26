@@ -418,8 +418,8 @@ impl RuneView {
     /// Draws the frame the display link's next refresh shows, and tells the pacing how it went.
     fn draw(&self) {
         let Some(target) = self.frame_target() else { return };
-        let drawn = self.with_surface(|surface| (surface.frame(target), surface.text(), surface.accessibility(), surface.popup(), surface.file_dialog()));
-        let Some((frame, text, tree, popup, file)) = drawn else {
+        let drawn = self.with_surface(|surface| (surface.frame(target), surface.text(), surface.accessibility(), surface.popup(), surface.file_dialog(), surface.interface_style()));
+        let Some((frame, text, tree, popup, file, style)) = drawn else {
             self.pace(Event::Frame { animating: false, wake_after: None });
             return;
         };
@@ -431,6 +431,7 @@ impl RuneView {
             None => self.menu_follow_caret(),
         }
         if let Some((id, kind, multiple, options)) = file { self.pick_file(id, kind, multiple, &options); }
+        if let Some(style) = style { self.override_style(style); }
         if let Some((tree, zoom)) = tree {
             let posts = self.ivars().accessibility.borrow_mut().apply(self.mtm(), self, tree, zoom);
             posts.post();

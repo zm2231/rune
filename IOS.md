@@ -8,6 +8,10 @@ What works:
 
 - **Drawing.** Light and dark appearance, the screen's own scale, up to 120 Hz, nothing drawn
   while idle or in the background.
+- **Appearance.** `App::color_scheme`, `Tx::set_color_scheme` and `AppHandle::set_color_scheme`
+  set the view's own light or dark appearance (its `overrideUserInterfaceStyle`), as a window's
+  scheme sets a desktop window's: a view's Light or Dark wins over the app's, and System follows
+  the app's, then the system's. Nothing else on the screen changes.
 - **Materials.** `El::system_material` blurs what the view drew behind the element, under a tint
   near the material's own in light and dark, as UIKit's materials blur an app's content: Glass
   is the clearest, Sidebar the most opaque. A translucent fill is the tint instead, and an

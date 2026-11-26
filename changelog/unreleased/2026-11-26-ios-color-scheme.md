@@ -1,0 +1,1 @@
+- iOS: `App::color_scheme`, `Tx::set_color_scheme` and `AppHandle::set_color_scheme` set the view's own light or dark appearance, a view's Light or Dark winning over the app's as a window's does on the desktop; they were ignored before.

@@ -6,6 +6,7 @@
 mod accessibility;
 #[cfg(target_os = "ios")]
 mod app;
+pub(crate) mod appearance;
 pub(crate) mod dropped;
 pub(crate) mod edit_menu;
 pub(crate) mod field_touch;

@@ -74,6 +74,12 @@ impl RuneView {
         ((bounds.size.width as f32, bounds.size.height as f32), scale as f32)
     }
 
+    pub(super) fn override_style(&self, style: isize) {
+        // SAFETY: `overrideUserInterfaceStyle` is a `UIView` property of the `NSInteger` enum
+        // `UIUserInterfaceStyle`, set on the main thread.
+        unsafe { let _: () = msg_send![self, setOverrideUserInterfaceStyle: style]; }
+    }
+
     fn dark(&self) -> bool {
         // SAFETY: `traitCollection` is never nil, and `userInterfaceStyle` is an `NSInteger` enum.
         let style: isize = unsafe {

@@ -525,6 +525,12 @@ impl RuntimeCore {
         crate::a11y::dump::json(&self.accessibility_tree(), false)
     }
 
+    pub fn ios_accessibility_json(&self) -> serde_json::Value {
+        let mut mirror = crate::a11y::ios::Mirror::default();
+        mirror.apply(self.accessibility_tree());
+        mirror.json()
+    }
+
     fn a11y_info(&self) -> TreeInfo {
         TreeInfo { root: ROOT, toolkit_name: Some("Rune".into()), toolkit_version: Some(env!("CARGO_PKG_VERSION").into()) }
     }

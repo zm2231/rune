@@ -25,6 +25,16 @@ pub(crate) mod traits {
     pub(crate) const TOGGLE: u16 = 1 << 8;
     pub(crate) const SEARCH: u16 = 1 << 9;
     pub(crate) const UPDATES: u16 = 1 << 10;
+
+    const NAMES: [(u16, &str); 11] = [
+        (BUTTON, "button"), (LINK, "link"), (IMAGE, "image"), (SELECTED, "selected"), (STATIC_TEXT, "static-text"),
+        (DISABLED, "disabled"), (ADJUSTABLE, "adjustable"), (HEADER, "header"), (TOGGLE, "toggle"), (SEARCH, "search"),
+        (UPDATES, "updates"),
+    ];
+
+    pub(crate) fn names(bits: u16) -> Vec<&'static str> {
+        NAMES.iter().filter(|(bit, _)| bits & bit != 0).map(|(_, name)| *name).collect()
+    }
 }
 
 /// One thing a reader can land on.
@@ -121,7 +131,34 @@ impl Mirror {
 
     /// The tree's action for what a reader did to element `id`, if the element takes it.
     pub(crate) fn request(&mut self, id: u64, gesture: Gesture) -> Option<ActionRequest> {
+        let (request, paging) = self.resolve(id, gesture)?;
+        if paging.is_some() { self.paging = paging; }
+        Some(request)
+    }
+
+    pub(crate) fn json(&self) -> serde_json::Value {
+        const GESTURES: [(Gesture, &str); 8] = [
+            (Gesture::Activate, "activate"), (Gesture::Increment, "increment"), (Gesture::Decrement, "decrement"),
+            (Gesture::Menu, "menu"), (Gesture::Scroll(Toward::Up), "scroll-up"), (Gesture::Scroll(Toward::Down), "scroll-down"),
+            (Gesture::Scroll(Toward::Left), "scroll-left"), (Gesture::Scroll(Toward::Right), "scroll-right"),
+        ];
+        let elements = self.elements.iter().map(|e| {
+            let node = &self.nodes[&e.id];
+            let mut v = serde_json::json!({ "label": e.label, "traits": traits::names(e.traits), "frame": e.rect.map(|x| (x * 10.0).round() / 10.0) });
+            if let Some(key) = node.author_id() { v["key"] = key.into(); }
+            if let Some(value) = &e.value { v["value"] = value.as_str().into(); }
+            if let Some(hint) = &e.hint { v["hint"] = hint.as_str().into(); }
+            if let Some(expanded) = e.expanded { v["expanded"] = expanded.into(); }
+            let actions: Vec<&str> = GESTURES.iter().filter(|(g, _)| self.resolve(e.id, *g).is_some()).map(|(_, name)| *name).collect();
+            if !actions.is_empty() { v["actions"] = actions.into(); }
+            v
+        });
+        serde_json::Value::Array(elements.collect())
+    }
+
+    fn resolve(&self, id: u64, gesture: Gesture) -> Option<(ActionRequest, Option<(u64, Axis)>)> {
         let node = self.nodes.get(&id)?;
+        let mut paging = None;
         let first = |actions: &[Action]| actions.iter().copied().find(|a| node.supports_action(*a));
         let (target, action) = match gesture {
             Gesture::Activate => (id, first(&[Action::Click, Action::Focus])?),
@@ -141,11 +178,11 @@ impl Mirror {
                 let (offset, max) = offsets(view, axis);
                 let ahead = match toward { Toward::Up | Toward::Left => offset > EDGE, Toward::Down | Toward::Right => offset < max - EDGE };
                 if !view.supports_action(action) || !ahead { return None; }
-                self.paging = Some((scrolls, axis));
+                paging = Some((scrolls, axis));
                 (scrolls, action)
             }
         };
-        Some(ActionRequest { action, target_tree: TreeId::ROOT, target_node: NodeId(target), data: None })
+        Some((ActionRequest { action, target_tree: TreeId::ROOT, target_node: NodeId(target), data: None }, paging))
     }
 }
 

@@ -16,6 +16,8 @@
 mod stories;
 
 #[cfg(test)]
+mod a11y_tests;
+#[cfg(test)]
 mod gallery_tests;
 #[cfg(test)]
 mod layer_timing;

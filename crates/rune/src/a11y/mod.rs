@@ -21,7 +21,6 @@ mod auto_complete_tests;
 pub(crate) mod dump;
 #[cfg(test)]
 mod dump_tests;
-#[cfg(any(test, target_os = "ios"))]
 pub(crate) mod ios;
 pub(crate) mod node;
 pub(crate) mod read;

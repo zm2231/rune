@@ -11,6 +11,7 @@ rune-kit = { workspace = true, default-features = true, features = ["markdown", 
 rune-theme-opencode = { workspace = true }
 
 [dev-dependencies]
+serde_json = { workspace = true }
 wgpu = { workspace = true }
 
 [lints]

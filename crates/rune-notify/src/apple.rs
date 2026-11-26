@@ -15,7 +15,9 @@ use objc2::runtime::{AnyClass, AnyObject, AnyProtocol, Bool, ClassBuilder, Sel};
 use objc2::{class, msg_send, sel};
 
 #[link(name = "UserNotifications", kind = "framework")]
-unsafe extern "C" {}
+unsafe extern "C" {
+    static UNNotificationAttachmentOptionsTypeHintKey: *mut AnyObject;
+}
 
 #[link(name = "Foundation", kind = "framework")]
 unsafe extern "C" {
@@ -146,7 +148,7 @@ pub(super) unsafe fn content(n: &Notification) -> Retained<AnyObject> {
             let sound: *mut AnyObject = msg_send![class!(UNNotificationSound), defaultSound];
             let _: () = msg_send![c, setSound: sound];
         }
-        let made: Vec<*mut AnyObject> = n.attachments.iter().enumerate().filter_map(|(i, a)| attach(i, a)).collect();
+        let made: Vec<*mut AnyObject> = n.attachments.iter().enumerate().filter_map(|(i, a)| attach(&n.id, i, a)).collect();
         if !made.is_empty() {
             let array: *mut AnyObject = msg_send![class!(NSArray), arrayWithObjects: made.as_ptr(), count: made.len()];
             let _: () = msg_send![c, setAttachments: array];
@@ -155,7 +157,7 @@ pub(super) unsafe fn content(n: &Notification) -> Retained<AnyObject> {
     }
 }
 
-unsafe fn attach(i: usize, a: &attachment::Attachment) -> Option<*mut AnyObject> {
+unsafe fn attach(id: &str, i: usize, a: &attachment::Attachment) -> Option<*mut AnyObject> {
     let copy = match attachment::stage(a, &staging_dir()) {
         Ok(copy) => copy,
         Err(e) => {
@@ -168,11 +170,16 @@ unsafe fn attach(i: usize, a: &attachment::Attachment) -> Option<*mut AnyObject>
     // `attachmentWithIdentifier:URL:options:error:`.
     let made: *mut AnyObject = unsafe {
         let url: *mut AnyObject = msg_send![class!(NSURL), fileURLWithPath: ns(&copy.to_string_lossy())];
+        let options: *mut AnyObject = msg_send![
+            class!(NSDictionary),
+            dictionaryWithObject: ns(a.uniform_type()),
+            forKey: UNNotificationAttachmentOptionsTypeHintKey
+        ];
         msg_send![
             class!(UNNotificationAttachment),
             attachmentWithIdentifier: ns(&format!("rune.{i}")),
             URL: url,
-            options: std::ptr::null::<AnyObject>(),
+            options: options,
             error: &mut error
         ]
     };
@@ -181,6 +188,10 @@ unsafe fn attach(i: usize, a: &attachment::Attachment) -> Option<*mut AnyObject>
         debug_log(&format!("{} refused as an attachment: {}", a.path().display(), unsafe { described(error) }));
         std::fs::remove_file(&copy).ok();
         return None;
+    }
+    if cfg!(debug_assertions) {
+        let size = std::fs::metadata(&copy).map_or(0, |m| m.len());
+        debug_log(&format!("{id} attachment rune.{i}: {} ({size} bytes, {}) staged at {}", a.path().display(), a.uniform_type(), copy.display()));
     }
     Some(made)
 }

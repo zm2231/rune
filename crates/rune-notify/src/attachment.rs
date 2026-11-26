@@ -32,6 +32,22 @@ impl Format {
         }
     }
 
+    #[cfg_attr(not(any(target_os = "macos", target_os = "ios")), allow(dead_code))]
+    pub(crate) fn uniform_type(self) -> &'static str {
+        match self {
+            Format::Png => "public.png",
+            Format::Jpeg => "public.jpeg",
+            Format::Gif => "com.compuserve.gif",
+            Format::Aiff => "public.aiff-audio",
+            Format::Wav => "com.microsoft.waveform-audio",
+            Format::Mp3 => "public.mp3",
+            Format::M4a => "com.apple.m4a-audio",
+            Format::Mp4 => "public.mpeg-4",
+            Format::Mpeg => "public.mpeg",
+            Format::Avi => "public.avi",
+        }
+    }
+
     pub(crate) fn extension(self) -> &'static str {
         match self {
             Format::Png => "png",
@@ -113,6 +129,13 @@ impl std::error::Error for AttachmentError {}
 pub struct Attachment {
     path: PathBuf,
     format: Format,
+}
+
+impl Attachment {
+    #[cfg_attr(not(any(target_os = "macos", target_os = "ios")), allow(dead_code))]
+    pub(crate) fn uniform_type(&self) -> &'static str {
+        self.format.uniform_type()
+    }
 }
 
 impl Attachment {

@@ -233,7 +233,10 @@ which sets `UIApplicationSupportsMultipleScenes` and declares the `rune.window` 
 in `NSUserActivityTypes`) shows each window in a scene of its own, which the user arranges as
 any app's windows: side by side, in Stage Manager, or one at a time. Showing a window asks the
 system for its scene, focusing one on screen brings its scene forward, and hiding or closing
-one ends its scene. A scene's session carries its window's key, so when the system restores an
+one ends its scene. When the window hidden or closed is the only one of the app's on screen,
+the window the user last had in front comes forward first (the primary when no other is left,
+asked for again if the user closed it), so the app stays on screen instead of going to the
+Home Screen. A scene's session carries its window's key, so when the system restores an
 app's scenes at launch each comes back with its window. Windows that start visible
 (`WindowOptions::visible`) open after the primary draws its first frame, on a fresh launch
 only: once the system restores scenes, it decides which windows come back, and a window the

@@ -22,6 +22,7 @@ use crate::runtime::Waker;
 pub(crate) const ACTIVITY: &str = "rune.window";
 const KEY: &str = "rune.window";
 const PAGE_SHEET: isize = 1;
+const DISMISS_STANDARD: isize = 1;
 
 extern_protocol!(
     #[name = "UIAdaptivePresentationControllerDelegate"]
@@ -76,6 +77,8 @@ struct Registry {
 enum Posted {
     Connected { scene: Retained<AnyObject>, key: Option<String> },
     Disconnected(Retained<AnyObject>),
+    Foreground(Retained<AnyObject>),
+    Background(Retained<AnyObject>),
     Discarded(String),
     Asked(String, Ask),
     Dismissed(String),
@@ -119,6 +122,10 @@ pub(crate) fn connected(scene: &AnyObject, key: Option<String>) {
 }
 
 pub(crate) fn disconnected(scene: &AnyObject) { post(Posted::Disconnected(scene.retain())); }
+
+pub(crate) fn foreground(scene: &AnyObject) { post(Posted::Foreground(scene.retain())); }
+
+pub(crate) fn background(scene: &AnyObject) { post(Posted::Background(scene.retain())); }
 
 pub(crate) fn discarded(key: String) { post(Posted::Discarded(key)); }
 
@@ -237,6 +244,8 @@ impl Registry {
                 self.scenes.retain(|(s, _)| *s != id);
                 Event::Disconnected(id)
             }
+            Posted::Foreground(scene) => Event::Foreground(self.scene_id(scene)),
+            Posted::Background(scene) => Event::Background(self.scene_id(scene)),
             Posted::Discarded(key) => Event::Discarded(key),
             Posted::Asked(key, ask) => Event::Ask { window: self.windows.find(key)?, ask: *ask },
             Posted::Dismissed(key) => Event::Dismissed(self.windows.find(key)?),
@@ -405,11 +414,15 @@ fn activate(key: &str) {
 }
 
 fn destroy(session: &AnyObject) {
-    // SAFETY: `requestSceneSessionDestruction:options:errorHandler:` takes a session and nullable
-    // options and block.
+    // SAFETY: `requestSceneSessionDestruction:options:errorHandler:` takes a session, nullable
+    // options and a nullable block; the options' `windowDismissalAnimation` is a
+    // `UIWindowSceneDismissalAnimation`.
     unsafe {
+        let options: Allocated<AnyObject> = msg_send![class!(UIWindowSceneDestructionRequestOptions), alloc];
+        let options: Retained<AnyObject> = msg_send![options, init];
+        let _: () = msg_send![&*options, setWindowDismissalAnimation: DISMISS_STANDARD];
         let app: Retained<AnyObject> = msg_send![class!(UIApplication), sharedApplication];
-        let _: () = msg_send![&*app, requestSceneSessionDestruction: session, options: None::<&AnyObject>, errorHandler: None::<&AnyObject>];
+        let _: () = msg_send![&*app, requestSceneSessionDestruction: session, options: &*options, errorHandler: None::<&AnyObject>];
     }
 }
 

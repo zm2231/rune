@@ -140,6 +140,16 @@ define_class!(
         fn did_disconnect(&self, scene: &AnyObject) {
             scenes::disconnected(scene);
         }
+
+        #[unsafe(method(sceneWillEnterForeground:))]
+        fn will_enter_foreground(&self, scene: &AnyObject) {
+            scenes::foreground(scene);
+        }
+
+        #[unsafe(method(sceneDidEnterBackground:))]
+        fn did_enter_background(&self, scene: &AnyObject) {
+            scenes::background(scene);
+        }
     }
 );
 

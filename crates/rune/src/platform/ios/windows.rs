@@ -39,6 +39,8 @@ pub(crate) struct Windows {
     windows: Vec<Window>,
     sheets: Vec<usize>,
     launch: Launch,
+    recent: Vec<usize>,
+    front: Vec<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +55,8 @@ pub(crate) enum Ask {
 pub(crate) enum Event<'a> {
     Connected { scene: Scene, key: Option<&'a str> },
     Disconnected(Scene),
+    Foreground(Scene),
+    Background(Scene),
     Discarded(&'a str),
     Ask { window: usize, ask: Ask },
     Dismissed(usize),
@@ -75,7 +79,7 @@ const PRIMARY: usize = 0;
 
 impl Windows {
     pub(crate) fn new(mode: Mode, windows: Vec<Window>) -> Self {
-        Windows { mode, windows, sheets: Vec::new(), launch: Launch::Connecting }
+        Windows { mode, windows, sheets: Vec::new(), launch: Launch::Connecting, recent: Vec::new(), front: Vec::new() }
     }
 
     pub(crate) fn len(&self) -> usize { self.windows.len() }
@@ -99,18 +103,46 @@ impl Windows {
     }
 
     fn rooted(&self) -> bool { matches!(self.state(PRIMARY), State::Scene(_)) }
+
+    fn forget(&mut self, window: usize) {
+        self.recent.retain(|&w| w != window);
+        self.front.retain(|&w| w != window);
+    }
+
+    fn successor(&self, closing: usize) -> Option<usize> {
+        if !self.front.contains(&closing) || self.front.iter().any(|&w| w != closing) { return None; }
+        let session = |w: usize| matches!(self.state(w), State::Scene(_) | State::Away);
+        self.recent.iter().rev().copied().find(|&w| w != closing && session(w))
+            .or((closing != PRIMARY).then_some(PRIMARY))
+    }
 }
 
 pub(crate) fn step(windows: &mut Windows, event: Event<'_>) -> Effects<Effect> {
     match event {
         Event::Connected { scene, key } => connected(windows, scene, key),
         Event::Disconnected(scene) => {
-            if let Some(window) = windows.in_scene(scene) { windows.set(window, State::Away); }
+            if let Some(window) = windows.in_scene(scene) {
+                windows.set(window, State::Away);
+                windows.front.retain(|&w| w != window);
+            }
+            Effects::none()
+        }
+        Event::Foreground(scene) => {
+            if let Some(window) = windows.in_scene(scene) {
+                windows.forget(window);
+                windows.recent.push(window);
+                windows.front.push(window);
+            }
+            Effects::none()
+        }
+        Event::Background(scene) => {
+            if let Some(window) = windows.in_scene(scene) { windows.front.retain(|&w| w != window); }
             Effects::none()
         }
         Event::Discarded(key) => match windows.find(key) {
             Some(window) if windows.state(window) == State::Away => {
                 windows.set(window, State::Hidden);
+                windows.forget(window);
                 Effects::one(Effect::Closed(window))
             }
             _ => Effects::none(),
@@ -191,8 +223,12 @@ fn hide(windows: &mut Windows, window: usize) -> Effects<Effect> {
     match windows.state(window) {
         _ if windows.mode == Mode::Sheets && window == PRIMARY => Effects::one(Effect::Refused(window)),
         State::Scene(_) | State::Away => {
+            let forward = windows.successor(window);
             windows.set(window, State::Hidden);
-            Effects::one(Effect::Destroy(window))
+            windows.forget(window);
+            let mut effects = forward.map(|next| show(windows, next, true)).unwrap_or_else(Effects::none);
+            effects.push(Effect::Destroy(window));
+            effects
         }
         State::Activating => {
             windows.set(window, State::Cancelled);

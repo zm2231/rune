@@ -145,3 +145,45 @@ fn iphone_a_sheet_asked_for_before_the_scene_connects_presents_with_it() {
     effects(&mut w, Event::Disconnected(1));
     assert_eq!(effects(&mut w, Event::Connected { scene: 2, key: None }), [Effect::Attach { window: 0, scene: 2 }, Effect::Present(1)]);
 }
+
+fn three_scenes() -> Windows {
+    let mut w = two(Mode::Scenes, false);
+    w.push("extra".into());
+    effects(&mut w, Event::Connected { scene: 1, key: None });
+    for (window, scene, key) in [(1, 2, "details"), (2, 3, "extra")] {
+        effects(&mut w, Event::Ask { window, ask: Ask::Show });
+        effects(&mut w, Event::Connected { scene, key: Some(key) });
+    }
+    w
+}
+
+#[test]
+fn ipad_closing_the_front_window_brings_the_most_recent_other_window_forward_before_it_goes() {
+    let mut w = three_scenes();
+    for scene in [1, 3, 2] {
+        effects(&mut w, Event::Foreground(scene));
+        if scene != 2 { effects(&mut w, Event::Background(scene)); }
+    }
+    assert_eq!(effects(&mut w, Event::Ask { window: 1, ask: Ask::Close }), [Effect::Activate(2), Effect::Destroy(1), Effect::Closed(1)]);
+}
+
+#[test]
+fn ipad_closing_the_front_window_reopens_the_main_window_when_its_session_is_gone() {
+    let mut w = three_scenes();
+    effects(&mut w, Event::Disconnected(1));
+    effects(&mut w, Event::Discarded("main"));
+    effects(&mut w, Event::Ask { window: 2, ask: Ask::Hide });
+    effects(&mut w, Event::Foreground(2));
+    assert_eq!(effects(&mut w, Event::Ask { window: 1, ask: Ask::Close }), [Effect::Activate(0), Effect::Destroy(1), Effect::Closed(1)]);
+    assert_eq!(w.state(0), State::Activating);
+    assert_eq!(effects(&mut w, Event::Connected { scene: 9, key: Some("main") }), [Effect::Attach { window: 0, scene: 9 }]);
+}
+
+#[test]
+fn ipad_closing_a_window_beside_another_or_behind_it_brings_nothing_forward() {
+    let mut w = three_scenes();
+    effects(&mut w, Event::Foreground(1));
+    effects(&mut w, Event::Foreground(2));
+    assert_eq!(effects(&mut w, Event::Ask { window: 1, ask: Ask::Close }), [Effect::Destroy(1), Effect::Closed(1)]);
+    assert_eq!(effects(&mut w, Event::Ask { window: 2, ask: Ask::Close }), [Effect::Destroy(2), Effect::Closed(2)]);
+}

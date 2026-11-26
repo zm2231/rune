@@ -1,5 +1,5 @@
 //! The iOS pasteboard. One item holds every form a copy carries: the text, HTML, RTF and the
-//! image as PNG. Files aren't written: an app's own paths mean nothing to another app's
+//! image as PNG. A paste reads an image in any format UIKit reads, as PNG. Files aren't written: an app's own paths mean nothing to another app's
 //! sandbox. A secret stays on this device (`UIPasteboardOptionLocalOnly`), off the Universal
 //! Clipboard, and the worker clears it when its time is up as everywhere else.
 //!
@@ -25,11 +25,12 @@ const HTML: &str = "public.html";
 const RTF: &str = "public.rtf";
 const PNG: &str = "public.png";
 
-// SAFETY: UIKit's headers declare it as a `UIPasteboardOption`, an `NSString` that lives for
-// the process.
+// SAFETY: UIKit's headers declare the option as a `UIPasteboardOption`, an `NSString` that
+// lives for the process, and the function as taking a `UIImage` and returning `NSData` or nil.
 #[link(name = "UIKit", kind = "framework")]
 unsafe extern "C" {
     static UIPasteboardOptionLocalOnly: &'static NSString;
+    fn UIImagePNGRepresentation(image: &AnyObject) -> *mut NSData;
 }
 
 /// The general pasteboard, looked up per call: it is a shared object UIKit owns.
@@ -49,6 +50,17 @@ fn data(pb: &AnyObject, kind: &str, limit: usize) -> Option<Vec<u8>> {
     // the main thread, as in `general`.
     let data: Option<Retained<NSData>> = unsafe { msg_send![pb, dataForPasteboardType: &*NSString::from_str(kind)] };
     data.filter(|d| !d.is_empty() && d.len() <= limit).map(|d| d.to_vec())
+}
+
+/// The pasteboard's image in any format UIKit reads (a photo is JPEG or HEIC), as PNG.
+fn any_image(pb: &AnyObject) -> Option<Vec<u8>> {
+    // SAFETY: `image` is the pasteboard's first image or nil, and `UIImagePNGRepresentation`
+    // returns autoreleased `NSData` or nil. Off the main thread, as in `general`.
+    let png: Option<Retained<NSData>> = unsafe {
+        let image: Option<Retained<AnyObject>> = msg_send![pb, image];
+        Retained::retain(UIImagePNGRepresentation(&*image?))
+    };
+    png.filter(|d| !d.is_empty() && d.len() <= MAX_IMAGE_BYTES).map(|d| d.to_vec())
 }
 
 impl Backend for Pasteboard {
@@ -93,7 +105,7 @@ impl Backend for Pasteboard {
             let text = self.text();
             let html = data(&pb, HTML, MAX_RICH_BYTES).and_then(|d| String::from_utf8(d).ok());
             let rtf = data(&pb, RTF, MAX_RICH_BYTES).map(Zeroizing::new);
-            let image = if all { data(&pb, PNG, MAX_IMAGE_BYTES).and_then(ClipboardImage::from_png) } else { None };
+            let image = if all { data(&pb, PNG, MAX_IMAGE_BYTES).or_else(|| any_image(&pb)).and_then(ClipboardImage::from_png) } else { None };
             if text.is_none() && html.is_none() && rtf.is_none() && image.is_none() { return None; }
             let mut content = ClipboardContent::from(text.unwrap_or_default());
             if let Some(html) = html { content = content.with_html(html); }

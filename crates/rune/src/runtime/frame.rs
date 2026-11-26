@@ -364,6 +364,7 @@ impl RuntimeCore {
         let (wake, _marked) = crate::spell::pause::tick(&mut self.edit.spell_watch, self.clock);
         if let Some(at) = wake { self.schedule_wakes([std::time::Duration::from_secs_f64((at - self.clock).max(0.0))]); }
         self.frame.set_poll_capped(false);
+        self.take_native_view_reports();
         let mut frame_had_input = self.frame.queue.has_input();
         if !polled && app.has_poll() {
             tx.request_poll = false;

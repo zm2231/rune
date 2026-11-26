@@ -124,6 +124,19 @@ fn root_class() -> Option<&'static AnyClass> {
     })
 }
 
+pub(crate) fn hosted(view: &AnyObject) -> bool {
+    // SAFETY: UIView reads on the main thread.
+    unsafe {
+        let mut at: *const AnyObject = view;
+        while let Some(v) = at.as_ref() {
+            if v.class().name() == c"RuneNativeViewRoot" { return true; }
+            let up: *mut AnyObject = msg_send![v, superview];
+            at = up;
+        }
+    }
+    false
+}
+
 fn make_view(class: Option<&'static AnyClass>, frame: CGRect) -> Option<Retained<AnyObject>> {
     // SAFETY: a UIView subclass initializer on the main thread; the caller owns the result.
     unsafe {

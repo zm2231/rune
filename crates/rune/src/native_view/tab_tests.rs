@@ -85,9 +85,20 @@ fn the_host_takes_the_keyboard_after_the_frame_not_inside_it() {
     press_tab(&mut rt, false);
     assert!(untouched(&rt.state.web), "AppKit and UIKit call back into Rune's text input when the first responder changes");
     assert_eq!(rt.presented_focus_key(), Some("before"), "Rune keeps focus until the view has the keyboard");
-    frames(&mut rt);
+    run_requests();
+    rt.frame(0.2);
     assert_eq!(calls(&rt.state.web), [Call::Enter { back: false }]);
-    assert_eq!(rt.presented_focus_key(), None);
+    assert_eq!(rt.presented_focus_key(), None, "a field still focused after this frame would take the keyboard back");
+}
+
+#[test]
+fn a_press_inside_a_host_clears_rune_focus_in_the_next_frame() {
+    let mut rt = runtime(Page::new());
+    focus(&mut rt, "first");
+    let id = rt.state.web.id();
+    press_where(|slot| slot.id == id);
+    rt.frame(0.2);
+    assert_eq!(rt.presented_focus_key(), None, "a field still focused after this frame would take the keyboard back");
 }
 
 #[test]

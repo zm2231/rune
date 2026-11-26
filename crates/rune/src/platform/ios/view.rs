@@ -141,6 +141,13 @@ define_class!(
             true
         }
 
+        #[unsafe(method(gestureRecognizer:shouldReceiveTouch:))]
+        fn receives_touch(&self, _recognizer: &AnyObject, touch: &AnyObject) -> bool {
+            // SAFETY: a touch's `view` is a `UIView` or nil.
+            let view: *mut AnyObject = unsafe { msg_send![touch, view] };
+            !unsafe { view.as_ref() }.is_some_and(crate::native_view::ios::hosted)
+        }
+
         /// A long press begins only over something with a menu to open.
         #[unsafe(method(gestureRecognizerShouldBegin:))]
         fn recognizer_begins(&self, recognizer: &AnyObject) -> bool {

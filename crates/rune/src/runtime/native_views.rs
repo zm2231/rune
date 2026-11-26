@@ -16,25 +16,21 @@ impl RuntimeCore {
                 if let Some(draw) = self.native_view_draw(i) { out.push(draw); }
             }
         }
-        let mut queued = false;
         for draw in &out {
-            let Some(slot) = crate::native_view::slot(draw.view) else { continue };
-            slot.listen(self.frame.live.waker());
-            if slot.take_pressed() {
-                self.frame.queue.push(Action::NativeView(Event::Pressed(draw.view)));
-                queued = true;
-            }
-            if let Some(back) = slot.take_tabbed() {
-                self.frame.queue.push(Action::NativeView(Event::TabbedOut { view: draw.view, back }));
-                queued = true;
-            }
-            if slot.take_refused() {
-                self.frame.queue.push(Action::NativeView(Event::Refused(draw.view)));
-                queued = true;
-            }
+            if let Some(slot) = crate::native_view::slot(draw.view) { slot.listen(self.frame.live.waker()); }
         }
         self.paint.native_views = out;
-        if queued { self.frame.live.waker().notify(); }
+    }
+
+    pub(in crate::runtime) fn take_native_view_reports(&mut self) {
+        for draw in &self.paint.native_views {
+            let Some(slot) = crate::native_view::slot(draw.view) else { continue };
+            if slot.take_pressed() { self.frame.queue.push(Action::NativeView(Event::Pressed(draw.view))); }
+            if let Some(back) = slot.take_tabbed() {
+                self.frame.queue.push(Action::NativeView(Event::TabbedOut { view: draw.view, back }));
+            }
+            if slot.take_refused() { self.frame.queue.push(Action::NativeView(Event::Refused(draw.view))); }
+        }
     }
 
     pub(in crate::runtime) fn native_view_event(&mut self, app: &mut dyn AppDriver, event: Event, tx: &mut Tx) -> bool {

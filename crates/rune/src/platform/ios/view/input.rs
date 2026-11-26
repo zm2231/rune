@@ -117,13 +117,17 @@ impl RuneView {
     /// runtime hears nothing else of them.
     pub(super) fn secondary_click(&self, touches: &AnyObject, event: Option<&AnyObject>) -> bool {
         // SAFETY: an event's `buttonMask` is an option set; a set of touches has any one of
-        // them, whose location in a view is a `CGPoint`.
-        let at: Option<CGPoint> = unsafe {
+        // them, whose view is a `UIView` or nil and whose location in a view is a `CGPoint`.
+        let at: Option<(CGPoint, bool)> = unsafe {
             let mask: isize = match event { Some(event) => msg_send![event, buttonMask], None => 0 };
             let touch: Option<Retained<AnyObject>> = if mask & BUTTON_SECONDARY != 0 { msg_send![touches, anyObject] } else { None };
-            touch.map(|touch| msg_send![&*touch, locationInView: self])
+            touch.map(|touch| {
+                let view: *mut AnyObject = msg_send![&*touch, view];
+                (msg_send![&*touch, locationInView: self], view.as_ref().is_some_and(crate::native_view::ios::hosted))
+            })
         };
-        let Some(at) = at else { return false };
+        let Some((at, hosted)) = at else { return false };
+        if hosted { return true; }
         self.with_surface(|surface| surface.secondary(at.x as f32, at.y as f32));
         self.pace(Event::Wake);
         true
@@ -269,19 +273,22 @@ impl RuneView {
     }
 
     pub(super) fn touches(&self, touches: &AnyObject, phase: TouchPhase) {
-        if phase == TouchPhase::Started { self.take_keys(); }
-        // SAFETY: `touches` is the `NSSet<UITouch *>` UIKit passes; a touch's location and
-        // timestamp are a `CGPoint` and an `NSTimeInterval`.
+        // SAFETY: `touches` is the `NSSet<UITouch *>` UIKit passes; a touch's view, location
+        // and timestamp are a `UIView` or nil, a `CGPoint` and an `NSTimeInterval`.
         let read: Vec<(u64, CGPoint, f64)> = unsafe {
             let all: Retained<AnyObject> = msg_send![touches, allObjects];
             let count: usize = msg_send![&*all, count];
-            (0..count).map(|index| {
+            (0..count).filter_map(|index| {
                 let touch: Retained<AnyObject> = msg_send![&*all, objectAtIndex: index];
+                let view: *mut AnyObject = msg_send![&*touch, view];
+                if view.as_ref().is_some_and(crate::native_view::ios::hosted) { return None; }
                 // UIKit keeps one `UITouch` for a finger from down to up, so its address
                 // tells fingers apart.
-                (Retained::as_ptr(&touch) as usize as u64, msg_send![&*touch, locationInView: self], msg_send![&*touch, timestamp])
+                Some((Retained::as_ptr(&touch) as usize as u64, msg_send![&*touch, locationInView: self], msg_send![&*touch, timestamp]))
             }).collect()
         };
+        if read.is_empty() { return; }
+        if phase == TouchPhase::Started { self.take_keys(); }
         let count = read.len();
         let input = self.ivars().text.borrow().clone();
         let left: Vec<_> = read.into_iter()

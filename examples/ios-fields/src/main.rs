@@ -21,7 +21,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
     let [top, right, bottom, left] = cx.safe_area();
     let filler = (1..=8).fold(col().w_full().gap(12.0), |list, n| {
         list.child(text(format!("Paragraph {n}: the fields below sit under the keyboard until it scrolls them up."))
-            .font(type_::BODY).color(t.text_secondary).w_full())
+            .font(type_::BODY).color(t.text_secondary).wrap().w_full())
     });
     let form = col().w_full().gap(16.0).py(16.0)
         .child(text("Fields").font(type_::TITLE).color(t.text))

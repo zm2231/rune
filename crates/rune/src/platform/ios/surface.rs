@@ -9,6 +9,7 @@ use std::sync::atomic::Ordering;
 
 use accesskit::{ActionRequest, TreeUpdate};
 
+use super::appearance::Appearance;
 use super::dropped::{self, Kind, Reported};
 use super::field_touch;
 use super::keys::Stroke;
@@ -133,6 +134,7 @@ pub(crate) trait Surface {
     /// The system is short of memory: the caches the last frame didn't draw from go, and
     /// `App::on_rest` runs for the app's own. True when the hook left a frame work to do.
     fn memory_warning(&mut self) -> bool;
+    fn interface_style(&mut self) -> Option<isize>;
 }
 
 struct Hosted<S: 'static> {
@@ -160,6 +162,7 @@ struct Hosted<S: 'static> {
     /// Its place among the apps receiving links (`App::on_open_url`).
     _open_urls: crate::open_url::incoming::Listeners,
     wake: Waker,
+    appearance: Appearance,
 }
 
 impl<S: 'static> Hosted<S> {
@@ -189,6 +192,7 @@ impl<S: 'static> Surface for Hosted<S> {
         for (kind, asked) in dropped::asked(&requests) {
             if asked { report(&mut self.dropped, kind); }
         }
+        if let Some(scheme) = requests.color_scheme { self.appearance.set_app(scheme); }
         // An update may have set the menu (`AppHandle::set_menu`).
         self.menus.drain();
         self.host.runtime_mut().core_mut().take_late_link_answers();
@@ -196,6 +200,7 @@ impl<S: 'static> Surface for Hosted<S> {
         // What handlers asked of a window in this frame, or in a hook since the last, is
         // taken and dropped the same way: none of it waits or piles up.
         let rt = self.host.runtime_mut();
+        if let Some(scheme) = rt.host.window_color_scheme.take() { self.appearance.set_window(scheme); }
         let (shell, minimize) = (rt.shell_request.take(), rt.host.minimize.field());
         if minimize { rt.minimize_step(crate::window::MinimizeEvent::Lost); }
         for (kind, asked) in dropped::asked_by_handlers(shell, minimize, dropped::take_opened()) {
@@ -441,6 +446,8 @@ impl<S: 'static> Surface for Hosted<S> {
     }
 
     fn memory_warning(&mut self) -> bool { self.host.trim_memory_with(self.on_rest) }
+
+    fn interface_style(&mut self) -> Option<isize> { self.appearance.changed() }
 }
 
 /// Starts an app on a `CAMetalLayer`, once its view has a size: the layer, the view's size in
@@ -469,7 +476,7 @@ pub(crate) fn mount<S: 'static>(mut app: App<S>) -> Mount {
     let mut dropped = Reported::default();
     if !app.windows.is_empty() { report(&mut dropped, Kind::Windows); }
     if !app.overlays.is_empty() { report(&mut dropped, Kind::Overlays); }
-    let (on_quit, on_rest) = (app.on_quit, app.on_rest);
+    let (on_quit, on_rest, appearance) = (app.on_quit, app.on_rest, Appearance::new(app.color_scheme));
     let (spec, state, shared, config) = app.into_parts(None);
     Box::new(move |layer, size, scale, dark, wake| {
         // SAFETY: `layer` is the `CAMetalLayer` of the view that owns this surface, and the
@@ -479,6 +486,7 @@ pub(crate) fn mount<S: 'static>(mut app: App<S>) -> Mount {
         let mut host = host.with_system_clipboard(wake.clone()).with_popup_menus().with_file_dialogs().with_share_sheets().with_system_links();
         host.runtime_mut().configure(config);
         host.runtime_mut().core_mut().answer_links_later(wake.clone());
+        host.runtime_mut().core_mut().set_backdrop_materials(true);
         // `configure` handed the runtime the app's hooks, as a window's host does. The app is
         // hidden until the view says where its scene is (`Surface::lifecycle`), as a window is
         // until it is shown.
@@ -486,6 +494,6 @@ pub(crate) fn mount<S: 'static>(mut app: App<S>) -> Mount {
         // The handles' requests wake the view, as they wake a window's event loop.
         shared.connect(wake.clone());
         let menus = crate::native_menu::MenuGuard::attach(&shared, false);
-        Ok(Box::new(Hosted { host, shared, menus, accessibility: AccessibilityLink::with_wake(wake.clone()), wake, title: spec.title, on_ready, dropped, on_quit, on_rest, lifecycle: lifecycle::State::default(), field: field_touch::State::default(), _open_urls: open_urls }))
+        Ok(Box::new(Hosted { host, shared, menus, accessibility: AccessibilityLink::with_wake(wake.clone()), wake, title: spec.title, on_ready, dropped, on_quit, on_rest, lifecycle: lifecycle::State::default(), field: field_touch::State::default(), _open_urls: open_urls, appearance }))
     })
 }

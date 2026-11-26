@@ -166,6 +166,9 @@ impl RuntimeCore {
                 }
             }
             let rest_fill = match n.material {
+                Some(material) if self.paint.backdrop_materials => {
+                    self.color(n.id, P_FILL, crate::system_material::backdrop::tint(material, n.vis.fill, self.env.system_dark))
+                }
                 Some(_) => self.color(n.id, P_FILL, crate::system_material::fallback_fill(n.vis.fill, self.env.system_dark)),
                 None => self.color(n.id, P_FILL, n.vis.fill),
             };

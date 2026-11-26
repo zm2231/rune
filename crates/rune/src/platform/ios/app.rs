@@ -17,6 +17,7 @@ use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
 use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, extern_protocol, msg_send};
 
+use super::controller::RuneViewController;
 use super::links::{self, Activity};
 use super::surface::{self, Mount};
 use super::view::{RuneView, UIResponder};
@@ -134,7 +135,7 @@ define_class!(
             let window = unsafe {
                 let window: Allocated<AnyObject> = msg_send![class!(UIWindow), alloc];
                 let window: Retained<AnyObject> = msg_send![window, initWithWindowScene: scene];
-                let controller: Retained<AnyObject> = msg_send![class!(UIViewController), new];
+                let controller = RuneViewController::new(MainThreadMarker::from(self));
                 let _: () = msg_send![&*controller, setView: &*view];
                 let _: () = msg_send![&*window, setRootViewController: &*controller];
                 let _: () = msg_send![&*window, makeKeyAndVisible];
@@ -221,7 +222,36 @@ pub(crate) fn run<S: 'static>(app: App<S>) -> Result<(), String> {
     if MainThreadMarker::new().is_none() {
         return Err("an iOS app runs from the main thread".into());
     }
-    MOUNT.set(Some(surface::mount(app)));
+    run_mounted(surface::mount(app))
+}
+
+/// Runs the first window a `run_windows` factory returns as the whole iOS app, as `run` runs
+/// an app: the screen is one window, so the factory's other windows never open.
+pub(crate) fn run_windows(factory: Box<dyn FnOnce(&[crate::Display]) -> Vec<crate::AnyWindowSpec>>) -> Result<(), String> {
+    let Some(mtm) = MainThreadMarker::new() else { return Err("an iOS app runs from the main thread".into()) };
+    let mut windows = crate::windows::flatten(factory(&[screen(mtm)])).into_iter();
+    let first = windows.next().ok_or("the app created no windows")?;
+    if windows.next().is_some() {
+        eprintln!("rune: run_windows' windows after the first ignored: an iOS app shows one window");
+    }
+    run_mounted(first.mount())
+}
+
+/// The main screen as a display: its whole size in pixels at its native scale.
+fn screen(_: MainThreadMarker) -> crate::Display {
+    // SAFETY: `UIScreen.mainScreen` is a screen, read on the main thread, whose `nativeBounds`
+    // is a `CGRect` and `nativeScale` a `CGFloat`.
+    let (bounds, scale) = unsafe {
+        let screen: Retained<AnyObject> = msg_send![class!(UIScreen), mainScreen];
+        let bounds: objc2_core_foundation::CGRect = msg_send![&*screen, nativeBounds];
+        let scale: objc2_core_foundation::CGFloat = msg_send![&*screen, nativeScale];
+        (bounds, scale)
+    };
+    crate::Display { id: None, name: None, position: (0, 0), size: (bounds.size.width as u32, bounds.size.height as u32), scale, primary: true }
+}
+
+fn run_mounted(mount: Mount) -> Result<(), String> {
+    MOUNT.set(Some(mount));
     // The app's one view listens by now if it has the hook; without it a link is dropped.
     crate::open_url::incoming::settle();
     // UIKit finds the delegates by name, so their classes are registered first.

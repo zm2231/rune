@@ -17,18 +17,22 @@
 //! ```
 //!
 //! Space or the button flies and docks the card; `m` cycles `Glass` / `Popover` / `Sidebar`;
-//! `b` toggles a busy main thread. The card flies on its own every 1.6 seconds unless
+//! `b` toggles a busy main thread; `a` switches between light and dark. The card flies on its own every 1.6 seconds unless
 //! `GLASS_CARD_MANUAL` is set, and the app quits after `GLASS_CARD_SECONDS` when that is set.
 //! `GLASS_CARD_AT=x,y` places both windows, in points from the primary display's top left
 //! (default `80,80`). `GLASS_CARD_TRACE=card.jsonl` writes the card window's frame trace, with
 //! each drawable's on-screen present time.
+//!
+//! On iOS the screen is one view: the card springs over the pattern inside it, docking above the
+//! home indicator, and its Light or Dark button switches the view's appearance.
 
 #![forbid(unsafe_code)]
+#![cfg_attr(target_os = "ios", allow(dead_code, unused_imports))]
 
 use std::time::Duration;
 
 use rune::{
-    App, AppSpec, Color, Cx, DisplayTarget, El, Key, KeyEvent, KeyPolicy, LoopSpec, MacWindowOptions,
+    App, AppSpec, Color, ColorScheme, Cx, DisplayTarget, El, Key, KeyEvent, KeyPolicy, LoopSpec, MacWindowOptions,
     OverlayInput, OverlayOptions, OverlayPlacement, OverlaySpec, Spring, SystemMaterial, TextStyle, Tx,
     WindowOptions, WindowSpec, col, el, oklch, row, text,
 };
@@ -49,6 +53,7 @@ struct Card {
     measure: bool,
     material: SystemMaterial,
     layout: Layout,
+    dark: bool,
 }
 
 fn init() -> Card {
@@ -65,6 +70,7 @@ fn init() -> Card {
         measure: measuring(),
         material,
         layout: Layout::Single,
+        dark: true,
     }
 }
 
@@ -172,32 +178,73 @@ fn busy(s: &mut Card, _: f64, _: &mut Tx) -> bool {
     false
 }
 
-fn key(s: &mut Card, event: &KeyEvent, _: &mut Tx) -> bool {
+fn key(s: &mut Card, event: &KeyEvent, tx: &mut Tx) -> bool {
     match &event.key {
         Key::Text(t) if t == " " => s.docked = !s.docked,
         Key::Text(t) if t == "m" => s.material = next_material(s.material),
         Key::Text(t) if t == "b" => s.busy_ms = if s.busy_ms > 0 { 0 } else { 8 },
+        Key::Text(t) if t == "a" => { s.dark = !s.dark; tx.set_color_scheme(scheme(s.dark)); }
         _ => return false,
     }
     true
 }
 
+fn scheme(dark: bool) -> ColorScheme { if dark { ColorScheme::Dark } else { ColorScheme::Light } }
+
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+fn phone_view(s: &Card, cx: &mut Cx<Card>) -> El {
+    let [w, h] = cx.layout_size("root").unwrap_or([SIZE.0, SIZE.1]);
+    let [top, _, bottom, _] = cx.safe_area();
+    let (x, y, cw, ch, radius) = if s.docked {
+        (w - 270.0, h - bottom - 76.0, 250.0, 60.0, 30.0)
+    } else {
+        (20.0, top + 40.0, w - 40.0, 300.0, 28.0)
+    };
+    let label = if s.docked { "Fly" } else { "Dock" };
+    let appearance = if cx.system_dark() { "Light" } else { "Dark" };
+    let pill = |key: &'static str, text_: String, fill: f32| row().key(key).role("button").label(text_.clone()).focusable(true).hit()
+        .h(30.0).px(14.0).center().radius(15.0).fill(Color::WHITE.alpha(fill)).border(1.0, Color::WHITE.alpha(fill + 0.12))
+        .child(text(text_).font(TextStyle::new(13.0, 600.0)).color(Color::WHITE));
+    let fly = pill("toggle", label.into(), 0.18).on_press(|s: &mut Card| s.docked = !s.docked);
+    let card = col().key("card").absolute(x, y).size(cw, ch).radius(radius).padding(if s.docked { 16.0 } else { 24.0 }).gap(12.0)
+        .shadow(18.0, 44.0, Color { r: 0.0, g: 0.0, b: 0.0, a: 0.35 })
+        .system_material(s.material)
+        .motion(Spring::new(0.7, 0.22));
+    let card = if s.docked {
+        card.child(row().w_full().h_full().center_y().gap(12.0)
+            .child(text("Docked").key("title").font(TextStyle::new(15.0, 650.0)).color(Color::WHITE)).child(el().grow(1.0)).child(fly))
+    } else {
+        let mat_label = material_name(s.material);
+        card.child(text(mat_label).key("title").font(TextStyle::new(26.0, 650.0)).color(Color::WHITE))
+            .child(text("Frame and corner radius on one spring. The material blurs the pattern behind it, under this text, its shadow and the buttons.")
+                .key("body").w_full().wrap().font(TextStyle::new(14.0, 450.0)).color(Color::WHITE.alpha(0.85)))
+            .child(el().grow(1.0))
+            .child(row().w_full().gap(8.0)
+                .child(pill("material-cycle", mat_label.into(), 0.12).on_press(|s: &mut Card| s.material = next_material(s.material)))
+                .child(pill("appearance", appearance.into(), 0.12).on_press_tx(|s: &mut Card, tx: &mut Tx| { s.dark = !s.dark; tx.set_color_scheme(scheme(s.dark)); }))
+                .child(el().grow(1.0)).child(fly))
+    };
+    el().key("root").w_full().h_full().child(pattern((w, h))).child(card)
+}
+
 /// Moving bars over a grid of colour tiles, or plain black to measure edges against.
-fn pattern_view(_: &(), _: &mut Cx<()>) -> El {
+fn pattern_view(_: &(), _: &mut Cx<()>) -> El { pattern(SIZE) }
+
+fn pattern(size: (f32, f32)) -> El {
     if measuring() { return el().key("pattern").w_full().h_full().fill(Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }); }
-    let (cols, rows) = (16, 10);
-    let tile = (SIZE.0 / cols as f32, SIZE.1 / rows as f32);
+    let (cols, rows) = (16, (16.0 * size.1 / size.0).round().max(1.0) as usize);
+    let tile = (size.0 / cols as f32, size.1 / rows as f32);
     let tiles = (0..cols * rows).map(move |i| {
         let (c, r) = (i % cols, i / cols);
         let light = if (c + r) % 2 == 0 { 0.78 } else { 0.42 };
         el().absolute(c as f32 * tile.0, r as f32 * tile.1).size(tile.0, tile.1).fill(oklch(light, 0.16, (i * 23 % 360) as f32))
     });
     let bars = (0..6).map(|k| {
-        el().absolute(0.0, 0.0).size(36.0, SIZE.1).fill(if k % 2 == 0 { Color::WHITE } else { Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 } })
-            .looping(LoopSpec { delay: k as f64 * 0.6, ..LoopSpec::slide(3.6, [-1.0, 0.0], [SIZE.0 / 36.0, 0.0]) })
+        el().absolute(0.0, 0.0).size(36.0, size.1).fill(if k % 2 == 0 { Color::WHITE } else { Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 } })
+            .looping(LoopSpec { delay: k as f64 * 0.6, ..LoopSpec::slide(3.6, [-1.0, 0.0], [size.0 / 36.0, 0.0]) })
     });
     let words = (0..3).map(|k| {
-        text("RUNE 120 Hz").font(TextStyle::new(64.0, 800.0)).color(Color::WHITE).absolute(40.0, 60.0 + k as f32 * 170.0)
+        text("RUNE 120 Hz").font(TextStyle::new((64.0 * size.0 / SIZE.0).min(64.0), 800.0)).color(Color::WHITE).absolute(40.0, 60.0 + k as f32 * 170.0 * size.1 / SIZE.1)
             .looping(LoopSpec { delay: k as f64 * 1.3, ..LoopSpec::slide(4.0, [0.0, 0.0], [0.9, 0.0]) })
     });
     el().key("pattern").w_full().h_full().fill(Color { r: 0.1, g: 0.1, b: 0.12, a: 1.0 }).children(tiles).children(bars).children(words)
@@ -296,6 +343,20 @@ fn run_overlay_probe() {
     });
 }
 
+#[cfg(target_os = "ios")]
+fn main() {
+    let app = App::new(AppSpec { poll: Some(busy), on_key: Some(key), ..AppSpec::new("Glass card", SIZE, init, phone_view) });
+    if std::env::var_os("GLASS_CARD_MANUAL").is_none() {
+        let handle = app.handle();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(1600));
+            handle.update(toggle_card_auto);
+        });
+    }
+    app.run();
+}
+
+#[cfg(not(target_os = "ios"))]
 fn main() {
     if std::env::args().any(|a| a == "--overlay") {
         run_overlay_probe();

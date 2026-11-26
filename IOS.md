@@ -8,6 +8,17 @@ What works:
 
 - **Drawing.** Light and dark appearance, the screen's own scale, up to 120 Hz, nothing drawn
   while idle or in the background.
+- **Appearance.** `App::color_scheme`, `Tx::set_color_scheme` and `AppHandle::set_color_scheme`
+  set the view's own light or dark appearance (its `overrideUserInterfaceStyle`), as a window's
+  scheme sets a desktop window's: a view's Light or Dark wins over the app's, and System follows
+  the app's, then the system's. In an app `rune::run` or `rune::run_windows` started, Rune's
+  view controller takes the same appearance, and the status bar's text and icons follow it:
+  light on a dark appearance, dark on a light one. A view embedded in a UIKit or SwiftUI app
+  changes only itself; the host's controller, and so its status bar, stay the host's.
+- **Materials.** `El::system_material` blurs what the view drew behind the element, under a tint
+  near the material's own in light and dark, as UIKit's materials blur an app's content: Glass
+  is the clearest, Sidebar the most opaque. A translucent fill is the tint instead, and an
+  opaque fill draws alone, unblurred, as on Windows and Wayland.
 - **Touch.** One finger taps, drags and pans with momentum; two fingers pinch (`on_magnify`)
   and turn (`on_rotate`); a long press is the secondary press, so it opens what a right-click
   opens on a desktop.
@@ -137,7 +148,9 @@ What doesn't yet:
   app's own delegate builds its main menu, so on an iPad only a `keys_first` item's shortcut
   runs there; on an iPhone every item's does.
 - More than one surface an app: a `RuneView` is one view, so `App::window`'s other windows,
-  `App::overlay`'s overlays and `rune::open_window`'s windows never open. Requests of a window
+  `App::overlay`'s overlays and `rune::open_window`'s windows never open. An app started with
+  `rune::run_windows` shows the first window its factory returns, which is handed the main
+  screen as its one display; the factory's other windows never open. Requests of a window
   are dropped: `AppHandle`'s `open`, `show`, `activate`, `hide`, `close`, `focus`, `minimize`,
   `set_position`, `place`, `set_dock_icon`, `quit` and `relaunch`, a handler's
   `Tx::close_window`, `Tx::minimize`, `Tx::quit` and `Tx::relaunch`, and the handle `on_ready`

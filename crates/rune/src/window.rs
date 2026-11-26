@@ -94,6 +94,7 @@ pub use resize_sync::ResizeSync;
 pub use event_loop::run;
 #[cfg(test)]
 pub(crate) use event_loop::finish_run;
+#[cfg(not(target_os = "ios"))]
 pub(crate) use event_loop::run_windows;
 #[cfg(any(test, target_os = "windows", all(unix, not(target_os = "ios"), not(target_os = "android"))))]
 pub(crate) use file_drop::FileStep;

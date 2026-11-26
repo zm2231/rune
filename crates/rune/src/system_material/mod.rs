@@ -1,9 +1,11 @@
 //! System backdrop materials (`El::system_material`): the platform blurs what is behind the
 //! window under an element's rounded rect. On macOS a native view per material sits under the
 //! transparent Metal layer and moves in the same Core Animation transaction as the drawable,
-//! so the material, Rune's shadow and the content on top present together. Everywhere else,
+//! so the material, Rune's shadow and the content on top present together. On iOS the element
+//! blurs what the view drew behind it, under the material's tint (`backdrop`). Everywhere else,
 //! in opaque windows and in headless renders, the element's fill (or a neutral tint) stands in.
 
+pub(crate) mod backdrop;
 #[cfg(target_os = "macos")]
 pub(crate) mod macos;
 #[cfg(any(test, all(target_os = "windows", feature = "windows-system-material")))]

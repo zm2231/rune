@@ -1,0 +1,1 @@
+- iOS: `rune::run_windows` and its variants start the app in the iOS scene host, showing the first window the factory returns, instead of a desktop event loop that iOS stops at launch for not adopting the scene lifecycle. The factory is handed the main screen as its one display, and its other windows never open.

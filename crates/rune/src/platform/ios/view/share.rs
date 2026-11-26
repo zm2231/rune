@@ -35,7 +35,7 @@ impl RuneView {
             if let Some(url) = share.url.as_deref().and_then(|url| NSURL::URLWithString(&NSString::from_str(url))) { add(&url); }
             for file in share.files.iter().filter_map(|f| f.to_str()) { add(&NSURL::fileURLWithPath(&NSString::from_str(file))); }
             let controller: Allocated<AnyObject> = msg_send![class!(UIActivityViewController), alloc];
-            let controller: Retained<AnyObject> = msg_send![controller, initWithActivityItems: &*items, applicationActivities: std::ptr::null::<AnyObject>()];
+            let controller: Retained<AnyObject> = msg_send![controller, initWithActivityItems: &*items, applicationActivities: None::<&AnyObject>];
             let done = RcBlock::new(move |activity: *mut NSString, completed: Bool, _items: *mut AnyObject, error: *mut AnyObject| {
                 let result = if let Some(error) = error.as_ref() {
                     let what: Retained<NSString> = msg_send![error, localizedDescription];

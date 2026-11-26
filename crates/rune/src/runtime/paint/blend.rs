@@ -50,6 +50,13 @@ impl RuntimeCore {
         }
     }
 
+    #[cfg_attr(not(any(target_os = "ios", test)), allow(dead_code))]
+    pub(crate) fn set_backdrop_materials(&mut self, on: bool) {
+        if self.paint.set_backdrop_materials(on) {
+            self.commit.dirty = true;
+        }
+    }
+
     pub fn fade_stops(&self) -> [f32; 2] {
         self.tree.fade_stops
     }

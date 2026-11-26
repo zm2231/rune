@@ -448,6 +448,7 @@ pub(crate) fn mount<S: 'static>(mut app: App<S>) -> Mount {
         // The view is the app's whole host here: links open in the system, as from a window.
         let mut host = host.with_system_clipboard(wake.clone()).with_popup_menus().with_file_dialogs().with_system_links();
         host.runtime_mut().configure(config);
+        host.runtime_mut().core_mut().set_backdrop_materials(true);
         // `configure` handed the runtime the app's hooks, as a window's host does. The app is
         // hidden until the view says where its scene is (`Surface::lifecycle`), as a window is
         // until it is shown.

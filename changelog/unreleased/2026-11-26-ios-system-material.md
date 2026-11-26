@@ -1,0 +1,1 @@
+- iOS: `El::system_material` blurs what the view drew behind the element under a light or dark tint near the material's own (Glass clearest, Sidebar most opaque), instead of a nearly opaque neutral fill. A translucent fill is the tint, and an opaque fill draws alone, unblurred.

@@ -22,6 +22,7 @@ pub(crate) struct PaintState {
     /// Wayland compositor behind-window blur backs `El::system_material` elements on this
     /// transparent surface when `WindowBackdrop::None` is active.
     pub(super) wayland_blur_materials: bool,
+    pub(super) backdrop_materials: bool,
     /// Windows 11 Acrylic behind-window blur backs non-opaque `El::system_material` elements on
     /// this transparent DirectComposition surface using Wayland-aligned fill rules (opaque fills
     /// stay opaque and unblurred; translucent fills tint over Acrylic; no fill paints transparent
@@ -134,6 +135,7 @@ impl PaintState {
             srgb_blend: true,
             native_materials: false,
             wayland_blur_materials: false,
+            backdrop_materials: false,
             #[cfg(any(test, all(target_os = "windows", feature = "windows-system-material")))]
             windows_acrylic_materials: false,
             videos_active: false,
@@ -311,6 +313,16 @@ impl PaintState {
     #[inline]
     pub(crate) fn set_windows_acrylic_materials(&mut self, on: bool) {
         self.windows_acrylic_materials = on;
+    }
+
+    #[cfg_attr(not(any(target_os = "ios", test)), allow(dead_code))]
+    #[inline]
+    pub(crate) fn set_backdrop_materials(&mut self, on: bool) -> bool {
+        if self.backdrop_materials == on {
+            return false;
+        }
+        self.backdrop_materials = on;
+        true
     }
 
     #[inline]

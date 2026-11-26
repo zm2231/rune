@@ -8,6 +8,10 @@ What works:
 
 - **Drawing.** Light and dark appearance, the screen's own scale, up to 120 Hz, nothing drawn
   while idle or in the background.
+- **Materials.** `El::system_material` blurs what the view drew behind the element, under a tint
+  near the material's own in light and dark, as UIKit's materials blur an app's content: Glass
+  is the clearest, Sidebar the most opaque. A translucent fill is the tint instead, and an
+  opaque fill draws alone, unblurred, as on Windows and Wayland.
 - **Touch.** One finger taps, drags and pans with momentum; two fingers pinch (`on_magnify`)
   and turn (`on_rotate`); a long press is the secondary press, so it opens what a right-click
   opens on a desktop.

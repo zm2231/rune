@@ -83,6 +83,7 @@ enum Posted {
 }
 
 thread_local! {
+    static PENDING: RefCell<Option<Vec<Entry>>> = const { RefCell::new(None) };
     static REGISTRY: RefCell<Option<Registry>> = const { RefCell::new(None) };
     static QUEUE: RefCell<VecDeque<Posted>> = const { RefCell::new(VecDeque::new()) };
     static NEXT_SCENE: Cell<Scene> = const { Cell::new(1) };
@@ -129,7 +130,10 @@ fn ask(request: WindowRequest) -> Ask {
     }
 }
 
-pub(crate) fn start(mtm: MainThreadMarker, entries: Vec<Entry>) {
+pub(crate) fn start(entries: Vec<Entry>) { PENDING.set(Some(entries)); }
+
+fn launch(mtm: MainThreadMarker) {
+    let Some(entries) = PENDING.take() else { return };
     let mode = if several_scenes(mtm) { Mode::Scenes } else { Mode::Sheets };
     let mut list = Vec::with_capacity(entries.len());
     let mut slots = Vec::with_capacity(entries.len());
@@ -167,6 +171,7 @@ fn several_scenes(_: MainThreadMarker) -> bool {
 
 fn pump() {
     let Some(mtm) = MainThreadMarker::new() else { return };
+    launch(mtm);
     if REGISTRY.with_borrow(Option::is_none) { return; }
     gather();
     while let Some(posted) = QUEUE.with_borrow_mut(VecDeque::pop_front) {

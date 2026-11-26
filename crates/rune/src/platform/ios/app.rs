@@ -205,7 +205,7 @@ pub(crate) fn run_windows(factory: Box<dyn FnOnce(&[crate::Display]) -> Vec<crat
     let windows = crate::windows::flatten(factory(&[screen(mtm)]));
     crate::windows::validate(&windows)?;
     if windows.is_empty() { return Err("the app created no windows".into()); }
-    run_entries(mtm, windows.into_iter().map(crate::AnyWindowSpec::entry).collect())
+    run_entries(windows.into_iter().map(crate::AnyWindowSpec::entry).collect())
 }
 
 /// The main screen as a display: its whole size in pixels at its native scale.
@@ -221,8 +221,8 @@ fn screen(_: MainThreadMarker) -> crate::Display {
     crate::Display { id: None, name: None, position: (0, 0), size: (bounds.size.width as u32, bounds.size.height as u32), scale, primary: true }
 }
 
-fn run_entries(mtm: MainThreadMarker, entries: Vec<Entry>) -> Result<(), String> {
-    scenes::start(mtm, entries);
+fn run_entries(entries: Vec<Entry>) -> Result<(), String> {
+    scenes::start(entries);
     // The app's views listen by now if they have the hook; without it a link is dropped.
     crate::open_url::incoming::settle();
     // UIKit finds the delegates by name, so their classes are registered first.

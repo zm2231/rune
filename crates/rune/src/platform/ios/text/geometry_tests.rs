@@ -65,3 +65,12 @@ fn a_ranges_first_rect_ends_with_the_range_or_its_first_line() {
     assert_eq!(g.first_rect(2..8), Some([120.0, 50.0, 20.0, 20.0]), "to the first line's end");
     assert_eq!(g.first_rect(6..6), Some([110.0, 70.0, 0.0, 20.0]));
 }
+
+#[test]
+fn a_selection_covers_each_line_it_reaches_up_to_the_line_end() {
+    let g = two_lines();
+    assert_eq!(g.selection_rects(1..3), vec![[110.0, 50.0, 20.0, 20.0]]);
+    assert_eq!(g.selection_rects(2..7), vec![[120.0, 50.0, 20.0, 20.0], [100.0, 70.0, 20.0, 20.0]]);
+    assert_eq!(g.selection_rects(0..9), vec![[100.0, 50.0, 40.0, 20.0], [100.0, 70.0, 40.0, 20.0]]);
+    assert!(g.selection_rects(9..9).is_empty());
+}

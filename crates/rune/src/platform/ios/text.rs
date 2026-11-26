@@ -5,7 +5,10 @@
 
 pub(crate) mod doc;
 pub(crate) mod geometry;
+pub(crate) mod handles;
 #[cfg(target_os = "ios")]
 pub(crate) mod input;
+#[cfg(target_os = "ios")]
+pub(crate) mod selection;
 pub(crate) mod traits;
 pub(crate) mod undo;

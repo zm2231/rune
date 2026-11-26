@@ -235,6 +235,11 @@ impl RuneView {
         self.pace(Event::Wake);
     }
 
+    pub(crate) fn field_menu(&self, x: f32, y: f32) {
+        self.with_surface(|surface| surface.secondary(x, y));
+        (self.waker())();
+    }
+
     /// ⌘Z, or ⇧⌘Z to `redo`, for an undo gesture UIKit ran on the focused field.
     pub(crate) fn history(&self, redo: bool) {
         let mods = Mods { cmd: true, logo: true, shift: redo, ..Mods::default() };
@@ -264,22 +269,25 @@ impl RuneView {
 
     pub(super) fn touches(&self, touches: &AnyObject, phase: TouchPhase) {
         if phase == TouchPhase::Started { self.take_keys(); }
-        let mut count = 0usize;
+        // SAFETY: `touches` is the `NSSet<UITouch *>` UIKit passes; a touch's location and
+        // timestamp are a `CGPoint` and an `NSTimeInterval`.
+        let read: Vec<(u64, CGPoint, f64)> = unsafe {
+            let all: Retained<AnyObject> = msg_send![touches, allObjects];
+            let count: usize = msg_send![&*all, count];
+            (0..count).map(|index| {
+                let touch: Retained<AnyObject> = msg_send![&*all, objectAtIndex: index];
+                // UIKit keeps one `UITouch` for a finger from down to up, so its address
+                // tells fingers apart.
+                (Retained::as_ptr(&touch) as usize as u64, msg_send![&*touch, locationInView: self], msg_send![&*touch, timestamp])
+            }).collect()
+        };
+        let count = read.len();
+        let input = self.ivars().text.borrow().clone();
+        let left: Vec<_> = read.into_iter()
+            .filter(|(id, at, _)| !input.as_ref().is_some_and(|input| input.touch(*id, phase, (at.x as f32, at.y as f32))))
+            .collect();
         self.with_surface(|surface| {
-            // SAFETY: `touches` is the `NSSet<UITouch *>` UIKit passes; a touch's location and
-            // timestamp are a `CGPoint` and an `NSTimeInterval`.
-            unsafe {
-                let all: Retained<AnyObject> = msg_send![touches, allObjects];
-                count = msg_send![&*all, count];
-                for index in 0..count {
-                    let touch: Retained<AnyObject> = msg_send![&*all, objectAtIndex: index];
-                    let at: CGPoint = msg_send![&*touch, locationInView: self];
-                    let time: f64 = msg_send![&*touch, timestamp];
-                    // UIKit keeps one `UITouch` for a finger from down to up, so its address
-                    // tells fingers apart.
-                    surface.touch(Retained::as_ptr(&touch) as usize as u64, phase, at.x as f32, at.y as f32, time);
-                }
-            }
+            for (id, at, time) in left { surface.touch(id, phase, at.x as f32, at.y as f32, time); }
         });
         // Each finger holds the display link from when it lands until it lifts.
         for _ in 0..count {

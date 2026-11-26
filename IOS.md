@@ -27,6 +27,10 @@ What works:
   return, predictions, autocorrection, dictation and marked text edit the field; a secure
   field shows the keyboard none of its text. The keyboard is told where the field's
   characters are, so the space bar's trackpad moves the caret.
+- **Selection handles.** On iOS 17 and later, text selected in the focused field (a double
+  tap, Select or Select All) shows the system's handles. A finger on a handle drags that end
+  of the selection under the system's loupe, and lifting it opens the field's menu for what is
+  selected. The field draws its own caret and highlight; on iOS 16 there are no handles.
 - **Keyboard traits.** The focused field answers UIKit's `UITextInputTraits`: `El::input_mode`
   is its `keyboardType` (a number pad on an iPhone, the decimal and phone pads, the email, URL
   and search keyboards), `El::autocomplete` its `textContentType`, and `El::autocapitalize`,
@@ -105,7 +109,6 @@ What works:
 
 What doesn't yet:
 
-- The system's selection handles and loupe: a field draws its own selection.
 - An App's menu items in the menu bar of a UIKit or SwiftUI app that embeds a Rune view. That
   app's own delegate builds its main menu, so on an iPad only a `keys_first` item's shortcut
   runs there; on an iPhone every item's does.

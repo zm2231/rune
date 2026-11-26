@@ -4,7 +4,7 @@
 //! one, autocorrection, dictation and marked text all edit through it.
 //!
 //! Positions and ranges are UTF-16 offsets into that copy. Rune draws its own caret and
-//! selection, so UIKit gets no selection rects, and shows no selection handles or loupe. A
+//! selection; UIKit draws the handles of a selection and the loupe while one is dragged. A
 //! position's caret rect, a range's first rect and the position nearest a point come from the
 //! field's lines as last drawn (`geometry`), which place the keyboard's own bubbles and move
 //! the space bar's cursor. While the keyboard composes or the field is a password, the copy
@@ -26,10 +26,13 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class,
 
 use super::doc::{Document, Effect, Event, Snapshot};
 use super::geometry::Geometry;
+use super::handles::{self, Ends};
+use super::selection::{self, Display, cg_rect};
 use super::traits::{self, ContentType, Frame, Reload, ReloadEffect};
 use super::undo::uikit::Undo;
 use super::undo::{Action, Offer};
 use crate::input::traits::InputTraits;
+use crate::runtime::TouchPhase;
 use super::super::view::{RuneView, UIResponder, UIView};
 
 extern_class!(
@@ -189,6 +192,8 @@ pub(crate) struct Ivars {
     floating: RefCell<Option<Retained<AnyObject>>>,
     /// What the system's undo gestures ask: an undo manager that offers what the field can do.
     undo: Undo,
+    display: RefCell<Display>,
+    handles: RefCell<handles::State>,
 }
 
 define_class!(
@@ -464,8 +469,11 @@ define_class!(
         }
 
         #[unsafe(method_id(selectionRectsForRange:))]
-        fn selection_rects(&self, _range: &Span) -> Retained<NSArray> {
-            NSArray::new()
+        fn selection_rects(&self, range: &Span) -> Retained<NSArray> {
+            let range = range.range();
+            let rects = self.place(range.start).zip(self.ivars().doc.borrow().field_byte(range.end))
+                .map(|((geometry, from), to)| geometry.selection_rects(from..to)).unwrap_or_default();
+            selection::rects(self.mtm(), &rects)
         }
 
         #[unsafe(method_id(closestPositionToPoint:))]
@@ -503,11 +511,6 @@ define_class!(
     }
 );
 
-/// A rect of the view's points as UIKit's.
-fn cg_rect([x, y, w, h]: [f32; 4]) -> CGRect {
-    CGRect::new(CGPoint::new(x as CGFloat, y as CGFloat), CGSize::new(w as CGFloat, h as CGFloat))
-}
-
 /// Whether a `UITextLayoutDirection` moves toward the start of the text.
 fn backward(direction: isize) -> bool {
     direction == DIRECTION_LEFT || direction == DIRECTION_UP
@@ -528,6 +531,8 @@ impl RuneTextInput {
             tokenizer: RefCell::new(None),
             floating: RefCell::new(None),
             undo: Undo::new(),
+            display: RefCell::default(),
+            handles: RefCell::default(),
         });
         // SAFETY: `initWithFrame:` is `UIView`'s designated initializer.
         unsafe { msg_send![super(this), initWithFrame: zero] }
@@ -684,6 +689,61 @@ impl RuneTextInput {
             } else {
                 for ReloadEffect::Reload in effects {
                     let _: () = msg_send![self, reloadInputViews];
+                }
+            }
+        }
+        self.show_handles(wanted && !secure);
+        self.handles(handles::Event::Frame, None);
+    }
+
+    fn show_handles(&self, wanted: bool) {
+        let Some(host) = self.ivars().host.load() else { return };
+        let selection = self.ivars().doc.borrow().selection();
+        // SAFETY: a `UIResponder` method of this signature.
+        let first: bool = unsafe { msg_send![self, isFirstResponder] };
+        let on = wanted && first && !selection.is_empty() && self.place(selection.start).is_some();
+        self.ivars().display.borrow_mut().show(self, &host, on);
+    }
+
+    fn ends(&self) -> Option<Ends> {
+        if !self.ivars().display.borrow().shown() { return None; }
+        let selection = self.ivars().doc.borrow().selection();
+        let start = self.place(selection.start).and_then(|(geometry, byte)| geometry.caret(byte))?;
+        let end = self.place(selection.end).and_then(|(geometry, byte)| geometry.caret(byte))?;
+        Some(Ends { selection, start, end })
+    }
+
+    pub(crate) fn touch(&self, touch: u64, phase: TouchPhase, at: (f32, f32)) -> bool {
+        let dragging = self.ivars().handles.borrow().dragging();
+        let (event, caret) = match phase {
+            TouchPhase::Started => (handles::Event::Down { touch, at, ends: self.ends() }, None),
+            TouchPhase::Moved => {
+                let Some((x, y)) = self.ivars().handles.borrow().aim(at) else { return false };
+                let nearest = self.closest(CGPoint::new(x as CGFloat, y as CGFloat));
+                let caret = self.place(nearest).and_then(|(geometry, byte)| geometry.caret(byte)).map(cg_rect);
+                (handles::Event::Move { touch, at, nearest }, caret)
+            }
+            TouchPhase::Ended => (handles::Event::Up { touch, cancelled: false }, None),
+            TouchPhase::Cancelled => (handles::Event::Up { touch, cancelled: true }, None),
+        };
+        self.handles(event, caret);
+        dragging || self.ivars().handles.borrow().dragging()
+    }
+
+    fn handles(&self, event: handles::Event, caret: Option<CGRect>) {
+        let effects = handles::step(&mut self.ivars().handles.borrow_mut(), event);
+        let Some(host) = self.ivars().host.load() else { return };
+        for effect in effects {
+            match effect {
+                handles::Effect::Select(range) => self.edit(Event::Select(range)),
+                handles::Effect::LoupeBegin(at) => self.ivars().display.borrow_mut().loupe_begin(&host, at),
+                handles::Effect::LoupeMove(at) => self.ivars().display.borrow().loupe_move(at, caret.unwrap_or(self.ivars().caret.get())),
+                handles::Effect::LoupeEnd => self.ivars().display.borrow_mut().loupe_end(),
+                handles::Effect::Menu => {
+                    let range = self.ivars().doc.borrow().selection();
+                    let rect = self.place(range.start).zip(self.ivars().doc.borrow().field_byte(range.end))
+                        .and_then(|((geometry, from), to)| geometry.first_rect(from..to));
+                    if let Some([x, y, w, h]) = rect { host.field_menu(x + w / 2.0, y + h / 2.0); }
                 }
             }
         }

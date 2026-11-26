@@ -68,6 +68,15 @@ impl Geometry {
         Some([from.min(to), row.top, (to - from).abs(), row.height])
     }
 
+    pub(crate) fn selection_rects(&self, range: Range<usize>) -> Vec<[f32; 4]> {
+        self.rows.iter().filter(|row| range.start < row.bytes.end && range.end > row.bytes.start).filter_map(|row| {
+            let (first, last) = (row.stops.first()?, row.stops.last()?);
+            let from = if range.start <= first.0 { first.1 } else { Self::x(row, range.start) };
+            let to = if range.end >= last.0 { last.1 } else { Self::x(row, range.end) };
+            Some([from.min(to), row.top, (to - from).abs(), row.height])
+        }).collect()
+    }
+
     /// The byte whose caret is nearest (x, y): on the line y falls in, or the nearest one.
     pub(crate) fn closest(&self, x: f32, y: f32) -> Option<usize> {
         let distance = |row: &Row| if y < row.top { row.top - y } else { (y - row.top - row.height).max(0.0) };

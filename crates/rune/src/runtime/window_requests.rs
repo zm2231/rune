@@ -12,6 +12,8 @@ pub(crate) struct HostState {
     pub(in crate::runtime) titlebar_inset: f32,
     /// What [`Cx::system_text_scale`] reports: the system's text size setting.
     pub(in crate::runtime) system_text_scale: f32,
+    /// What [`Cx::horizontal_size_class`] and [`Cx::vertical_size_class`] report.
+    pub(in crate::runtime) size_classes: crate::SizeClasses,
     pub(in crate::runtime) maximized: bool,
     pub(in crate::runtime) full_screen: bool,
     /// Confirmed OS-active whole-window backdrop reported by [`Cx::window_backdrop`].
@@ -137,6 +139,7 @@ impl HostState {
             titlebar: Default::default(),
             titlebar_inset: 0.0,
             system_text_scale: 1.0,
+            size_classes: crate::SizeClasses::default(),
             maximized: false,
             full_screen: false,
             window_backdrop: crate::WindowBackdrop::None,

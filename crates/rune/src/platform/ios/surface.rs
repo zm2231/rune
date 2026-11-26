@@ -117,6 +117,7 @@ pub(crate) trait Surface {
     fn set_reduced_motion(&mut self, reduced: bool);
     /// The text size setting, as a scale of its default.
     fn set_text_scale(&mut self, scale: f32);
+    fn set_size_classes(&mut self, classes: crate::SizeClasses);
     /// What the screen keeps at the view's top, right, bottom and left edges, in points.
     fn set_safe_area(&mut self, insets: [f32; 4]);
     fn set_keyboard(&mut self, visible: Option<(f32, f32)>);
@@ -401,6 +402,8 @@ impl<S: 'static> Surface for Hosted<S> {
     fn set_reduced_motion(&mut self, reduced: bool) { self.host.runtime_mut().set_system_reduced_motion(reduced); }
 
     fn set_text_scale(&mut self, scale: f32) { self.host.runtime_mut().set_system_text_scale(scale); }
+
+    fn set_size_classes(&mut self, classes: crate::SizeClasses) { self.host.runtime_mut().set_size_classes(classes); }
 
     fn set_safe_area(&mut self, insets: [f32; 4]) { self.host.runtime_mut().set_safe_area(insets); }
 

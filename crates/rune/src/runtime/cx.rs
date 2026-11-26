@@ -55,6 +55,7 @@ pub(crate) struct CxCore {
     pub(super) titlebar_inset: f32,
     pub(super) safe_area: [f32; 4],
     pub(super) system_text_scale: f32,
+    pub(super) size_classes: crate::SizeClasses,
     pub(super) chrome: crate::ChromeInsets,
     pub(super) maximized: bool,
     pub(super) full_screen: bool,
@@ -151,6 +152,7 @@ impl CxCore {
     pub(crate) fn focus_color(&self) -> Color { self.system_accent.focus(self.env.system_dark) }
     pub(crate) fn safe_area(&self) -> [f32; 4] { self.safe_area }
     pub(crate) fn system_text_scale(&self) -> f32 { self.system_text_scale }
+    pub(crate) fn size_classes(&self) -> crate::SizeClasses { self.size_classes }
     pub(crate) fn hover_none(&self) -> bool {
         #[cfg(target_arch = "wasm32")]
         { crate::platform::web::hover_none() }
@@ -595,6 +597,22 @@ impl<S> Cx<S> {
     /// only its type. A `memo` closure that reads it needs nothing in its version.
     #[inline(always)]
     pub fn system_text_scale(&self) -> f32 { self.core.system_text_scale() }
+    /// How much room the view has across, as iOS names it: [`SizeClass::Compact`] on an
+    /// iPhone held upright and in a narrow iPad window (Slide Over, a third of Split View, a
+    /// small Stage Manager window), [`SizeClass::Regular`] on a full-screen iPad. Lay a view
+    /// out by it as a UIKit or SwiftUI app does: a sidebar beside the content when regular, a
+    /// stack of screens when compact. `None` where the platform has no size classes (the
+    /// desktop and the web): read [`Cx::layout_size`] there. A change re-runs the view and
+    /// its memos.
+    ///
+    /// [`SizeClass::Compact`]: crate::SizeClass::Compact
+    /// [`SizeClass::Regular`]: crate::SizeClass::Regular
+    #[inline(always)]
+    pub fn horizontal_size_class(&self) -> Option<crate::SizeClass> { self.core.size_classes().horizontal }
+    /// [`Cx::horizontal_size_class`] for the view's height: compact on an iPhone turned on
+    /// its side, regular otherwise.
+    #[inline(always)]
+    pub fn vertical_size_class(&self) -> Option<crate::SizeClass> { self.core.size_classes().vertical }
     /// The primary pointer can't hover: a browser's `(hover: none)`, a phone's or tablet's touch
     /// screen. What a mouse would reveal on hover (a code block's Copy, a row's actions) should
     /// show without it. False natively. A change re-runs the view.

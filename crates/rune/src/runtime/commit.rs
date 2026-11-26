@@ -436,6 +436,8 @@ pub(super) struct Measurement<'a> {
     pub(super) safe_area: [f32; 4],
     /// `Cx::system_text_scale`.
     pub(super) system_text_scale: f32,
+    /// `Cx::horizontal_size_class` and `Cx::vertical_size_class`.
+    pub(super) size_classes: crate::SizeClasses,
     pub(super) chrome: crate::ChromeInsets,
     pub(super) maximized: bool,
     pub(super) full_screen: bool,

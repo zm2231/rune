@@ -219,6 +219,14 @@ impl window_requests::HostState {
     }
 
     #[inline]
+    pub(super) fn set_size_classes(&mut self, classes: crate::SizeClasses) -> bool {
+        if classes == self.size_classes { return false; }
+        self.size_classes = classes;
+        self.languages_gen = self.languages_gen.wrapping_add(1);
+        true
+    }
+
+    #[inline]
     pub(super) fn set_system_text_scale(&mut self, scale: f32) -> bool {
         let next = if scale.is_finite() && scale > 0.0 { scale.clamp(0.25, 8.0) } else { 1.0 };
         if next == self.system_text_scale { return false; }
@@ -235,6 +243,15 @@ impl RuntimeCore {
     /// eight; anything else is 1.
     pub fn set_system_text_scale(&mut self, scale: f32) -> bool {
         let changed = self.host.set_system_text_scale(scale);
+        if changed { self.commit.dirty = true; }
+        changed
+    }
+
+    /// What [`Cx::horizontal_size_class`] and [`Cx::vertical_size_class`] report: an iOS
+    /// view's trait collection. A change re-runs the view and its memos. Returns whether it
+    /// changed.
+    pub fn set_size_classes(&mut self, classes: crate::SizeClasses) -> bool {
+        let changed = self.host.set_size_classes(classes);
         if changed { self.commit.dirty = true; }
         changed
     }

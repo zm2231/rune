@@ -13,6 +13,7 @@ pub(crate) mod keys;
 pub(crate) mod lifecycle;
 pub(crate) mod links;
 pub(crate) mod pacing;
+pub(crate) mod size_class;
 #[cfg(target_os = "ios")]
 mod surface;
 pub(crate) mod text;

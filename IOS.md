@@ -23,6 +23,12 @@ What works:
 - **Safe area.** `Cx::safe_area` holds what the status bar, the home indicator and the soft
   keyboard take: pad a full-screen root by it. When the keyboard rises over the focused text
   field, or moves, the field's scroll views scroll the whole field into what the keyboard leaves.
+- **Size classes and multitasking.** `Cx::horizontal_size_class` and `Cx::vertical_size_class`
+  are the view's trait collection: compact across on an iPhone and in a narrow iPad window
+  (Slide Over, a third of Split View, a small Stage Manager window), regular on a full-screen
+  iPad. The view takes every size its window is given, and a resize or rotation that changes a
+  class re-runs the view. A bundle `scripts/ios-app` makes turns every way on an iPad, which
+  is what lets it share the screen.
 - **Text input.** The soft keyboard shows while a text field has the focus. Typing, delete,
   return, predictions, autocorrection, dictation and marked text edit the field; a secure
   field shows the keyboard none of its text. The keyboard is told where the field's

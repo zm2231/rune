@@ -338,6 +338,8 @@ impl<S: 'static> Runtime<S> {
     #[inline(always)]
     pub fn set_system_text_scale(&mut self, scale: f32) -> bool { self.core_mut().set_system_text_scale(scale) }
     #[inline(always)]
+    pub fn set_size_classes(&mut self, classes: crate::SizeClasses) -> bool { self.core_mut().set_size_classes(classes) }
+    #[inline(always)]
     pub(crate) fn system_accent(&self) -> crate::SystemAccent { self.core().system_accent() }
     #[inline(always)]
     pub fn set_system_accent(&mut self, accent: crate::SystemAccent) -> bool { self.core_mut().set_system_accent(accent) }

@@ -232,6 +232,8 @@ mod line_clamp_tests;
 #[cfg(test)]
 mod safe_area_tests;
 #[cfg(test)]
+mod size_class_tests;
+#[cfg(test)]
 mod text_scale_tests;
 #[cfg(test)]
 mod window_focus_tests;

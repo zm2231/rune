@@ -33,6 +33,7 @@ use super::undo::uikit::Undo;
 use super::undo::{Action, Offer};
 
 mod grab;
+use crate::machine::Effects;
 use crate::input::traits::InputTraits;
 use super::super::view::{RuneView, UIResponder, UIView};
 
@@ -627,7 +628,32 @@ impl RuneTextInput {
     /// An edit the keyboard made: the copy takes it now, and the runtime hears of it.
     fn edit(&self, event: Event) {
         let effects = self.ivars().doc.borrow_mut().step(event);
+        self.tell(effects.clone());
         if let Some(host) = self.ivars().host.load() { host.text_edits(effects); }
+    }
+
+    fn tell(&self, effects: Effects<Effect>) {
+        let Some(delegate) = self.delegate() else { return };
+        for effect in effects {
+            // SAFETY: `UITextInputDelegate`'s methods, each taking the text input.
+            unsafe {
+                match effect {
+                    Effect::TextChanged => {
+                        let _: () = msg_send![&*delegate, textWillChange: self];
+                        let _: () = msg_send![&*delegate, textDidChange: self];
+                    }
+                    // UIKit answers news of a selected range by collapsing it to its end (it
+                    // draws no selection here to keep), so it hears only of a caret that moved
+                    // and reads a range when it next needs one.
+                    Effect::SelectionChanged if self.ivars().doc.borrow().selection().is_empty() => {
+                        let _: () = msg_send![&*delegate, selectionWillChange: self];
+                        let _: () = msg_send![&*delegate, selectionDidChange: self];
+                    }
+                    Effect::SelectionChanged => {}
+                    Effect::Key(_) | Effect::Commit(_) | Effect::Preedit(..) | Effect::Select(_) => {}
+                }
+            }
+        }
     }
 
     /// After a frame: whether a field wants the keyboard, what it holds, where its caret is in
@@ -643,28 +669,7 @@ impl RuneTextInput {
         ivars.secure.set(secure);
         ivars.traits.set(traits);
         let effects = if wanted { ivars.doc.borrow_mut().step(Event::Runtime(snapshot)) } else { Default::default() };
-        let delegate = self.delegate();
-        for effect in effects {
-            let Some(delegate) = &delegate else { break };
-            // SAFETY: `UITextInputDelegate`'s methods, each taking the text input.
-            unsafe {
-                match effect {
-                    Effect::TextChanged => {
-                        let _: () = msg_send![&**delegate, textWillChange: self];
-                        let _: () = msg_send![&**delegate, textDidChange: self];
-                    }
-                    // UIKit answers news of a selected range by collapsing it to its end (it
-                    // draws no selection here to keep), so it hears only of a caret that moved
-                    // and reads a range when it next needs one.
-                    Effect::SelectionChanged if ivars.doc.borrow().selection().is_empty() => {
-                        let _: () = msg_send![&**delegate, selectionWillChange: self];
-                        let _: () = msg_send![&**delegate, selectionDidChange: self];
-                    }
-                    Effect::SelectionChanged => {}
-                    Effect::Key(_) | Effect::Commit(_) | Effect::Preedit(..) | Effect::Select(_) => {}
-                }
-            }
-        }
+        self.tell(effects);
         // SAFETY: `UIResponder` methods of these signatures.
         unsafe {
             let first: bool = msg_send![self, isFirstResponder];

@@ -71,6 +71,7 @@ pub(crate) enum Event {
     Unmark,
     /// The keyboard moved the selection to UTF-16 range `range` of the document.
     Select(Range<usize>),
+    Place(Range<usize>),
     /// A frame ended with the field holding this.
     Runtime(Snapshot),
 }
@@ -195,25 +196,32 @@ impl Document {
                 self.mark(over, text, selection)
             }
             Event::Unmark => self.unmark(),
-            Event::Select(range) => {
-                let string = self.string();
-                let bytes = byte(&string, range.start)..byte(&string, range.end).max(byte(&string, range.start));
-                if let Phase::Marked { over, marked, .. } = self.phase.clone() {
-                    let inside = over.start..over.start + marked.len();
-                    if bytes.start >= inside.start && bytes.end <= inside.end {
-                        return self.mark(over.clone(), marked, bytes.start - over.start..bytes.end - over.start);
-                    }
-                }
-                // A selection outside the marked text ends the marking first, which shifts
-                // nothing: the marked text becomes text where it stood.
-                let mut effects = self.unmark();
-                let bytes = whole_emoji(&self.string(), bytes);
-                self.phase = Phase::Plain { selection: bytes.clone() };
-                effects.push(Effect::Select(self.start + bytes.start..self.start + bytes.end));
+            Event::Select(range) => self.select(range),
+            Event::Place(range) => {
+                let mut effects = self.select(range);
+                effects.push(Effect::SelectionChanged);
                 effects
             }
             Event::Runtime(snapshot) => self.reconcile(snapshot),
         }
+    }
+
+    fn select(&mut self, range: Range<usize>) -> Effects<Effect> {
+        let string = self.string();
+        let bytes = byte(&string, range.start)..byte(&string, range.end).max(byte(&string, range.start));
+        if let Phase::Marked { over, marked, .. } = self.phase.clone() {
+            let inside = over.start..over.start + marked.len();
+            if bytes.start >= inside.start && bytes.end <= inside.end {
+                return self.mark(over.clone(), marked, bytes.start - over.start..bytes.end - over.start);
+            }
+        }
+        // A selection outside the marked text ends the marking first, which shifts
+        // nothing: the marked text becomes text where it stood.
+        let mut effects = self.unmark();
+        let bytes = whole_emoji(&self.string(), bytes);
+        self.phase = Phase::Plain { selection: bytes.clone() };
+        effects.push(Effect::Select(self.start + bytes.start..self.start + bytes.end));
+        effects
     }
 
     /// Writes `text` over the marked text or the selection and leaves the caret after it.

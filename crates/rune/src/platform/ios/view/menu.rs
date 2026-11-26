@@ -58,6 +58,7 @@ impl RuneView {
         };
         if phase != TouchPhase::Started {
             if let Some(input) = input { input.hold(phase, at); }
+            self.pace(Event::Wake);
             return;
         }
         let on_field = self.with_surface(|surface| surface.on_focused_field(at.0, at.1)).unwrap_or(false);

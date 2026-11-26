@@ -91,7 +91,7 @@ impl RuneTextInput {
         let Some(host) = self.ivars().host.load() else { return };
         for effect in effects {
             match effect {
-                handles::Effect::Select(range) => self.edit(Event::Select(range)),
+                handles::Effect::Select(range) => self.edit(Event::Place(range)),
                 handles::Effect::LoupeBegin(at) => {
                     host.hide_menu();
                     self.ivars().display.borrow_mut().loupe_begin(&host, at);

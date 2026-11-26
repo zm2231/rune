@@ -200,3 +200,12 @@ fn a_range_inside_a_combining_sequence_stays_a_code_point() {
     run(&mut doc, Event::Replace { range: 2..3, text: String::new() });
     assert_eq!(doc.string(), "ae");
 }
+
+#[test]
+fn a_caret_a_gesture_moves_tells_the_keyboard_and_one_the_keyboard_moves_does_not() {
+    let mut doc = field("aHello world from Rune", 5..5);
+    assert_eq!(run(&mut doc, Event::Place(18..18)), [Effect::Select(18..18), Effect::SelectionChanged]);
+    assert_eq!(doc.selection(), 18..18);
+    assert_eq!(run(&mut doc, Event::Select(5..5)), [Effect::Select(5..5)]);
+    assert_eq!(run(&mut doc, Event::Runtime(Snapshot::Field { text: "aHello world from Rune".into(), start: 0, selection: 5..5 })), []);
+}

@@ -406,8 +406,10 @@ no such list the scroll view's content fits it, and the bars show nothing under 
 When the view joins a window, its nearest view controller is given this scroll view for each
 of its top and bottom edges that names none of its own (`setContentScrollView(_:for:)`), so
 its bars follow the main list for their large title as well as their edge. An edge where the
-host named a scroll view keeps it. When the view leaves that controller, the edges it was
-given are cleared.
+host named a scroll view keeps it. When the view moves to another superview or window
+and so to another controller, or leaves its window, the edges it was given are cleared and
+the new controller is offered its vacant ones. Moving a view's ancestor between controllers in
+the same window tells the view nothing, and leaves the edges where they were.
 
 What the bars did was shown on the iOS 27 simulator, under SwiftUI's `NavigationStack` and
 `TabView` (`examples/swiftui-host`):

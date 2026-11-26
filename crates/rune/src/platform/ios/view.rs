@@ -202,6 +202,13 @@ define_class!(
             self.offer_mirror();
         }
 
+        #[unsafe(method(didMoveToSuperview))]
+        fn did_move_to_superview(&self) {
+            // SAFETY: `UIView` implements it with this signature.
+            let _: () = unsafe { msg_send![super(self), didMoveToSuperview] };
+            self.offer_mirror();
+        }
+
         #[unsafe(method(traitCollectionDidChange:))]
         fn trait_collection_did_change(&self, previous: Option<&AnyObject>) {
             // SAFETY: `UIView` implements it with this signature.

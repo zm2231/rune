@@ -18,7 +18,7 @@ What works:
   list rather than the one behind it, and the outermost of nested lists that has anywhere to go.
   A list already at its top, and a view with no list there, do nothing; a list that follows its
   end (`stick_bottom`) stops following it. This was shown on the iOS simulator; a real tap on a
-  device is not yet verified. See "Scroll to top" below.
+  device is not yet verified. See "The main list and UIKit's bars" below.
 - **Pointer.** A mouse or trackpad on an iPad hovers, clicks, right-clicks and scrolls.
 - **Safe area.** `Cx::safe_area` holds what the status bar, the home indicator and the soft
   keyboard take: pad a full-screen root by it. When the keyboard rises over the focused text
@@ -384,25 +384,60 @@ thread: it returns null anywhere else. The view reports the safe area of where i
 that doesn't reach the screen's edges reads zero. `examples/web-hello` exports
 `web_hello_view` this way (`examples/web-hello/include/web_hello.h`).
 
-## Scroll to top
+`examples/swiftui-host` is a whole SwiftUI app with an Xcode project. It puts a Rune list
+inside a native tab bar and navigation bar. The toolbar's buttons change Rune's state through
+`App::handle`, and a tap in Rune opens a SwiftUI sheet through a callback the app registers.
 
-UIKit tells scroll views of a tap on the status bar, not views, so a `RuneView` keeps a scroll
-view for it to ask: a strip one point high across the view's top edge, with nothing in it,
-that no touch lands on and no reader sees. Asked, it stays where it is and
-`Runtime::scroll_main_to_top` scrolls the app's list.
+## The main list and UIKit's bars
 
-What UIKit does with the tap was shown on the iOS simulator only:
+UIKit looks for a scroll view in two places where a Rune list needs it to: a tap on the status
+bar, which it sends to scroll views and not to views, and the bars of a `UINavigationController`
+or `UITabBarController` (or SwiftUI's `NavigationStack` and `TabView`), which blur and dim what
+scrolls under them only when it sits in a scroll view. A `RuneView` keeps one for both: a
+scroll view that fills it, draws nothing, takes no touch and no reader sees. After each frame
+it holds the main list's place: its content is the list's length, and its offset is the list's
+offset less the safe area's top, so it rests at the top of its content when the list does.
+Asked to scroll to its top, it stays where it is and `Runtime::scroll_main_to_top` scrolls
+the app's list.
 
-- UIKit asked every scroll view under the tap's x, the strip and a host's own among them,
-  and a host's scroll view that agreed scrolled to its top as the app's list did;
+The main list is the first vertical scroll view down the view's centre line from under the
+status bar (the **Scroll to top** item above), and `Runtime::main_scroll` reads its offset and reach. With
+no such list the scroll view's content fits it, and the bars show nothing under them.
+When the view joins a window, its nearest view controller is given this scroll view for each
+of its top and bottom edges that names none of its own (`setContentScrollView(_:for:)`), so
+its bars follow the main list for their large title as well as their edge. An edge where the
+host named a scroll view keeps it. When the view moves to another superview or window
+and so to another controller, or leaves its window, the edges it was given are cleared and
+the new controller is offered its vacant ones. Moving a view's ancestor between controllers in
+the same window tells the view nothing, and leaves the edges where they were.
+
+What the bars did was shown on the iOS 27 simulator, under SwiftUI's `NavigationStack` and
+`TabView` (`examples/swiftui-host`):
+
+- with the list at its top the navigation bar showed no edge, and it blurred the cards that
+  scrolled under it, up under the status bar;
+- a large title collapsed into the bar as the list was dragged up, stayed collapsed when the
+  finger lifted, and opened again back at the top;
+- around the floating tab bar, the Rune list looked as a native SwiftUI `List` did at the same
+  place in its scroll: neither showed a strong bottom edge.
+
+When the safe area's top changes, as a large title collapses into the bar or opens out of it,
+the main list's offset moves by the same amount (`Runtime::shift_main_scroll`), so what it
+shows stays where it was on screen and under a finger that holds it. A list at rest at its
+top stays at its top.
+
+What UIKit does with a tap on the status bar was shown on the iOS simulator only:
+
+- UIKit asked every scroll view under the tap's x, Rune's and a host's own among them, and a
+  host's scroll view that agreed scrolled to its top as the app's list did;
 - a scroll view that didn't reach the tap's x wasn't asked, and one that sat below the
   status bar was.
 
 A real tap on a device is not yet verified. Nor is a Rune view in one column of a split
 view, which by the above would scroll for a tap above that column only.
 
-The strip is told only that the status bar was tapped, not where. A Rune view that draws
-several columns itself scrolls the one under its centre, wherever above it the tap was.
+The scroll view is told only that the status bar was tapped, not where. A Rune view that
+draws several columns itself scrolls the one under its centre, wherever above it the tap was.
 
 ## Spell checking
 

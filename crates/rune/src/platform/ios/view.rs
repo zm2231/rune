@@ -31,8 +31,8 @@ mod input;
 mod lifecycle;
 mod link;
 mod menu;
+mod mirror;
 mod tint;
-mod top;
 
 use link::MainOnly;
 
@@ -108,6 +108,8 @@ pub(crate) struct Ivars {
     /// The hardware key that repeats while held.
     keys: RefCell<keys::Repeat>,
     key_seq: Cell<Seq>,
+    mirror: RefCell<Option<Retained<mirror::Mirror>>>,
+    mirrored_by: RefCell<Weak<AnyObject>>,
 }
 
 define_class!(
@@ -171,9 +173,9 @@ define_class!(
 
     // SAFETY: every method of the protocol is optional.
     unsafe impl ScrollViewDelegate for RuneView {
-        /// The strip at the view's top stays put: the runtime scrolls the app's own list.
+        /// The mirror stays put: the runtime scrolls the app's own list.
         #[unsafe(method(scrollViewShouldScrollToTop:))]
-        fn should_scroll_to_top(&self, _strip: &AnyObject) -> bool {
+        fn should_scroll_to_top(&self, _mirror: &AnyObject) -> bool {
             self.status_bar_tapped();
             false
         }
@@ -197,6 +199,14 @@ define_class!(
             // SAFETY: `UIView` implements it with this signature.
             let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
             self.moved_to_window();
+            self.offer_mirror();
+        }
+
+        #[unsafe(method(didMoveToSuperview))]
+        fn did_move_to_superview(&self) {
+            // SAFETY: `UIView` implements it with this signature.
+            let _: () = unsafe { msg_send![super(self), didMoveToSuperview] };
+            self.offer_mirror();
         }
 
         #[unsafe(method(traitCollectionDidChange:))]
@@ -390,6 +400,8 @@ impl RuneView {
             edit_menu: RefCell::new(None),
             keys: RefCell::new(keys::Repeat::Idle),
             key_seq: Cell::new(Seq::default()),
+            mirror: RefCell::new(None),
+            mirrored_by: RefCell::default(),
         });
         let frame = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0));
         // SAFETY: `initWithFrame:` is `UIView`'s designated initializer.
@@ -400,7 +412,7 @@ impl RuneView {
         // SAFETY: `addSubview:` takes a view, which the text input is.
         let _: () = unsafe { msg_send![&*view, addSubview: &*text] };
         *view.ivars().text.borrow_mut() = Some(text);
-        view.watch_status_bar(mtm);
+        view.mirror_main_scroll(mtm);
         view.recognize(class!(UIPinchGestureRecognizer), sel!(runePinch:));
         view.recognize(class!(UIRotationGestureRecognizer), sel!(runeRotate:));
         view.recognize(class!(UILongPressGestureRecognizer), sel!(runeLongPress:));
@@ -435,6 +447,7 @@ impl RuneView {
             let posts = self.ivars().accessibility.borrow_mut().apply(self.mtm(), self, tree, zoom);
             posts.post();
         }
+        self.sync_mirror();
         self.pace(Event::Frame { animating: frame.animating, wake_after: frame.wake_after_secs });
     }
 

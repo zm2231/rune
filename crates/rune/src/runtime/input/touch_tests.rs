@@ -311,13 +311,14 @@ fn confirming_rig() -> Runtime<HoldStateTest> {
 
 #[test]
 fn a_completed_tap_leaves_no_hold_wake_deadline() {
-    let mut rt = rig();
+    let mut rt = Runtime::new(HoldStateTest::default(), hold_view, (200.0, 300.0), Env::default());
+    rt.frame(0.0);
     assert_eq!(rt.wake_deadline(), None, "idle runtime starts with no wake scheduled");
     rt.touch(1, TouchPhase::Started, 100.0, 70.0, 0.0);
     assert_eq!(rt.wake_deadline(), Some(LONG_PRESS), "pending touch arms hold wake");
     rt.touch(1, TouchPhase::Ended, 100.0, 70.0, 0.05);
     rt.frame(1.0 / 60.0);
-    assert_eq!(rt.state.taps, [0]);
+    assert_eq!(rt.state.taps, 1);
     assert_eq!(rt.wake_deadline(), None, "lifting a finger must not leave a hold wake scheduled on an idle page");
 
     // Panning past slop and cancelling a touch also leave no hold wake scheduled.
@@ -671,4 +672,29 @@ fn host_touch_hold_fires_once_cancels_confirm_and_ignores_stale_or_duplicate_eve
     rt.touch(2, TouchPhase::Ended, 100.0, 30.0, 5.0);
     rt.frame(0.0);
     assert_eq!(rt.wake_deadline(), None);
+}
+
+#[test]
+fn a_finger_that_rests_before_it_drags_still_scrolls_the_list() {
+    let mut rt = rig();
+    let start = 1000.0;
+    rt.touch(1, TouchPhase::Started, 100.0, 220.0, start);
+    for _ in 0..40 { rt.frame(1.0 / 60.0); }
+    for i in 1..=60 {
+        let t = i as f64 / 60.0;
+        rt.touch(1, TouchPhase::Moved, 100.0, 220.0 - 100.0 * t as f32, start + 0.7 + t);
+        rt.frame(1.0 / 60.0);
+    }
+    assert!((offset(&rt) - 100.0).abs() < 1.0, "the list follows the finger after it rested: {}", offset(&rt));
+}
+
+#[test]
+fn a_hold_arms_only_where_a_secondary_press_opens_something() {
+    let mut rt = rig();
+    rt.touch(1, TouchPhase::Started, 100.0, 70.0, 0.0);
+    assert_eq!(rt.wake_deadline(), None, "a row with no secondary press arms no hold");
+    for _ in 0..40 { rt.frame(1.0 / 60.0); }
+    rt.touch(1, TouchPhase::Ended, 100.0, 70.0, 0.7);
+    rt.frame(1.0 / 60.0);
+    assert_eq!(rt.state.taps, [0], "a long press on a plain row still clicks it, as a native button does");
 }

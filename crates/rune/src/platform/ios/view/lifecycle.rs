@@ -54,11 +54,11 @@ pub(super) const STYLE_DARK: isize = 2;
 /// `UIEdgeInsets`.
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct EdgeInsets {
-    top: CGFloat,
-    left: CGFloat,
-    bottom: CGFloat,
-    right: CGFloat,
+pub(super) struct EdgeInsets {
+    pub(super) top: CGFloat,
+    pub(super) left: CGFloat,
+    pub(super) bottom: CGFloat,
+    pub(super) right: CGFloat,
 }
 
 // SAFETY: `UIEdgeInsets` is four `CGFloat`s in this order.

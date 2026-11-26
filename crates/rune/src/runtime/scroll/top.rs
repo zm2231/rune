@@ -31,6 +31,18 @@ impl<S: 'static> Runtime<S> {
         let (core, mut app) = self.split_mut();
         core.scroll_main_to_top(&mut app)
     }
+
+    pub fn main_scroll(&self) -> Option<[f32; 2]> {
+        let core = self.core();
+        let i = core.main_viewport()?;
+        let st = core.scroll.scrolls.get(&core.tree.nodes[i].id)?;
+        let zoom = core.zoom();
+        Some([st.offset as f32 * zoom, st.max as f32 * zoom])
+    }
+
+    pub fn shift_main_scroll(&mut self, dy: f32) {
+        self.core_mut().shift_main_scroll(dy);
+    }
 }
 
 impl RuntimeCore {
@@ -48,6 +60,16 @@ impl RuntimeCore {
         self.land_jumps(app, jumps, &[]);
         self.scroll.requests.step(requests::Event::Destination);
         true
+    }
+
+    pub(crate) fn shift_main_scroll(&mut self, dy: f32) {
+        let Some(i) = self.main_viewport() else { return };
+        let id = self.tree.nodes[i].id;
+        let dy = f64::from(dy / self.zoom());
+        let held = crate::runtime::scroll_touch::shift_held(self.pointer.touch_scroll_mut(), id, dy);
+        let Some(st) = self.scroll.scrolls.get_mut(&id) else { return };
+        if !held && st.offset <= 0.0 { return; }
+        st.offset = if held { st.offset + dy } else { (st.offset + dy).max(0.0) };
     }
 
     /// The viewport a tap on the status bar scrolls: of the vertical viewports at the first

@@ -32,6 +32,7 @@ enum Scene {
     Virtual,
     /// A list that follows its end.
     Chat,
+    Zoomed,
 }
 
 fn rows(n: usize) -> impl Iterator<Item = El> {
@@ -47,7 +48,7 @@ fn fixed(key: &str, n: usize, h: f32) -> El {
     col().key(key).w_full().h(h).scroll(ScrollSpec { stick_bottom: false }).children(rows(n))
 }
 
-fn view(scene: &Scene, _: &mut Cx<Scene>) -> El {
+fn view(scene: &Scene, cx: &mut Cx<Scene>) -> El {
     let root = col().size(SIZE.0, SIZE.1);
     match scene {
         Scene::List => root.child(list("list", 60)),
@@ -69,6 +70,10 @@ fn view(scene: &Scene, _: &mut Cx<Scene>) -> El {
         Scene::Virtual => root.child(col().key("list").scroll(ScrollSpec { stick_bottom: false }).grow(1.0)
             .child(col().key("rows").w_full().growth(crate::GrowthSpec::default()).virtual_rows(10_000, 40.0, |_: &Scene, i| format!("row{i}").into(), |_: &Scene, i| el().h(40.0 + (i % 3) as f32 * 10.0)))),
         Scene::Chat => root.child(col().key("list").scroll(ScrollSpec { stick_bottom: true }).grow(1.0).children(rows(60))),
+        Scene::Zoomed => {
+            cx.zoom(2.0);
+            col().size(SIZE.0 / 2.0, SIZE.1 / 2.0).child(list("list", 60))
+        }
     }
 }
 
@@ -317,3 +322,89 @@ fn a_hand_takes_the_list_back_mid_glide() {
     assert_eq!(offset(&rt, "list"), held);
 }
 
+
+#[test]
+fn the_main_scroll_reports_the_lists_offset_and_reach() {
+    let mut rt = scene(Scene::Titled);
+    let [offset, max] = rt.main_scroll().expect("the list under the title bar");
+    assert_eq!((offset, max), (0.0, max_of(&rt, "list")));
+    down(&mut rt, (150.0, 300.0), 500.0);
+    assert_eq!(rt.main_scroll(), Some([500.0, max_of(&rt, "list")]));
+    assert_eq!(scene(Scene::Still).main_scroll(), None, "nothing scrolls");
+}
+
+fn max_of(rt: &Runtime<Scene>, key: &str) -> f32 { state(rt, key).max as f32 }
+
+#[test]
+fn the_main_scroll_is_in_the_views_points() {
+    let mut rt = scene(Scene::Zoomed);
+    down(&mut rt, (75.0, 150.0), 200.0);
+    let (offset, max) = (offset(&rt, "list") as f32, max_of(&rt, "list"));
+    assert!(offset > 0.0, "the wheel scrolled the list");
+    assert_eq!(rt.main_scroll(), Some([offset * 2.0, max * 2.0]));
+}
+
+#[test]
+fn a_shift_keeps_a_held_list_under_the_finger() {
+    let mut rt = scene(Scene::Titled);
+    let list = rt.tree.nodes.iter().find(|n| n.key.as_deref() == Some("list")).map(|n| n.id).expect("list");
+    let vertical = rt.touch_scroll_start(150.0, 300.0);
+    rt.touch_scroll_pan(150.0, 300.0, false, vertical);
+    rt.touch_scroll_move(list, -100.0);
+    assert_eq!(offset(&rt, "list"), 100.0);
+    rt.shift_main_scroll(-30.0);
+    assert_eq!(offset(&rt, "list"), 70.0, "the bar took 30 points less: the content stays where it was");
+    rt.touch_scroll_move(list, -110.0);
+    assert_eq!(offset(&rt, "list"), 80.0, "the finger carries on from the shifted origin");
+}
+
+#[test]
+fn a_shift_leaves_a_list_at_rest_at_its_top_there() {
+    let mut rt = scene(Scene::Titled);
+    rt.shift_main_scroll(40.0);
+    assert_eq!(offset(&rt, "list"), 0.0, "a list at its top stays at its top");
+    down(&mut rt, (150.0, 300.0), 20.0);
+    rt.shift_main_scroll(-50.0);
+    assert_eq!(offset(&rt, "list"), 0.0, "a list at rest isn't shifted past its top");
+    down(&mut rt, (150.0, 300.0), 300.0);
+    rt.shift_main_scroll(25.0);
+    assert_eq!(offset(&rt, "list"), 325.0);
+}
+
+#[test]
+fn a_shift_carries_a_coasting_list_on_from_its_new_place() {
+    let mut rt = scene(Scene::Titled);
+    let list = rt.tree.nodes.iter().find(|n| n.key.as_deref() == Some("list")).map(|n| n.id).expect("list");
+    let vertical = rt.touch_scroll_start(150.0, 300.0);
+    rt.touch_scroll_pan(150.0, 300.0, false, vertical);
+    rt.touch_scroll_move(list, -200.0);
+    rt.touch_scroll_end(Some(list), -1500.0);
+    rt.frame(1.0 / 120.0);
+    let before = offset(&rt, "list");
+    rt.shift_main_scroll(-30.0);
+    assert_eq!(offset(&rt, "list"), before - 30.0);
+    rt.frame(1.0 / 120.0);
+    let after = offset(&rt, "list");
+    assert!(after > before - 30.0 && after < before + 20.0, "it coasts on from where the shift left it: {before} then {after}");
+}
+
+#[test]
+fn a_gliding_list_still_lands_on_its_top_after_a_shift() {
+    let mut rt = scene(Scene::List);
+    down(&mut rt, (150.0, 300.0), 900.0);
+    assert!(rt.scroll_main_to_top());
+    rt.frame(1.0 / 120.0);
+    rt.shift_main_scroll(-40.0);
+    idle(&mut rt);
+    assert_eq!(offset(&rt, "list"), 0.0);
+}
+
+#[test]
+fn a_list_that_follows_its_end_follows_it_after_a_shift() {
+    let mut rt = scene(Scene::Chat);
+    let end = state(&rt, "list").max;
+    assert_eq!(offset(&rt, "list"), end);
+    rt.shift_main_scroll(-30.0);
+    idle(&mut rt);
+    assert_eq!(offset(&rt, "list"), state(&rt, "list").max, "back on its end");
+}

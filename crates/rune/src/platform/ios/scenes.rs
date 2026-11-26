@@ -402,8 +402,9 @@ pub(crate) fn session_key(session: &AnyObject) -> Option<String> {
 fn activate(key: &str) {
     let existing = session(key);
     // SAFETY: `requestSceneSessionActivation:userActivity:options:errorHandler:` takes a
-    // nullable session, activity, options and block; an activity is made with its type and
-    // carries a property-list `userInfo`.
+    // nullable session, activity, options and block taking an `NSError`, which UIKit copies, so
+    // the handler outlives this call; an activity is made with its type and carries a
+    // property-list `userInfo`.
     unsafe {
         let activity: Allocated<AnyObject> = msg_send![class!(NSUserActivity), alloc];
         let activity: Retained<AnyObject> = msg_send![activity, initWithActivityType: &*NSString::from_str(ACTIVITY)];
@@ -418,7 +419,8 @@ fn activate(key: &str) {
 fn destroy(session: &AnyObject) {
     let failed = failure(format!("ending the scene of window {:?}", session_key(session).unwrap_or_default()));
     // SAFETY: `requestSceneSessionDestruction:options:errorHandler:` takes a session, nullable
-    // options and a nullable block taking an `NSError`.
+    // options and a nullable block taking an `NSError`, which UIKit copies, so the handler
+    // outlives this call.
     unsafe {
         let app: Retained<AnyObject> = msg_send![class!(UIApplication), sharedApplication];
         let _: () = msg_send![&*app, requestSceneSessionDestruction: session, options: None::<&AnyObject>, errorHandler: &*failed];

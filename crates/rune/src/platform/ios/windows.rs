@@ -56,7 +56,7 @@ pub(crate) enum Ask {
 pub(crate) enum Event<'a> {
     Connected { scene: Scene, key: Option<&'a str> },
     Disconnected(Scene),
-    Foreground(Scene),
+    Foreground { scene: Scene, key: Option<&'a str> },
     Background(Scene),
     Discarded(&'a str),
     Ask { window: usize, ask: Ask },
@@ -103,8 +103,10 @@ impl Windows {
         self.windows.iter().position(|w| matches!(w.state, State::Scene(s) | State::Leaving { scene: s, .. } if s == scene))
     }
 
-    fn leaving(&self) -> Vec<usize> {
-        (0..self.len()).filter(|&w| matches!(self.state(w), State::Leaving { .. })).collect()
+    fn in_front(&mut self, window: usize) {
+        self.forget(window);
+        self.recent.push(window);
+        self.front.push(window);
     }
 
     fn rooted(&self) -> bool { matches!(self.state(PRIMARY), State::Scene(_)) }
@@ -134,16 +136,18 @@ pub(crate) fn step(windows: &mut Windows, event: Event<'_>) -> Effects<Effect> {
             }
             None => Effects::none(),
         },
-        Event::Foreground(scene) => match windows.in_scene(scene) {
-            Some(window) if !matches!(windows.state(window), State::Leaving { .. }) => {
-                windows.forget(window);
-                windows.recent.push(window);
-                windows.front.push(window);
-                let mut effects = Effects::none();
-                for leaving in windows.leaving() { effects.extend(gone(windows, leaving)); }
+        Event::Foreground { scene, key } => match windows.in_scene(scene) {
+            Some(window) if matches!(windows.state(window), State::Leaving { .. }) => Effects::none(),
+            Some(window) => {
+                windows.in_front(window);
+                Effects::none()
+            }
+            None => {
+                let Some(key) = key else { return Effects::none() };
+                let effects = connected(windows, scene, Some(key));
+                if let Some(window) = windows.in_scene(scene) { windows.in_front(window); }
                 effects
             }
-            _ => Effects::none(),
         },
         Event::Background(scene) => match windows.in_scene(scene) {
             Some(window) if matches!(windows.state(window), State::Leaving { .. }) => gone(windows, window),

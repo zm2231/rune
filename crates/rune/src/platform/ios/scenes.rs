@@ -78,7 +78,7 @@ struct Registry {
 enum Posted {
     Connected { scene: Retained<AnyObject>, key: Option<String> },
     Disconnected(Retained<AnyObject>),
-    Foreground(Retained<AnyObject>),
+    Foreground(Retained<AnyObject>, Option<String>),
     Background(Retained<AnyObject>),
     Discarded(String),
     Asked(String, Ask),
@@ -124,7 +124,13 @@ pub(crate) fn connected(scene: &AnyObject, key: Option<String>) {
 
 pub(crate) fn disconnected(scene: &AnyObject) { post(Posted::Disconnected(scene.retain())); }
 
-pub(crate) fn foreground(scene: &AnyObject) { post(Posted::Foreground(scene.retain())); }
+pub(crate) fn foreground(scene: &AnyObject) { post(Posted::Foreground(scene.retain(), scene_session_key(scene))); }
+
+fn scene_session_key(scene: &AnyObject) -> Option<String> {
+    // SAFETY: a scene's `session` is never nil.
+    let session: Retained<AnyObject> = unsafe { msg_send![scene, session] };
+    session_key(&session)
+}
 
 pub(crate) fn background(scene: &AnyObject) { post(Posted::Background(scene.retain())); }
 
@@ -245,7 +251,7 @@ impl Registry {
                 self.scenes.retain(|(s, _)| *s != id);
                 Event::Disconnected(id)
             }
-            Posted::Foreground(scene) => Event::Foreground(self.scene_id(scene)),
+            Posted::Foreground(scene, key) => Event::Foreground { scene: self.scene_id(scene), key: key.as_deref() },
             Posted::Background(scene) => Event::Background(self.scene_id(scene)),
             Posted::Discarded(key) => Event::Discarded(key),
             Posted::Asked(key, ask) => Event::Ask { window: self.windows.find(key)?, ask: *ask },

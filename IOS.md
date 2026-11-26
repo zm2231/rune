@@ -233,15 +233,19 @@ which sets `UIApplicationSupportsMultipleScenes` and declares the `rune.window` 
 in `NSUserActivityTypes`) shows each window in a scene of its own, which the user arranges as
 any app's windows: side by side, in Stage Manager, or one at a time. Showing a window asks the
 system for its scene, focusing one on screen brings its scene forward, and hiding or closing
-one ends its scene. When the window hidden or closed is the only one of the app's on screen,
-the window the user last had in front comes forward first (the primary when no other is left,
-asked for again if the user closed it), so the app stays on screen instead of going to the
-Home Screen; its own scene ends once that window is in front, and `App::on_close` runs then.
-Asking to hide or close it again before that ends it at once. A scene's session carries its window's key, so when the system restores an
-app's scenes at launch each comes back with its window. Windows that start visible
+one takes the window out of its scene and asks the system to end the scene. When the window
+hidden or closed is the only one of the app's on screen, the window the user last had in front
+comes forward first (the primary when no other is left, asked for again if the user closed
+it), so the app stays on screen instead of going to the Home Screen; the closed window's
+scene is asked to end once the system has moved it behind, and `App::on_close` runs then.
+Asking to hide or close it again before that does both at once. iPadOS may keep a scene it
+was asked to end, in the background and in the app switcher: showing the window again then
+brings that scene back with the window in it, and a kept scene the user brings back from the
+switcher gets its window too. A scene's session carries its window's key, so when the system
+restores an app's scenes at launch each comes back with its window. Windows that start visible
 (`WindowOptions::visible`) open after the primary draws its first frame, on a fresh launch
 only: once the system restores scenes, it decides which windows come back, and a window the
-user closed stays closed. A restored scene whose window the app no longer has is ended.
+user closed stays closed. A restored scene whose window the app no longer has is asked to end.
 
 **iPhone, and an iPad app with one scene.** The primary fills the scene and can't hide: a
 request to hide or close it is dropped. Every other window shows as a page sheet over the

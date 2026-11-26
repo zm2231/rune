@@ -13,7 +13,7 @@ const CALLBACK: u32 = WM_APP + 1;
 const UPDATE: u32 = WM_APP + 2;
 const ICON_ID: u32 = 1;
 
-struct Model { tooltip: String, menu: Vec<TrayItem>, pending_icon: Option<TrayIcon>, menu_on_primary_click: bool }
+struct Model { tooltip: String, label: String, menu: Vec<TrayItem>, pending_icon: Option<TrayIcon>, menu_on_primary_click: bool }
 struct Context { model: Arc<Mutex<Model>>, on_event: Handler, icon: Cell<HICON>, taskbar_created: u32 }
 pub(super) struct Native { window: isize, model: Arc<Mutex<Model>>, worker: Option<JoinHandle<()>> }
 
@@ -92,7 +92,9 @@ fn notify(hwnd: HWND, context: &Context, message: NOTIFY_ICON_MESSAGE) -> bool {
     let mut data = data(hwnd, NIF_MESSAGE | NIF_ICON | NIF_TIP);
     data.uCallbackMessage = CALLBACK;
     data.hIcon = context.icon.get();
-    set_tip(&mut data, &context.model.lock().unwrap_or_else(|e| e.into_inner()).tooltip);
+    let model = context.model.lock().unwrap_or_else(|e| e.into_inner());
+    set_tip(&mut data, super::win32_tip(&model.tooltip, &model.label));
+    drop(model);
     // SAFETY: `data` is fully initialized for this window's icon.
     unsafe { Shell_NotifyIconW(message, &data) != 0 }
 }
@@ -207,6 +209,7 @@ impl Native {
     pub(super) fn new(spec: TraySpec, on_event: Handler) -> Result<Self, TrayError> {
         let model = Arc::new(Mutex::new(Model {
             tooltip: spec.tooltip.clone(),
+            label: spec.title.clone(),
             menu: spec.menu.clone(),
             pending_icon: None,
             menu_on_primary_click: spec.menu_on_primary_click,
@@ -270,7 +273,10 @@ impl Native {
     }
     pub(super) fn set_icon_name(&self, _name: String) {}
     pub(super) fn set_title(&self, _title: String) {}
-    pub(super) fn set_accessibility_label(&self, _label: String) {}
+    pub(super) fn set_accessibility_label(&self, label: String) {
+        self.model.lock().unwrap_or_else(|e| e.into_inner()).label = label;
+        self.update();
+    }
     pub(super) fn rect(&self) -> Option<[i32; 4]> {
         if self.window == 0 {
             return None;

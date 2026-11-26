@@ -311,7 +311,10 @@ impl Tray {
     ///   carries over to icons set later with [`Tray::set_icon`].
     /// - Linux: the StatusNotifierItem `Title` property (the one [`Tray::set_title`] sets), with
     ///   `NewTitle` emitted.
-    /// - Windows: no-op; Narrator reads the icon's tooltip, set with [`Tray::set_tooltip`].
+    /// - Windows: Narrator reads the icon's tooltip text, the one string Windows keeps for it. The
+    ///   label is that text while the app sets no tooltip ([`TraySpec::tooltip`],
+    ///   [`Tray::set_tooltip`]); a tooltip the app sets is shown and read instead, and the label
+    ///   comes back when the tooltip is cleared to empty.
     ///
     /// ```no_run
     /// use rune::{Tray, TrayIcon, TraySpec};
@@ -351,6 +354,11 @@ impl Tray {
         #[cfg(not(any(all(target_os = "linux", feature = "dbus"), target_os = "macos", target_os = "windows")))]
         { None }
     }
+}
+
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+pub(super) fn win32_tip<'a>(tooltip: &'a str, label: &'a str) -> &'a str {
+    if tooltip.is_empty() { label } else { tooltip }
 }
 
 /// Escapes a tray menu label so Win32 `AppendMenuW` shows it literally: `&` would underline the
@@ -778,6 +786,13 @@ mod tests {
         assert_eq!(dbusmenu_label("Save & Quit"), "Save & Quit");
         assert_eq!(dbusmenu_label("A\0B"), "AB");
         assert_eq!(dbusmenu_label(""), "");
+    }
+
+    #[test]
+    fn windows_tip_reads_the_tooltip_or_else_the_label() {
+        assert_eq!(win32_tip("", "App unavailable"), "App unavailable");
+        assert_eq!(win32_tip("Click to open", "App unavailable"), "Click to open");
+        assert_eq!(win32_tip("", ""), "");
     }
 
     #[test]

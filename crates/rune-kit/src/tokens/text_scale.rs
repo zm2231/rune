@@ -77,6 +77,8 @@ impl Kit {
         m.popup_row = Some(super::metrics::PopupRowMetrics { height: r.height * s, ..r });
         let sel = self.select_metrics();
         m.select = Some(super::metrics::SelectMetrics { chevron: sel.chevron * s, chevron_box: sel.chevron_box * s });
+        let p = self.popover_metrics();
+        m.popover = Some(super::metrics::PopoverMetrics { min_width: p.min_width * s, max_width: p.max_width * s });
         m
     }
 

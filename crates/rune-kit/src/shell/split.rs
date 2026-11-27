@@ -48,7 +48,7 @@ pub struct SidebarToggle {
     hide_label: Option<&'static str>,
 }
 
-const DEFAULT_TOGGLE_SHORTCUT: &str = if cfg!(target_os = "macos") { "⇧⌘B" } else { "Ctrl+Shift+B" };
+const DEFAULT_TOGGLE_SHORTCUT: &str = if rune::MAC_KEYS { "⇧⌘B" } else { "Ctrl+Shift+B" };
 const DEFAULT_SHOW_SIDEBAR: &str = "Show sidebar";
 const DEFAULT_HIDE_SIDEBAR: &str = "Hide sidebar";
 const DEFAULT_FRAME_INSET: f32 = 8.0;

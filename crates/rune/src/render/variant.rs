@@ -427,7 +427,7 @@ impl Renderer {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, not(target_os = "ios")))]
     pub(crate) fn has_frame_wake(&self) -> bool {
         self.frame_wake.is_some()
     }

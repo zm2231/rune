@@ -6,6 +6,7 @@ use crate::frame::clock::FrameClock;
 use crate::frame::host_step::{
     self, Acquire, FrameHost, Gate, PostStepCheck, ReacquireReason, RenderPrep, StepInfo,
 };
+use crate::frame::loop_frame;
 use crate::runtime::{AppDriver, RuntimeCore};
 use crate::time::Instant;
 use crate::window::Missed;
@@ -69,6 +70,14 @@ pub(crate) struct FrameSummary {
     pub(crate) animating: bool,
     pub(crate) wake_after_secs: Option<f64>,
     pub(crate) cpu_us: u64,
+    pub(crate) drawn: Option<Drawn>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Drawn {
+    pub(crate) started: Instant,
+    pub(crate) submitted: Instant,
+    pub(crate) update_ms: f64,
 }
 
 /// What an embedded host serves itself. Everything else an app asks of its window is refused
@@ -116,7 +125,7 @@ pub(crate) trait EmbedSurface {
     fn receive_clipboard(&mut self) {}
     /// Sends what the frame copied to the system clipboard, once the runtime has stepped.
     fn flush_clipboard(&mut self) {}
-    fn prepare(&mut self, drawable: Self::Drawable) -> Self::Prepared;
+    fn prepare(&mut self, drawable: Self::Drawable, looped: Option<Vec<u32>>) -> Self::Prepared;
     fn compositor_animating(&self) -> bool;
     fn render(&mut self, prepared: &mut Self::Prepared, dt: f64, update_ms: f64) -> bool;
     fn submit_and_present(&mut self, prepared: Self::Prepared) -> Instant;
@@ -128,6 +137,8 @@ struct EmbedFrameHost<'a, E: EmbedSurface> {
     surface: &'a mut E,
     /// When the frame will be on screen, from the host's display link; `None` steps to now.
     target: Option<Instant>,
+    only_loops: bool,
+    looped: Option<Vec<u32>>,
     t0: Option<Instant>,
     summary: FrameSummary,
 }
@@ -167,6 +178,14 @@ impl<E: EmbedSurface> FrameHost for EmbedFrameHost<'_, E> {
         self.t0 = Some(t0);
         let target = self.target.unwrap_or(t0);
         let compositing = self.surface.compositor_animating();
+        if self.only_loops && !compositing {
+            let (clock, rt) = self.surface.clock_and_rt_mut();
+            if let Ok((patched, dt)) = loop_frame::step(clock, rt, target) {
+                let animating = rt.animating;
+                self.looped = Some(patched);
+                return StepInfo { runtime_animating: animating, animating, dt, update_ms: t0.elapsed().as_secs_f64() * 1000.0, presents_at: self.target };
+            }
+        }
         let serves = self.surface.serves();
         self.surface.receive_clipboard();
         let (animating, dt, _) = self.surface.with_driver(|clock, rt, app| {
@@ -231,7 +250,7 @@ impl<E: EmbedSurface> FrameHost for EmbedFrameHost<'_, E> {
 
     #[inline]
     fn prepare_render(&mut self, drawable: Self::Drawable, _info: &mut StepInfo) -> RenderPrep<Self::Prepared> {
-        RenderPrep::Ready(self.surface.prepare(drawable))
+        RenderPrep::Ready(self.surface.prepare(drawable, self.looped.take()))
     }
 
     #[inline]
@@ -256,6 +275,7 @@ impl<E: EmbedSurface> FrameHost for EmbedFrameHost<'_, E> {
         self.surface.surface_health_mut().step(EmbedSurfaceEvent::Presented);
         let (_, rt) = self.surface.clock_and_rt_mut();
         self.summary = frame_summary_presented(rt, submitted, t0, info.animating);
+        self.summary.drawn = Some(Drawn { started: t0, submitted, update_ms: info.update_ms });
         self.surface.presented(self.summary.animating);
     }
 }
@@ -263,16 +283,18 @@ impl<E: EmbedSurface> FrameHost for EmbedFrameHost<'_, E> {
 /// Runs one embedded layer frame through the shared [`crate::frame::host_step::run`] sequencer.
 #[cfg(test)]
 pub(crate) fn run_embed_frame<E: EmbedSurface>(surface: &mut E) -> FrameSummary {
-    run_embed_frame_at(surface, None)
+    run_embed_frame_at(surface, None, false)
 }
 
 /// [`run_embed_frame`], stepping the runtime to `target`, the time the frame will be on screen,
 /// when the host's display link gives one.
 #[inline]
-pub(crate) fn run_embed_frame_at<E: EmbedSurface>(surface: &mut E, target: Option<Instant>) -> FrameSummary {
+pub(crate) fn run_embed_frame_at<E: EmbedSurface>(surface: &mut E, target: Option<Instant>, only_loops: bool) -> FrameSummary {
     let mut host = EmbedFrameHost {
         surface,
         target,
+        only_loops,
+        looped: None,
         t0: None,
         summary: FrameSummary::default(),
     };
@@ -348,6 +370,7 @@ pub(crate) fn missed_after_step(
         animating: retry_now || comp_animating || rt.animating || rt.stale() || rt.has_pending_input() || rt.live_pending(),
         wake_after_secs: wake_after_secs(rt),
         cpu_us: t0.elapsed().as_micros() as u64,
+        drawn: None,
     }
 }
 
@@ -366,6 +389,7 @@ fn frame_summary_presented(
         animating: keep_ticking,
         wake_after_secs: wake_after_secs(rt),
         cpu_us,
+        drawn: None,
     }
 }
 

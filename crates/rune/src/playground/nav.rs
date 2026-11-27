@@ -7,8 +7,9 @@ impl LiveCore {
     /// are its own, so it only gets here from the list or the side column.
     pub(crate) fn nav(&self, ev: &KeyEvent, region: Region) -> Nav {
         let m = ev.mods;
-        // Control on macOS, the Windows key elsewhere: never the playground's.
-        let other = m.alt || (cfg!(target_os = "macos") && m.ctrl) || (cfg!(not(target_os = "macos")) && m.logo);
+        // Control with Mac keys, the Windows key elsewhere: never the playground's.
+        let mac = crate::edit::MAC_KEYS;
+        let other = m.alt || (mac && m.ctrl) || (!mac && m.logo);
         if !self.is_open() || other || region == Region::Stage { return Nav::Pass; }
         let letter = match &ev.key {
             Key::Text(t) if !m.cmd => t.chars().next().filter(|_| t.chars().count() == 1).map(|c| c.to_ascii_lowercase()),

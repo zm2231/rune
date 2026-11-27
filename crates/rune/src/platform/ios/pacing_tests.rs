@@ -105,10 +105,23 @@ fn a_timer_from_an_earlier_rest_changes_nothing() {
 }
 
 #[test]
-fn a_timer_already_due_is_asked_for_at_zero_not_in_the_past() {
+fn a_timer_already_due_is_asked_for_at_zero_not_in_the_past_and_keeps_the_link_ticking() {
     let (mut seq, mut state) = running();
     let effects = run(&mut seq, &mut state, Event::Frame { animating: false, wake_after: Some(-0.25) });
-    assert_eq!(effects, [Effect::Pause, Effect::TimerAfter(seq.current(), 0.0)]);
+    assert_eq!(effects, [Effect::TimerAfter(seq.current(), 0.0)]);
+}
+
+#[test]
+fn a_timer_due_before_a_rested_link_could_tick_again_keeps_it_ticking_and_draws_on_the_next_tick() {
+    let (mut seq, mut state) = running();
+    let effects = still_frame(&mut seq, &mut state, Some(0.004));
+    let attempt = seq.current();
+    assert_eq!(effects, [Effect::TimerAfter(attempt, 0.004)]);
+    assert_eq!(state, State::Running { held: 0, stale: false, timer: Some(attempt) });
+    assert_eq!(run(&mut seq, &mut state, Event::Tick), []);
+    assert_eq!(run(&mut seq, &mut state, Event::Timer(attempt)), []);
+    assert_eq!(run(&mut seq, &mut state, Event::Tick), [Effect::Draw]);
+    assert_eq!(run(&mut seq, &mut state, Event::Frame { animating: false, wake_after: None }), [Effect::Pause]);
 }
 
 #[test]

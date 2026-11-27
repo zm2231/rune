@@ -377,7 +377,9 @@ impl SidebarRow {
         self.icon = Some(i);
         self
     }
-    /// A 16 point leading element in place of the icon: a project's avatar, an initial.
+    /// A leading element in place of the icon, in a 16 point slot that follows the kit's text
+    /// size: a project's avatar, an initial. Size it with `k.text_size(16.0)` so it fills the
+    /// slot at every text size.
     pub fn avatar(mut self, e: El) -> Self {
         self.avatar = Some(e);
         self
@@ -617,7 +619,7 @@ impl SidebarRow {
             r = r.fill(c.pressed);
         }
         let lead = match (self.avatar, self.icon) {
-            (Some(a), _) => Some(row().key("avatar").size(16.0, 16.0).center().child(a).a11y_hidden()),
+            (Some(a), _) => Some(row().key("avatar").size(k.text_size(16.0), k.text_size(16.0)).center().child(a).a11y_hidden()),
             (None, Some(i)) => Some(icon(i, k.text_size(16.0)).key("icon").color(glyph).a11y_hidden()),
             _ => None,
         };
@@ -642,7 +644,7 @@ impl SidebarRow {
             Some(sub) => {
                 let first = row().key("line1").w_full().gap(6.0).center_y().children(lead).child(label);
                 let second = text(sub).key("subtitle").font(sub_font).color(self.subtitle_color.unwrap_or(c.text_faint)).truncate().w_full().a11y_hidden();
-                let second = row().key("line2").w_full().pl(if has_lead { 16.0 + 6.0 } else { 0.0 }).child(second);
+                let second = row().key("line2").w_full().pl(if has_lead { k.text_size(16.0) + 6.0 } else { 0.0 }).child(second);
                 r.child(col().key("lines").grow(1.0).shrink().min_w(0.0).child(first).child(second))
             }
             None => r.children(lead).child(label),
@@ -667,16 +669,16 @@ impl SidebarRow {
             r = r.child(t);
         }
         if self.status.is_some() || self.close.is_some() {
-            let dot = |color| el().size(7.0, 7.0).radius(3.5).fill(color);
+            let dot = |color| el().size(k.text_size(7.0), k.text_size(7.0)).radius(k.text_size(3.5)).fill(color);
             let status = self.status.map(|s| match s {
                 RowStatus::Busy => Spinner::new().size(k.text_size(12.0)).color(c.icon_muted).build(k),
                 RowStatus::Attention => dot(c.warning.icon),
                 RowStatus::Unread => dot(c.bg_accent),
                 RowStatus::Other(e) => e,
             });
-            let mut slot = row().key("status").size(20.0, 20.0).center();
+            let mut slot = row().key("status").size(k.text_size(20.0), k.text_size(20.0)).center();
             if let Some(st) = status {
-                let st = row().key("status-mark").size(20.0, 20.0).center().child(st).a11y_hidden();
+                let st = row().key("status-mark").size(k.text_size(20.0), k.text_size(20.0)).center().child(st).a11y_hidden();
                 slot = slot.child(if self.close.is_some() { st.group_opacity(1.0, 0.0) } else { st });
             }
             if let Some(bind) = self.close {

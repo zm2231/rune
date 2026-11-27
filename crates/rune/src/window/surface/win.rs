@@ -440,6 +440,7 @@ impl Win {
 
     /// Keeps the macOS display link coasting briefly (~150 ms) with zero draws and zero presents
     /// when a visible window settles idle after presenting.
+    #[cfg_attr(feature = "frame-profile", track_caller)]
     pub(in crate::window) fn coast_pacing(&mut self) {
         #[cfg(target_os = "macos")]
         if let Some(pacing) = &mut self.native.pacing { pacing.coast(); }
@@ -449,10 +450,12 @@ impl Win {
 
     /// Stops a coasting macOS display link once its keep-alive budget hits zero (zero redraws).
     #[cfg(target_os = "macos")]
+    #[cfg_attr(feature = "frame-profile", track_caller)]
     pub(in crate::window) fn stop_expired_pacing(&mut self) {
         if let Some(pacing) = &mut self.native.pacing { pacing.stop_expired(); }
     }
 
+    #[cfg_attr(feature = "frame-profile", track_caller)]
     pub(in crate::window) fn stop_pacing(&mut self) {
         #[cfg(target_os = "macos")]
         if let Some(pacing) = &mut self.native.pacing { pacing.stop(); }

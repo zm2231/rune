@@ -133,6 +133,7 @@ pub(crate) struct HostState {
     /// smaller than the layout viewport (e.g. an on-screen keyboard under `resizes-visual`), or
     /// `None` when the full layout viewport is visible.
     pub(in crate::runtime) visual_viewport_y: Option<(f32, f32)>,
+    pub(in crate::runtime) window_key: Option<std::sync::Arc<str>>,
 }
 
 impl HostState {
@@ -142,6 +143,7 @@ impl HostState {
     pub(in crate::runtime) fn new(viewport: (f32, f32), env: &Env) -> Self {
         Self {
             zoom: zoom::Zoom { k: 1.0, window: viewport, window_scale: env.scale },
+            window_key: None,
             titlebar: Default::default(),
             titlebar_inset: 0.0,
             system_text_scale: 1.0,
@@ -554,6 +556,10 @@ impl FitWindow {
 }
 
 impl RuntimeCore {
+    pub(crate) fn set_window_key(&mut self, key: &str) {
+        self.host.window_key = Some(key.into());
+    }
+
     /// Asks the window for the content's new height, on this commit's spring. The first
     /// commit, a viewport change and `Tx::instant` jump.
     #[inline]
@@ -584,7 +590,7 @@ impl RuntimeCore {
 
     /// The last committed root element's target `(width, height)` in window points from Taffy
     /// layout (not interpolated spring rects).
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(all(test, not(any(target_arch = "wasm32", target_os = "ios"))))]
     pub(crate) fn committed_content_size(&self) -> Option<(f32, f32)> {
         let root = self.tree.nodes.first()?;
         Some((root.local.w * self.host.zoom.k, root.local.h * self.host.zoom.k))

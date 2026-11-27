@@ -6,7 +6,7 @@
 //! close it, and focus goes back to the trigger, without a ring when the pointer opened it, as
 //! Desktop's menu machine has it (`ui/src/navigation/menu/machine.ts`).
 
-use rune::{El, Icon, TextStyle, Tx, col, el, icon, row, text};
+use rune::{El, Icon, TextStyle, Tx, col, el, icon, row, spacer, text};
 
 use super::overlay::{Modal, Placement, content_key, dismissal, dismissal_tx, push_anchored_modal, scrim_key, trigger_key};
 use super::popover::fit_scroll_bar;
@@ -50,7 +50,7 @@ pub struct Select {
     key: String,
     options: Vec<(Option<String>, String)>,
     details: Vec<Option<String>>,
-    width: f32,
+    width: Option<f32>,
     fill: bool,
     menu_width: Option<f32>,
     current: Option<String>,
@@ -75,7 +75,7 @@ impl Select {
             key: key.into(),
             options: options.iter().map(|o| (None, o.as_ref().to_owned())).collect(),
             details: Vec::new(),
-            width: 280.0,
+            width: None,
             fill: false,
             menu_width: None,
             current: None,
@@ -105,11 +105,12 @@ impl Select {
         self.details = d.iter().map(|x| x.as_ref().map(|s| s.as_ref().to_owned())).collect();
         self
     }
-    /// The field trigger's width in points (default 280), the widest it grows: in a narrower
-    /// parent it takes the parent's width. Ignored when [`Self::fill`] is set or when the
+    /// The field trigger's width in points (280 at the default text size by default, following
+    /// the kit's text size), the widest it grows: in a narrower parent it takes the parent's
+    /// width. Ignored when [`Self::fill`] is set or when the
     /// appearance is [`SelectAppearance::Inline`].
     pub fn width(mut self, w: f32) -> Self {
-        self.width = w;
+        self.width = Some(w);
         self
     }
     /// The [`SelectAppearance::Field`] trigger fills its parent's width instead of using
@@ -129,7 +130,8 @@ impl Select {
     }
     /// The open listbox's width in points for any [`SelectAppearance`], such as the trigger's
     /// measured width (clamped to the window bounds when wider than the viewport). Without it
-    /// the listbox sizes itself to its labels, between 160 and 368 points.
+    /// the listbox sizes itself to its labels, between 160 and 368 points at the default text
+    /// size, scaling with the kit's text size.
     ///
     /// ```
     /// use rune_kit::{Select, SelectAppearance};
@@ -331,9 +333,10 @@ impl Select {
                 .radius(row_m.radius)
                 .mt(if after_item { 2.0 } else { 0.0 })
                 .child(
-                    text(o.clone()).key("label").font(k.ty.ui_compact).color(c.text_base).grow(1.0).shrink().truncate().a11y_hidden(),
+                    text(o.clone()).key("label").font(k.ty.ui_compact).color(c.text_base).shrink().truncate().a11y_hidden(),
                 )
-                .child(el().key("indicator").size(16.0, 16.0).center().a11y_hidden().child(
+                .child(spacer())
+                .child(el().key("indicator").size(k.text_size(16.0), k.text_size(16.0)).center().a11y_hidden().child(
                     icon(k.glyph.check_small, k.text_size(14.0)).color(c.icon_base).opacity(if selected { 1.0 } else { 0.0 }),
                 ));
             if let Some(d) = self.details.get(i).cloned().flatten() {
@@ -362,7 +365,7 @@ impl Select {
             .shrink();
         let listbox = match self.menu_width {
             Some(w) => listbox.w(w),
-            None => listbox.min_w(160.0).max_w(368.0),
+            None => listbox.min_w(k.text_size(160.0)).max_w(k.text_size(368.0)),
         };
         let content = k.elevate(
             listbox
@@ -415,7 +418,7 @@ impl Select {
                 k.overlay_state(t, self.state, hover, !disabled)
             }
             SelectAppearance::Field => {
-                let t = if self.fill { trigger.w_full().shrink() } else { trigger.w_full().max_w(self.width).shrink() };
+                let t = if self.fill { trigger.w_full().shrink() } else { trigger.w_full().max_w(self.width.unwrap_or_else(|| k.text_size(280.0))).shrink() };
                 let mut t = t
                     .h(k.text_size(28.0))
                     .pr(6.0)

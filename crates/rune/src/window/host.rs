@@ -35,6 +35,9 @@ pub(in crate::window) mod window_script;
 #[cfg(test)]
 #[path = "host/frame_move_tests.rs"]
 mod frame_move_tests;
+#[cfg(test)]
+#[path = "host/shared_state_tests.rs"]
+mod shared_state_tests;
 
 pub(in crate::window) use app::{CompositorFrame, WindowApp};
 use app::TypedWindowApp;
@@ -311,22 +314,24 @@ impl Host {
         let comp = app.compositor.take();
         let (layout_seed, keep_layout) = (app.layout_seed.take(), app.keep_layout.take());
         let (playground, attach_playground) = (app.playground.take(), app.attach_playground);
-        let (spec, state, shared, runtime) = app.into_parts(args.scene.as_deref());
+        let (spec, state, shared, runtime, member) = app.into_member_parts(&key, args.scene.as_deref());
         let size = args.size.unwrap_or(spec.size);
         // The window reports the system appearance and scale when it opens.
         let env = Env::new(args.theme.as_deref() != Some("light"), 1.0);
         let mut rt = runtime_for(&spec, state, size, env, setup_waker(&shared.core));
         if let Some(attach) = attach_playground { attach(&mut rt, playground, &spec, args.playground.clone(), args.variant.clone(), true); }
         rt.configure(runtime);
+        rt.core_mut().set_window_key(&key);
         if let Some(seed) = layout_seed.clone() { rt.core_mut().offer_layout_seed(seed); }
         shared.core.connect(prepared.waker.clone());
+        if let Some(member) = &member { member.connect(prepared.waker.clone()); }
         let shortcuts = crate::shortcuts::Guard::attach(&shared, prepared.waker.clone(), false, wayland);
         let menus = crate::native_menu::MenuGuard::attach(&shared, false);
         let shared_core = shared.core.clone();
         let geometry = SpecGeometry { title: spec.title, size: spec.size, min_size: spec.min_size };
         let typed = Box::new(TypedWindowApp {
             rt, shared, comp, on_frame_drawn, on_close_request, on_quit_request, on_close, on_rest, on_quit, on_reopen, on_geometry, turn_scope,
-            keep_layout, kept_layout: layout_seed,
+            keep_layout, kept_layout: layout_seed, member,
         });
         Self::from_app(typed, HostInit {
             prepared,
@@ -449,7 +454,10 @@ impl Host {
             // real scale makes.
             app.rt_mut().host.set_fit_height(true);
             let (min, max) = options.size_limits(geometry.min_size);
-            let fitted = crate::window::frame::clamp_size((size.0, app.content_height()), min, max);
+            let entered = app.enter_turn();
+            let height = app.content_height();
+            if entered { app.leave_turn(); }
+            let fitted = crate::window::frame::clamp_size((size.0, height), min, max);
             app.rt_mut().set_viewport(fitted, 1.0);
             geometry.size = fitted;
             args.size = None;
@@ -489,7 +497,9 @@ impl Host {
             rt.host.represented_file.seed(macos_window.represented_file.clone());
             rt.host.document_edited.seed(macos_window.document_edited);
         }
+        let entered = app.enter_turn();
         app.set_live_visible(false);
+        if entered { app.leave_turn(); }
         let terminal_loss = gpu_loss::TerminalLoss::new(gpu_loss_policy, gpu_loss_latch);
         terminal_loss.connect_wake(shared.clone(), waker.clone());
         let mut clipboard = crate::clipboard::Client::default();

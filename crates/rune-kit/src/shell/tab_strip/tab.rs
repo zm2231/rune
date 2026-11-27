@@ -104,18 +104,18 @@ pub(super) fn build(item: TabItemCore<'_>, at: Place, prev: Option<&str>, st: &S
 
     // A busy icon-only tab spins in its avatar's place.
     let lead = match icon_only && busy {
-        true => row().key("avatar").size(16.0, 16.0),
+        true => row().key("avatar").size(k.text_size(16.0), k.text_size(16.0)),
         false => lead(item.avatar, item.icon, at.active, icon_only && dotted, status, k),
     };
     // Without hover every closable tab shows its slot: the title fades 24 before the tab's end, 44 with a status mark beside the close button.
     let touch = st.hover_none && closable && !icon_only;
-    let room = if touch && status.is_some() { 44.0 } else { 24.0 };
+    let room = SLOT_END + k.text_size(SLOT) * if touch && status.is_some() { 2.0 } else { 1.0 };
     let title = (!icon_only).then(|| title(&item.title, item.editor, &at, vertical, emphasized || touch, room, k));
     pill = match (item.subtitle, title) {
         (Some(sub), Some(t)) if vertical => {
             let sub = text(sub.into_owned()).key("subtitle").font(k.ty.ui_compact).color(c.text_muted).truncate_fade_width(FADE / k.ty.ui_compact.size).a11y_hidden();
             let first = row().key("line1").w_full().gap(6.0).center_y().child(lead).child(t);
-            pill.child(col().key("lines").grow(1.0).shrink().min_w(0.0).child(first).child(row().key("line2").w_full().pl(16.0 + 6.0).pr(SLOT_END + SLOT).child(sub)))
+            pill.child(col().key("lines").grow(1.0).shrink().min_w(0.0).child(first).child(row().key("line2").w_full().pl(k.text_size(16.0) + 6.0).pr(SLOT_END + k.text_size(SLOT)).child(sub)))
         }
         (_, Some(t)) => pill.child(lead).child(t),
         (_, None) => pill.child(lead),
@@ -241,19 +241,21 @@ pub(super) fn build(item: TabItemCore<'_>, at: Place, prev: Option<&str>, st: &S
 /// The 16 point avatar, icon or empty mark, with an icon-only tab's status badge on its corner.
 fn lead(avatar: Option<El>, glyph: Option<&'static rune::Icon>, active: bool, badge: bool, status: Option<TabItemStatus>, k: &Kit) -> El {
     let c = &k.c;
+    let side = k.text_size(16.0);
     let mark = match (avatar, glyph) {
         (Some(a), _) => a,
-        (None, Some(i)) => icon(i, k.text_size(16.0)).key("icon").color(if active { c.icon_base } else { c.icon_muted }),
-        (None, None) => el().size(16.0, 16.0).radius(3.0).border(1.0, c.border_muted),
+        (None, Some(i)) => icon(i, side).key("icon").color(if active { c.icon_base } else { c.icon_muted }),
+        (None, None) => el().size(side, side).radius(3.0).border(1.0, c.border_muted),
     };
     if !badge {
-        return row().key("avatar").size(16.0, 16.0).center().child(mark).a11y_hidden();
+        return row().key("avatar").size(side, side).center().child(mark).a11y_hidden();
     }
     // The dot sits on the avatar's corner, which is cut clear 4.5 around it (`tab-nav.css`:
     // `radial-gradient(circle 4.5px at 100% 0, transparent 4px, black 5px)`).
-    let mark = row().key("mark").size(16.0, 16.0).center().cutout_circle([16.0, 0.0], 4.0, 5.0).child(mark);
-    row().key("avatar").size(16.0, 16.0).center().child(mark).a11y_hidden().child(
-        el().key("badge").absolute(16.0 - BADGE / 2.0, -BADGE / 2.0).size(BADGE, BADGE).radius(BADGE / 2.0).fill(dot_color(status, k)),
+    let dot = k.text_size(BADGE);
+    let mark = row().key("mark").size(side, side).center().cutout_circle([side, 0.0], k.text_size(4.0), k.text_size(5.0)).child(mark);
+    row().key("avatar").size(side, side).center().child(mark).a11y_hidden().child(
+        el().key("badge").absolute(side - dot / 2.0, -dot / 2.0).size(dot, dot).radius(dot / 2.0).fill(dot_color(status, k)),
     )
 }
 
@@ -336,7 +338,7 @@ fn status_slot(look: SlotLook, st: &Strip, bind: &dyn TabBind, id: &str, k: &Kit
     // An icon-only tab carries its dots on the avatar; only a busy ring takes the slot.
     let mark = match status {
         Some(TabItemStatus::Busy) => Some((st.busy)(k)),
-        Some(s) if !icon_only => Some(el().size(DOT, DOT).radius(DOT / 2.0).fill(dot_color(Some(s), k))),
+        Some(s) if !icon_only => Some(el().size(k.text_size(DOT), k.text_size(DOT)).radius(k.text_size(DOT) / 2.0).fill(dot_color(Some(s), k))),
         _ => None,
     };
     // An icon-only tab that isn't active has no close button, even under the pointer: a press
@@ -350,8 +352,9 @@ fn status_slot(look: SlotLook, st: &Strip, bind: &dyn TabBind, id: &str, k: &Kit
     // A vertical tab's slot is clear unless the pointer or a status is on it.
     // Under the pointer it's always painted, in the hover's overlay where the tab has none.
     let painted = touch || ((status.is_some() || (active && !vertical)) && !(icon_only && !busy));
-    let top = (h - SLOT) / 2.0;
-    let mut slot = row().key("status").size(SLOT, SLOT).center();
+    let side = k.text_size(SLOT);
+    let top = (h - side) / 2.0;
+    let mut slot = row().key("status").size(side, side).center();
     let ground = |key: &'static str, fill: Color| hidden(el().key(key).pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).fill(fill).group_opacity(0.0, 1.0));
     if painted {
         slot = grounded(slot, composite, 0.0);
@@ -365,7 +368,7 @@ fn status_slot(look: SlotLook, st: &Strip, bind: &dyn TabBind, id: &str, k: &Kit
         slot = slot.child(ground("ground-hover", over));
     }
     slot = match (icon_only, width) {
-        (true, Some(w)) => slot.absolute((w - SLOT) / 2.0, top),
+        (true, Some(w)) => slot.absolute((w - side) / 2.0, top),
         _ => slot.pin(None, Some(top), Some(SLOT_END), None),
     };
     // An icon-only tab's slot shows only under the pointer, or while it spins.
@@ -374,9 +377,9 @@ fn status_slot(look: SlotLook, st: &Strip, bind: &dyn TabBind, id: &str, k: &Kit
     }
     if let Some(m) = mark {
         let keep = icon_only && busy && !active;
-        let m = row().key("status-mark").size(SLOT, SLOT).absolute(0.0, 0.0).center().child(m).a11y_hidden();
+        let m = row().key("status-mark").size(side, side).absolute(0.0, 0.0).center().child(m).a11y_hidden();
         // Without hover the mark stays, beside the close button (`tab-status`'s `inset-inline-end: 20px`).
-        slot = slot.child(if touch { m.absolute(-16.0, 0.0) } else if close && !keep { hidden(m.group_opacity(1.0, 0.0)) } else { m });
+        slot = slot.child(if touch { m.absolute(-k.text_size(16.0), 0.0) } else if close && !keep { hidden(m.group_opacity(1.0, 0.0)) } else { m });
     }
     if close {
         let lock = width.filter(|_| st.horizontal_lock).unwrap_or(0.0);

@@ -267,14 +267,16 @@ impl LayerHostCore {
         crate::window::reblend_core(&self.surface, &self.gpu, &mut self.config, renderer, &mut alpha, rt)
     }
 
-    fn prepare_draw(&mut self, rt: &mut RuntimeCore, frame: wgpu::SurfaceTexture) -> PreparedEmbedFrame {
+    fn prepare_draw(&mut self, rt: &mut RuntimeCore, frame: wgpu::SurfaceTexture, looped: Option<Vec<u32>>) -> PreparedEmbedFrame {
         let target_format = if rt.srgb_blend() { self.config.format.remove_srgb_suffix() } else { self.config.format };
         let target = frame.texture.create_view(&wgpu::TextureViewDescriptor {
             format: (target_format != self.config.format).then_some(target_format),
             ..Default::default()
         });
         let size = (self.config.width, self.config.height);
-        host_step::prepare_gpu_resources(self.renderer.as_mut().expect("a frame remakes the renderer before it draws"), &self.gpu, rt, size, true);
+        let renderer = self.renderer.as_mut().expect("a frame remakes the renderer before it draws");
+        renderer.next_instances(rt.paint_count(), looped);
+        host_step::prepare_gpu_resources(renderer, &self.gpu, rt, size, true);
         let encoder = self.gpu.device.create_command_encoder(&Default::default());
         PreparedEmbedFrame { frame, target, encoder, size, format: target_format }
     }
@@ -537,7 +539,7 @@ impl<S: 'static> LayerHost<S> {
 
     /// [`Self::frame_at`] for a host with no presentation time: the frame is stepped to now.
     pub fn frame(&mut self) -> EmbedFrame {
-        self.frame_to(None)
+        self.frame_to(None, false)
     }
 
     /// Steps animations and layout to `target`, the time the frame will be on screen, and
@@ -550,20 +552,25 @@ impl<S: 'static> LayerHost<S> {
     /// tried again on a wait that doubles, an outdated one is configured again, and one the GPU
     /// refuses to configure rests until a resize. `EmbedFrame::wake_after_secs` carries the wait.
     pub fn frame_at(&mut self, target: Instant) -> EmbedFrame {
-        self.frame_to(Some(target))
+        self.frame_to(Some(target), false)
     }
 
-    fn frame_to(&mut self, target: Option<Instant>) -> EmbedFrame {
+    fn frame_to(&mut self, target: Option<Instant>, only_loops: bool) -> EmbedFrame {
+        self.frame_summary(target, only_loops).into()
+    }
+
+    #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+    pub(crate) fn frame_summary(&mut self, target: Option<Instant>, only_loops: bool) -> embed_frame::FrameSummary {
         let now = crate::time::now();
         if !self.core.suspended && self.core.backoff.waiting(now) {
-            return EmbedFrame { wake_after_secs: self.core.wake_after(self.rt.core(), now), ..EmbedFrame::default() };
+            return embed_frame::FrameSummary { wake_after_secs: self.core.wake_after(self.rt.core(), now), ..Default::default() };
         }
         let _ = self.core.backoff.step(BackoffEvent::Lapsed);
         if let Err(error) = self.remake_gpu() {
             eprintln!("rune: an embedded surface could not make its renderer again: {error}");
-            return EmbedFrame::default();
+            return embed_frame::FrameSummary::default();
         }
-        embed_frame::run_embed_frame_at(self, target).into()
+        embed_frame::run_embed_frame_at(self, target, only_loops)
     }
 }
 
@@ -589,8 +596,8 @@ impl<S: 'static> EmbedSurface for LayerHost<S> {
     fn flush_clipboard(&mut self) {
         if let Some(clipboard) = &self.core.clipboard { clipboard.flush_core(self.rt.core_mut()); }
     }
-    fn prepare(&mut self, drawable: wgpu::SurfaceTexture) -> PreparedEmbedFrame {
-        self.core.prepare_draw(self.rt.core_mut(), drawable)
+    fn prepare(&mut self, drawable: wgpu::SurfaceTexture, looped: Option<Vec<u32>>) -> PreparedEmbedFrame {
+        self.core.prepare_draw(self.rt.core_mut(), drawable, looped)
     }
     fn compositor_animating(&self) -> bool { self.compositor.as_ref().is_some_and(|c| c.animating()) }
 

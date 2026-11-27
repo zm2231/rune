@@ -26,7 +26,8 @@ impl CommitWhy {
     pub const ROUTE: u16 = 256;
     /// A commit landed at once (`Tx::instant`): what it changed didn't animate, by design.
     pub const INSTANT: u16 = 512;
-    pub const NAMES: [&'static str; 10] = ["poll", "input", "layout", "read", "dirty", "relayout", "settle", "virtual", "route", "instant"];
+    pub const SHARED: u16 = 1024;
+    pub const NAMES: [&'static str; 11] = ["poll", "input", "layout", "read", "dirty", "relayout", "settle", "virtual", "route", "instant", "shared"];
 
     pub fn names(bits: u16) -> Vec<&'static str> {
         Self::NAMES.iter().enumerate().filter(|(i, _)| bits & (1 << i) != 0).map(|(_, n)| *n).collect()

@@ -146,6 +146,9 @@ fn at_twice_the_text_size_every_control_holds_its_text_and_grows_only_by_it() {
     }
 }
 
+#[cfg(feature = "markdown")]
+const NOTES: &str = "```facts\nLatency: {verified} 11.9 ms\n```\n\n```compare\nBefore: Software loop.\nAfter: One GPU pass.\n```\n\n```steps\n{built} Shared pass\n{proposed} Live preview\n```\n\n```size\napp +120 \u{2212}30 \u{b7} tests +45 \u{2212}0 \u{b7} 4 files\n```\n";
+
 struct Scene {
     scale: TextScale,
     diff: crate::diff::DiffState,
@@ -164,13 +167,18 @@ fn scene(s: &Scene, cx: &mut Cx<Scene>) -> El {
             let menu = Menu::new("menu")
                 .trigger(Button::new("Edit").build(k))
                 .item(MenuItem::new("Copy").icon(&STAR))
-                .item(MenuItem::new("Wrap").checked(true))
+                .item(MenuItem::new("Word wrap").shortcut("\u{2325} Z").checked(true))
                 .item(MenuItem::new("More").submenu(vec![MenuEntry::item(MenuItem::new("Less"))], false))
                 .open(true)
                 .build(k, &mut layer);
-            let select = Select::new("select", &["One", "Two"]).current(Some("One")).open(true).build(k, &mut layer);
+            let wide = Menu::new("wide")
+                .trigger(Button::new("View").build(k))
+                .item(MenuItem::new("Show the minimap beside the editor"))
+                .open(true)
+                .build(k, &mut layer);
+            let select = Select::new("select", &["One", "Elderberry"]).current(Some("One")).open(true).build(k, &mut layer);
             let tabs = TabStrip::new("tabs", TabOrientation::Horizontal)
-                .tabs([TabItem::new("a", "Alpha").icon(&STAR).closable(true)])
+                .tabs([TabItem::new("a", "Alpha").icon(&STAR).closable(true), TabItem::new("b", "Beta").status(Some(crate::shell::TabItemStatus::Busy))])
                 .viewport_width(Some(400.0))
                 .on_close(|_: &mut Scene, _, _| {})
                 .build(k);
@@ -178,17 +186,39 @@ fn scene(s: &Scene, cx: &mut Cx<Scene>) -> El {
             let tree = TreeItem::new("src").icon(&STAR).build(k, &TreeRow::new("src", 0), &TreeStyle::from_kit(k));
             let folder = TreeItem::new("lib").build(k, &TreeRow::new("lib", 0).expanded(Some(true)), &TreeStyle::from_kit(k));
             let diff = crate::diff::DiffView::new(|s: &Scene| &s.diff, |s: &mut Scene| &mut s.diff).on_comment(|_: &mut Scene, _, _| {}).build(s, k);
+            #[cfg(feature = "markdown")]
+            let markdown = crate::Markdown::new("# One\n\n## Two\n\n### Three\n\n#### Four\n\nBody with `code`.\n\n1. First\n2. Second\n\n![Missing chart](missing.png)\n\n```\nlet x = 1;\n```\n").build(k);
+            #[cfg(not(feature = "markdown"))]
+            let markdown = el();
+            #[cfg(feature = "markdown")]
+            let notes = crate::Note::new(NOTES).build(k);
+            #[cfg(not(feature = "markdown"))]
+            let notes = el();
             col()
                 .w(900.0)
                 .items_start()
+                .child(el().w(600.0).child(markdown.key("markdown")))
+                .child(el().w(600.0).child(notes.key("notes")))
                 .child(row().child(tabs.key("tab_strip")))
                 .child(row().child(list.key("list")))
                 .child(row().child(menu))
+                .child(row().child(wide))
                 .child(row().child(select))
-                .child(Toast::new("toast", "Saved").icon(k, &STAR).closable().build(k).key("toast"))
+                .child(
+                    Toast::new("toast", "Download started")
+                        .icon(k, &STAR)
+                        .description("23% \u{b7} 2 min left")
+                        .closable()
+                        .action(k, "Run in background", true, |_: &mut Scene, _: &mut rune::Tx| {})
+                        .action(k, "Cancel", false, |_: &mut Scene, _: &mut rune::Tx| {})
+                        .build(k)
+                        .key("toast"),
+                )
                 .child(SidebarHeader::new("Pinned").collapsed(false).build(k).key("sidebar_header"))
-                .child(el().w(240.0).child(SidebarRow::new("Inbox").icon(&STAR).build(k).key("sidebar_icon_row")))
+                .child(el().w(240.0).child(SidebarRow::new("Inbox").icon(&STAR).status(crate::shell::RowStatus::Busy).build(k).key("sidebar_icon_row")))
                 .child(el().w(300.0).child(tree.key("tree_row")))
+                .child(el().w(240.0).child(SidebarRow::new("Inbox").icon(&STAR).subtitle("3 unread").build(k).key("sidebar_two_icon")))
+                .child(el().w(240.0).child(SidebarRow::new("Ada").avatar(el().size(k.text_size(16.0), k.text_size(16.0))).subtitle("Online").build(k).key("sidebar_two_avatar")))
                 .child(el().w(300.0).child(folder.key("tree_folder")))
                 .child(el().w(900.0).h(400.0).child(diff.key("diff")))
                 .children(layer)
@@ -220,7 +250,11 @@ fn at_twice_the_text_size_kit_text_and_the_glyphs_beside_it_double() {
                 stuck.push(format!("{} {:?}: {} / {} to {} / {}", b.path, b.text, sa.size, sa.line_height, sb.size, sb.line_height));
             }
         }
-        if b.role == "icon" {
+        let holder = matches!(b.key.as_deref(), Some("status" | "status-mark" | "indicator" | "avatar" | "dot"))
+            || (b.key.as_deref() == Some("icon") && b.role != "icon")
+            || (b.role == "image" && b.path.contains("/markdown/"));
+        let broken_glyph = big.iter().any(|p| p.role == "image" && p.path.contains("/markdown/") && b.path == format!("{}/#0", p.path));
+        if b.role == "icon" || b.role == "progressbar" || (holder && b.role != "image") || broken_glyph {
             glyphs += 1;
             if [b.target[2], b.target[3]] != [a.target[2] * 2.0, a.target[3] * 2.0] {
                 stuck.push(format!("{} glyph: {:?} to {:?}", b.path, &a.target[2..], &b.target[2..]));
@@ -228,7 +262,10 @@ fn at_twice_the_text_size_kit_text_and_the_glyphs_beside_it_double() {
         }
     }
     assert!(stuck.is_empty(), "text and glyphs that kept their size:\n{}", stuck.join("\n"));
-    for key in ["tab_strip", "list", "menu-menu", "select-content", "toast", "sidebar_header", "sidebar_icon_row", "tree_row", "tree_folder", "diff"] {
+    for key in ["tab_strip", "list", "menu-menu", "select-content", "toast", "sidebar_header", "sidebar_icon_row", "tree_row", "tree_folder", "diff"]
+        .into_iter()
+        .chain(cfg!(feature = "markdown").then_some("markdown"))
+        .chain(cfg!(feature = "markdown").then_some("notes")) {
         let inside = |els: &[rune::ElementInfo]| {
             let root = els.iter().find(|e| e.key.as_deref() == Some(key) || e.path.ends_with(&format!("/{key}"))).map(|e| e.path.clone());
             root.map_or(0, |r| els.iter().filter(|e| e.path.starts_with(&r) && (e.text_style.is_some() || e.role == "icon")).count())
@@ -236,6 +273,40 @@ fn at_twice_the_text_size_kit_text_and_the_glyphs_beside_it_double() {
         assert!(inside(&big) > 0, "{key} draws text or glyphs");
     }
     assert!(texts > 20 && glyphs > 8, "{texts} texts and {glyphs} glyphs compared");
+
+    let tab = |key: &str| big.iter().find(|e| e.path.contains("/t-b/") && e.key.as_deref() == Some(key)).unwrap_or_else(|| panic!("the busy tab's {key}"));
+    let (title, status) = (tab("title"), tab("status"));
+    assert!(title.target[0] + title.target[2] <= status.target[0] + 0.5, "the busy tab's title {:?} ends before its status {:?}", title.target, status.target);
+
+    for els in [&plain, &big] {
+        for row in ["sidebar_two_icon", "sidebar_two_avatar"] {
+            let part = |key: &str| els.iter().find(|e| e.path.contains(&format!("/{row}/")) && e.key.as_deref() == Some(key)).unwrap_or_else(|| panic!("{row}'s {key}"));
+            let (label, subtitle) = (part("label"), part("subtitle"));
+            assert!((label.target[0] - subtitle.target[0]).abs() < 0.5, "{row}'s subtitle {:?} starts under its label {:?}", subtitle.target, label.target);
+        }
+    }
+
+    for (scale, els) in [(1.0, &plain), (2.0, &big)] {
+        for key in ["menu-menu", "wide-menu", "select-content", "toast"] {
+            let root = els.iter().find(|e| e.key.as_deref() == Some(key)).unwrap_or_else(|| panic!("{key} at {scale}x"));
+            let right = root.target[0] + root.target[2];
+            for e in els.iter().filter(|e| e.path.starts_with(&format!("{}/", root.path))) {
+                assert!(!e.text_cut, "{key} cuts {:?} at {scale}x", e.text);
+                assert!(e.target[0] + e.target[2] <= right + 0.5, "{key}'s {} {:?} ends past its right edge {right} at {scale}x", e.path, e.text);
+            }
+        }
+        #[cfg(feature = "markdown")]
+        for (marker, item) in [("1.", "First"), ("2.", "Second")] {
+            let find = |t: &str| els.iter().find(|e| e.path.contains("/markdown/") && e.text.as_deref() == Some(t)).unwrap_or_else(|| panic!("markdown {t:?} at {scale}x"));
+            let (m, i) = (find(marker), find(item));
+            let size = m.text_style.as_ref().unwrap().size;
+            let ink = m.target[0] + (m.target[2] + m.text_size.unwrap()[0]) / 2.0;
+            assert!(i.target[0] - ink >= size * 0.25, "the list marker {marker:?} ends {} before its text at {scale}x", i.target[0] - ink);
+        }
+    }
+
+    let width = |els: &[rune::ElementInfo]| els.iter().find(|e| e.key.as_deref() == Some("menu-menu")).expect("the menu").target[2];
+    assert!(width(&big) >= width(&plain) * 2.0 - 0.5, "a menu of short labels keeps its least width at its text's size: {} to {}", width(&plain), width(&big));
 
     let mut pluses = 0;
     for b in big.iter().filter(|e| e.key.as_deref() == Some("plus")) {

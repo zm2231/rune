@@ -88,6 +88,7 @@ pub struct MarkdownStyle {
     pub(super) math_scale: f32,
     /// The icon before a link to a web page: its size and gap (`None`: no icon).
     pub(super) link_icon: Option<[f32; 2]>,
+    pub(super) broken_glyph: f32,
     pub(super) diff_add: Color,
     pub(super) diff_remove: Color,
     pub(super) diff_add_text: Color,
@@ -188,7 +189,7 @@ impl MarkdownStyle {
     pub fn from_kit(k: &Kit) -> MarkdownStyle {
         let c = &k.c;
         let body = TextStyle { line_height: k.text_size(22.4), ..k.ty.body };
-        let heading = |size, lh| TextStyle { size, weight: 600.0, line_height: lh, ..body };
+        let heading = |size: f32, lh: f32| TextStyle { size: k.text_size(size), weight: 600.0, line_height: k.text_size(lh), ..body };
         MarkdownStyle {
             text: c.text_base,
             muted: c.text_muted,
@@ -216,7 +217,7 @@ impl MarkdownStyle {
             inline_code_pad: 3.5,
             code_block_pad: [12.0, 12.0],
             code_block_radius: 6.0,
-            list_indent: 32.0,
+            list_indent: k.text_size(32.0),
             list_gap: 4.0,
             strong_weight: 670.0,
             table_outline: Some(c.border_muted),
@@ -249,6 +250,7 @@ impl MarkdownStyle {
             wide_fade: 12.0,
             math_scale: 2.0,
             link_icon: None,
+            broken_glyph: k.text_size(16.0),
             diff_add: tint(c.layer_01, k.roles.added, if k.dark { 0.11 } else { 0.14 }),
             diff_remove: tint(c.layer_01, k.roles.removed, if k.dark { 0.11 } else { 0.14 }),
             diff_add_text: c.text_base,
@@ -360,8 +362,8 @@ impl MarkdownStyle {
         self.code_block_radius = super::table::pts(radius);
         self
     }
-    /// The column a list's markers sit centred in (32 by default), and the gap between its
-    /// items (4).
+    /// The column a list's markers sit centred in (32 at the default text size, widening for a
+    /// list's widest marker), and the gap between its items (4).
     pub fn list(mut self, indent: f32, gap: f32) -> Self {
         self.list_indent = indent;
         self.list_gap = gap;
@@ -753,6 +755,7 @@ impl std::hash::Hash for MarkdownStyle {
             wide_fade,
             math_scale,
             link_icon,
+            broken_glyph,
             diff_add,
             diff_remove,
             diff_add_text,
@@ -780,7 +783,7 @@ impl std::hash::Hash for MarkdownStyle {
         (table_outline, table_rule, table_col_rule, table_row_hover, table_shrink, table_head_fill, table_head_text, table_head_rule, table_head_weight.map(f32_bits), table_tabular, table_font).hash(state);
         ([f32_bits(table_pad[0]), f32_bits(table_pad[1])], table_flush_left, table_head_pad.map(|p| p.map(f32_bits)), table_full_width, paragraph_margin.map(f32_bits), heading_margin.map(|m| m.map(f32_bits)), image_margin.map(f32_bits), table_margin.map(f32_bits), code_margin.map(f32_bits), block_margin.map(|m| m.map(f32_bits))).hash(state);
         table_frame.map(|TableFrame { fill, ring, pad }| (fill, ring, f32_bits(pad))).hash(state);
-        (table_bar, text_width.map(f32_bits), prose_width.map(f32_bits), f32_bits(wide_fade), f32_bits(math_scale), link_icon.map(|l| l.map(f32_bits))).hash(state);
+        (table_bar, text_width.map(f32_bits), prose_width.map(f32_bits), f32_bits(wide_fade), f32_bits(math_scale), link_icon.map(|l| l.map(f32_bits)), f32_bits(broken_glyph)).hash(state);
         match table_body {
             None => 0u8.hash(state),
             Some(TableBody { fill, radius, shadows }) => {

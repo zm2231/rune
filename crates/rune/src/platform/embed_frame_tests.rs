@@ -116,6 +116,7 @@ struct EmbedTestState {
     polls: u32,
     switch_blend: bool,
     invalidate_on_poll: bool,
+    spin: bool,
 }
 
 struct MockEmbedSurface {
@@ -137,7 +138,12 @@ struct MockEmbedSurface {
 
 impl MockEmbedSurface {
     fn new(start: Instant) -> Self {
-        fn view(_: &EmbedTestState, _: &mut Cx<EmbedTestState>) -> El { el().size(40.0, 20.0) }
+        fn view(s: &EmbedTestState, _: &mut Cx<EmbedTestState>) -> El {
+            let dot = el().key("dot").size(4.0, 4.0).fill(crate::Color::WHITE).a11y_hidden()
+                .cycle(crate::Cycle { period: 1.0, phase: 0.0, stops: &[(0.0, 0.2), (0.5, 1.0), (1.0, 0.2)], still: 0.5, fps: crate::Cycle::DISPLAY_RATE });
+            let root = el().size(40.0, 20.0);
+            if s.spin { root.child(dot) } else { root }
+        }
         fn poll(s: &mut EmbedTestState, _: f64, tx: &mut crate::Tx) -> bool {
             s.polls += 1;
             if std::mem::take(&mut s.switch_blend) {
@@ -221,8 +227,9 @@ impl EmbedSurface for MockEmbedSurface {
         self.log.push(format!("presented:{ticking}"));
     }
 
-    fn prepare(&mut self, drawable: u32) -> u32 {
+    fn prepare(&mut self, drawable: u32, looped: Option<Vec<u32>>) -> u32 {
         self.log.push(format!("prepare:{drawable}"));
+        if let Some(looped) = looped { self.log.push(format!("looped:{}", looped.len())); }
         drawable
     }
 
@@ -342,7 +349,7 @@ fn a_frame_aimed_at_a_display_tick_steps_the_clock_to_it() {
     let start = crate::time::now();
     let mut surface = MockEmbedSurface::new(start);
     let target = crate::time::now() + Duration::from_millis(8);
-    assert!(run_embed_frame_at(&mut surface, Some(target)).drew);
+    assert!(run_embed_frame_at(&mut surface, Some(target), false).drew);
     assert_eq!(surface.clock.last(), target, "the clock steps to when the frame will show");
 }
 
@@ -430,4 +437,30 @@ fn a_close_request_outlives_the_frame_only_for_a_host_that_closes_its_window() {
         let kept = rt.core_mut().shell_request.take();
         assert_eq!(kept, shell.then_some(crate::Shell::Close), "serving the shell: {shell}");
     }
+}
+
+#[test]
+fn a_frame_only_loops_asked_for_steps_them_without_the_app_or_a_paint() {
+    let start = crate::time::now();
+    let mut surface = MockEmbedSurface::new(start);
+    surface.rt.state.spin = true;
+    let tick = Duration::from_micros(8_333);
+    let mut at = start;
+    for _ in 0..4 {
+        at += tick;
+        assert!(run_embed_frame_at(&mut surface, Some(at), false).animating);
+    }
+    let (polls, paints) = (surface.rt.state.polls, surface.rt.paint_count());
+    surface.log.clear();
+    at += tick;
+    assert!(run_embed_frame_at(&mut surface, Some(at), true).drew);
+    assert_eq!(surface.log, ["acquire:ok:99", "prepare:99", "looped:1", "render:99", "present:99", "presented:true"]);
+    assert_eq!((surface.rt.state.polls, surface.rt.paint_count()), (polls, paints), "no poll and no paint");
+
+    surface.log.clear();
+    surface.rt.invalidate();
+    at += tick;
+    run_embed_frame_at(&mut surface, Some(at), true);
+    assert!(surface.log.contains(&"step".to_owned()), "a stale runtime takes an ordinary frame: {:?}", surface.log);
+    assert!(!surface.log.iter().any(|l| l.starts_with("looped")));
 }

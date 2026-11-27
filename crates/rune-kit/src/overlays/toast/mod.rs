@@ -74,7 +74,7 @@ impl Toast {
         }
         let mut top = row().key("top").w_full().gap(12.0).items_start();
         if let Some(i) = self.icon {
-            top = top.child(el().key("icon").size(16.0, 20.0).center().child(i).a11y_hidden());
+            top = top.child(el().key("icon").size(k.text_size(16.0), k.text_size(20.0)).center().child(i).a11y_hidden());
         }
         top = top.child(content);
         if let Some(a) = self.close {
@@ -98,14 +98,14 @@ impl Toast {
             .role("status")
             .label(self.title)
             .description(described)
-            .w(320.0)
+            .w(k.text_size(320.0))
             .padding(12.0)
             .gap(12.0)
             .radius(8.0)
             .fill(c.layer_01);
         root = k.elevate(root, &k.elevation.floating).child(top);
         if !self.actions.is_empty() {
-            let indent = 16.0 + 12.0;
+            let indent = k.text_size(16.0) + 12.0;
             root = root.child(row().key("actions").pl(indent).gap(8.0).flex_wrap().children(self.actions));
         }
         root.transition(Transition::move_edge(Edge::Bottom)).motion(rune::Spring::new(0.28, 0.0))

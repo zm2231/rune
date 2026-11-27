@@ -551,3 +551,23 @@ fn inh_stays_compact_and_cold_handles_stay_consistent_across_keep_and_scroll() {
         );
     }
 }
+
+#[test]
+fn a_faded_group_that_stops_folding_into_one_paint_repaints_what_took_its_opacity() {
+    fn view(_: &(), _: &mut Cx<()>) -> El {
+        let stops: &'static [(f32, f32)] = &[(0.0, 0.0), (0.5, 1.0), (1.0, 0.0)];
+        col().key("root").size(80.0, 40.0).child(
+            el().key("dim").size(80.0, 20.0).opacity(0.5)
+                .child(el().key("label").size(20.0, 8.0).fill(Color::WHITE))
+                .child(el().key("pulse").size(8.0, 8.0).fill(Color::WHITE).a11y_hidden()
+                    .cycle(crate::Cycle { period: 1.0, phase: 0.0, stops, still: 0.5, fps: crate::Cycle::DISPLAY_RATE })),
+        )
+    }
+    let mut rt = Runtime::new((), view, (80.0, 40.0), Env::new(true, 1.0));
+    rt.frame(0.0);
+    for _ in 0..6 {
+        rt.frame(1.0 / 60.0);
+    }
+    let label = rt.instances.iter().find(|q| q.rect == [0.0, 0.0, 20.0, 8.0]).expect("the label draws");
+    assert_eq!(label.fill[3], 1.0, "inside its group's layer the label draws opaque, the layer fading it once");
+}

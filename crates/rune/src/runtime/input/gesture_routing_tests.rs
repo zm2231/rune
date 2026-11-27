@@ -2,12 +2,12 @@ use super::*;
 use crate::{Env, Mods, PhysicalInput, PhysicalKeyCode, el};
 
 #[derive(Default)]
-struct State { ups: Vec<crate::Key>, swallow: bool, zoom: Vec<f32>, from_wheel: Vec<bool> }
+struct State { ups: Vec<crate::Key>, swallow: bool, zoom: Vec<f32>, from_wheel: Vec<bool>, wheel_dy: Vec<f32> }
 
 fn view(_: &State, _: &mut crate::Cx<State>) -> El {
     el().w_full().h_full()
         .on_key_up(|s: &mut State, e, _| { s.ups.push(e.key.clone()); true })
-        .on_magnify(|s: &mut State, e, _| { s.zoom.push(e.delta); s.from_wheel.push(e.wheel); true })
+        .on_magnify(|s: &mut State, e, _| { s.zoom.push(e.delta); s.from_wheel.push(e.wheel); s.wheel_dy.push(e.wheel_dy); true })
         .child(el().key("field").size(40.0, 40.0).focusable(true).on_physical_input(|s: &mut State, _, _| s.swallow))
 }
 
@@ -104,6 +104,7 @@ fn a_ctrl_wheel_pinches_only_where_a_magnify_handler_is() {
     rt.frame(0.0);
     assert_eq!(rt.state.zoom, [20.0 / PINCH_WHEEL]);
     assert_eq!(rt.state.from_wheel, [true], "a handler tells Ctrl + wheel from a pinch gesture");
+    assert_eq!(rt.state.wheel_dy, [20.0], "it carries the wheel's own travel");
     assert!(!rt.pinch_wheel(500.0, 50.0, -20.0, None), "off the window nothing takes it");
 }
 
@@ -118,6 +119,7 @@ fn ctrl_wheel_line_ticks_scale_by_chrome_step_and_round_trip() {
     assert!(!rt.pinch_wheel(500.0, 50.0, 100.0, Some(1.0)), "off the window nothing takes it");
     rt.frame(0.0);
     assert_eq!(rt.state.zoom.len(), 2);
+    assert_eq!(rt.state.wheel_dy, [100.0, -100.0], "notches carry the travel an on_wheel handler would have heard");
     assert_eq!(rt.state.from_wheel, [true, true]);
     assert!((rt.state.zoom[0] - 0.2).abs() < 1e-5, "one forward notch is +0.2, got {}", rt.state.zoom[0]);
     assert!(((1.0 + rt.state.zoom[0]) * (1.0 + rt.state.zoom[1]) - 1.0).abs() < 1e-5, "forward + backward round-trips to 1.0");

@@ -426,7 +426,7 @@ Rune's core crate: views, layout, animation, rendering, text and the native shel
   visual line edges (keeping Cmd+Home/End and Ctrl+Home/End on the document's ends) with
   `El::line_home_end(true)` or `TextEdit::set_line_home_end(true)` / `with_line_home_end(true)`.
 - **Periodic and finite loops**: `.looping(rune_motion::LoopSpec::opacity(..))`, `LoopSpec::rotation(period)`
-  (icon quads), `LoopSpec::slide(period, from, to)` (optionally bounded to `n` sweeps with `.loop_times(n)`,
+  (icon quads; `.fps(60.0)` steps it on a timer instead of every display frame), `LoopSpec::slide(period, from, to)` (optionally bounded to `n` sweeps with `.loop_times(n)`,
   resting at `to` and sleeping once finished), and `El::sequence(Sequence::new(BEATS).repeating())`.
   Tracks use animation time, preserve phase when retimed and only request frames
   while visible through ancestor clips. Removal cools smoothly via amplitude. Reduced
@@ -943,6 +943,20 @@ app.run();
   window entering an output at scale 1 with no resize or scale event. Unchanged samples run
   nothing and draw nothing. Opting in queries size, scale and output on every idle turn (on X11
   the size query waits on the server); headless tooling and the web don't call it.
+- Several windows over one state: `SharedState::new(state)` (or `with_placeholder(state,
+  make)` for a state with no cheap `Default`) given to each window with
+  `WindowSpec::shared(&shared)`. Each window keeps its own view, focus, layout, clocks and
+  accessibility tree. The windows take turns: Rune moves the state into a window's runtime for
+  each turn that reaches it (input, a frame, a timer, an update, a menu or accessibility action)
+  and back out when the turn ends, so views and handlers get plain `&S` and `&mut S`. A turn that
+  changed the state (a handler that isn't `Tx::live_only`, a `poll` that returns true, an
+  update) wakes the other windows, which run their views on their next frame; an idle turn wakes
+  nobody. `SharedState::on_enter(|s, key| ..)` and `on_leave` run around each turn with the
+  window's key, for fields that belong to one window (their changes wake no other window, since
+  they run every turn); `Cx::window()` and `Tx::window()` give the
+  key too. `poll` runs in each window's frames, so app-wide polling belongs in one window's
+  `poll` or checks `tx.window()`. On iOS each window is a scene (iPad) or a sheet (iPhone). See
+  `examples/shared-windows`.
 - `AppSpec::min_size` sets the smallest window (None keeps 420×400).
 - `AppHandle::set_dock_icon(bool)` switches macOS between the regular and accessory activation
   policies at runtime.
@@ -1565,8 +1579,8 @@ For an app's own perf log, with nothing changed about how its windows draw:
   `p.presented_at() == None`). `p.seq()` matches `FrameEncoded::seq()` for that `Drawn` frame (and
   `on_frame_encoded` always runs before `on_frame_presented` for the same `seq`), so apps can measure real
   input-to-photon latency and detect missed vsyncs against `FrameEncoded::presents_at()`. Called on platforms with
-  reliable actual presentation timestamps (macOS Metal via `MTLDrawable::addPresentedHandler`); Windows, Linux,
-  headless runs, overlays and the web never call it. Without it, no layer hook is attached; once in-flight drawables
+  reliable actual presentation timestamps (macOS and iOS Metal via `MTLDrawable::addPresentedHandler`); Windows,
+  Linux, headless runs, overlays and the web never call it. Without it, no layer hook is attached; once in-flight drawables
   land, the wake watch clears automatically so an idle window never wakes or draws.
 - **`App::on_frame_drawn(|rt: &Runtime<S>| ..)`** runs on the UI thread after each `Drawn` frame (on desktop
   windows and in the web runner, and not on unchanged or skipped frames) with the runtime as it presented that frame,

@@ -56,6 +56,7 @@ fn main() {
             ("printscreen", |s| s.recorder = ShortcutRecorderState::new(Some("printscreen".parse().unwrap()))),
             ("ctrl-printscreen", |s| s.recorder = ShortcutRecorderState::new(Some("ctrl+printscreen".parse().unwrap()))),
         ],
+        poll: Some(|s, now, _| s.recorder.poll(now)),
         ..AppSpec::new("Shortcut recorder", (360.0, 180.0), State::default, view)
     };
     let app = App::new(spec)

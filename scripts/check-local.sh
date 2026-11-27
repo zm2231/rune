@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fast, opt-in local developer checks for Rune (pure POSIX bash/awk/grep; no Python required).
-# Usage: scripts/check-local.sh [--wasm] [--hot] [--features] [--docs] [--all] [--tests] [--help]
+# Usage: scripts/check-local.sh [--wasm] [--ios] [--hot] [--features] [--docs] [--all] [--tests] [--help]
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
@@ -18,6 +18,7 @@ Default steps:
 
 Options:
   --wasm        Also run cargo check-wasm and cargo check-webgl (warnings warn)
+  --ios         Also run cargo clippy -p rune --lib and type-check its tests for the iOS simulator (aarch64-apple-ios-sim)
   --strict      Run strict web lints (cargo lint-wasm and cargo lint-webgl, warnings denied)
   --hot         Also run cargo check-hot (rune with --features hot)
   --features    Also check optional/no-default feature sets (gpu counters, Linux noop, rune optional features, rune-kit --all-features)
@@ -29,6 +30,7 @@ EOF
 }
 
 run_wasm=0
+run_ios=0
 run_strict=0
 run_hot=0
 run_features=0
@@ -39,6 +41,7 @@ run_tests=0
 for arg in "$@"; do
   case "$arg" in
     --wasm) run_wasm=1 ;;
+    --ios) run_ios=1 ;;
     --strict) run_strict=1 ;;
     --hot) run_hot=1 ;;
     --features) run_features=1 ;;
@@ -143,6 +146,20 @@ if [ "$run_strict" -eq 1 ]; then
 elif [ "$run_wasm" -eq 1 ]; then
   run_step "cargo check-wasm" cargo check-wasm
   run_step "cargo check-webgl" cargo check-webgl
+fi
+
+if [ "$run_ios" -eq 1 ]; then
+  if [ "$(uname -s)" = "Darwin" ]; then
+    run_step "cargo clippy (iOS simulator)" cargo clippy -p rune --lib --target aarch64-apple-ios-sim
+    run_step "rune lib tests check (iOS simulator)" cargo check -p rune --lib --tests --target aarch64-apple-ios-sim
+  else
+    run_step "cargo clippy (iOS simulator)" env CC_aarch64_apple_ios_sim=clang \
+      CFLAGS_aarch64_apple_ios_sim=--target=arm64-apple-ios16.0-simulator CARGO_FEATURE_PURE=1 \
+      cargo clippy -p rune --lib --target aarch64-apple-ios-sim
+    run_step "rune lib tests check (iOS simulator)" env CC_aarch64_apple_ios_sim=clang \
+      CFLAGS_aarch64_apple_ios_sim=--target=arm64-apple-ios16.0-simulator CARGO_FEATURE_PURE=1 \
+      cargo check -p rune --lib --tests --target aarch64-apple-ios-sim
+  fi
 fi
 
 if [ "$run_hot" -eq 1 ] || [ "$run_all" -eq 1 ]; then

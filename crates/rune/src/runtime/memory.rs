@@ -17,10 +17,8 @@ impl<S: 'static> Runtime<S> {
     ///
     /// Nothing the last frame's instances draw from moves, so they stay good to draw again
     /// and no frame is asked for: the view isn't re-run. Call it between frames, never from a
-    /// handler, and follow it with
-    /// [`Renderer::trim_memory`](crate::render::Renderer::trim_memory) on this runtime's
-    /// renderer, which lets go of the textures of what went; `LayerHost::trim_memory` does
-    /// both.
+    /// handler, and follow it with `Renderer::trim_memory` on this runtime's renderer, which
+    /// lets go of the textures of what went; `LayerHost::trim_memory` does both.
     pub fn trim_memory(&mut self) {
         self.rest_with(None, None, false);
         self.text.trim_memory();

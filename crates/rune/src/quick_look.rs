@@ -109,6 +109,7 @@ impl crate::runtime::RuntimeCore {
 
     pub(crate) fn quick_look(&self) -> Option<&QuickLook> { self.host.quick_look.state.look() }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(not(any(test, target_os = "macos")), allow(dead_code))]
     pub(crate) fn quick_look_closer(&self, wake: Waker) -> Box<dyn Fn()> {
         let closed = self.host.quick_look.closed.clone();

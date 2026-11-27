@@ -27,7 +27,7 @@ fn caller_block_keys_insert_remove_edit_and_retarget_mid_flight() {
     assert!(y_b0 > 20.0);
 
     // 1. Insert a block at the top: old blocks keep their keys and spring down; new block fades in.
-    rt.state = ("Intro\n\nAlpha\n\nBeta".to_owned(), vec!["p-intro", "p-a", "p-b"]);
+    *rt.state = ("Intro\n\nAlpha\n\nBeta".to_owned(), vec!["p-intro", "p-a", "p-b"]);
     rt.invalidate();
     rt.frame(0.0);
     rt.frame(1.0 / 60.0);
@@ -46,7 +46,7 @@ fn caller_block_keys_insert_remove_edit_and_retarget_mid_flight() {
     assert!((y_a_landed - y_b0).abs() < 0.5 && y_b_landed > y_a_landed);
 
     // 2. Remove the middle block: it stays mounted while exiting and the trailing sibling springs up.
-    rt.state = ("Intro\n\nBeta".to_owned(), vec!["p-intro", "p-b"]);
+    *rt.state = ("Intro\n\nBeta".to_owned(), vec!["p-intro", "p-b"]);
     rt.invalidate();
     rt.frame(0.0);
     rt.frame(1.0 / 60.0);
@@ -63,7 +63,7 @@ fn caller_block_keys_insert_remove_edit_and_retarget_mid_flight() {
     // 3. Edit a block in place and retarget mid-flight: height and sibling y continue smoothly without jumping.
     let h0 = by_key(&rt, "p-intro").rect[3];
     let y0 = by_key(&rt, "p-b").rect[1];
-    rt.state = ("Intro line one  \nline two  \nline three\n\nBeta".to_owned(), vec!["p-intro", "p-b"]);
+    *rt.state = ("Intro line one  \nline two  \nline three\n\nBeta".to_owned(), vec!["p-intro", "p-b"]);
     rt.invalidate();
     rt.frame(0.0);
     for _ in 0..3 {
@@ -75,7 +75,7 @@ fn caller_block_keys_insert_remove_edit_and_retarget_mid_flight() {
     assert!(h_mid < by_key(&rt, "p-intro").target[3] && y_mid < by_key(&rt, "p-b").target[1],
         "editing animates toward the larger height and sibling position, not straight to them");
 
-    rt.state = ("Intro line one  \nline two  \nline three  \nline four  \nline five\n\nBeta".to_owned(), vec!["p-intro", "p-b"]);
+    *rt.state = ("Intro line one  \nline two  \nline three  \nline four  \nline five\n\nBeta".to_owned(), vec!["p-intro", "p-b"]);
     rt.invalidate();
     rt.frame(0.0);
     let h_retarget = by_key(&rt, "p-intro").rect[3];
@@ -102,7 +102,7 @@ fn block_keys_fallback_nested_and_selectable() {
     assert!(paths.iter().any(|p| p.ends_with("/b2")), "missing 3rd key falls back to b2: {paths:?}");
 
     // Extra keys, empty keys and duplicates never collide or panic.
-    rt.state = vec!["", "dup", "dup", "extra-1", "extra-2"];
+    *rt.state = vec!["", "dup", "dup", "extra-1", "extra-2"];
     rt.invalidate();
     rt.frame(1.0 / 60.0);
     let top_keys: Vec<_> = rt.elements().into_iter().filter(|e| !e.exiting && e.path.matches('/').count() == 2).filter_map(|e| e.key).collect();

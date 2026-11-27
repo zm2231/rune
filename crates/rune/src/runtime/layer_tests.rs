@@ -333,7 +333,7 @@ fn isolated_exit_descendants_stay_inside_their_fading_parent() {
     let mut rt = Runtime::new(true, view, (32.0, 16.0), Env { scale: 1.0, system_dark: true });
     rt.set_srgb_blend(false);
     rt.frame(0.0);
-    rt.state = false; rt.invalidate(); rt.frame(0.0);
+    *rt.state = false; rt.invalidate(); rt.frame(0.0);
     let start = rt.instances.iter().position(|i| i.params[1] == KIND_LAYER).unwrap();
     let end = rt.instances.iter().position(|i| i.params[1] == KIND_LAYER_END).unwrap();
     assert_eq!(end - start, 3, "both retained descendants share the scope");
@@ -426,7 +426,7 @@ fn opacity_motion_samples_group_alpha_until_the_terminal_frame() {
     }
     let mut rt = Runtime::new(true, view, (32.0, 16.0), Env { scale: 1.0, system_dark: true });
     rt.frame(0.0);
-    rt.state = false; rt.invalidate(); rt.frame(0.0);
+    *rt.state = false; rt.invalidate(); rt.frame(0.0);
     let commits = rt.stats.commits;
     rt.frame(0.05);
     let first = rt.instances[0].fill[3];

@@ -265,7 +265,7 @@ fn drop_hidden_images_and_park_do_not_block_on_busy_shared_gpu_and_retire_on_lat
         let started = crate::time::now();
         let (chunks, sibling_done) = busy.submit_busy(planned);
         overlay.drop_hidden_images();
-        overlay.rt.state = None;
+        *overlay.rt.state = None;
         assert!(!busy.gpu.is_lost());
         assert!(overlay.rt.images.pages.is_empty());
         assert!(!overlay.core.renderer.as_ref().unwrap().has_images());

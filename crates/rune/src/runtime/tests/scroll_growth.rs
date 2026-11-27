@@ -18,7 +18,7 @@ fn growth_rows_grow_and_sticky_scroll_lands_at_bottom() {
     let last = rt.elements().into_iter().find(|e| e.key.as_deref() == Some("r9")).unwrap();
     assert!((last.rect[1] + last.rect[3] - 300.0).abs() < 0.05, "{:?}", last.rect);
     // A new row grows from 0 and the end stays pinned.
-    rt.state = 11;
+    *rt.state = 11;
     rt.commit.dirty = true;
     rt.frame(1.0 / 60.0);
     assert!(rt.animating);

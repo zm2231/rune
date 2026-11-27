@@ -125,7 +125,7 @@ fn live_tail_motion_gate_joined_corner_retargets_on_adjacent_deliveries() {
         true
     });
     let mut run = Run::new(rt, 60.0);
-    while run.rt.state == 0 { assert!(run.rt.t < 0.6); run.step(); }
+    while *run.rt.state == 0 { assert!(run.rt.t < 0.6); run.step(); }
     let id = run.rt.tree.nodes.iter().find(|n| n.named("second")).unwrap().id;
     let radii = |rt: &Runtime<usize>| rt.scene.presented(id).unwrap().radius.0;
     let [tl, first, br, bl] = radii(&run.rt);
@@ -133,7 +133,7 @@ fn live_tail_motion_gate_joined_corner_retargets_on_adjacent_deliveries() {
     assert!(first > 4.0 && first < 6.0, "the corner begins to open: {first}");
     assert_eq!(run.rt.scene.get(id, prop::OPACITY), Some(0.75), "only corners inherit the neighbour's motion");
     run.step();
-    assert_eq!(run.rt.state, 2);
+    assert_eq!(*run.rt.state, 2);
     let next = radii(&run.rt)[1];
     assert!(next > 4.0 && (next - first).abs() < 1.0, "retarget from {first}, not the intermediate goal: {next}");
     run.play(1.0);

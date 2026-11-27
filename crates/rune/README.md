@@ -952,7 +952,9 @@ app.run();
   `WindowSpec::shared(&shared)`. Each window keeps its own view, focus, layout, clocks and
   accessibility tree. The windows take turns: Rune moves the state into a window's runtime for
   each turn that reaches it (input, a frame, a timer, an update, a menu or accessibility action)
-  and back out when the turn ends, so views and handlers get plain `&S` and `&mut S`. A turn that
+  and back out when the turn ends, so views and handlers get plain `&S` and `&mut S`. The state
+  stays boxed where it is and only the box changes hands, so a turn costs the same for any `S`
+  and allocates nothing. A turn that
   changed the state (a handler that isn't `Tx::live_only`, a `poll` that returns true, an
   update) wakes the other windows, which run their views on their next frame; an idle turn wakes
   nobody. `SharedState::on_enter(|s, key| ..)` and `on_leave` run around each turn with the

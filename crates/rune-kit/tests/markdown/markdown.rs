@@ -112,7 +112,7 @@ fn a_streaming_append_keeps_earlier_blocks_mounted() {
     let mut seen = keys(&rt);
     let head = by_key(&rt, "b0").path.clone();
     for step in &steps[1..] {
-        rt.state = (*step).to_owned();
+        *rt.state = (*step).to_owned();
         rt.invalidate();
         rt.frame(1.0 / 60.0);
         let now = keys(&rt);
@@ -273,12 +273,12 @@ fn a_streaming_row_does_not_move_the_columns() {
     let before = column_edges(&rt);
     assert_eq!(before.len(), 2, "{:?}", keys(&rt));
     for partial in ["| a much longer first cell that is still arriving", "| a much longer first cell that is still arriving | and more"] {
-        rt.state = format!("{base}{partial}");
+        *rt.state = format!("{base}{partial}");
         rt.invalidate();
         rt.frame(1.0 / 60.0);
         assert_eq!(column_edges(&rt), before, "{partial:?}");
     }
-    rt.state = format!("{base}| a much longer first cell that is still arriving | and more |\n");
+    *rt.state = format!("{base}| a much longer first cell that is still arriving | and more |\n");
     rt.invalidate();
     rt.frame(1.0 / 60.0);
     assert_ne!(column_edges(&rt), before, "a finished row sizes the columns");
@@ -804,7 +804,7 @@ fn on_link_tx_reaches_the_tx_and_on_link_still_works() {
     rt.pointer_down(x, y);
     rt.pointer_up(x, y);
     rt.frame(1.0 / 60.0);
-    assert_eq!(rt.state, ["tx:session:1"]);
+    assert_eq!(*rt.state, ["tx:session:1"]);
     assert_eq!(rt.copy_request.as_deref(), Some("session:1"));
 
     let mut rt = Runtime::new(Vec::new(), plain_last, (200.0, 100.0), Env::new(true, 1.0));
@@ -814,7 +814,7 @@ fn on_link_tx_reaches_the_tx_and_on_link_still_works() {
     rt.pointer_down(x, y);
     rt.pointer_up(x, y);
     rt.frame(1.0 / 60.0);
-    assert_eq!(rt.state, ["plain:session:1"]);
+    assert_eq!(*rt.state, ["plain:session:1"]);
     assert!(rt.copy_request.is_none());
 }
 
@@ -866,13 +866,13 @@ fn styled_links_keep_inner_styles_select_copy_and_stream_across_chunks() {
     rt.frame(0.0);
     assert!(fill_rects(&rt, CHIP_BG).is_empty(), "unclosed link syntax is still plain text");
 
-    rt.state = "Start [First **bold** `code`](session:one)".to_owned();
+    *rt.state = "Start [First **bold** `code`](session:one)".to_owned();
     rt.invalidate();
     rt.frame(1.0 / 60.0);
     assert_eq!(fill_rects(&rt, CHIP_BG).len(), 1, "completed link gets one merged chip rect");
 
     // 2. Appending a second styled link fades its glyphs in through word reveal and wraps cleanly.
-    rt.state = "Start [First **bold** `code`](session:one) and *[Second](session:two)* on the next line.".to_owned();
+    *rt.state = "Start [First **bold** `code`](session:one) and *[Second](session:two)* on the next line.".to_owned();
     rt.invalidate();
     rt.frame(1.0 / 60.0);
     let chips = fill_rects(&rt, CHIP_BG);

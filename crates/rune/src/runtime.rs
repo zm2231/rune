@@ -320,7 +320,9 @@ macro_rules! runtime_core_fields {
                 $vis $name: $ty,
             )*
             pub(crate) _core_end: CoreEnd,
-            pub state: S,
+            /// The app's state, boxed so the windows of a [`SharedState`](crate::SharedState)
+            /// hand it over without copying it.
+            pub state: Box<S>,
             /// Called at the start of every frame with the clock (unless a resting timer's poll
             /// already stood for it) so background data and timers can update the tree before
             /// input routes. Queued input and event handlers then run; whenever a non-`live_only`
@@ -349,7 +351,7 @@ macro_rules! runtime_core_fields {
                         $name: core.$name,
                     )*
                     _core_end: core._core_end,
-                    state,
+                    state: Box::new(state),
                     poll: None,
                     on_key: None,
                     hooks,
@@ -538,7 +540,7 @@ impl<S: 'static> Runtime<S> {
         unsafe {
             let core = &*ptr.cast::<RuntimeCore>();
             let app = AppRef {
-                state: &(*ptr).state,
+                state: &*(*ptr).state,
                 hooks: &(*ptr).hooks,
             };
             (core, app)
@@ -566,7 +568,7 @@ impl<S: 'static> Runtime<S> {
         unsafe {
             let poll = *std::ptr::addr_of!((*ptr).poll);
             let on_key = *std::ptr::addr_of!((*ptr).on_key);
-            let state = &mut *std::ptr::addr_of_mut!((*ptr).state);
+            let state = &mut **std::ptr::addr_of_mut!((*ptr).state);
             let hooks = &mut *std::ptr::addr_of_mut!((*ptr).hooks);
             let core = &mut *ptr.cast::<RuntimeCore>();
             (core, AppRefMut { state, poll, on_key, hooks })

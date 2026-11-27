@@ -105,7 +105,7 @@ fn a_drawn_frame_s_inspector_reads_the_runtime_it_presented() {
     let seen = Rc::new(RefCell::new(Vec::new()));
     let sink = seen.clone();
     let mut window = WindowSpec::from_app("main", App::new(spec()).on_frame_drawn(move |rt| {
-        sink.borrow_mut().push((rt.state, rt.elements().iter().any(|e| e.key.as_deref() == Some("box"))));
+        sink.borrow_mut().push((*rt.state, rt.elements().iter().any(|e| e.key.as_deref() == Some("box"))));
     }));
     let mut rt = crate::Runtime::new(7u32, |_, _| crate::el().key("box").size(20.0, 20.0), (100.0, 100.0), crate::Env::new(true, 1.0));
     rt.frame(0.0);

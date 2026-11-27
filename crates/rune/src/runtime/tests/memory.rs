@@ -20,7 +20,7 @@ fn instance_bytes(rt: &Runtime<bool>) -> Vec<u8> {
 }
 
 fn show(rt: &mut Runtime<bool>, reading: bool) {
-    rt.state = reading;
+    *rt.state = reading;
     rt.invalidate();
     rt.frame(1.0 / 120.0);
 }

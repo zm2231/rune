@@ -538,7 +538,7 @@ fn presses_land_on_targets_inside_a_scrolled_viewport() {
     rt.pointer_down(100.0, 25.0);
     rt.pointer_up(100.0, 25.0);
     rt.frame(1.0 / 120.0);
-    assert_eq!(rt.state, [4]);
+    assert_eq!(*rt.state, [4]);
 }
 
 #[test]

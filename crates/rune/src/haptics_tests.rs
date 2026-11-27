@@ -19,7 +19,7 @@ fn headless_runs_record_haptics_in_order_until_taken() {
     rt.pointer_down(5.0, 5.0);
     rt.pointer_up(5.0, 5.0);
     rt.frame(1.0 / 60.0);
-    assert_eq!(rt.state, 1);
+    assert_eq!(*rt.state, 1);
     assert_eq!(rt.take_haptics(), [
         Haptic::Selection,
         Haptic::Notify(HapticOutcome::Success),
@@ -45,7 +45,7 @@ fn same_handler_and_same_frame_bursts_coalesce_identical_haptics() {
     rt.pointer_down(5.0, 5.0);
     rt.pointer_up(5.0, 5.0);
     rt.frame(1.0 / 60.0);
-    assert_eq!(rt.state, 1);
+    assert_eq!(*rt.state, 1);
     assert_eq!(
         rt.take_haptics(),
         [Haptic::Selection],
@@ -177,7 +177,7 @@ fn disabled_inert_and_unused_elements_emit_nothing_and_stay_idle() {
     rt.pointer_up(25.0, 5.0);
     let animating = rt.frame(1.0 / 60.0);
     assert!(!animating);
-    assert_eq!(rt.state, 0);
+    assert_eq!(*rt.state, 0);
     assert_eq!(rt.stats.commits, commits0);
     assert!(rt.take_haptics().is_empty(), "disabled, inert and uninvoked elements emit no haptics");
 }

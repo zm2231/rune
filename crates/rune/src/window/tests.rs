@@ -63,7 +63,7 @@ fn a_timer_asking_for_the_next_frame_waits_a_frame_without_a_display_link() {
     let start = crate::time::now() - Duration::from_secs(1);
     rt.wall_start = Some(start);
     rt.frame(0.0);
-    assert_eq!(rt.state, 1);
+    assert_eq!(*rt.state, 1);
     let due = wall_wake_deadline(&rt).expect("armed");
     let polled = start + Duration::from_secs_f64(rt.polled_at());
     assert!(due <= polled + Duration::from_micros(1), "due at once on the runtime's clock");
@@ -194,7 +194,7 @@ fn a_timer_frame_that_draws_the_same_still_draws_while_a_poll_steps() {
     let p = presented.as_ref().unwrap();
     let next_tick = Some(crate::time::now() + Duration::from_millis(8));
     assert!(p.unchanged(&rt, &config, false, next_tick), "a slow timer leaves the drawable");
-    rt.state = true;
+    *rt.state = true;
     rt.frame(0.0);
     assert!(p.same(&rt, &config));
     assert!(!p.unchanged(&rt, &config, false, next_tick), "a step due by the next tick draws");
@@ -364,32 +364,32 @@ impl CompHost {
 fn a_still_compositor_s_window_rests_and_polls_its_timers_first() {
     let mut host = CompHost::new(Some(false), still);
     assert!(host.idle && host.presented.is_some(), "a still compositor lets the window rest");
-    let (frames, commits, polls) = (host.frames, host.rt.stats.commits, host.rt.state);
+    let (frames, commits, polls) = (host.frames, host.rt.stats.commits, *host.rt.state);
     for _ in 0..8 { assert!(!host.timer_wake(), "a poll that returns false builds and presents nothing"); }
     assert_eq!(host.frames, frames);
     assert_eq!(host.rt.stats.commits, commits, "and runs no view");
-    assert_eq!(host.rt.state, polls + 8, "each timer still polls");
+    assert_eq!(*host.rt.state, polls + 8, "each timer still polls");
 }
 
 #[test]
 fn a_still_compositor_s_poll_that_changes_something_gets_one_frame() {
     let mut host = CompHost::new(Some(false), every_third);
-    let (frames, polls) = (host.frames, host.rt.state);
+    let (frames, polls) = (host.frames, *host.rt.state);
     let drew = (0..6).filter(|_| host.timer_wake()).count();
     let changes = (polls + 1..=polls + 6).filter(|p| p % 3 == 0).count();
     assert_eq!(drew, changes, "one frame for each poll that returns true");
     assert_eq!(host.frames - frames, changes as u32);
-    assert_eq!(host.rt.state, polls + 6, "one poll a wake: the frame doesn't poll again");
+    assert_eq!(*host.rt.state, polls + 6, "one poll a wake: the frame doesn't poll again");
 }
 
 #[test]
 fn an_animating_compositor_draws_every_frame() {
     let mut host = CompHost::new(Some(true), still);
     assert!(!host.idle && host.presented.is_none(), "an animating compositor never rests");
-    let (frames, polls) = (host.frames, host.rt.state);
+    let (frames, polls) = (host.frames, *host.rt.state);
     for _ in 0..5 { assert!(host.timer_wake()); }
     assert_eq!(host.frames - frames, 5);
-    assert_eq!(host.rt.state, polls + 5, "the frames poll");
+    assert_eq!(*host.rt.state, polls + 5, "the frames poll");
 }
 
 #[test]
@@ -456,7 +456,7 @@ fn reporting_frames_changes_no_frame_skip_or_redraw() {
             steps.push((presented, host.idle, host.rt.stale(), host.rt.wake_deadline().is_some(), host.frames));
         }
         let outcomes = log.borrow().clone();
-        (steps, host.rt.stats.commits, host.rt.state, outcomes)
+        (steps, host.rt.stats.commits, *host.rt.state, outcomes)
     }
     let (plain, plain_commits, plain_polls, none) = run(false);
     let (hooked, hooked_commits, hooked_polls, outcomes) = run(true);

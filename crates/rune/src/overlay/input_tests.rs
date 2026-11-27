@@ -500,7 +500,7 @@ fn overlay_without_window_drag_behaves_unchanged() {
     overlay.left_button(true, Some((40.0, 20.0)));
     overlay.left_button(false, Some((40.0, 20.0)));
     overlay.rt.frame(0.0);
-    assert_eq!(overlay.rt.state, 1);
+    assert_eq!(*overlay.rt.state, 1);
     assert_eq!(overlay.core.test_window_drags, 0);
     assert_eq!(overlay.core.position_owner, PositionOwner::Managed);
 }

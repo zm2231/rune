@@ -300,5 +300,5 @@ fn host_keyboard_core_gates_media_keys_on_opt_in_and_delivers_physical_code() {
     };
     assert!(redraw);
     rt.frame(0.0);
-    assert_eq!(rt.state, [(Key::Media(MediaKey::PlayPause), Some(PhysicalKeyCode::MediaPlayPause))]);
+    assert_eq!(*rt.state, [(Key::Media(MediaKey::PlayPause), Some(PhysicalKeyCode::MediaPlayPause))]);
 }

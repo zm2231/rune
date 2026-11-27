@@ -148,3 +148,44 @@ fn the_state_drops_once_when_a_window_goes_away_inside_its_turn() {
     drop(shared);
     assert_eq!(drops.get(), 1);
 }
+
+struct Big { bytes: [u8; 1 << 20], count: u32 }
+
+fn big() -> Big { Big { bytes: [0; 1 << 20], count: 0 } }
+
+fn big_view(_: &Big, _: &mut Cx<Big>) -> El { el() }
+
+fn counted<R>(allocs: &mut usize, f: impl FnOnce() -> R) -> R {
+    let before = crate::tooling::test_alloc::allocs();
+    let result = f();
+    *allocs += crate::tooling::test_alloc::allocs() - before;
+    result
+}
+
+#[test]
+fn a_turn_neither_moves_a_large_state_nor_allocates() {
+    std::thread::Builder::new().stack_size(64 << 20).spawn(|| {
+        let shared = SharedState::with_placeholder(big(), big);
+        let (mut a, mut ra) = (shared.member("a"), Runtime::new(big(), big_view, (10.0, 10.0), Env::default()));
+        let (mut b, mut rb) = (shared.member("b"), Runtime::new(big(), big_view, (10.0, 10.0), Env::default()));
+        let ((_, a_wake), (b_woken, b_wake)) = (counter(), counter());
+        a.connect(a_wake);
+        b.connect(b_wake);
+        a.enter(&mut ra);
+        let home: *const Big = &*ra.state;
+        a.leave(&mut ra);
+        let mut allocs = 0;
+        for n in 1..=4 {
+            counted(&mut allocs, || a.enter(&mut ra));
+            assert!(std::ptr::eq(&*ra.state, home), "the state stays where it is");
+            ra.update(|s, _| { s.count = n; s.bytes[(1 << 20) - 1] = n as u8; });
+            counted(&mut allocs, || a.leave(&mut ra));
+            counted(&mut allocs, || b.enter(&mut rb));
+            assert!(std::ptr::eq(&*rb.state, home), "the other window sees the same state, not a copy");
+            assert_eq!((rb.state.count, rb.state.bytes[(1 << 20) - 1]), (n, n as u8));
+            counted(&mut allocs, || b.leave(&mut rb));
+        }
+        assert_eq!(b_woken.load(Ordering::Relaxed), 4, "each change still wakes the other window");
+        assert_eq!(allocs, 0, "entering and leaving allocate nothing");
+    }).unwrap().join().unwrap();
+}

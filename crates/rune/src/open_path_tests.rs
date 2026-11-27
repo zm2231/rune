@@ -125,7 +125,7 @@ fn headless_runtime_records_open_and_reveal_requests_and_keeps_open_url_strict()
     rt.pointer_up(reveal_at.0, reveal_at.1);
     rt.frame(1.0 / 60.0);
 
-    assert_eq!(rt.state, ["open", "reveal"]);
+    assert_eq!(*rt.state, ["open", "reveal"]);
     assert_eq!(
         rt.take_path_requests(),
         [

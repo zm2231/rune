@@ -28,11 +28,11 @@ fn an_enter_waits_for_the_pointer_to_rest() {
     assert!(rt.state.is_empty(), "not yet");
     assert!(rt.wake_deadline().is_some(), "the wait asks for a frame");
     rt.frame(0.015);
-    assert_eq!(rt.state, [true]);
+    assert_eq!(*rt.state, [true]);
     // Moving within it reports nothing more.
     rt.pointer_move(10.0, 60.0);
     rt.frame(0.1);
-    assert_eq!(rt.state, [true]);
+    assert_eq!(*rt.state, [true]);
 }
 
 #[test]
@@ -50,17 +50,17 @@ fn a_leave_waits_out_its_grace_and_a_return_keeps_it() {
     let mut rt = app();
     rt.pointer_move(8.0, 50.0);
     rt.frame(0.05);
-    assert_eq!(rt.state, [true]);
+    assert_eq!(*rt.state, [true]);
     rt.pointer_move(100.0, 50.0);
     rt.frame(0.05);
     rt.pointer_move(8.0, 50.0);
     rt.frame(0.2);
-    assert_eq!(rt.state, [true], "back within the grace");
+    assert_eq!(*rt.state, [true], "back within the grace");
     rt.pointer_move(100.0, 50.0);
     rt.frame(0.09);
-    assert_eq!(rt.state, [true]);
+    assert_eq!(*rt.state, [true]);
     rt.frame(0.02);
-    assert_eq!(rt.state, [true, false]);
+    assert_eq!(*rt.state, [true, false]);
 }
 
 #[test]
@@ -76,7 +76,7 @@ fn a_press_cancels_the_wait_and_the_next_move_starts_it_again() {
     rt.frame(0.03);
     assert!(rt.state.is_empty());
     rt.frame(0.02);
-    assert_eq!(rt.state, [true]);
+    assert_eq!(*rt.state, [true]);
 }
 
 #[test]
@@ -91,10 +91,10 @@ fn blur_cancels_pending_enters_and_ends_shown_hover_without_a_grace() {
     rt.window_focus(true);
     rt.pointer_move(8.0, 50.0);
     rt.frame(0.05);
-    assert_eq!(rt.state, [true]);
+    assert_eq!(*rt.state, [true]);
     rt.window_focus(false);
     rt.frame(0.0);
-    assert_eq!(rt.state, [true, false], "blur ends even a hover with exit grace");
+    assert_eq!(*rt.state, [true, false], "blur ends even a hover with exit grace");
 }
 
 /// A window behind another still hears the pointer (macOS sends it moves too), so a tooltip
@@ -108,16 +108,16 @@ fn a_move_over_a_window_that_isnt_key_starts_the_wait() {
     rt.frame(0.03);
     assert!(rt.state.is_empty(), "not yet");
     rt.frame(0.015);
-    assert_eq!(rt.state, [true]);
+    assert_eq!(*rt.state, [true]);
     rt.window_focus(true);
     rt.window_focus(false);
     rt.frame(0.0);
-    assert_eq!(rt.state, [true, false]);
+    assert_eq!(*rt.state, [true, false]);
     rt.frame(0.2);
-    assert_eq!(rt.state, [true, false], "a still pointer doesn't reopen it");
+    assert_eq!(*rt.state, [true, false], "a still pointer doesn't reopen it");
     rt.pointer_move(9.0, 50.0);
     rt.frame(0.05);
-    assert_eq!(rt.state, [true, false, true], "the next move does");
+    assert_eq!(*rt.state, [true, false, true], "the next move does");
 }
 
 #[test]

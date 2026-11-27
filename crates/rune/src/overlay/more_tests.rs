@@ -267,7 +267,7 @@ fn hidden_overlay_update_wakes_once_without_a_surface() {
     handle.update(|_, tx| tx.wake_after(Duration::from_millis(250)));
     let updates = std::mem::take(&mut *overlay.shared.updates.lock().unwrap());
     overlay.apply_wake(false, updates);
-    assert_eq!(overlay.rt.state, [0.0]);
+    assert_eq!(*overlay.rt.state, [0.0]);
     assert_eq!(overlay.rt.wake_deadline(), Some(0.25));
     let start = crate::time::now();
     overlay.rt.wall_start = Some(start);
@@ -317,7 +317,7 @@ fn a_hidden_overlay_builds_nothing_until_it_shows() {
         overlay.rt.wall_start = Some(crate::time::now() - k * Duration::from_millis(100));
         overlay.wake_due(crate::time::now());
     }
-    assert_eq!(overlay.rt.state, 10);
+    assert_eq!(*overlay.rt.state, 10);
     assert_eq!(BUILDS.get() - builds, 0, "no view builds while hidden");
     assert_eq!(overlay.rt.stats.commits, commits, "no layout while hidden");
     assert_eq!(overlay.wake_deadline(), None, "and nothing left to wake it");
@@ -370,7 +370,7 @@ fn updates_that_change_nothing_leave_an_overlay_alone() {
         false
     });
     apply(&mut overlay);
-    assert_eq!(overlay.rt.state, 7);
+    assert_eq!(*overlay.rt.state, 7);
     assert!(overlay.dirty);
 }
 
@@ -404,7 +404,7 @@ fn a_hidden_prewarmed_overlay_commits_at_most_every_refresh() {
     let hidden = BUILDS.get() - builds;
     let bound = 1 + (Duration::from_secs(1).as_millis() / HIDDEN_REFRESH.as_millis()) as u32;
     assert!((2..=bound).contains(&hidden), "{hidden} builds in a hidden second, want at most {bound}; paced wakes at {pace_wakes:?}");
-    assert_eq!(overlay.rt.state, 10);
+    assert_eq!(*overlay.rt.state, 10);
     assert_ne!(counter_text(&overlay).as_deref(), Some("10"), "the last change waits for the pace or the reveal");
     let before = BUILDS.get();
     overlay.refresh_for_reveal_at(start + Duration::from_millis(1005));
@@ -460,7 +460,7 @@ fn overlay_poll_inherits_overrides_and_wakes_visible_state_once() {
     let (mut different, _) = Overlay::new(OverlaySpec::new("different", app.size, other_view), 0_u32, &app);
     assert!(different.rt.poll.is_none(), "never apply a poll to a different state type");
     different.rt.frame(0.0);
-    assert_eq!(different.rt.state, 0);
+    assert_eq!(*different.rt.state, 0);
 }
 
 /// Covered, or shown while the displays sleep: no frame comes, yet `wake_after` still fires

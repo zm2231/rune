@@ -26,7 +26,7 @@ fn a_focused_key_taking_overlay_blurs_on_hide_and_hears_the_next_shows_focus() {
             overlay.hide();
             overlay.rt.frame(0.0);
         }
-        assert_eq!(overlay.rt.state, [true, false, true, false], "{keys:?}");
+        assert_eq!(*overlay.rt.state, [true, false, true, false], "{keys:?}");
     }
 }
 
@@ -64,7 +64,7 @@ fn shell_close_from_hide_blur_does_not_linger_or_abort_a_fade() {
         overlay.presence = Presence::Shown { occluded: false };
         overlay.rt.window_focus(true);
         overlay.hide();
-        assert_eq!(overlay.rt.state, [true, false], "{keys:?}");
+        assert_eq!(*overlay.rt.state, [true, false], "{keys:?}");
         assert_eq!(overlay.rt.shell_request, None, "{keys:?}: immediate hide discards its own blur's Shell::Close");
         assert!(!overlay.presence.shown(), "{keys:?}");
 
@@ -74,14 +74,14 @@ fn shell_close_from_hide_blur_does_not_linger_or_abort_a_fade() {
         overlay.presence = Presence::Shown { occluded: false };
         overlay.rt.window_focus(true);
         overlay.hide_fading(std::time::Duration::from_millis(150));
-        assert_eq!(overlay.rt.state, [true, false, true, false], "{keys:?}");
+        assert_eq!(*overlay.rt.state, [true, false, true, false], "{keys:?}");
         assert_eq!(overlay.rt.shell_request, None, "{keys:?}: fade-out hide discards its own blur's Shell::Close");
         if cfg!(any(target_os = "macos", target_os = "windows")) {
             assert!(overlay.presence.fading(), "{keys:?}: blur close request must not abort the fade-out");
         }
         // Native Focused(false) arriving after hide (macOS ResignKey / Windows SW_HIDE).
         overlay.rt.window_focus(false);
-        assert_eq!(overlay.rt.state, [true, false, true, false], "{keys:?}: native blur after hide is deduplicated");
+        assert_eq!(*overlay.rt.state, [true, false, true, false], "{keys:?}: native blur after hide is deduplicated");
         assert_eq!(overlay.rt.shell_request, None, "{keys:?}");
 
         // Blur-first path (clicking outside): on_focus(false) queues Shell::Close, host takes it
@@ -91,7 +91,7 @@ fn shell_close_from_hide_blur_does_not_linger_or_abort_a_fade() {
         overlay.rt.window_focus(false);
         assert_eq!(overlay.rt.shell_request.take(), Some(crate::el::Shell::Close), "{keys:?}");
         overlay.hide();
-        assert_eq!(overlay.rt.state, [true, false, true, false, true, false], "{keys:?}");
+        assert_eq!(*overlay.rt.state, [true, false, true, false, true, false], "{keys:?}");
         assert_eq!(overlay.rt.shell_request, None, "{keys:?}");
     }
 }

@@ -336,7 +336,7 @@ fn web_runtime_preserves_on_frame_drawn_hook_and_reads_presented_state() {
     let app = App::new(AppSpec::new("web-hook", (120.0, 80.0), || 1u32, view))
         .on_frame_drawn(move |rt| {
             let has_key = rt.elements().iter().any(|e| e.key.as_deref() == Some(&format!("frame-{}", rt.state)));
-            sink.borrow_mut().push((rt.state, has_key));
+            sink.borrow_mut().push((*rt.state, has_key));
         });
 
     let (mut rt, _, _, mut on_frame_drawn, _) = start_web_runtime(
@@ -482,7 +482,7 @@ fn web_frame_host_invokes_on_frame_drawn_only_on_drawn_frames() {
         el().child(el().size(*s as f32 + 10.0, 20.0).fill(Color::WHITE))
     }))
     .on_frame_drawn(move |rt| {
-        sink.borrow_mut().push((rt.state, rt.elements().len()));
+        sink.borrow_mut().push((*rt.state, rt.elements().len()));
     });
 
     let start = crate::time::now();

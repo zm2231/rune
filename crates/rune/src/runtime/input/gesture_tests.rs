@@ -186,11 +186,11 @@ fn drag_direction_follows_inherited_layout_direction() {
     rt.pointer_move(120.0, 20.0);
     rt.pointer_up(120.0, 20.0);
     rt.frame(0.0);
-    assert_eq!(rt.state, vec![crate::Direction::Ltr; 3]);
+    assert_eq!(*rt.state, vec![crate::Direction::Ltr; 3]);
     rt.state.clear();
     rt.pointer_down(100.0, 60.0);
     rt.pointer_move(80.0, 60.0);
     rt.pointer_up(80.0, 60.0);
     rt.frame(0.0);
-    assert_eq!(rt.state, vec![crate::Direction::Rtl; 3]);
+    assert_eq!(*rt.state, vec![crate::Direction::Rtl; 3]);
 }

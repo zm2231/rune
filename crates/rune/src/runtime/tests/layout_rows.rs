@@ -108,7 +108,7 @@ fn measurement_cannot_change_presented_geometry_or_motion_policy() {
     rt.frame(0.0);
     let id = rt.tree.nodes.iter().find(|n| n.key.as_deref() == Some("row")).unwrap().id;
     let before = rt.scene.presented(id).unwrap().rect;
-    rt.state = true;
+    *rt.state = true;
     let measured = rt.measure(&Tx::default());
     assert_eq!(rt.scene.presented(id).unwrap().rect, before);
     assert_eq!(rt.scene.store().active_len(), 0);
@@ -240,7 +240,7 @@ fn reduced_motion_rows_land_immediately_but_keep_the_presence_fade() {
     }
     let mut rt = Runtime::new(false, view, (200.0, 300.0), Env::new(true, 2.0));
     assert!(!rt.frame(0.0));
-    rt.state = true;
+    *rt.state = true;
     rt.invalidate();
     rt.frame(1.0 / 120.0);
     let row = rt.elements().into_iter().find(|e| e.key.as_deref() == Some("row")).unwrap();
@@ -249,7 +249,7 @@ fn reduced_motion_rows_land_immediately_but_keep_the_presence_fade() {
     rt.frame(0.2);
     assert!(!rt.animating);
     assert_eq!(rt.elements().into_iter().find(|e| e.key.as_deref() == Some("row")).unwrap().opacity, 1.0);
-    rt.state = false;
+    *rt.state = false;
     rt.invalidate();
     rt.frame(1.0 / 120.0);
     let row = rt.elements().into_iter().find(|e| e.key.as_deref() == Some("row")).unwrap();
@@ -321,7 +321,7 @@ fn retained_layout_matches_fresh_tree_across_edits() {
     for seed in 0..40 {
         let size = (240.0 + (seed % 4) as f32 * 30.0, 600.0);
         let scale = if seed % 3 == 0 { 1.0 } else { 2.0 };
-        cached.state = seed;
+        *cached.state = seed;
         cached.set_viewport(size, scale);
         cached.settle_all();
         cached.frame(0.0);

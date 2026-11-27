@@ -154,7 +154,7 @@ fn max_size_wraps_text_and_shadow_margin_is_included_in_measured_size() {
     assert!(short_resolved.0 > 40.0 && short_resolved.0 < 180.0, "short text shrinks below max_w: {short_resolved:?}");
     assert!(short_resolved.1 >= 40.0, "12pt shadow margin + 8pt padding included: {short_resolved:?}");
 
-    rt.state = vec!["This candidate entry is intentionally very long so that it must wrap across several lines inside max_size".to_owned()];
+    *rt.state = vec!["This candidate entry is intentionally very long so that it must wrap across several lines inside max_size".to_owned()];
     let long = rt.measure_content();
     let long_resolved = resolve_content_size(cfg, None, (0.0, 0.0), long, Some((1920.0, 1080.0)), 1.0, 8192);
     assert!(long_resolved.0 <= 180.0, "must wrap within max_size.0: {long_resolved:?}");
@@ -409,7 +409,7 @@ fn cpu_layered_engine_atomically_resizes_and_shrinks_fitted_overlay_dib() {
     assert_eq!(engine.presenter().seam().updates[0].flags, ULW_ALPHA);
     assert_eq!(engine.presenter().seam().updates[0].dirty, None);
 
-    rt.state = false;
+    *rt.state = false;
     rt.invalidate();
     rt.frame(0.0);
     let s2 = resolve_content_size(cfg, None, (0.0, 0.0), rt.core().committed_content_size().unwrap(), Some((1920.0, 1080.0)), 1.0, 8192);

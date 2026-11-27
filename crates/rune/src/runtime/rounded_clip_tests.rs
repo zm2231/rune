@@ -365,7 +365,7 @@ fn rounded_clip_and_dissolve_follow_retained_presence() {
     let mut rt = Runtime::new(true, view, (80.0, 40.0), Env { scale: 2.0, system_dark: true });
     rt.frame(0.0);
     assert!(rt.instances.iter().all(|i| i.params[1] != KIND_LAYER));
-    rt.state = false; rt.invalidate(); rt.frame(0.0); rt.frame(0.04);
+    *rt.state = false; rt.invalidate(); rt.frame(0.0); rt.frame(0.04);
     assert!(rt.instances.iter().any(|i| i.params[1] == KIND_LAYER && i.params[0] == 1.0 && f32::from_bits(i.fade[3]) == 40.0));
     assert!(rt.instances.iter().any(|i| i.params[1] == KIND_LAYER && i.params[2] > 0.0));
     for _ in 0..120 { rt.frame(1.0 / 120.0); }

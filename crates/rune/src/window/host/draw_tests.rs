@@ -721,7 +721,7 @@ fn turn_end_guard_requests_redraw_when_user_input_is_queued_at_rest() {
     rt.frame(crate::frame::clock::RESUME_STEP);
     assert!(rt.rests());
 
-    rt.state = true;
+    *rt.state = true;
     assert_eq!(rt.resting_wake(), Some(true));
     rt.resting_wake_frame(true);
     assert!(rt.core().has_input_waiting());

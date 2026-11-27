@@ -130,7 +130,7 @@ fn cache_invalidates_on_state_and_hover_changes() {
     assert_eq!(renderer.layer_stats().extra_passes, 0);
 
     // Frame 3: state change inside cached subtree invalidates and re-renders once settled (green).
-    rt.state = true;
+    *rt.state = true;
     rt.invalidate();
     rt.frame(1.0);
     renderer.prepare(&gpu.device, &gpu.queue, &mut rt.text.atlas, &rt.instances, (32, 32));
@@ -183,7 +183,7 @@ fn cache_draws_live_while_subtree_animates_and_recaches_when_settled() {
     assert_eq!(renderer.layer_stats().extra_passes, 0);
 
     // Start animation inside cached subtree: must bypass cache and draw live without re-rasterizing offscreen targets.
-    rt.state = true;
+    *rt.state = true;
     rt.invalidate();
     rt.frame(0.0);
     for _ in 0..3 {
@@ -710,7 +710,7 @@ fn scale_commits_draw_live_without_repeated_cache_passes() {
     renderer.prepare(&gpu.device, &gpu.queue, &mut rt.text.atlas, &rt.instances, (200, 200));
     let _ = pixels(&gpu, &renderer, &target);
     for step in 1..=30 {
-        rt.state = 1.0 + step as f32 * 0.01;
+        *rt.state = 1.0 + step as f32 * 0.01;
         rt.invalidate();
         rt.frame(1.0 / 60.0);
         renderer.prepare(&gpu.device, &gpu.queue, &mut rt.text.atlas, &rt.instances, (200, 200));

@@ -48,7 +48,7 @@ fn polls_in_a_second(overlay: &mut Overlay<u32>) -> u32 {
     overlay.rt.wall_start = Some(start);
     // An update asks for the next frame, as a poll would.
     overlay.apply_wake(false, vec![Box::new(|_: &mut u32, tx: &mut Tx| { tx.wake_after(Duration::ZERO); true })]);
-    let before = overlay.rt.state;
+    let before = *overlay.rt.state;
     for _ in 0..10_000 {
         if overlay.dirty && !overlay.frameless() { present_paced(overlay, crate::time::now(), false); }
         let Some(wake) = overlay.wake_deadline() else { break };
@@ -59,7 +59,7 @@ fn polls_in_a_second(overlay: &mut Overlay<u32>) -> u32 {
         overlay.rt.wall_start = Some(now - at);
         overlay.wake_due(now + Duration::from_micros(1));
     }
-    overlay.rt.state - before
+    *overlay.rt.state - before
 }
 
 fn assert_frame_rate(polls: u32, what: &str) {
@@ -80,16 +80,16 @@ fn a_retained_overlay_moved_while_hidden_reports_its_screen_rect_on_show() {
     let (mut overlay, _) = Overlay::new(OverlaySpec::new("moved hidden", app.size, view).options(options), None, &app);
     overlay.rt.wall_start = None;
     overlay.warm();
-    assert_eq!(overlay.rt.state, Some([10.0, 5.0, 20.0, 8.0]));
+    assert_eq!(*overlay.rt.state, Some([10.0, 5.0, 20.0, 8.0]));
     overlay.dirty = false;
     overlay.idle = true;
 
     overlay.origin_moved((300.0, 200.0));
     assert!(overlay.dirty, "the moved rect waits for the next step");
     assert!(overlay.idle, "a hidden overlay doesn't turn the loop for it");
-    assert_eq!(overlay.rt.state, Some([10.0, 5.0, 20.0, 8.0]));
+    assert_eq!(*overlay.rt.state, Some([10.0, 5.0, 20.0, 8.0]));
     overlay.refresh_for_reveal_at(crate::time::now());
-    assert_eq!(overlay.rt.state, Some([310.0, 205.0, 20.0, 8.0]), "the reveal delivers it");
+    assert_eq!(*overlay.rt.state, Some([310.0, 205.0, 20.0, 8.0]), "the reveal delivers it");
 }
 
 /// `Tx::wake_after(Duration::ZERO)` asks for the next frame. With no display link to take
@@ -220,7 +220,7 @@ fn a_poll_asking_for_the_next_frame_keeps_a_shown_overlay_stepping() {
         present(&mut overlay, start + k * FRAME);
         overlay.idle
     }).collect();
-    assert_eq!(overlay.rt.state, 5);
+    assert_eq!(*overlay.rt.state, 5);
     assert_eq!(idle, [false, false, false, true, true], "the display link runs while the poll asks for frames, and stops after");
 }
 
@@ -556,7 +556,7 @@ fn window_panel_overlay_focus_callback_is_connected_before_first_show() {
     let (mut overlay, _) = Overlay::new(spec, Vec::new(), &app);
     overlay.rt.window_focus(true);
     overlay.rt.window_focus(false);
-    assert_eq!(overlay.rt.state, [true, false]);
+    assert_eq!(*overlay.rt.state, [true, false]);
     assert_eq!(overlay.rt.shell_request, Some(crate::el::Shell::Close));
     assert!(overlay.surface.live().is_none());
 }
@@ -582,7 +582,7 @@ fn hiding_a_key_overlay_releases_the_modifiers_it_held() {
     press(&mut overlay, Code::Fn);
     // Hidden from its own handler: no blur reaches it, and no frame draws.
     overlay.hide();
-    assert_eq!(overlay.rt.state, [(Modifier::AltRight, true), (Modifier::Fn, true), (Modifier::AltRight, false), (Modifier::Fn, false)]);
+    assert_eq!(*overlay.rt.state, [(Modifier::AltRight, true), (Modifier::Fn, true), (Modifier::AltRight, false), (Modifier::Fn, false)]);
     overlay.rt.window_focus(false);
     overlay.hidden_input();
     assert_eq!(overlay.rt.state.len(), 4, "the blur after the hide releases nothing again");

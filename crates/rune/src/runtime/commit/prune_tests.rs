@@ -235,11 +235,11 @@ fn directly_unmounted_scroll_viewport_forgets_offset_before_next_frame() {
 
     let mut instant_tx = Tx::default();
     instant_tx.instant();
-    rt.state = false;
+    *rt.state = false;
     rt.commit(&instant_tx);
     assert!(!rt.scroll.scrolls.contains_key(&scroll_id), "directly unmounted viewport drops scroll state on commit");
 
-    rt.state = true;
+    *rt.state = true;
     rt.commit(&Tx::default());
     let new_id = rt.tree.nodes.iter().find(|n| n.key.as_deref() == Some("vp")).unwrap().id;
     assert_eq!(rt.scroll.scrolls[&new_id].offset, 0.0, "remounted viewport starts at offset 0");

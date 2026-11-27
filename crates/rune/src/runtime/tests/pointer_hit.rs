@@ -52,7 +52,7 @@ fn overlay_pointer_observation_does_not_require_a_native_hit_region() {
     rt.frame(0.0);
     rt.pointer_move(20.0, 40.0);
     rt.frame(0.0);
-    assert_eq!(rt.state, [PointerPress { x: 20.0, y: 40.0 }]);
+    assert_eq!(*rt.state, [PointerPress { x: 20.0, y: 40.0 }]);
     assert!(rt.hit_regions().is_empty());
 }
 
@@ -65,7 +65,7 @@ fn overlay_idle_pointer_does_not_request_unchanged_frames() {
     rt.frame(0.0);
     assert!(rt.observe_pointer(5.0, 5.0), "enter must run the hover callback");
     rt.frame(0.0);
-    assert_eq!(rt.state, 1);
+    assert_eq!(*rt.state, 1);
     assert!(!rt.observe_pointer(6.0, 5.0), "movement within an unchanged chip needs no frame");
     assert!(!rt.observe_pointer(6.0, 5.0), "duplicate monitor/winit observations need no frame");
     assert!(!rt.observe_pointer(90.0, 90.0));
@@ -93,7 +93,7 @@ fn hit_tests_leave_out_the_right_and_bottom_edges() {
         rt.pointer_down(x, y);
         rt.pointer_up(x, y);
         rt.frame(0.0);
-        let mut events = std::mem::take(&mut rt.state);
+        let mut events = std::mem::take(&mut *rt.state);
         rt.pointer_leave();
         rt.frame(0.0);
         rt.state.clear();
@@ -145,7 +145,7 @@ fn secondary_only_children_preserve_primary_click_hover_and_background_blur() {
     rt.pointer_down(10.0, 10.0);
     rt.pointer_up(10.0, 10.0);
     rt.frame(0.0);
-    assert_eq!(rt.state, (1, 1, false));
+    assert_eq!(*rt.state, (1, 1, false));
     rt.state.2 = true;
     rt.invalidate();
     rt.frame(0.0);
@@ -401,7 +401,7 @@ fn hover_change_spans_descendants_and_holds_through_a_press() {
     rt.pointer_down(20.0, 20.0);
     rt.pointer_up(20.0, 20.0);
     rt.frame(0.0);
-    assert_eq!(rt.state, (vec![true], 1, 1), "the child keeps its hover and press; entering it is not a leave");
+    assert_eq!(*rt.state, (vec![true], 1, 1), "the child keeps its hover and press; entering it is not a leave");
     rt.pointer_down(20.0, 20.0);
     rt.pointer_move(20.0, 120.0);
     rt.pointer_leave();

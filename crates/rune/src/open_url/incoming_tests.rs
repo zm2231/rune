@@ -72,7 +72,7 @@ fn links_before_the_first_window_arrive_once_in_order_as_it_starts() {
     let mut rt = runtime();
     assert!(rt.state.is_empty(), "nothing runs before the host starts");
     assert_eq!(deliver(&app, &mut rt), 2);
-    assert_eq!(rt.state, ["app://one", "app://two?x=1"]);
+    assert_eq!(*rt.state, ["app://one", "app://two?x=1"]);
     assert!(rt.needs_commit(), "the transaction commits and redraws");
     assert_eq!(deliver(&app, &mut rt), 0, "delivered once");
     assert_eq!((glue.installs.get(), glue.removes.get()), (1, 0));
@@ -102,7 +102,7 @@ fn links_while_running_wake_the_loop_and_arrive() {
     assert_eq!(wakes.load(Ordering::SeqCst), before + 1);
     let mut rt = runtime();
     assert_eq!(deliver(&app, &mut rt), 1);
-    assert_eq!(rt.state, ["app://later"]);
+    assert_eq!(*rt.state, ["app://later"]);
 }
 
 #[test]
@@ -155,7 +155,7 @@ fn a_view_listening_before_its_first_frame_gets_the_launch_links_in_order_and_la
     assert_eq!(wakes.load(Ordering::SeqCst), 1, "connecting wakes for what waited");
     let mut rt = runtime();
     assert_eq!(deliver(&app, &mut rt), 2);
-    assert_eq!(rt.state, ["myapp://launch", "https://example.com/item/7"]);
+    assert_eq!(*rt.state, ["myapp://launch", "https://example.com/item/7"]);
     inbox.receive("myapp://warm".into());
     assert_eq!(wakes.load(Ordering::SeqCst), 2);
     assert_eq!(deliver(&app, &mut rt), 1);
@@ -186,7 +186,7 @@ fn links_a_host_hands_over_reach_its_view_in_order_from_before_the_view_was_made
     inbox.receive("myapp://later".into());
     let mut rt = runtime();
     assert_eq!(deliver(&app, &mut rt), 3);
-    assert_eq!(rt.state, ["myapp://launch", "https://example.com/item/7", "myapp://later"]);
+    assert_eq!(*rt.state, ["myapp://launch", "https://example.com/item/7", "myapp://later"]);
 }
 
 #[test]
@@ -204,7 +204,7 @@ fn links_a_host_hands_a_view_without_the_hook_are_dropped_not_kept() {
     inbox.receive("myapp://third".into());
     let mut rt = runtime();
     assert_eq!(deliver(&second, &mut rt), 1);
-    assert_eq!(rt.state, ["myapp://third"]);
+    assert_eq!(*rt.state, ["myapp://third"]);
 }
 
 type Files = Vec<Vec<std::path::PathBuf>>;
@@ -243,7 +243,7 @@ fn files_before_the_first_window_arrive_once_in_order_as_it_starts() {
     let mut rt = files_runtime();
     assert!(rt.state.is_empty(), "nothing runs before the host starts");
     assert_eq!(deliver_files(&app, &mut rt), 2);
-    assert_eq!(rt.state, [
+    assert_eq!(*rt.state, [
         vec![PathBuf::from("/a.torrent"), PathBuf::from("/b.torrent")],
         vec![PathBuf::from("/c.torrent")],
     ]);
@@ -278,7 +278,7 @@ fn a_later_window_with_on_open_files_gets_the_launch_batch() {
     inbox.settle(&glue);
     let mut rt = files_runtime();
     assert_eq!(deliver_files(&second, &mut rt), 1);
-    assert_eq!(rt.state, [vec![PathBuf::from("/launch.torrent")]]);
+    assert_eq!(*rt.state, [vec![PathBuf::from("/launch.torrent")]]);
     assert_eq!(glue.removes.get(), 0);
 }
 
@@ -300,8 +300,8 @@ fn files_while_running_wake_the_loop_and_hand_off_when_first_window_closes() {
     let mut rt2 = files_runtime();
     assert_eq!(deliver_files(&first, &mut rt1), 1);
     assert_eq!(deliver_files(&second, &mut rt2), 1);
-    assert_eq!(rt1.state, [vec![PathBuf::from("/one.torrent")]]);
-    assert_eq!(rt2.state, [vec![PathBuf::from("/two.torrent")]]);
+    assert_eq!(*rt1.state, [vec![PathBuf::from("/one.torrent")]]);
+    assert_eq!(*rt2.state, [vec![PathBuf::from("/two.torrent")]]);
     assert_eq!(glue.installs.get(), 1, "installed once");
 }
 

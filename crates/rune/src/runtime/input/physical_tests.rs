@@ -448,7 +448,7 @@ fn physical_paste_uses_app_handler_without_a_focused_editor() {
     let target = rt.edit.paste_request.take().unwrap();
     rt.paste_result(target, crate::ClipboardContent::new("app"));
     rt.frame(0.0);
-    assert_eq!(rt.state, "app");
+    assert_eq!(*rt.state, "app");
 }
 
 #[test]

@@ -27,5 +27,5 @@ fn a_service_that_launched_the_app_and_a_later_one_reach_the_hook_in_order() {
     inbox.receive(later.clone());
     let mut rt = Runtime::new(Vec::new(), |_: &Vec<ServiceInput>, _: &mut crate::Cx<Vec<ServiceInput>>| el(), (80.0, 60.0), Env::new(true, 2.0));
     for f in app.shared.take_updates() { rt.update_if(f); }
-    assert_eq!(rt.state, [launched, later]);
+    assert_eq!(*rt.state, [launched, later]);
 }

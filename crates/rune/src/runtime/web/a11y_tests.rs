@@ -243,7 +243,7 @@ fn fractional_scroll_offsets_never_rewrite_a_page_mirror() {
     for i in 1..20u32 {
         let y = f32::from(u16::try_from(i).expect("small")) * 137.3333;
         assert!(rt.set_page_scroll(y), "each offset is a new page position");
-        rt.state = i;
+        *rt.state = i;
         rt.frame(0.0);
         assert!(rt.web_a11y(&mut mirror).is_none(), "the mirror changed at {y}");
     }

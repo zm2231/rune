@@ -520,7 +520,7 @@ fn delegated_a11y_action_covers_all_composite_item_roles_and_other_actions() {
     assert!(rt.accessibility_action("opt", Ak::Focus, None));
     rt.frame(0.016);
     assert_eq!(
-        rt.state,
+        *rt.state,
         vec![
             ("tree".to_owned(), Ak::Expand),
             ("row".to_owned(), Ak::ShowContextMenu),

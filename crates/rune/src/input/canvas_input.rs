@@ -275,7 +275,7 @@ impl El {
     /// rt.touch(2, TouchPhase::Ended, 180.0, 100.0, 0.03);
     /// rt.touch(1, TouchPhase::Ended, 60.0, 100.0, 0.04);
     /// rt.frame(1.0 / 60.0);
-    /// assert!(rt.state > 1.0);
+    /// assert!(*rt.state > 1.0);
     /// ```
     pub fn on_magnify<S: 'static>(mut self, f: impl Fn(&mut S, MagnifyEvent, &mut Tx) -> bool + 'static) -> Self {
         self.canvas_input().magnify = Some(Rc::new(move |s, e, tx| f(state::<S>(s), e, tx)));
@@ -330,7 +330,7 @@ impl El {
     /// rt.touch(2, TouchPhase::Ended, 156.57, 43.43, 0.03);
     /// rt.touch(1, TouchPhase::Ended, 100.0, 100.0, 0.04);
     /// rt.frame(1.0 / 60.0);
-    /// assert!(rt.state > 30.0);
+    /// assert!(*rt.state > 30.0);
     /// ```
     pub fn on_rotate<S: 'static>(mut self, f: impl Fn(&mut S, RotateEvent, &mut Tx) -> bool + 'static) -> Self {
         self.canvas_input().rotate = Some(Rc::new(move |s, e, tx| f(state::<S>(s), e, tx)));

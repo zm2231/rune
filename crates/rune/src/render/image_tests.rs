@@ -170,7 +170,7 @@ fn gpu_static_mips_alpha_clip_and_page_order_match_pixels() {
     big.set(2048, 1, [255, 0, 0, 255].repeat(2048));
     let full = Pixels::new();
     full.set(1024, 1024, [0, 255, 0, 255].repeat(1024 * 1024));
-    rt.state = (big, full, true);
+    *rt.state = (big, full, true);
     rt.invalidate();
     rt.settle_all();
     let out = draw(&mut rt);

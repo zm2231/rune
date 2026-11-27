@@ -28,7 +28,7 @@ use crate::file_dialog::{DialogAnswer, FileDialogError};
 use crate::popup_menu::Show;
 use crate::runtime::{LockEffect, TouchPhase, TouchSource, Waker};
 use crate::time::Instant;
-use crate::{GesturePhase, Ime, KeyEvent, MagnifyEvent, PhysicalInput, RotateEvent};
+use crate::{GesturePhase, Ime, KeyEvent, MagnifyEvent, PhysicalInput, RotateEvent, WheelEvent};
 
 pub(crate) struct Reading {
     pub(crate) tree: Option<TreeUpdate>,
@@ -84,6 +84,7 @@ pub(crate) trait Surface {
     // Gestures.
     /// Two fingers pinched: scale by `1.0 + delta` about (x, y) in the view's points.
     fn magnify(&mut self, delta: f32, x: f32, y: f32, phase: GesturePhase);
+    fn touch_pan(&mut self, phase: GesturePhase, at: (f32, f32), moved: (f32, f32));
     /// Two fingers turned `degrees`, positive counterclockwise, about (x, y).
     fn rotate(&mut self, degrees: f32, x: f32, y: f32, phase: GesturePhase);
     /// Whether a secondary press at (x, y) would open a menu or reach a handler.
@@ -393,6 +394,11 @@ impl<S: 'static> Surface for Hosted<S> {
     fn magnify(&mut self, delta: f32, x: f32, y: f32, phase: GesturePhase) {
         let (x, y) = self.in_view(x, y);
         self.host.runtime_mut().magnify_event(MagnifyEvent::new(delta).at(x, y).phase(phase));
+    }
+
+    fn touch_pan(&mut self, phase: GesturePhase, (x, y): (f32, f32), (dx, dy): (f32, f32)) {
+        let ((x, y), (dx, dy)) = (self.in_view(x, y), self.in_view(dx, dy));
+        self.host.runtime_mut().touch_pan_event(WheelEvent::new(dx, dy).at(x, y).phase(phase).precise(true));
     }
 
     fn rotate(&mut self, degrees: f32, x: f32, y: f32, phase: GesturePhase) {

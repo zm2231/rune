@@ -29,6 +29,7 @@ const GESTURE_CANCELLED: isize = 4;
 const BUTTON_SECONDARY: isize = 1 << 1;
 /// `UIScrollTypeMaskAll`: a mouse's wheel and a trackpad's two fingers.
 const SCROLL_ALL: isize = 3;
+const TOUCH_DIRECT: isize = 0;
 /// `UITouchTypeIndirectPointer`: a mouse's or trackpad's click, in an app whose Info.plist sets
 /// `UIApplicationSupportsIndirectInputEvents`.
 const TOUCH_INDIRECT_POINTER: isize = 3;
@@ -62,6 +63,36 @@ impl RuneView {
             let none: Retained<AnyObject> = msg_send![class!(NSArray), array];
             let _: () = msg_send![&*scroll, setAllowedTouchTypes: &*none];
         }
+    }
+
+    pub(super) fn recognize_touch_pan(&self) {
+        let pan = self.recognize(class!(UIPanGestureRecognizer), sel!(runeTouchPan:));
+        // SAFETY: a pan recognizer's touch counts are `NSUInteger`s and its touch types an
+        // array of `NSNumber`s holding `UITouchType`s, here only a finger on the screen.
+        unsafe {
+            let _: () = msg_send![&*pan, setMinimumNumberOfTouches: 2usize];
+            let _: () = msg_send![&*pan, setMaximumNumberOfTouches: 2usize];
+            let direct: Retained<AnyObject> = msg_send![class!(NSNumber), numberWithInteger: TOUCH_DIRECT];
+            let types: Retained<AnyObject> = msg_send![class!(NSArray), arrayWithObject: &*direct];
+            let _: () = msg_send![&*pan, setAllowedTouchTypes: &*types];
+        }
+    }
+
+    pub(super) fn touch_panned(&self, recognizer: &AnyObject) {
+        let Some((phase, x, y)) = self.gesture(recognizer) else { return };
+        // SAFETY: a pan recognizer's translation in a view is a `CGPoint`. Setting it back to
+        // zero makes the next one the move since this one.
+        let moved: CGPoint = unsafe {
+            let moved = msg_send![recognizer, translationInView: self];
+            let _: () = msg_send![recognizer, setTranslation: CGPoint::new(0.0, 0.0), inView: self];
+            moved
+        };
+        let (at, moved) = match phase {
+            GesturePhase::Began => ((x - moved.x as f32, y - moved.y as f32), (0.0, 0.0)),
+            _ => ((x, y), (moved.x as f32, moved.y as f32)),
+        };
+        self.with_surface(|surface| surface.touch_pan(phase, at, moved));
+        self.track(phase);
     }
 
     /// The pointer moved over the view, or left it.

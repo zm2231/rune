@@ -56,6 +56,7 @@ pub(crate) fn mount<S: 'static>(mut app: App<S>, key: Option<&str>) -> Mount {
         host.runtime_mut().configure(config);
         host.runtime_mut().core_mut().answer_links_later(wake.clone());
         host.runtime_mut().core_mut().set_backdrop_materials(true);
+        host.runtime_mut().core_mut().recognize_two_fingers_in_host();
         if let Some(key) = &window { host.runtime_mut().core_mut().set_window_key(key); }
         if let Some(member) = &mut member {
             member.connect(wake.clone());
@@ -92,6 +93,7 @@ pub(crate) fn overlay_slot<T: 'static>(built: Built<T>) -> OverlaySlot {
             }
         };
         host = host.with_clipboard(clipboard, wake.clone()).with_system_links();
+        host.runtime_mut().core_mut().recognize_two_fingers_in_host();
         host.runtime_mut().set_live_visible(false);
         let role = Role::Overlay(Box::new(OverlayRole { feed }));
         let feedback = Feedback::new(None, None, name, layer, presents);

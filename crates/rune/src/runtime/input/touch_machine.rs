@@ -108,6 +108,7 @@ pub(super) struct TwoFingerTargets {
     pub(super) wheel: bool,
     pub(super) magnify: bool,
     pub(super) rotate: bool,
+    pub(super) in_host: bool,
 }
 
 impl TwoFingerTargets {
@@ -170,13 +171,13 @@ impl TwoFinger {
     pub(super) fn new(first: Contact, second: Contact, targets: TwoFingerTargets) -> Self {
         let initial_mid = midpoint(first.pos, second.pos);
         let initial_span = span(first.pos, second.pos);
-        let pan = if targets.wheel { PanChannel::Armed } else { PanChannel::Disabled };
-        let pinch = if targets.magnify {
+        let pan = if targets.wheel && !targets.in_host { PanChannel::Armed } else { PanChannel::Disabled };
+        let pinch = if targets.magnify && !targets.in_host {
             PinchChannel::Armed { initial_span }
         } else {
             PinchChannel::Disabled
         };
-        let rotate = if targets.rotate {
+        let rotate = if targets.rotate && !targets.in_host {
             if initial_span.is_finite() && initial_span >= MIN_SPAN {
                 let angle = finger_angle_deg(first.pos, second.pos);
                 RotateChannel::Armed { anchored: angle.is_finite(), prev_angle: if angle.is_finite() { angle } else { 0.0 }, cumulative: 0.0 }

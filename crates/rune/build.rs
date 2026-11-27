@@ -618,7 +618,7 @@ fn parse_shader_consts(src: &WgslSources<'_>) -> ParsedShaderConsts {
     let ring_fn = wgsl_block(shader_path, &shader_code, "fn", "ring_arc");
     let (_, quarter_turn_lit) = parse_f32(shader_path, "QUARTER_TURN", capture_once(shader_path, "ring_arc quarter turn", &ring_fn, "let arc = rc * {};")[0]);
     let dash_fn = wgsl_block(shader_path, &shader_code, "fn", "dash_cov");
-    let (_, dash_min_total_lit) = parse_f32(shader_path, "DASH_MIN_TOTAL", capture_once(shader_path, "dash_cov min total", &dash_fn, "max(total, {})")[0]);
+    let (_, dash_min_period_lit) = parse_f32(shader_path, "DASH_MIN_PERIOD", capture_once(shader_path, "dash_cov min period", &dash_fn, "max(d.x + d.y, {})")[0]);
     let border_fn = wgsl_block(shader_path, &shader_code, "fn", "border_over");
     let (_, opacity_eps_lit) = parse_f32(shader_path, "OPACITY_EPSILON", capture_once(shader_path, "border_over opacity eps", &border_fn, "clamp(opacity, {}, 1.0)")[0]);
     let (_, opaque_hide_lit) = parse_f32(shader_path, "OPAQUE_HIDE_THRESHOLD", capture_once(shader_path, "border_over hide threshold", &border_fn, "shrink && hide > {})")[0]);
@@ -766,7 +766,7 @@ fn parse_shader_consts(src: &WgslSources<'_>) -> ParsedShaderConsts {
     writeln!(out, "pub const TRIANGLE_AA_BC: u32 = {};", tri_aa[1]).unwrap();
     writeln!(out, "pub const TRIANGLE_AA_CA: u32 = {};", tri_aa[2]).unwrap();
     writeln!(out, "pub const QUARTER_TURN: f32 = {quarter_turn_lit};").unwrap();
-    writeln!(out, "pub const DASH_MIN_TOTAL: f32 = {dash_min_total_lit};").unwrap();
+    writeln!(out, "pub const DASH_MIN_PERIOD: f32 = {dash_min_period_lit};").unwrap();
     writeln!(out, "pub const SOFT_MIN: f32 = {soft_min_lit};").unwrap();
     writeln!(out, "pub const OPACITY_EPSILON: f32 = {opacity_eps_lit};").unwrap();
     writeln!(out, "pub const OPAQUE_HIDE_THRESHOLD: f32 = {opaque_hide_lit};").unwrap();

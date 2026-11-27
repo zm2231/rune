@@ -424,6 +424,7 @@ pub use runtime::register_thread_rest_hook;
 #[doc(hidden)]
 pub use runtime::scroll_watch_state;
 pub use shape::Area;
+pub use shape::Dash;
 pub use shape::FillRule;
 pub use shape::LineCap;
 pub use shape::Path;

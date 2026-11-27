@@ -6,6 +6,7 @@ use rune_kit::{Button, Kit, Menu, MenuEntry, MenuItem, root};
 struct S {
     menu_open: bool,
     process_open: bool,
+    picked_process: bool,
 }
 
 fn view(s: &S, _: &mut Cx<S>) -> El {
@@ -18,7 +19,8 @@ fn view(s: &S, _: &mut Cx<S>) -> El {
     let process = MenuItem::new("Process")
         .key("process")
         .submenu(sub, s.process_open)
-        .on_submenu(|s: &mut S, open| s.process_open = open);
+        .on_submenu(|s: &mut S, open| s.process_open = open)
+        .on_select(|s: &mut S| s.picked_process = true);
     let trigger = Menu::new("app")
         .trigger(Button::new("App").build(&k))
         .item(MenuItem::new("New").key("new"))
@@ -63,6 +65,7 @@ fn press_from_assistive_technology_opens_a_submenu_with_focus_inside() {
     settle(&mut rt);
     assert!(rt.state.process_open, "pressing an open submenu row keeps it open");
     assert!(rt.state.menu_open, "and leaves the menu open");
+    assert!(!rt.state.picked_process, "a submenu row's press opens it instead of picking it");
 }
 
 #[test]
@@ -104,4 +107,5 @@ fn pointer_press_opens_a_submenu_without_moving_focus_into_it() {
     settle(&mut rt);
     assert!(rt.state.process_open, "a click opens the submenu at once, as NSMenu does");
     assert_ne!(focused(&rt).as_deref(), Some("restart"), "the pointer keeps the highlight on the row");
+    assert!(!rt.state.picked_process, "a click on a submenu row doesn't pick it");
 }

@@ -210,6 +210,8 @@ impl MenuItem {
     }
     /// Runs `f` when the item is picked. Picking an item that isn't a checkbox or radio
     /// ([`Self::checked`]) also closes the menu's open [`Self::on_submenu`] submenus first.
+    /// On a row whose submenu the menu controls ([`Self::on_submenu`]), a press opens the
+    /// submenu and `f` never runs, as an `NSMenu` item with a submenu ignores its action.
     pub fn on_select<S: 'static>(self, f: impl Fn(&mut S) + 'static) -> Self {
         self.on_select_tx(move |s: &mut S, _: &mut Tx| f(s))
     }
@@ -412,7 +414,7 @@ impl MenuItem {
         e = k.disabled_dim(e, disabled && !standard);
         // A popup opens on its checked item (NSPopUpButton).
         let mut e = e.focusable(!disabled).focus_selected(self.checked == Some(true)).disabled(disabled);
-        if !disabled {
+        if !disabled && toggle.is_none() {
             // A checkbox or radio pick may keep the menu open, so it leaves submenus alone.
             let closers: Closers = if self.checked.is_some() { Rc::new([]) } else { tree.clone() };
             for select in self.selects {

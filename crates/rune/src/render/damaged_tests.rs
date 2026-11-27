@@ -247,8 +247,11 @@ mod loop_frames {
     }
 
     fn whole(gpu: &Gpu, rt: &mut Runtime<String>) -> Vec<u8> {
+        rt.core_mut().text.atlas.invalidate();
         let mut renderer = Renderer::new(&gpu.device, OFFSCREEN_FORMAT);
-        draw(gpu, &mut renderer, rt, None).0
+        let pixels = draw(gpu, &mut renderer, rt, None).0;
+        assert!(pixels.chunks_exact(4).any(|px| px[0] > 200), "the whole frame draws the rows' white text");
+        pixels
     }
 
     fn step(rt: &mut Runtime<String>) -> Vec<u32> {

@@ -1,6 +1,8 @@
 """Fake-bundle regressions: never launches a desktop application."""
+import argparse
 import os
 from pathlib import Path
+import plistlib
 import subprocess
 import sys
 import tempfile
@@ -8,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from mac_app_bundle import Bundle
-from mac_app_install import launch, receipt_ready, parse_argv
+from mac_app_install import build, launch, receipt_ready, parse_argv
 
 
 class InstallerRegression(unittest.TestCase):
@@ -40,6 +42,24 @@ class InstallerRegression(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((home / "Applications/Demo.app/Contents/MacOS/demo").read_text(), "new")
             self.assertEqual(stamp.read_text(), "abc123\n")
+
+    def test_extra_plist_keys_merge_into_the_built_info_plist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            binary = home / "demo"
+            binary.write_text("bin")
+            extra = home / "extra.plist"
+            services = [{"NSMessage": "runeService", "NSPortName": "Demo", "NSMenuItem": {"default": "Send to Demo"}}]
+            extra.write_bytes(plistlib.dumps({"NSServices": services, "NSUserActivityTypes": ["com.example.demo.note"]}))
+            args = argparse.Namespace(bundle=None, bin=str(binary), exe="demo", name="Demo", id="com.example.demo",
+                                      icon=None, scheme=None, mic=None, plist=[str(extra)])
+            with patch("mac_app_install.command") as command:
+                command.return_value.returncode = 0
+                build(home / "Demo.app", args)
+            info = plistlib.loads((home / "Demo.app/Contents/Info.plist").read_bytes())
+        self.assertEqual(info["NSServices"], services)
+        self.assertEqual(info["NSUserActivityTypes"], ["com.example.demo.note"])
+        self.assertEqual(info["CFBundleIdentifier"], "com.example.demo")
 
     def bundle(self, home):
         live = Path(home) / "Demo.app"

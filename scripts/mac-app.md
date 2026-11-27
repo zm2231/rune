@@ -3,7 +3,7 @@
 `scripts/mac-app --name Demo --id com.example.demo --exe demo --bin target/release/demo`
 stages and signs a bundle beside its destination, asks the running app to quit,
 atomically exchanges the bundles, then launches the replacement. `--icon`,
-`--scheme`, `--mic`, `--wait-idle SECONDS`, `MAC_APP_SIGN`, and arguments after `--`
+`--scheme`, `--mic`, `--plist PATH`, `--wait-idle SECONDS`, `MAC_APP_SIGN`, and arguments after `--`
 work as before. Launches are normal, not occluded: an occluded first frame can
 prevent Rune from reaching readiness.
 
@@ -40,6 +40,9 @@ never force-quit.
   - `CFBundleURLTypes` (when `--scheme` is given, with `CFBundleURLName` set to
     `<id>` and `CFBundleURLSchemes` set to `[<scheme>]`)
   - `NSMicrophoneUsageDescription` (when `--mic` is given)
+  - every top-level key of each `--plist PATH` given (repeatable), in order, over
+    the keys above: how an app adds `NSServices`, `NSUserActivityTypes` and other
+    declarations the flags don't cover
 - Signs the bundle with `codesign --force --sign <identity>`, where `<identity>`
   is `MAC_APP_SIGN` if set or ad hoc (`-`) otherwise. It does not pass
   `--options runtime`, `--timestamp`, or `--entitlements`. If signing with

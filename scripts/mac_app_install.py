@@ -133,6 +133,9 @@ def build(stage, args):
         plist["CFBundleURLTypes"] = [dict(CFBundleURLName=args.id, CFBundleURLSchemes=[args.scheme])]
     if args.mic:
         plist["NSMicrophoneUsageDescription"] = args.mic
+    for extra in args.plist or ():
+        with open(extra, "rb") as file:
+            plist.update(plistlib.load(file))
     with (stage / "Contents/Info.plist").open("wb") as file:
         plistlib.dump(plist, file)
     identity = os.environ.get("MAC_APP_SIGN") or "-"
@@ -152,6 +155,7 @@ def main():
     source.add_argument("--bundle", help="install an already signed bundle")
     for name in ("icon", "scheme", "mic"):
         parser.add_argument(f"--{name}")
+    parser.add_argument("--plist", action="append", help="merge this plist's top-level keys into Info.plist")
     parser.add_argument("--wait-idle", type=float)
     parser.add_argument("--no-rune-ready", action="store_true", help="for binaries predating Rune readiness")
     parser.add_argument("--only-relaunch", action="store_true", help="do not open an app that was not running")

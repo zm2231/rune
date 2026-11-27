@@ -3,12 +3,13 @@
 use std::path::{Path, PathBuf};
 
 use rune::tok::{self, radius, space, type_};
-use rune::{App, AppSpec, Cx, El, Key, KeyEvent, QuickLook, Tx, col, el, text};
+use rune::{App, AppSpec, Cx, El, Key, KeyEvent, QuickLook, ServiceInput, Tx, col, el, text};
 
 #[derive(Default)]
 struct State {
     files: Vec<PathBuf>,
     selected: usize,
+    received: Vec<String>,
 }
 
 fn sample_files() -> Vec<PathBuf> {
@@ -46,6 +47,16 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
     true
 }
 
+fn on_service(s: &mut State, input: &ServiceInput, _: &mut Tx) {
+    let mut parts: Vec<String> = input.text().map(|t| format!("text {t:?}")).into_iter().collect();
+    parts.extend(input.urls().iter().map(|u| format!("link {u}")));
+    parts.extend(input.files().iter().map(|f| format!("file {}", f.display())));
+    s.received.push(format!("{}: {}", input.name(), parts.join(", ")));
+    for file in input.files().iter().filter(|f| f.is_file()) {
+        if !s.files.contains(file) { s.files.push(file.clone()); }
+    }
+}
+
 fn row_for(i: usize, path: &Path, selected: bool, dark: bool) -> El {
     let t = tok::theme(dark);
     let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
@@ -64,12 +75,14 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .child(text("Mac parity").font(type_::TITLE).color(t.text))
         .child(text(status).key("status").font(type_::LABEL).color(t.text_secondary))
         .children(rows)
+        .child(text("Received from Services").font(type_::SECTION).color(t.text))
+        .children(s.received.iter().rev().take(5).map(|line| text(line.clone()).font(type_::LABEL).color(t.text_secondary)))
 }
 
 fn main() {
     let spec = AppSpec::<State> {
         on_key: Some(on_key),
-        ..AppSpec::new("Mac Parity", (420.0, 360.0), || State { files: sample_files(), selected: 0 }, view)
+        ..AppSpec::new("Mac Parity", (420.0, 360.0), || State { files: sample_files(), ..State::default() }, view)
     };
-    App::new(spec).run();
+    App::new(spec).on_service(on_service).run();
 }

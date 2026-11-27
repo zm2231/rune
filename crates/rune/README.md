@@ -1078,6 +1078,40 @@ app.run();
   process reads its own from its arguments, and a later launch's are not passed on (that launch
   reopens the app), so use `%U` rather than `%F`. Headless scripts send it with
   `{"open_files": ["a.torrent"]}`.
+- Services menu (macOS): `App::on_service(|s, input: &ServiceInput, tx| ..)` (and
+  `WindowSpec::on_service`) runs on the main thread with what the user sends from another app's
+  Services menu: `input.text()`, `input.urls()`, `input.files()`, and `input.name()`, the entry's
+  `NSUserData`, so one app can offer several entries. Rune makes its own object the app's
+  services provider before the event loop starts, so a service that launches the app arrives
+  before the first frame, and leaves a provider the app set itself alone. Each entry in the
+  bundle's `Info.plist` names the message `runeService` (`rune::SERVICE_MESSAGE`):
+
+  ```xml
+  <key>NSServices</key>
+  <array>
+    <dict>
+      <key>NSMenuItem</key>
+      <dict><key>default</key><string>Send to My App</string></dict>
+      <key>NSMessage</key>
+      <string>runeService</string>
+      <key>NSPortName</key>
+      <string>My App</string>
+      <key>NSUserData</key>
+      <string>send</string>
+      <key>NSSendTypes</key>
+      <array><string>public.utf8-plain-text</string></array>
+      <key>NSSendFileTypes</key>
+      <array><string>public.item</string></array>
+      <key>NSRequiredContext</key>
+      <dict/>
+    </dict>
+  </array>
+  ```
+
+  `scripts/mac-app --plist services.plist` merges such keys into a development bundle. macOS
+  rereads Services when the bundle registers; after changing entries run
+  `/System/Library/CoreServices/pbs -flush`. Input comes from another app, so validate it. Never
+  called on other platforms.
 - Links and relaunches on Windows: Windows starts a new process for each launch, passing a link
   as an argument. The hook receives the links among the first process's arguments
   (`scheme://…`) like the launching link on macOS. Call `rune::single_instance("com.example.myapp")`

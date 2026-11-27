@@ -139,6 +139,7 @@ pub struct App<S: 'static> {
     pub(crate) on_reopen: Option<fn(&mut S, bool, &mut Tx) -> bool>,
     pub(crate) on_open_url: Option<crate::open_url::incoming::OnOpenUrl<S>>,
     pub(crate) on_open_files: Option<crate::open_url::incoming::OnOpenFiles<S>>,
+    pub(crate) on_service: Option<crate::services::OnService<S>>,
     pub(crate) shared: Arc<Shared<S>>,
     #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
     pub(crate) overlays: Vec<Box<dyn crate::overlay::PendingOverlay>>,
@@ -226,6 +227,7 @@ impl<S: 'static> App<S> {
             on_reopen: None,
             on_open_url: None,
             on_open_files: None,
+            on_service: None,
             shared,
             #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
             overlays: Vec::new(),
@@ -1066,6 +1068,28 @@ impl<S: 'static> App<S> {
     /// ```
     pub fn on_open_files(mut self, f: fn(&mut S, &[std::path::PathBuf], &mut Tx)) -> Self {
         self.on_open_files = Some(f);
+        self
+    }
+
+    /// macOS: runs on the main thread with what the user sends to this app from another app's
+    /// Services menu ("Send to My App"): the selected text, links and files, and the entry's
+    /// `NSUserData` as [`ServiceInput::name`](crate::ServiceInput::name), so one app can offer
+    /// several entries. A service that launches the app arrives before the window's first frame.
+    /// The bundle declares each entry under `NSServices` with `NSMessage` set to
+    /// [`SERVICE_MESSAGE`](crate::SERVICE_MESSAGE) (`runeService`); see the README. Input comes
+    /// from another app, so validate it before acting. Never called on other platforms.
+    ///
+    /// ```no_run
+    /// use rune::{App, AppSpec, el};
+    ///
+    /// let spec = AppSpec::new("Inbox", (640.0, 420.0), Vec::<String>::new, |_, _| el());
+    /// let app = App::new(spec).on_service(|notes, input, _| {
+    ///     notes.extend(input.text().map(str::to_owned));
+    /// });
+    /// let _ = app;
+    /// ```
+    pub fn on_service(mut self, f: fn(&mut S, &crate::ServiceInput, &mut Tx)) -> Self {
+        self.on_service = Some(f);
         self
     }
 

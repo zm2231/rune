@@ -96,7 +96,7 @@ impl<T: Send + 'static> Inbox<T> {
         };
     }
 
-    fn listen_sink(&'static self, glue: &dyn Glue, sink: Sink<T>) -> Option<Listening<T>> {
+    pub(crate) fn listen_sink(&'static self, glue: &dyn Glue, sink: Sink<T>) -> Option<Listening<T>> {
         let mut state = self.state.lock().unwrap();
         let (mut listeners, kept) = match std::mem::replace(&mut state.funnel, Funnel::Closed) {
             // `Listening` and `Launch` already have the handler; `Unprepared` and `Closed`
@@ -223,6 +223,7 @@ impl<T: Send + 'static> Drop for Listening<T> {
 pub(crate) struct Listeners {
     _urls: Option<Listening<String>>,
     _files: Option<Listening<Vec<PathBuf>>>,
+    _services: Option<Listening<crate::ServiceInput>>,
 }
 
 static INBOX: Inbox<String> = Inbox::new();
@@ -248,6 +249,7 @@ impl Glue for NativeFiles {
 pub(crate) fn prepare() {
     INBOX.prepare(&NativeUrl);
     FILES_INBOX.prepare(&NativeFiles);
+    crate::services::prepare();
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     {
         let (links, files) = super::instance::launch_arguments();
@@ -271,6 +273,7 @@ pub(crate) fn listen<S: 'static>(app: &App<S>) -> Listeners {
     Listeners {
         _urls: INBOX.listen(app, &NativeUrl),
         _files: FILES_INBOX.listen_files(app, &NativeFiles),
+        _services: crate::services::listen(app),
     }
 }
 
@@ -278,6 +281,7 @@ pub(crate) fn listen<S: 'static>(app: &App<S>) -> Listeners {
 pub(crate) fn settle() {
     INBOX.settle(&NativeUrl);
     FILES_INBOX.settle(&NativeFiles);
+    crate::services::settle();
 }
 
 #[cfg(target_os = "macos")]

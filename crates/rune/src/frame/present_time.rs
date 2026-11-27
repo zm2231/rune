@@ -350,11 +350,6 @@ pub(crate) mod metal {
         fn default() -> Self { Self::new(true, false) }
     }
 
-    pub(crate) fn trace(what: std::fmt::Arguments<'_>) {
-        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *ON.get_or_init(|| std::env::var_os("RUNE_SHADOW_LOG").is_some()) { eprintln!("rune: shadow: {what}"); }
-    }
-
     impl Log {
         /// A log recording for `--trace` (`traced`), `App::on_frame_presented` (`callbacks`),
         /// and/or transparent shadow resampling (always tracked via `on_screen` / `watch`).
@@ -404,9 +399,6 @@ pub(crate) mod metal {
                 wake |= buf.watch;
             }
             self.on_screen.fetch_max(seq, Ordering::AcqRel);
-            if self.watch.load(Ordering::Acquire) {
-                trace(format_args!("drawable {seq} presented at {at}"));
-            }
             wake | self.watch.load(Ordering::Acquire)
         }
 
@@ -578,37 +570,26 @@ pub(crate) mod metal {
             // SAFETY: the layer is only retained and has its class swapped for a subclass of its
             // class without state; wgpu keeps using it as a CAMetalLayer.
             // Under wgpu's lock until the class is swapped, so wgpu doesn't use the layer in between.
-            let hooked = crate::gpu::with_layer(surface, |layer| Self::hook(layer.retain(), log));
-            if hooked.is_none() { trace(format_args!("the surface has no Metal layer")); }
-            hooked?
+            crate::gpu::with_layer(surface, |layer| Self::hook(layer.retain(), log))?
         }
 
         pub(crate) fn hook(layer: Retained<AnyObject>, log: Arc<Log>) -> Option<Self> {
             let metal = AnyClass::get(c"CAMetalLayer")?;
             // SAFETY: isKindOfClass: takes any class.
             let is_metal: bool = unsafe { msg_send![&*layer, isKindOfClass: metal] };
-            if !is_metal {
-                trace(format_args!("layer isn't a CAMetalLayer: {}", layer.class().name().to_string_lossy()));
-                return None;
-            }
+            if !is_metal { return None; }
             Self::hook_instance(layer, log)
         }
 
         pub(super) fn hook_instance(layer: Retained<AnyObject>, log: Arc<Log>) -> Option<Self> {
             // SAFETY: `layer` is a live ObjC object; never place a subclass above KVO's.
-            if unsafe { crate::platform::objc_class::kvo_observed(&layer) } {
-                trace(format_args!("layer is key-value observed ({}), not hooked", layer.class().name().to_string_lossy()));
-                return None;
-            }
+            if unsafe { crate::platform::objc_class::kvo_observed(&layer) } { return None; }
             let (base, class) = if crate::platform::objc_class::has_subclass(&layer, HOOKED_PREFIX.as_bytes()) {
                 let top = layer.class();
                 (original_class(top), top)
             } else {
                 let base = layer.class();
-                let Some(class) = hooked_class(base) else {
-                    trace(format_args!("no hooked subclass of {}", base.name().to_string_lossy()));
-                    return None;
-                };
+                let class = hooked_class(base)?;
                 (base, class)
             };
             LAYERS.lock().unwrap().push(Hooked { addr: Retained::as_ptr(&layer) as usize, base, log });

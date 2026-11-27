@@ -12,7 +12,7 @@
 //! presented handler reports it (`present_time::metal`). Calling earlier would sample the old
 //! pixels again; ordinary frames never call it.
 
-use crate::frame::present_time::metal::{trace, wake_main, Log};
+use crate::frame::present_time::metal::{wake_main, Log};
 use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -106,26 +106,20 @@ impl Shadow {
     }
 
     pub(crate) fn shown(&self) { let last = self.last.get(); self.update(|r| r.shown(last)); }
-    pub(crate) fn redraw(&self) {
-        trace(format_args!("redraw asked, last acquired {}, on screen {}", self.log.last_acquired(), self.log.on_screen()));
-        self.update(Resample::redraw);
-    }
+    pub(crate) fn redraw(&self) { self.update(Resample::redraw); }
     pub(crate) fn hidden(&self) { self.update(Resample::hidden); }
 
     pub(crate) fn presented(&self) {
         let n = self.log.last_acquired();
         self.last.set(n);
         self.update(|r| r.presented(n));
-        trace(format_args!("presented drawable {n}, on screen {}, state {:?}", self.log.on_screen(), self.state.get()));
     }
 
     /// At the start of each run loop turn.
     pub(crate) fn turn(&self) {
         let mut state = self.state.get();
         if state == Resample::Idle { return; }
-        let on_screen = self.log.on_screen();
-        if state.turn(on_screen) {
-            trace(format_args!("invalidateShadow, on screen {on_screen}"));
+        if state.turn(self.log.on_screen()) {
             self.window.invalidateShadow();
         }
         self.state.set(state);
@@ -134,9 +128,7 @@ impl Shadow {
 
     fn update(&self, f: impl FnOnce(&mut Resample)) {
         let mut state = self.state.get();
-        let before = state;
         f(&mut state);
-        if state != before { trace(format_args!("{before:?} -> {state:?}, on screen {}", self.log.on_screen())); }
         self.state.set(state);
         self.log.watch(state != Resample::Idle);
         // Its drawable already landed, so no presented handler will wake the next turn.

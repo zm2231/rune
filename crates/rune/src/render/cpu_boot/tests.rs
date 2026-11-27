@@ -896,6 +896,24 @@ fn transparent_cpu_painter_matches_gpu_corpus_and_premultiplied_bgra_invariant()
                     ),
             )
             .child(
+                row()
+                    .gap(8.0)
+                    .child(
+                        el().size(72.0, 36.0)
+                            .radius(10.0)
+                            .border(2.0, Color { r: 0.95, g: 0.75, b: 0.3, a: 0.9 })
+                            .border_dash(6.0, 4.0)
+                            .border_dash_phase(2.0),
+                    )
+                    .child(
+                        el().size(64.0, 36.0)
+                            .radius(18.0)
+                            .border(3.0, Color { r: 0.5, g: 0.85, b: 1.0, a: 1.0 })
+                            .border_dash(0.0, 4.0)
+                            .border_dash_cap(crate::LineCap::Round),
+                    ),
+            )
+            .child(
                 el().padding(8.0)
                     .radius(8.0)
                     .fill(Color { r: 0.08, g: 0.09, b: 0.12, a: 0.9 })

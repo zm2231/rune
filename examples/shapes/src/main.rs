@@ -5,12 +5,15 @@
 //! (`El::cutout_circles`), nearest-neighbour pixel-art scaling (`El::image_filter`,
 //! `ImageFilter::Nearest`), runtime alpha-tinted symbolic icons (`El::pixels_tint`), and
 //! wrapped/tiled images (`El::pixels_wrap`, `El::pixels_tile`, `PixelsWrap::{Repeat, Mirror, Extend}`),
-//! and dashes: dashed and dotted borders (`El::border_dash`, `El::border_dash_cap`) on a box
-//! whose width animates without its dashes moving, and dashed strokes (`Shape::stroke_dashed`).
+//! and dashes: dashed and dotted borders (`El::border_dash`, `El::border_dash_cap`), a box that
+//! springs wider and back every 1.6 s with a dash held on each corner, and dashed strokes
+//! (`Shape::stroke_dashed`).
 //! `cargo run -p shapes -- --snap shapes.png` renders it headless; time animates the waveform,
 //! so `--at 1.5` shows another moment.
 
 #![forbid(unsafe_code)]
+
+use std::time::Duration;
 
 use rune::{
     AppSpec, Color, Cx, Dash, El, FillRule, ImageFilter, LineCap, Path, Pixels, PixelsWrap, Shape,
@@ -19,6 +22,7 @@ use rune::{
 
 struct State {
     t: f32,
+    wide: bool,
     sprite: Pixels,
     symbolic: Pixels,
     motif: Pixels,
@@ -435,7 +439,7 @@ fn dashed_strokes() -> Shape {
         .stroke_dashed(vec![[184.0, 48.0], [264.0, 48.0]], false, 1.0, Dash::new(8.0, 4.0).phase(4.0), INK)
 }
 
-fn dashes(t: f32) -> El {
+fn dashes(wide: bool) -> El {
     let notice = el()
         .size(150.0, 64.0)
         .radius(10.0)
@@ -451,7 +455,7 @@ fn dashes(t: f32) -> El {
         .border_dash(0.0, 5.0)
         .border_dash_cap(LineCap::Round);
     let growing = el()
-        .size(80.0 + 60.0 * (0.5 - 0.5 * (t * 1.3).cos()), 64.0)
+        .size(if wide { 140.0 } else { 80.0 }, 64.0)
         .radius(12.0)
         .border(1.5, WARM)
         .border_dash(6.0, 4.0)
@@ -537,13 +541,17 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
         .child(
             col()
                 .gap(8.0)
-                .child(label("Dashes: a dashed notice, round-capped dots, a growing box whose dashes stay put, dashed strokes"))
-                .child(dashes(s.t)),
+                .child(label("Dashes: a dashed notice, round-capped dots, a box springing wider with a dash on each corner, dashed strokes"))
+                .child(dashes(s.wide)),
         )
 }
 
-fn poll(s: &mut State, t: f64, _: &mut Tx) -> bool {
+const GROW_EVERY: f64 = 1.6;
+
+fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
     s.t = t as f32;
+    s.wide = (t / GROW_EVERY) as u64 % 2 == 1;
+    tx.wake_after(Duration::from_secs_f64(GROW_EVERY - t.rem_euclid(GROW_EVERY)));
     true
 }
 
@@ -555,6 +563,7 @@ fn main() {
             (820.0, 1110.0),
             || State {
                 t: 0.0,
+                wide: false,
                 sprite: pixel_sprite(),
                 symbolic: symbolic_icon(),
                 motif: wrap_motif(),

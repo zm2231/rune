@@ -118,18 +118,20 @@ pub fn seeded(seed: u64, count: usize) -> Scene {
     scene(&records)
 }
 
-/// `seeded`, with every primitive redrawn as a dashed border ring (kind 10), butt or round capped. A separate corpus,
-/// so adding the kind left the canonical hashes of `seeded` alone.
+/// `seeded`, with every primitive redrawn as a dashed border ring (kind 10), butt or round capped,
+/// some with dash counts held per side. A separate corpus, so adding the kind left the canonical
+/// hashes of `seeded` alone.
 pub fn dashed(seed: u64, count: usize) -> Scene {
     let mut scene = seeded(seed, count);
     for p in &mut scene.primitives {
         let b = |n: usize| (p.radii[n % 4] * 8.0 + p.rect[n % 4] * 4.0) as u32;
         let bw = 0.5 + (b(0) % 8) as f32 * 0.25;
-        p.params = [bw, 10.0, if b(1) % 4 == 0 { p.params[2] } else { 0.0 }, 1.0];
+        let held = |n: usize| if b(3) % 3 == 0 { (1 + b(n) % 7) as f32 } else { 0.0 };
+        p.params = [bw, 10.0, if b(1) % 4 == 0 { p.params[2] } else { 0.0 }, held(0) * 4096.0 + held(1)];
         let dash = 1.0 + (b(2) % 24) as f32 * 0.5;
         let gap = 1.0 + (b(3) % 16) as f32 * 0.5;
-        let round = ((b(2) / 24) % 2) as f32;
-        p.uv = [dash, gap, (b(1) % 32) as f32 * 0.75 - 6.0, round];
+        let caps = if (b(2) / 24) % 2 == 1 { -1.0 } else { 1.0 };
+        p.uv = [dash, gap * caps, (b(1) % 32) as f32 * 0.75 - 6.0, held(2) * 4096.0 + held(3)];
         if b(0) % 3 == 0 { p.border = p.fill; }
     }
     scene

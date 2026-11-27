@@ -206,3 +206,42 @@ fn a_microphone_skip_filled_with_silence_leaves_the_echo_cancelled() {
     let (before, after) = bursts_through_a_microphone_skip(650..654, true);
     assert!(after <= -40.0, "the bursts after the skip came back at {after:.1} dB (before it, {before:.1} dB)");
 }
+
+fn first_bursts_echo(delay_ms: usize, seed: u32) -> Vec<f64> {
+    let mut room = Room::new(EchoPath::InProcess, delay_ms);
+    room.seed = seed;
+    let (block, period, burst) = (160, RATE as usize * 2, RATE as usize / 5);
+    let talk: Vec<f32> = (0..period * 6).map(|i| if i % period < burst { room.speech(i) } else { 0.0 }).collect();
+    room.speaker.write(&talk);
+    let mut out = vec![0.0; block];
+    let mut cleaned = Vec::new();
+    let mut read = vec![0.0; RATE as usize];
+    for _ in 0..talk.len() / block {
+        room.render.render(&mut out);
+        let input: Vec<f32> = out.iter().map(|&sample| {
+            room.air.push_back(sample);
+            0.5 * room.air.pop_front().unwrap_or(0.0) + 0.0005 * room.noise()
+        }).collect();
+        room.heard.capture(&input);
+        let n = room.mic.read(&mut read);
+        cleaned.extend_from_slice(&read[..n]);
+    }
+    let burst_energy: f64 = talk[..burst].iter().map(|&s| f64::from(s * s)).sum();
+    (0..6).map(|p| db(cleaned[p * period..(p + 1) * period].iter().map(|&s| f64::from(s * s)).sum::<f64>() / burst_energy)).collect()
+}
+
+#[test]
+fn the_far_end_bursts_after_the_first_leave_no_echo_while_the_canceller_converges() {
+    let cases: Vec<(usize, u32)> = [20, 48, 68, 100].into_iter().flat_map(|delay_ms| [7, 11, 13, 17].map(|seed| (delay_ms, seed))).collect();
+    let leaks: Vec<String> = std::thread::scope(|scope| {
+        let runs: Vec<_> = cases.iter().map(|&(delay_ms, seed)| (delay_ms, seed, scope.spawn(move || first_bursts_echo(delay_ms, seed)))).collect();
+        runs.into_iter()
+            .filter_map(|(delay_ms, seed, run)| {
+                let echo = run.join().expect("the room runs");
+                let (burst, worst) = echo.iter().copied().enumerate().skip(1).max_by(|a, b| a.1.total_cmp(&b.1))?;
+                (worst > -40.0).then(|| format!("{delay_ms} ms echo, seed {seed}: burst {burst} at {worst:.1} dB"))
+            })
+            .collect()
+    });
+    assert!(leaks.is_empty(), "far-end bursts came back as echo:\n{}", leaks.join("\n"));
+}

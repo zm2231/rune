@@ -184,6 +184,7 @@ PATCHED_VENDOR_CRATES=(
   "accesskit_windows"
   "accesskit_atspi_common"
   "accesskit_macos"
+  "sonora-aec3"
 )
 
 SRC="$STAGE_DIR/src"

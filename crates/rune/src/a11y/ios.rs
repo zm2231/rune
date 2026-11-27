@@ -68,6 +68,7 @@ pub(crate) enum Gesture {
     Increment,
     Decrement,
     /// The reader's cursor landed on it.
+    #[cfg(any(target_os = "ios", test))]
     Focused,
     /// A scroll that shows the content further in this direction.
     Scroll(Toward),
@@ -106,6 +107,7 @@ pub(crate) struct Mirror {
 }
 
 impl Mirror {
+    #[cfg(any(target_os = "ios", test))]
     pub(crate) fn elements(&self) -> &[Element] { &self.elements }
 
     pub(crate) fn set_masks(&mut self, masks: Vec<(u64, String)>) -> bool {
@@ -117,8 +119,10 @@ impl Mirror {
 
     pub(crate) fn set_start(&mut self, start: Option<u64>) { self.start = start; }
 
+    #[cfg(any(target_os = "ios", test))]
     pub(crate) fn landing(&self) -> Option<u64> { self.landing }
 
+    #[cfg(any(target_os = "ios", test))]
     pub(crate) fn refresh(&mut self) -> Changes {
         let Some(focus) = self.focus.filter(|_| self.root.is_some()) else { return Changes::default() };
         self.apply(TreeUpdate { nodes: Vec::new(), tree: None, tree_id: TreeId::ROOT, focus: NodeId(focus) })
@@ -155,6 +159,7 @@ impl Mirror {
     }
 
     /// The tree's action for what a reader did to element `id`, if the element takes it.
+    #[cfg(any(target_os = "ios", test))]
     pub(crate) fn request(&mut self, id: u64, gesture: Gesture) -> Option<ActionRequest> {
         let (request, paging) = self.resolve(id, gesture)?;
         if paging.is_some() { self.paging = paging; }
@@ -190,6 +195,7 @@ impl Mirror {
             Gesture::Activate => (id, first(&[Action::Click, Action::Focus])?),
             Gesture::Increment => (id, first(&[Action::Increment])?),
             Gesture::Decrement => (id, first(&[Action::Decrement])?),
+            #[cfg(any(target_os = "ios", test))]
             Gesture::Focused => (id, first(&[Action::ScrollIntoView])?),
             Gesture::Menu => (id, first(&[Action::ShowContextMenu])?),
             Gesture::Scroll(toward) => {

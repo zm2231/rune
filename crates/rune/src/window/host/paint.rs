@@ -4,6 +4,7 @@
 use winit::event_loop::ActiveEventLoop;
 
 use super::Host;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 use crate::window::chrome::sync_chrome_core;
 #[cfg(not(target_os = "macos"))]
 use crate::window::surface::RedrawEvent;

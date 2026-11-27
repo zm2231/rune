@@ -212,7 +212,7 @@ impl SharedCore {
         *self.gpu_loss_latch.lock().unwrap_or_else(|e| e.into_inner()) = latch;
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
     pub(crate) fn gpu_loss_latch(&self) -> Option<Arc<crate::render::loss_latch::GpuLossLatch>> {
         self.gpu_loss_latch.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }

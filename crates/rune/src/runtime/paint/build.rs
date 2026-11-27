@@ -154,7 +154,7 @@ impl RuntimeCore {
             pinh.dy += self.paint.row_dy[i];
             pinh.grow_rigid(self.paint.row_dy[i]);
             if let Some(a) = self.tree.nodes[i].above.clone() {
-                if let Some(j) = anchor_index_live(&self.tree.nodes, i, &a, |idx| self.subtree_exiting(idx)) {
+                if let Some(j) = anchor_index_live(&self.tree.nodes, i, |idx| self.subtree_exiting(idx)) {
                     let mut pc = pcold_buf.unwrap_or_else(|| *self.paint.inh_cold_of(&pinh));
                     let saved = self.anchored_inh(i, j, &a, &p, &mut pinh, &mut pc);
                     pcold_buf = Some(pc);

@@ -15,24 +15,24 @@ fn in_subtree(nodes: &[Node], mut candidate: usize, root: usize) -> bool {
     }
 }
 
-/// The node an `El::above` / `El::anchored` anchor `a` names, preferring an earlier node and
-/// falling back to a later one (for example a trigger inside a dialog mounted after its portal),
-/// never matching `overlay` itself or any of its descendants.
-pub(super) fn anchor_index(nodes: &[Node], overlay: usize, a: &Anchor) -> Option<usize> {
-    nodes[..overlay].iter().position(|n| n.key.as_ref() == Some(&a.key))
+const NO_NODE: u32 = u32::MAX;
+
+/// The first node keyed `key`, preferring one before `overlay` and falling back to a later
+/// one, never `overlay` itself or any of its descendants.
+fn scan_keyed(nodes: &[Node], overlay: usize, key: &str) -> Option<usize> {
+    nodes[..overlay].iter().position(|n| n.key.as_deref() == Some(key))
         .or_else(|| {
             nodes[overlay + 1..].iter().enumerate()
-                .find(|(off, n)| n.key.as_ref() == Some(&a.key) && !in_subtree(nodes, overlay + 1 + *off, overlay))
+                .find(|(off, n)| n.key.as_deref() == Some(key) && !in_subtree(nodes, overlay + 1 + *off, overlay))
                 .map(|(off, _)| overlay + 1 + off)
         })
 }
 
-/// Like [`anchor_index`], preferring a live (non-exiting) anchor when both a live and an exiting
-/// node share the key.
-pub(super) fn anchor_index_live(nodes: &[Node], overlay: usize, a: &Anchor, exiting: impl Fn(usize) -> bool) -> Option<usize> {
+/// Like [`scan_keyed`], preferring a node that isn't `exiting` when both share the key.
+fn scan_keyed_live(nodes: &[Node], overlay: usize, key: &str, exiting: impl Fn(usize) -> bool) -> Option<usize> {
     let mut fallback = None;
     for idx in (0..overlay).chain(overlay + 1..nodes.len()) {
-        if nodes[idx].key.as_ref() != Some(&a.key) { continue; }
+        if nodes[idx].key.as_deref() != Some(key) { continue; }
         if idx > overlay && in_subtree(nodes, idx, overlay) { continue; }
         if !exiting(idx) { return Some(idx); }
         fallback.get_or_insert(idx);
@@ -40,9 +40,68 @@ pub(super) fn anchor_index_live(nodes: &[Node], overlay: usize, a: &Anchor, exit
     fallback
 }
 
+/// Records on each anchored overlay the nodes its anchor and its `El::anchored_in` boundary
+/// name, by [`scan_keyed`]'s rule, from one pass over the keys: lookups through the rest of the
+/// frame read them rather than scan the tree. Runs on every node buffer that replaces another.
+pub(super) fn resolve_anchors(nodes: &mut [Node]) {
+    let overlays: Vec<usize> = (0..nodes.len()).filter(|&i| nodes[i].above.is_some()).collect();
+    if overlays.is_empty() { return; }
+    let found: Vec<(u32, u32)> = {
+        let mut by_key: HashMap<&str, Vec<u32>> = HashMap::default();
+        for &i in &overlays {
+            if let Some(a) = &nodes[i].above { by_key.entry(a.key.as_str()).or_default(); }
+            if let Some(b) = nodes[i].above_boundary.as_deref() { by_key.entry(b).or_default(); }
+        }
+        for (i, n) in nodes.iter().enumerate() {
+            if let Some(at) = n.key.as_deref().and_then(|k| by_key.get_mut(k)) { at.push(i as u32); }
+        }
+        let first = |key: Option<&str>, overlay: usize| {
+            key.and_then(|key| by_key[key].iter().copied().find(|&c| {
+                let c = c as usize;
+                c < overlay || (c > overlay && !in_subtree(nodes, c, overlay))
+            })).unwrap_or(NO_NODE)
+        };
+        overlays.iter().map(|&i| {
+            (first(nodes[i].above.as_ref().map(|a| a.key.as_str()), i), first(nodes[i].above_boundary.as_deref(), i))
+        }).collect()
+    };
+    for (&i, (anchor, boundary)) in overlays.iter().zip(found) {
+        let c = nodes[i].cold_mut();
+        c.anchor_at = anchor;
+        c.boundary_at = boundary;
+    }
+}
+
+fn recorded(nodes: &[Node], overlay: usize, key: &str, at: u32) -> Option<usize> {
+    let found = if at == NO_NODE {
+        None
+    } else {
+        let j = at as usize;
+        if j != overlay && nodes.get(j).is_some_and(|n| n.key.as_deref() == Some(key)) { Some(j) } else { scan_keyed(nodes, overlay, key) }
+    };
+    debug_assert_eq!(found, scan_keyed(nodes, overlay, key), "anchor `{key}` of node {overlay} was resolved for other nodes");
+    found
+}
+
+/// The node `overlay`'s `El::above` / `El::anchored` anchor names, preferring an earlier node
+/// and falling back to a later one (for example a trigger inside a dialog mounted after its
+/// portal), never `overlay` itself or any of its descendants.
+pub(super) fn anchor_index(nodes: &[Node], overlay: usize) -> Option<usize> {
+    let n = &nodes[overlay];
+    recorded(nodes, overlay, &n.above.as_ref()?.key, n.anchor_at)
+}
+
+/// Like [`anchor_index`], preferring a live (non-exiting) anchor when both a live and an exiting
+/// node share the key.
+pub(super) fn anchor_index_live(nodes: &[Node], overlay: usize, exiting: impl Fn(usize) -> bool) -> Option<usize> {
+    let first = anchor_index(nodes, overlay)?;
+    if !exiting(first) { return Some(first); }
+    scan_keyed_live(nodes, overlay, &nodes[overlay].above.as_ref()?.key, exiting)
+}
+
 /// Where a walk from node `i` goes next: the node it is anchored above, else its parent.
 pub(super) fn step_up(nodes: &[Node], i: usize) -> Option<usize> {
-    nodes[i].above.as_ref().and_then(|a| anchor_index(nodes, i, a)).or(nodes[i].parent)
+    anchor_index(nodes, i).or(nodes[i].parent)
 }
 
 /// Walks upward from `start` via [`step_up`], stopping before any cycle.
@@ -55,30 +114,18 @@ pub(super) fn anchor_ancestors(nodes: &[Node], start: usize) -> impl Iterator<It
     })
 }
 
-/// The boundary node `El::anchored_in` names for `overlay`, preferring an earlier node and
-/// falling back to a later one, never matching `overlay` itself or any of its descendants.
+/// The boundary node `El::anchored_in` names for `overlay`, by [`anchor_index`]'s rule.
 pub(super) fn boundary_index(nodes: &[Node], overlay: usize) -> Option<usize> {
-    let key = nodes[overlay].above_boundary.as_deref()?;
-    nodes[..overlay].iter().position(|n| n.key.as_deref() == Some(key))
-        .or_else(|| {
-            nodes[overlay + 1..].iter().enumerate()
-                .find(|(off, n)| n.key.as_deref() == Some(key) && !in_subtree(nodes, overlay + 1 + *off, overlay))
-                .map(|(off, _)| overlay + 1 + off)
-        })
+    let n = &nodes[overlay];
+    recorded(nodes, overlay, n.above_boundary.as_deref()?, n.boundary_at)
 }
 
 /// Like [`boundary_index`], preferring a live (non-exiting) boundary node when both a live and
 /// an exiting node share the key.
 pub(super) fn boundary_index_live(nodes: &[Node], overlay: usize, exiting: impl Fn(usize) -> bool) -> Option<usize> {
-    let key = nodes[overlay].above_boundary.as_deref()?;
-    let mut fallback = None;
-    for idx in (0..overlay).chain(overlay + 1..nodes.len()) {
-        if nodes[idx].key.as_deref() != Some(key) { continue; }
-        if idx > overlay && in_subtree(nodes, idx, overlay) { continue; }
-        if !exiting(idx) { return Some(idx); }
-        fallback.get_or_insert(idx);
-    }
-    fallback
+    let first = boundary_index(nodes, overlay)?;
+    if !exiting(first) { return Some(first); }
+    scan_keyed_live(nodes, overlay, nodes[overlay].above_boundary.as_deref()?, exiting)
 }
 
 /// Clamps boundary rect `b` into the window viewport so overlays never escape the window.
@@ -304,6 +351,8 @@ impl Measurement<'_> {
     /// Places every node from `taffy`'s layout: ids, local and window rects, insets, and
     /// anchored overlays beside their anchors.
     pub(super) fn place(&mut self, taffy: &LayoutEngine, nodes: &mut [Node]) {
+        let _place_time = crate::frame::profile::Scope::new(crate::frame::profile::Phase::Place);
+        resolve_anchors(nodes);
         self.node_index.rebuild(nodes.len());
         let mut deferred = Vec::new();
         for i in 0..nodes.len() {
@@ -329,7 +378,7 @@ impl Measurement<'_> {
             let mut y = py + l.y;
             let mut resolved = true;
             if let Some(a) = &nodes[i].above {
-                if let Some(j) = anchor_index(nodes, i, a) {
+                if let Some(j) = anchor_index(nodes, i) {
                     let b = boundary_index(nodes, i);
                     if j < i && b.is_none_or(|b| b < i) && deferred.is_empty() {
                         // Anchors inside scroll viewports sit where they are scrolled (and stuck) to.
@@ -429,10 +478,11 @@ impl Measurement<'_> {
     /// margins), through its style. Records each clamped node's unclamped style in `saved` so
     /// a later `Relayout` can restore it before re-fitting. True when any changed.
     pub(super) fn fit_anchored(&self, taffy: &mut LayoutEngine, nodes: &[Node], saved: &mut Vec<(usize, CompactStyle)>) -> bool {
+        let _place_time = crate::frame::profile::Scope::new(crate::frame::profile::Phase::Place);
         let mut changed = false;
         for (i, n) in nodes.iter().enumerate() {
             let Some(a) = n.above.as_ref().filter(|a| a.fit) else { continue };
-            let Some(j) = anchor_index(nodes, i, a) else { continue };
+            let Some(j) = anchor_index(nodes, i) else { continue };
             let b = boundary_index(nodes, i);
             let target = sticky::anchored_target(nodes, self.scrolls, j, self.viewport);
             // It draws `k` times its layout size beside where the anchor draws.
@@ -503,11 +553,11 @@ pub(super) fn inherited_zoom(nodes: &[Node], i: usize, own: &impl Fn(&Node) -> f
 fn inherited_zoom_inner(nodes: &[Node], i: usize, own: &impl Fn(&Node) -> f32, depth: usize) -> f32 {
     if depth >= MAX_ANCHOR_CHAIN { return 1.0; }
     let n = &nodes[i];
-    let Some(a) = n.above.as_ref().filter(|a| !a.unscaled) else { return 1.0 };
+    if n.above.as_ref().is_none_or(|a| a.unscaled) { return 1.0; }
     if n.scale_track || n.static_scale != 1.0 {
         return 1.0;
     }
-    let Some(j) = anchor_index(nodes, i, a) else { return 1.0 };
+    let Some(j) = anchor_index(nodes, i) else { return 1.0 };
     let mut k = 1.0;
     let mut at = nodes[j].parent;
     while let Some(p) = at {
@@ -579,8 +629,8 @@ impl RuntimeCore {
 
     /// The live anchor element `overlay`'s `El::above` / `El::anchored` points to, if any.
     pub(crate) fn anchor_of(&self, overlay: usize) -> Option<usize> {
-        let a = self.tree.nodes.get(overlay)?.above.as_ref()?;
-        anchor_index_live(&self.tree.nodes, overlay, a, |j| self.subtree_exiting(j))
+        self.tree.nodes.get(overlay)?;
+        anchor_index_live(&self.tree.nodes, overlay, |j| self.subtree_exiting(j))
     }
 
     /// Resolved boundary rect `[x0, y0, x1, y1]` for anchored overlay `i` during paint,

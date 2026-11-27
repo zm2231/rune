@@ -583,6 +583,7 @@ impl RuntimeCore {
         changed
     }
     pub(in crate::runtime) fn sync_requested_focus(&mut self, app: &mut dyn AppDriver, nodes: &mut Vec<Node>) -> bool {
+        let _focus_time = crate::frame::profile::Scope::new(crate::frame::profile::Phase::Focus);
         // A `Tx::focus_when_shown` still owed stands until the user's own input or another ask,
         // whatever focus did meanwhile (a closing palette leaves it nowhere, then on the prompt).
         let owed = self.kbd.focus_owed.take().map(|(key, ring)| (key, ring, crate::el::FocusAsk::WhenShown));

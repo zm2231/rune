@@ -666,7 +666,9 @@ impl Measurement<'_> {
                     bold_text: self.defaults.bold_text,
                     missed_virtual_memo: false,
                 };
+                let flatten_time = crate::frame::profile::Scope::new(crate::frame::profile::Phase::Flatten);
                 let (root_id, _) = flatten_with_buf(root, None, &mut path_buf, 0, crate::tok::motion::DEFAULT, RowLayout::Free, true, &mut taffy, &mut nodes, scale, &mut memo_ctx);
+                drop(flatten_time);
                 let (pending, reused, taken_paths, missed) = (memo_ctx.pending, memo_ctx.reused, memo_ctx.taken_paths, memo_ctx.missed_virtual_memo);
                 path_buf.clear();
                 self.memo.path_scratch = path_buf;

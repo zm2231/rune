@@ -214,7 +214,7 @@ fn instant_scrolls_whose_visible_rows_handler_commits_still_warn() {
 
 #[test]
 fn a_budget_line_names_the_phase_that_took_most_and_why_the_frame_committed() {
-    let times = [9.0, 14.0, 3.0, 1.0, 0.0, 1.5];
+    let times = [9.0, 14.0, 3.0, 1.0, 0.0, 1.5, 0.0, 0.0, 0.0];
     let line = budget::report(14.2, 8.0, times, crate::runtime::CommitWhy::POLL, 3);
     assert_eq!(line, "rune: commit took 14.2 ms, over RUNE_COMMIT_BUDGET_MS=8: view 9.0, layout 3.0 (text 1.0), apply 1.5 ms; \
         most in the view (63%); committed for poll (3 more over budget since the last line)");

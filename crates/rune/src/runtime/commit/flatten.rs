@@ -352,7 +352,7 @@ fn node_cold_meta_only(meta: ColdMeta) -> NodeCold {
     NodeCold {
         trace_name: None, trace_namespace: meta.trace_namespace, label: None, live: Vec::new(),
         run_layout: None, tabular_layout: None, live_text_seen: None, looping: None, loop_times: None, frame_motion: None, opacity_motion: None, lead: None,
-        transition: None, transition_motion: None, enter_in_instant: false, matched: None, matched_motion: None, above: None, above_boundary: None, resolved_anchor: None, scroll: None, scroll_axes: crate::el::ScrollAxes::Y,
+        transition: None, transition_motion: None, enter_in_instant: false, matched: None, matched_motion: None, above: None, above_boundary: None, resolved_anchor: None, anchor_at: u32::MAX, boundary_at: u32::MAX, scroll: None, scroll_axes: crate::el::ScrollAxes::Y,
         scroll_edges: crate::el::ScrollEdges::default(), wheel_scrolls: None, sticky: None, growth: None, glide: None,
         a11y: crate::el::A11y::EMPTY, pixel_aspect: meta.pixel_aspect, aspect_fit: meta.aspect_fit,
         material: None, help: None, help_cut: false, help_side: None, help_open: false, data: Vec::new(),
@@ -475,7 +475,7 @@ macro_rules! node_cold_from {
             opacity_motion: take_field!($mode, $c.opacity_motion), lead: $c.lead,
             transition: take_field!($mode, $c.transition), transition_motion: take_field!($mode, $c.transition_motion),
             enter_in_instant: $c.enter_in_instant,
-            matched, matched_motion: take_field!($mode, $c.matched_motion), above, above_boundary: take_field!($mode, $c.above_boundary), resolved_anchor: None,
+            matched, matched_motion: take_field!($mode, $c.matched_motion), above, above_boundary: take_field!($mode, $c.above_boundary), resolved_anchor: None, anchor_at: u32::MAX, boundary_at: u32::MAX,
             scroll: $c.scroll, scroll_axes: $c.scroll_axes, scroll_edges: $c.scroll_edges,
             wheel_scrolls: take_field!($mode, $c.wheel_scrolls),
             sticky: take_field!($mode, $c.sticky), growth: take_field!($mode, $c.growth),

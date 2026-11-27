@@ -447,7 +447,7 @@ impl RuntimeCore {
         }
         if let Some(anc) = std::iter::successors(Some(i), |&p| nodes[p].parent).find(|&p| nodes[p].above.is_some())
             && let Some(a) = &nodes[anc].above
-            && let Some(k) = anchor_index(&nodes, anc, a)
+            && let Some(k) = anchor_index(nodes, anc)
         {
             let at = sticky::anchored_target(nodes, scrolls, k, self.viewport);
             let b = anchor::boundary_index(nodes, anc);
@@ -491,7 +491,7 @@ impl RuntimeCore {
             return Some(placed);
         }
         let a = n.above.as_ref()?;
-        let j = anchor_index(nodes, i, a)?;
+        let j = anchor_index(nodes, i)?;
         let b = anchor::boundary_index(nodes, i);
         Some(anchor::resolved_placement(nodes, &self.scroll.scrolls, i, j, b, a, (n.local.w, n.local.h), self.viewport))
     }

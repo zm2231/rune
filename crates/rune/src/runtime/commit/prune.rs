@@ -133,6 +133,7 @@ impl RuntimeCore {
         remap.clear();
         self.commit.apply_scratch.remap = remap;
         self.prune_detached_tables(false);
+        if self.tree.has_above { anchor::resolve_anchors(&mut self.tree.nodes); }
         if !self.paint.layer_paint_order().is_empty() || !self.motion.flying.is_empty() || self.tree.has_sticky || self.tree.has_raise || self.tree.has_paint_order || self.tree.has_above { self.update_layer_paint_order(); }
         // A removed element's live sources (a `Pixels` stream) stop waking this window.
         if self.frame.has_live_subscriptions() {

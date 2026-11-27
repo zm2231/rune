@@ -576,8 +576,7 @@ impl PaintState {
             for _ in 0..max_rounds {
                 let mut changed = false;
                 for &i in &above_nodes {
-                    let Some(a) = &tree.nodes[i].above else { continue };
-                    let Some(j) = super::anchor_index_live(&tree.nodes, i, a, &exiting) else { continue };
+                    let Some(j) = super::anchor_index_live(&tree.nodes, i, &exiting) else { continue };
                     if (pass_of(j, &lifted_pos), base_rank[j]) > (pass_of(i, &lifted_pos), base_rank[i]) {
                         if lifted_pos[i] == 0 {
                             self.lifted_anchors.push(i);

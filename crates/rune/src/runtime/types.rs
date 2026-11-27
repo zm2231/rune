@@ -39,6 +39,9 @@ pub(crate) struct NodeCold {
     pub(super) above: Option<crate::el::Anchor>,
     pub(super) above_boundary: Option<String>,
     pub(super) resolved_anchor: Option<(crate::Side, crate::Align)>,
+    /// The nodes `above` and `above_boundary` name, as `anchor::resolve_anchors` found them.
+    pub(super) anchor_at: u32,
+    pub(super) boundary_at: u32,
     pub(crate) scroll: Option<ScrollSpec>,
     pub(super) scroll_axes: crate::el::ScrollAxes,
     pub(super) scroll_edges: crate::el::ScrollEdges,
@@ -88,7 +91,7 @@ impl crate::cold::Empty for NodeCold {
         enter_in_instant: false,
         matched: None,
         matched_motion: None,
-        above: None, above_boundary: None, resolved_anchor: None,
+        above: None, above_boundary: None, resolved_anchor: None, anchor_at: u32::MAX, boundary_at: u32::MAX,
         scroll: None,
         scroll_axes: crate::el::ScrollAxes::Y,
         scroll_edges: crate::el::ScrollEdges { fade: 0.0, fade_style: crate::el::FadeStyle::SMOOTH, margin: 0.0, anchor: false, no_anchor: false },

@@ -103,7 +103,7 @@ pub(in crate::runtime) fn anchored_target_inner(nodes: &[Node], scrolls: &HashMa
     if depth < crate::runtime::anchor::MAX_ANCHOR_CHAIN
         && let Some(anc) = std::iter::successors(Some(j), |&p| nodes[p].parent).find(|&p| nodes[p].above.is_some())
         && let Some(a) = &nodes[anc].above
-        && let Some(k) = super::anchor_index(nodes, anc, a)
+        && let Some(k) = super::anchor_index(nodes, anc)
     {
         let at = anchored_target_inner(nodes, scrolls, k, viewport, depth + 1);
         let b = crate::runtime::anchor::boundary_index(nodes, anc);

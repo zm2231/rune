@@ -232,6 +232,9 @@ pub(crate) fn frame(f: Frame) {
     });
     // Apart from the rest: one more key there passes `json!`'s recursion limit.
     let mut line = line;
+    line["flatten"] = serde_json::json!(ns(p[6]));
+    line["place"] = serde_json::json!(ns(p[7]));
+    line["focus"] = serde_json::json!(ns(p[8]));
     line["looped"] = serde_json::json!(f.looped);
     let [prepare, layers, pass, compositor] = f.encode_parts;
     line["encode_parts"] = serde_json::json!({ "prepare": prepare, "layers": layers, "pass": pass, "compositor": compositor });

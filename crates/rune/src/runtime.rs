@@ -250,6 +250,8 @@ mod aspect_ratio_tests;
 #[cfg(test)]
 mod anchor_fit_tests;
 #[cfg(test)]
+mod anchor_index_tests;
+#[cfg(test)]
 mod drop_tests;
 #[cfg(test)]
 mod elements_tests;

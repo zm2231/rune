@@ -65,7 +65,7 @@ const SLOW_PER_SECOND: u32 = 10;
 
 /// The `update` span's attribute for each [`Phase`].
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) const PHASE_NAMES: [&str; PHASES] = ["rune.view_ms", "rune.commit_ms", "rune.layout_ms", "rune.text_ms", "rune.paint_ms", "rune.apply_ms"];
+pub(crate) const PHASE_NAMES: [&str; PHASES] = ["rune.view_ms", "rune.commit_ms", "rune.layout_ms", "rune.text_ms", "rune.paint_ms", "rune.apply_ms", "rune.flatten_ms", "rune.place_ms", "rune.focus_ms"];
 
 thread_local! {
     /// A timed frame is underway on this thread: phases time themselves into `TIMES`.

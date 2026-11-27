@@ -70,7 +70,7 @@ impl Commit {
 
 /// The line for a commit that took `total` ms against `budget`, its phases timed in `times`.
 pub(crate) fn report(total: f64, budget: f64, times: [f64; PHASES], why: u16, left_out: u32) -> String {
-    let [view, _, layout, text, _, apply] = times;
+    let [view, _, layout, text, _, apply, ..] = times;
     let parts = [("the view", view), ("layout", (layout - text).max(0.0)), ("text", text), ("apply", apply)];
     let top = parts.iter().copied().max_by(|a, b| a.1.total_cmp(&b.1)).filter(|p| p.1 > 0.0);
     let why = crate::runtime::CommitWhy::names(why);

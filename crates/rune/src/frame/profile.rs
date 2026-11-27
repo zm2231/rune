@@ -1,11 +1,11 @@
 //! Opt-in headless phase timings. No clocks or allocator hooks in ordinary builds.
 //! Commit and Layout include their nested phases; these overlapping times must not be summed.
 #[derive(Clone, Copy)]
-pub(crate) enum Phase { View, Commit, Layout, Text, Paint, Apply }
+pub(crate) enum Phase { View, Commit, Layout, Text, Paint, Apply, Flatten, Place, Focus }
 
 /// Phases timed, each with a wall and a CPU column.
 #[cfg_attr(not(feature = "frame-profile"), allow(dead_code))]
-pub const PHASES: usize = 6;
+pub const PHASES: usize = 9;
 
 /// Converts raw `thread_cpu` units (cycles on Windows, ns elsewhere) to nanoseconds, or
 /// `None` until Windows knows the cycles' rate or where there is no CPU clock.
@@ -115,7 +115,8 @@ impl Log {
             let mut line = serde_json::json!({
                 "k": self.rows.len(), "ms": row.update_ms + row.encode_ms, "cpu_ms": row.cpu_ms, "events": row.events, "update_ms": row.update_ms, "encode_ms": row.encode_ms,
                 "view_cpu": p[PHASES], "commit_cpu": p[PHASES + 1], "layout_cpu": p[PHASES + 2], "text_cpu": p[PHASES + 3],
-                "paint_cpu": p[PHASES + 4], "apply_cpu": p[PHASES + 5], "allocations": row.allocations,
+                "paint_cpu": p[PHASES + 4], "apply_cpu": p[PHASES + 5], "flatten_cpu": p[PHASES + 6], "place_cpu": p[PHASES + 7], "focus_cpu": p[PHASES + 8],
+                "allocations": row.allocations,
                 "commits": row.commits, "shaped": row.shaped, "animating": row.animating,
             });
             if row.commits > 0 { line["why"] = crate::runtime::CommitWhy::names(row.why).into(); }
@@ -143,12 +144,14 @@ impl Log {
             "view_ms": avg(&|r| r.phases[0]), "commit_inclusive_ms": avg(&|r| r.phases[1]),
             "layout_inclusive_ms": avg(&|r| r.phases[2]), "shape_ms": avg(&|r| r.phases[3]),
             "paint_ms": avg(&|r| r.phases[4]), "apply_ms": avg(&|r| r.phases[5]),
+            "flatten_ms": avg(&|r| r.phases[6]), "place_ms": avg(&|r| r.phases[7]), "focus_ms": avg(&|r| r.phases[8]),
             "update_ms": avg(&|r| r.update_ms), "encode_submit_ms": avg(&|r| r.encode_ms),
             "allocations": avg(&|r| r.allocations as f64), "commits": avg(&|r| r.commits as f64),
             "shaped": avg(&|r| r.shaped as f64), "animating_fraction": avg(&|r| u8::from(r.animating) as f64),
             "thread_cpu_ms": thread_cpu_ms,
             "view_cpu_ms": phase_cpu(0), "commit_cpu_ms": phase_cpu(1), "layout_cpu_ms": phase_cpu(2),
             "shape_cpu_ms": phase_cpu(3), "paint_cpu_ms": phase_cpu(4), "apply_cpu_ms": phase_cpu(5),
+            "flatten_cpu_ms": phase_cpu(6), "place_cpu_ms": phase_cpu(7), "focus_cpu_ms": phase_cpu(8),
         })
     }
 
@@ -169,8 +172,8 @@ impl Log {
     }
 }
 
-/// Wall then CPU milliseconds per phase (view, commit, layout, text, paint, apply) on this thread
-/// since the last call, for benches that drive a `Runtime` themselves.
+/// Wall then CPU milliseconds per phase (view, commit, layout, text, paint, apply, flatten, place,
+/// focus) on this thread since the last call, for benches that drive a `Runtime` themselves.
 #[cfg(feature = "frame-profile")]
 pub fn take_frame_phases() -> [f64; 2 * PHASES] {
     install_text_hook();

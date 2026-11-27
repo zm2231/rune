@@ -594,6 +594,7 @@ impl RuntimeCore {
         scratch.top_moved = top_moved;
         scratch.held = held;
         self.commit.apply_scratch = scratch;
+        if nodes.len() > present_len { anchor::resolve_anchors(&mut nodes); }
         self.tree.nodes = nodes;
         self.commit.memo.commit_flattened(&self.tree.nodes, present_len, memo_flattened, memo_reused, taken_paths);
         skip_spans.clear();

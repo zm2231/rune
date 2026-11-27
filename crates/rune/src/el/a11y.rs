@@ -295,8 +295,9 @@ impl El {
     /// element in reading order: the control a screen is for, not the title above it. On iOS the
     /// window's first frame posts `UIAccessibilityScreenChangedNotification` with this element,
     /// as a UIKit view controller does for the element it names. A container lands the reader
-    /// on its first element, and text inside a control on the control. The first marked
-    /// element in tree order wins.
+    /// on its first element, text inside a control on the control, and a hosted native view on
+    /// that view. A hidden element lands nowhere and leaves the reader to the reading order. The
+    /// first marked element in tree order wins.
     pub fn accessibility_first(mut self) -> Self {
         self.cold_mut().a11y.more().first = true;
         self

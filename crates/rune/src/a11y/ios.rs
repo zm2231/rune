@@ -348,7 +348,17 @@ impl crate::runtime::RuntimeCore {
         let nodes = &self.tree.nodes;
         let marked = nodes.iter().position(|n| n.a11y.more.as_ref().is_some_and(|more| more.first))?;
         let inside = (marked..self.subtree_end(marked)).find(|&j| self.a11y_in_tree(j));
-        let around = || std::iter::successors(nodes[marked].parent, |&p| nodes[p].parent).find(|&p| self.a11y_in_tree(p));
+        let unseen = |j: usize| {
+            let n = &nodes[j];
+            n.is_moved_stub() || n.a11y.hidden || n.vis.opacity <= 0.01 || self.is_exiting(n.id) || !self.scene.contains(n.id)
+        };
+        let around = || {
+            for j in std::iter::successors(Some(marked), |&p| nodes[p].parent) {
+                if unseen(j) { return None }
+                if j != marked && self.a11y_in_tree(j) { return Some(j) }
+            }
+            None
+        };
         inside.or_else(around).map(|j| super::tree::element_id(nodes[j].id).0)
     }
 

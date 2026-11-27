@@ -316,6 +316,8 @@ impl Accessibility {
         };
         let zoom = reading.zoom;
         let mut made = HashMap::default();
+        let landing = self.mirror.landing();
+        let mut start = None;
         // SAFETY: `+[NSMutableArray array]` takes nothing and returns a new array, never nil.
         let list: Retained<AnyObject> = unsafe { msg_send![class!(NSMutableArray), array] };
         for element in self.mirror.elements() {
@@ -323,6 +325,7 @@ impl Accessibility {
                 if let Some(view) = slot.view.object() {
                     // SAFETY: `addObject:` takes an object that is not nil, which the hosted view is.
                     let _: () = unsafe { msg_send![&*list, addObject: view] };
+                    if landing == Some(element.id) { start = Some(retain(view)); }
                 }
                 continue;
             }
@@ -330,11 +333,12 @@ impl Accessibility {
             object.describe(element, zoom);
             // SAFETY: `addObject:` takes an object that is not nil, which the element is.
             let _: () = unsafe { msg_send![&*list, addObject: &*object] };
+            if landing == Some(element.id) { start = Some(retain(&object)); }
             made.insert(element.id, object);
         }
         let focus = changes.focus.and_then(|id| made.get(&id).cloned());
         let screen = first && changes.layout;
-        let start = self.mirror.landing().filter(|_| screen).and_then(|id| made.get(&id).cloned());
+        let start = start.filter(|_| screen);
         self.made = made;
         self.list = list;
         let layout = !first && changes.layout && changes.page.is_none();
@@ -342,11 +346,17 @@ impl Accessibility {
     }
 }
 
+fn retain(object: &AnyObject) -> Retained<AnyObject> {
+    // SAFETY: `object` is a live Objective-C object borrowed for this call, so retaining it is
+    // sound and the pointer is never null.
+    unsafe { Retained::retain(std::ptr::from_ref(object).cast_mut()) }.expect("a borrowed object is not null")
+}
+
 /// What to tell the reader after an update.
 #[derive(Default)]
 pub(crate) struct Posts {
     screen: bool,
-    start: Option<Retained<RuneElement>>,
+    start: Option<Retained<AnyObject>>,
     layout: bool,
     focus: Option<Retained<RuneElement>>,
     page: Option<String>,
@@ -358,7 +368,7 @@ impl Posts {
         // SAFETY: UIKit's notifications, each with the argument it documents: none to let
         // the reader choose where to land, the element to land on, or the words to speak.
         unsafe {
-            if self.screen { UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, self.start.as_deref().map(|e| -> &AnyObject { e })); }
+            if self.screen { UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, self.start.as_deref()); }
             match &self.focus {
                 Some(element) => UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, Some(element)),
                 None if self.layout => UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, None),

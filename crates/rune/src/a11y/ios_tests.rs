@@ -468,3 +468,27 @@ fn the_landing_follows_the_tree_the_mirror_holds() {
     mirror.apply(part(Vec::new()));
     assert_eq!(mirror.landing(), None);
 }
+
+#[test]
+fn a_named_leaf_and_a_container_holding_one_element_land_the_reader_there() {
+    use crate::{col, row, text};
+    let elements = screen_json(|_, _| titled(text("Windows").role("heading").accessibility_first()));
+    assert_eq!(first_label(&elements), Some("Windows"));
+    let elements = screen_json(|_, _| {
+        col().child(text("Windows").role("heading"))
+            .child(col().key("one").accessibility_first()
+                .child(row().key("go").role("button").focusable(true).on_press(|_: &mut ()| {}).child(text("Go"))))
+    });
+    assert_eq!(first_label(&elements), Some("Go"));
+}
+
+#[test]
+fn hidden_text_named_inside_a_control_lands_the_reader_nowhere() {
+    use crate::{col, row, text};
+    let elements = screen_json(|_, _| {
+        col().child(text("Windows").role("heading"))
+            .child(row().key("go").role("button").focusable(true).on_press(|_: &mut ()| {})
+                .child(text("Go")).child(text("secret").a11y_hidden().accessibility_first()))
+    });
+    assert_eq!(first_label(&elements), None);
+}

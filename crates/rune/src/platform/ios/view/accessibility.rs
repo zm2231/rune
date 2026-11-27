@@ -16,7 +16,8 @@ impl RuneView {
         if self.ivars().accessibility.borrow_mut().ask() {
             let reading = self.with_surface(|surface| surface.accessibility_wanted()).flatten();
             if let Some(reading) = reading {
-                self.ivars().accessibility.borrow_mut().answer(self.mtm(), self, reading);
+                let posts = self.ivars().accessibility.borrow_mut().answer(self.mtm(), self, reading);
+                posts.post();
             }
             self.pace(Event::Wake);
         }

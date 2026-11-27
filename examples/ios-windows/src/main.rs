@@ -61,7 +61,7 @@ fn main_view(s: &Main, cx: &mut Cx<Main>) -> El {
             .child(text(format!("Row {at}")).font(type_::BODY).color(t.text)))
     });
     col().w_full().h_full().gap(16.0).pt(top + 16.0).pr(16.0 + right).pb(bottom).pl(16.0 + left).fill(t.bg)
-        .child(text("Windows").font(type_::TITLE).color(t.text))
+        .child(text("Windows").role("heading").level(1).font(type_::TITLE).color(t.text))
         .child(controls)
         .child(text(tapped).key("tapped").font(type_::BODY).color(t.text_secondary))
         .child(col().key("rows").w_full().grow(1.0).shrink().scroll(ScrollSpec { stick_bottom: false }).child(rows))
@@ -71,7 +71,7 @@ fn details_view(s: &Details, cx: &mut Cx<Details>) -> El {
     let t = tok::theme(cx.system_dark());
     let [top, right, bottom, left] = cx.safe_area();
     col().w_full().h_full().center().gap(16.0).pt(top).pr(right).pb(bottom).pl(left).fill(t.bg)
-        .child(text("Details").font(type_::TITLE).color(t.text))
+        .child(text("Details").role("heading").level(1).font(type_::TITLE).color(t.text))
         .child(text(format!("Count {}, closed {} times", s.count, s.closed)).key("details-count").font(type_::BODY).color(t.text_secondary))
         .child(row().gap(12.0)
             .child(button("details-add", "Add one".into(), &t, |s: &mut Details, _| s.count += 1))

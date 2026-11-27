@@ -24,7 +24,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
             .font(type_::BODY).color(t.text_secondary).wrap().w_full())
     });
     let form = col().w_full().gap(16.0).py(16.0)
-        .child(text("Fields").font(type_::TITLE).color(t.text))
+        .child(text("Fields").role("heading").level(1).font(type_::TITLE).color(t.text))
         .child(field("Name", &state.name, &t).autocomplete(Autocomplete::Name).on_edit(|s: &mut State| &mut s.name))
         .child(field("Email", &state.email, &t).autocomplete(Autocomplete::Email).on_edit(|s: &mut State| &mut s.email))
         .child(filler)

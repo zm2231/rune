@@ -3467,11 +3467,14 @@ let heard = speaker.played_frames();
   default (100 ms to 10 s), so a reply can arrive faster than it plays. `clear` drops
   everything written before it on the next device callback. `played_frames` counts what
   reached the speaker, cleared frames excluded.
-- **The audio thread**: device callbacks touch only the rings and a few atomics. They never
-  allocate, lock or wait on the app (`crates/rune-media/tests/voice_alloc.rs` runs 10,000
-  callbacks with zero allocations).
+- **The audio thread**: the app's ends never block, and the audio side never waits on the app.
+  On Apple platforms the device callbacks touch only the rings and a few atomics and never
+  allocate or lock (`crates/rune-media/tests/voice_alloc.rs` runs 10,000 callbacks with zero
+  allocations). On Linux and Windows audio moves on Rune's own microphone and speaker threads,
+  which take a short uncontended lock per 10 ms block; on the web each block crosses the page's
+  main thread in freshly allocated buffers.
 - **Control**: `start`, `stop` and `set_muted` return at once. A thread per `Voice` runs the
-  device, and `state()` reports `Idle`, `Starting`, `Running`, `Reconnecting`, `Interrupted`
+  device (on the web, the page's main thread), and `state()` reports `Idle`, `Starting`, `Running`, `Reconnecting`, `Interrupted`
   or `Failed`. `take_events()` reports `Started`, `Stopped`, `DeviceChanged`,
   `Interrupted`, `Resumed` and `Failed`. Muting sends silence to `VoiceMic`, and the speaker
   keeps playing. `stats()` counts frames and gives `start_to_audio`, the time from

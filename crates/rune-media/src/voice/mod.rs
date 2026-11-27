@@ -167,7 +167,8 @@ impl VoiceSpec {
         self
     }
 
-    /// Called from another thread when the state changes or an event arrives.
+    /// Called when the state changes or an event arrives, from another thread (on the web, from
+    /// the page's main thread).
     pub fn waker(mut self, waker: rune_core::Waker) -> Self {
         self.waker = Some(waker);
         self
@@ -370,7 +371,8 @@ impl Voice {
         self.board.take_events()
     }
 
-    /// Installs a waker called from another thread when the state changes or an event arrives.
+    /// Installs a waker called when the state changes or an event arrives, from another thread (on
+    /// the web, from the page's main thread).
     pub fn set_waker(&self, waker: rune_core::Waker) {
         self.board.waker.set(waker);
         if let Some(generation) = self.board.pending() {

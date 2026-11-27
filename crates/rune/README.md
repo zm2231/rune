@@ -3441,8 +3441,9 @@ for event in audio.take_events() { /* AudioEvent::Underrun | Ended | DeviceLost(
 
 ### Voice calls (`Voice`, `crates/rune-media/src/voice/`)
 
-`Voice` is full-duplex call audio. The microphone comes in with the speaker's own output, room
-noise and level differences already removed, and the speaker goes out. Both streams are mono
+`Voice` is full-duplex call audio. The microphone comes in with the speaker's own output and room
+noise removed (and its level evened out on Apple platforms and the web), and the speaker goes
+out. Both streams are mono
 `f32` PCM at a rate the app picks (8–48 kHz, for example 24 kHz for a realtime speech model).
 
 ```rust

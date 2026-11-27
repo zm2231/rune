@@ -3,9 +3,12 @@ use super::duplex::{self, Heard, Render};
 use super::echo_path::EchoPath;
 use super::io::{Capture, Playback};
 use super::machine::Fault;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::JoinHandle;
+use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
+
+const PATIENCE: Duration = Duration::from_millis(500);
 
 pub(crate) trait MicLink: Send {
     fn begin(&mut self) {}
@@ -24,20 +27,61 @@ pub(crate) struct Opened {
 }
 
 pub(crate) type Opener = Box<dyn FnMut(u32, usize) -> Result<Opened, Fault> + Send>;
+pub(crate) type Work = Box<dyn FnOnce() + Send>;
+pub(crate) type Spawner = Box<dyn FnMut(&str, Work) -> std::io::Result<()> + Send>;
 
 pub(crate) fn device(rate: u32, capture: Capture, playback: Playback, signals: SignalSender, open: Opener) -> Box<dyn VoiceDevice> {
-    Box::new(Streams { rate, open, signals, ends: Some((capture, playback)), pumps: None })
+    with_spawner(rate, capture, playback, signals, open, Box::new(spawn_thread))
+}
+
+pub(crate) fn with_spawner(
+    rate: u32,
+    capture: Capture,
+    playback: Playback,
+    signals: SignalSender,
+    open: Opener,
+    spawn: Spawner,
+) -> Box<dyn VoiceDevice> {
+    Box::new(Streams { rate, open, spawn, signals, ends: Some((capture, playback)), pumps: None })
+}
+
+fn spawn_thread(name: &str, work: Work) -> std::io::Result<()> {
+    std::thread::Builder::new().name(name.into()).spawn(work).map(drop)
+}
+
+type Slot<T> = Arc<Mutex<Option<T>>>;
+
+fn lock<T>(slot: &Mutex<Option<T>>) -> std::sync::MutexGuard<'_, Option<T>> {
+    slot.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 struct Pumps {
     stop: Arc<AtomicBool>,
-    mic: JoinHandle<Heard>,
-    speaker: JoinHandle<Render>,
+    heard: Slot<Heard>,
+    render: Slot<Render>,
+    finished: Receiver<()>,
+    running: usize,
+}
+
+impl Pumps {
+    fn end(self) -> Option<(Capture, Playback)> {
+        self.stop.store(true, Ordering::Relaxed);
+        let deadline = rune_core::time::now() + PATIENCE;
+        for _ in 0..self.running {
+            let wait = deadline.saturating_duration_since(rune_core::time::now());
+            if self.finished.recv_timeout(wait).is_err() {
+                break;
+            }
+        }
+        let (heard, render) = (lock(&self.heard).take(), lock(&self.render).take());
+        heard.zip(render).map(|(heard, render)| duplex::join(render, heard))
+    }
 }
 
 struct Streams {
     rate: u32,
     open: Opener,
+    spawn: Spawner,
     signals: SignalSender,
     ends: Option<(Capture, Playback)>,
     pumps: Option<Pumps>,
@@ -45,17 +89,12 @@ struct Streams {
 
 impl Streams {
     fn stop(&mut self) {
-        if let Some(pumps) = self.pumps.take() {
-            pumps.stop.store(true, Ordering::Relaxed);
-            if let (Ok(heard), Ok(render)) = (pumps.mic.join(), pumps.speaker.join()) {
-                self.ends = Some(duplex::join(render, heard));
-            }
+        if let Some(pumps) = self.pumps.take()
+            && let Some(ends) = pumps.end()
+        {
+            self.ends = Some(ends);
         }
     }
-}
-
-fn spawn<T: Send + 'static>(name: &str, work: impl FnOnce() -> T + Send + 'static) -> Result<JoinHandle<T>, Fault> {
-    std::thread::Builder::new().name(name.into()).spawn(work).map_err(|e| Fault::passing(e.to_string()))
 }
 
 impl VoiceDevice for Streams {
@@ -68,7 +107,7 @@ impl VoiceDevice for Streams {
             return Ok(());
         }
         let Some((capture, playback)) = self.ends.take() else {
-            return Err(Fault::lasting("the voice stream's audio threads stopped unexpectedly"));
+            return Err(Fault::lasting("the voice stream's audio buffers were lost"));
         };
         let block = (self.rate / 100) as usize;
         let opened = match (self.open)(self.rate, block) {
@@ -79,21 +118,38 @@ impl VoiceDevice for Streams {
             }
         };
         let (render, heard) = duplex::for_path(opened.echo, self.rate, capture, playback);
-        let stop = Arc::new(AtomicBool::new(false));
-        let (mic_link, speaker_link) = (opened.mic, opened.speaker);
-        let (mic_stop, mic_signals) = (stop.clone(), self.signals.clone());
-        let mic = spawn("rune-voice-mic", move || listen(mic_link, heard, block, &mic_stop, &mic_signals))?;
-        let (speaker_stop, speaker_signals) = (stop.clone(), self.signals.clone());
-        let speaker = spawn("rune-voice-speaker", move || play(speaker_link, render, block, &speaker_stop, &speaker_signals));
-        let speaker = match speaker {
-            Ok(speaker) => speaker,
-            Err(fault) => {
-                stop.store(true, Ordering::Relaxed);
-                drop(mic.join());
-                return Err(Fault::lasting(fault.message));
-            }
+        let (done, finished) = mpsc::channel();
+        let mut pumps = Pumps {
+            stop: Arc::new(AtomicBool::new(false)),
+            heard: Arc::new(Mutex::new(Some(heard))),
+            render: Arc::new(Mutex::new(Some(render))),
+            finished,
+            running: 0,
         };
-        self.pumps = Some(Pumps { stop, mic, speaker });
+        let mic = {
+            let (stop, slot, signals, done) = (pumps.stop.clone(), pumps.heard.clone(), self.signals.clone(), done.clone());
+            let link = opened.mic;
+            Box::new(move || {
+                listen(link, &slot, block, &stop, &signals);
+                done.send(()).ok();
+            }) as Work
+        };
+        let speaker = {
+            let (stop, slot, signals) = (pumps.stop.clone(), pumps.render.clone(), self.signals.clone());
+            let link = opened.speaker;
+            Box::new(move || {
+                play(link, &slot, block, &stop, &signals);
+                done.send(()).ok();
+            }) as Work
+        };
+        for (name, work) in [("rune-voice-mic", mic), ("rune-voice-speaker", speaker)] {
+            if let Err(e) = (self.spawn)(name, work) {
+                self.ends = pumps.end();
+                return Err(Fault::passing(format!("couldn't start the {name} thread: {e}")));
+            }
+            pumps.running += 1;
+        }
+        self.pumps = Some(pumps);
         Ok(())
     }
 
@@ -120,32 +176,34 @@ fn report(result: Result<(), Fault>, stop: &AtomicBool, signals: &SignalSender) 
     }
 }
 
-fn listen(mut link: Box<dyn MicLink>, mut heard: Heard, block: usize, stop: &AtomicBool, signals: &SignalSender) -> Heard {
+fn listen(mut link: Box<dyn MicLink>, slot: &Mutex<Option<Heard>>, block: usize, stop: &AtomicBool, signals: &SignalSender) {
     link.begin();
     let mut frames = vec![0.0; block];
     let result = (|| {
         while !stop.load(Ordering::Relaxed) {
             link.read(&mut frames)?;
-            heard.capture(&frames);
+            match lock(slot).as_mut() {
+                Some(heard) if !stop.load(Ordering::Relaxed) => heard.capture(&frames),
+                _ => break,
+            }
         }
         Ok(())
     })();
     report(result, stop, signals);
-    drop(link);
-    heard
 }
 
-fn play(mut link: Box<dyn SpeakerLink>, mut render: Render, block: usize, stop: &AtomicBool, signals: &SignalSender) -> Render {
+fn play(mut link: Box<dyn SpeakerLink>, slot: &Mutex<Option<Render>>, block: usize, stop: &AtomicBool, signals: &SignalSender) {
     link.begin();
     let mut frames = vec![0.0; block];
     let result = (|| {
         while !stop.load(Ordering::Relaxed) {
-            render.render(&mut frames);
+            match lock(slot).as_mut() {
+                Some(render) if !stop.load(Ordering::Relaxed) => render.render(&mut frames),
+                _ => break,
+            }
             link.write(&frames)?;
         }
         Ok(())
     })();
     report(result, stop, signals);
-    drop(link);
-    render
 }

@@ -3,8 +3,11 @@
 //!
 //! [`Voice::open`] returns a control handle and two lock-free stream ends. [`VoiceMic`] reads
 //! what the microphone heard with the speaker's own output removed. [`VoiceSpeaker`] queues
-//! what to play. The audio side touches only the two rings and a few atomics, so it never locks
-//! or waits on the app. [`Voice::open_fake`] runs anywhere, on a [`FakeVoice`].
+//! what to play. The app's ends never block: the app and the audio side share only the two
+//! rings and a few atomics, so neither waits on the other. On Apple platforms the device's audio
+//! callback also never allocates; on Linux and Windows audio moves on Rune's own threads, and on
+//! the web each 10 ms block crosses the page's main thread in freshly allocated buffers.
+//! [`Voice::open_fake`] runs anywhere, on a [`FakeVoice`].
 //!
 //! # Platforms
 //!

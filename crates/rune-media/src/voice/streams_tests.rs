@@ -137,3 +137,134 @@ fn a_stream_that_dies_mid_call_comes_back() {
     }
     assert_eq!(voice.state(), VoiceState::Running);
 }
+
+#[derive(Default)]
+struct Gate {
+    open: Mutex<bool>,
+    changed: std::sync::Condvar,
+}
+
+impl Gate {
+    fn hold(&self) {
+        let mut open = self.open.lock().unwrap();
+        while !*open {
+            open = self.changed.wait(open).unwrap();
+        }
+    }
+
+    fn release(&self) {
+        *self.open.lock().unwrap() = true;
+        self.changed.notify_all();
+    }
+}
+
+struct Stuck {
+    gate: Arc<Gate>,
+    fail: bool,
+}
+
+impl MicLink for Stuck {
+    fn read(&mut self, _: &mut [f32]) -> Result<(), Fault> {
+        if self.fail {
+            return Err(Fault::passing("the microphone stream broke"));
+        }
+        self.gate.hold();
+        Err(Fault::passing("released"))
+    }
+}
+
+impl SpeakerLink for Stuck {
+    fn write(&mut self, _: &[f32]) -> Result<(), Fault> {
+        self.gate.hold();
+        Err(Fault::passing("released"))
+    }
+}
+
+fn stuck_then(air: &Arc<Mutex<Air>>, gate: &Arc<Gate>, mic_fails: bool) -> Opener {
+    let (air, gate) = (air.clone(), gate.clone());
+    let mut first = true;
+    Box::new(move |_, _| {
+        if std::mem::take(&mut first) {
+            let mic = Stuck { gate: gate.clone(), fail: mic_fails };
+            return Ok(Opened { mic: Box::new(mic), speaker: Box::new(Stuck { gate: gate.clone(), fail: false }), echo: EchoPath::InProcess });
+        }
+        Ok(Opened { mic: Box::new(Room { air: air.clone() }), speaker: Box::new(Room { air: air.clone() }), echo: EchoPath::InProcess })
+    })
+}
+
+fn quickly(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = rune_core::time::now() + Duration::from_secs(3);
+    while !done() {
+        assert!(rune_core::time::now() < deadline, "{what} took too long");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn stopping_while_the_sound_server_blocks_returns_and_keeps_the_stream_usable() {
+    let (air, gate) = (Arc::new(Mutex::new(Air::default())), Arc::new(Gate::default()));
+    let (voice, _mic, _speaker) = open(stuck_then(&air, &gate, false));
+    voice.start();
+    until(&voice, VoiceState::Running);
+    voice.stop();
+    quickly("stopping", || voice.state() == VoiceState::Idle && !voice.take_events().is_empty());
+    voice.start();
+    until(&voice, VoiceState::Running);
+    let captured = voice.stats().captured_frames;
+    quickly("audio after restarting", || voice.stats().captured_frames > captured);
+    let started = rune_core::time::now();
+    drop(voice);
+    assert!(rune_core::time::now() - started < Duration::from_secs(2));
+    gate.release();
+}
+
+#[test]
+fn a_fault_while_the_other_direction_blocks_still_rebuilds_the_stream() {
+    let (air, gate) = (Arc::new(Mutex::new(Air::default())), Arc::new(Gate::default()));
+    let (voice, _mic, _speaker) = open(stuck_then(&air, &gate, true));
+    voice.start();
+    let mut events = Vec::new();
+    quickly("rebuilding", || {
+        events.extend(voice.take_events());
+        events.contains(&VoiceEvent::DeviceChanged)
+    });
+    assert_eq!(voice.state(), VoiceState::Running);
+    gate.release();
+}
+
+#[test]
+fn dropping_a_voice_whose_sound_server_blocks_returns() {
+    let (air, gate) = (Arc::new(Mutex::new(Air::default())), Arc::new(Gate::default()));
+    let (voice, _mic, _speaker) = open(stuck_then(&air, &gate, false));
+    voice.start();
+    until(&voice, VoiceState::Running);
+    let started = rune_core::time::now();
+    drop(voice);
+    assert!(rune_core::time::now() - started < Duration::from_secs(2));
+    gate.release();
+}
+
+#[test]
+fn a_thread_that_fails_to_start_is_retried_with_the_queued_audio_kept() {
+    for failing in 0..2 {
+        let air = Arc::new(Mutex::new(Air::default()));
+        let mut calls = 0;
+        let spawner: streams::Spawner = Box::new(move |name, work| {
+            calls += 1;
+            if calls == failing + 1 {
+                return Err(std::io::Error::other("out of threads"));
+            }
+            std::thread::Builder::new().name(name.into()).spawn(work).map(drop)
+        });
+        let spec = VoiceSpec::new(RATE).speaker_buffer(Duration::from_secs(1));
+        let open = opener(&air, 0);
+        let (voice, _mic, mut speaker) =
+            Voice::launch(spec, move |capture, playback, signals| streams::with_spawner(RATE, capture, playback, signals, open, spawner)).unwrap();
+        let queued = vec![0.1; 1_600];
+        speaker.write(&queued);
+        voice.start();
+        until(&voice, VoiceState::Running);
+        assert_eq!(voice.take_events(), vec![VoiceEvent::Started], "failing spawn #{}", failing + 1);
+        quickly("playing the queued audio", || speaker.played_frames() >= queued.len() as u64);
+    }
+}

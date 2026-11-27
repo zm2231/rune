@@ -25,8 +25,9 @@
 //! the app, with WebRTC's AEC3 and noise suppressor, using exactly the samples Rune plays as the
 //! reference, so no system echo-cancel module is needed. Limits: only Rune's own output is
 //! cancelled, not other apps' sound; steady pure tones are cancelled far less than speech or
-//! noise; the microphone level isn't adjusted automatically; the
-//! sound server moves the streams when the default devices change, and a stream that fails is
+//! noise; the microphone level isn't adjusted automatically; an echo that comes back more than
+//! about 700 ms after it was played (a long virtual-cable or network loop) may not be found, and
+//! then isn't cancelled; the sound server moves the streams when the default devices change, and a stream that fails is
 //! rebuilt ([`VoiceEvent::DeviceChanged`]). If the default source is already PipeWire's or
 //! PulseAudio's echo-cancel node, the echo is cancelled twice, which is harmless. Verified
 //! against a real PulseAudio server whose microphone hears the speaker directly; a desktop with

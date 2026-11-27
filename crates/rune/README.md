@@ -3522,8 +3522,9 @@ let heard = speaker.played_frames();
   on the default devices, falling back to ALSA, both loaded at run time. Echo cancellation and
   noise suppression run in the app (WebRTC's AEC3 through `sonora`) with the samples Rune plays
   as the reference, so no system echo-cancel module is needed. Only Rune's own output is
-  cancelled, and the microphone level isn't adjusted. `scripts/voice-pulse-e2e.sh` measures
-  echo against a real PulseAudio server in Docker.
+  cancelled, and the microphone level isn't adjusted. The canceller finds echoes that come back
+  up to at least 700 ms after they're played (a 1 s loop isn't found). `scripts/voice-pulse-e2e.sh [--loop-ms N]` measures echo against a
+  real PulseAudio server in Docker, directly or through an N ms loop.
 - **Windows**: WASAPI on the default communications microphone and speaker, tagged as
   communications audio. The system's echo canceller is used when the microphone's driver
   offers one (Windows 11 lists it among the stream's effects); otherwise, as on Windows 10, the

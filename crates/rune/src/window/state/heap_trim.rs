@@ -265,6 +265,7 @@ mod glibc {
     fn resolve_glibc_trim() -> Option<MallocTrimFn> {
         // SAFETY: `malloc_trim`, `mallinfo2`, and `mallinfo` match glibc `<malloc.h>` ABI.
         let trim_fn: MallocTrimFn = unsafe { dlsym_default(c"malloc_trim")? };
+        // SAFETY: `Mallinfo2Fn` is glibc's `mallinfo2` signature from `<malloc.h>`.
         let probed = if let Some(info2) = unsafe { dlsym_default::<Mallinfo2Fn>(c"mallinfo2") } {
             probe_glibc_used(
                 usize::MAX,
@@ -282,7 +283,10 @@ mod glibc {
                     unsafe { std::alloc::dealloc(ptr, layout) };
                 },
             )
-        } else if let Some(info1) = unsafe { dlsym_default::<MallinfoFn>(c"mallinfo") } {
+        } else if let Some(info1) = {
+            // SAFETY: `MallinfoFn` is glibc's `mallinfo` signature from `<malloc.h>`.
+            unsafe { dlsym_default::<MallinfoFn>(c"mallinfo") }
+        } {
             probe_glibc_used(
                 u32::MAX as usize,
                 || {

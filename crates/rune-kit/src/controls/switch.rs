@@ -115,9 +115,9 @@ impl Switch {
             root = root.label(l.clone());
             if !self.hide_label {
                 let (font, color) = if self.standard {
-                    (k.ty.text_small.lh(16.0), c.std_text)
+                    (k.ty.text_small.lh(k.text_size(16.0)), c.std_text)
                 } else {
-                    (TextStyle { line_height: 16.0, ..k.ty.small }, c.text_faint)
+                    (TextStyle { line_height: k.text_size(16.0), ..k.ty.small }, c.text_faint)
                 };
                 root = root.child(text(l.clone()).key("label").font(font).color(color).a11y_hidden());
             }
@@ -125,7 +125,7 @@ impl Switch {
         if let Some(d) = &self.description {
             root = root
                 .description(d.clone())
-                .child(text(d.clone()).key("description").font(k.ty.text_xsmall.lh(15.6)).color(c.std_text).wrap().shrink().a11y_hidden());
+                .child(text(d.clone()).key("description").font(k.ty.text_xsmall.lh(k.text_size(15.6))).color(c.std_text).wrap().shrink().a11y_hidden());
         }
         root = root.child(control.key("control").a11y_hidden());
         self.acts.apply(root.focusable(!disabled).disabled(disabled), !disabled)

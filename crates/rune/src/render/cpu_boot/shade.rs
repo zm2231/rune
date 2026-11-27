@@ -364,8 +364,16 @@ fn triangle(p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2], aa: u32) -> f32 
     cov
 }
 
+struct RingSide {
+    at: f32,
+    len: f32,
+    edge: f32,
+    flat: [f32; 2],
+    index: usize,
+}
+
 /// `ring_arc`.
-fn ring_arc(p: [f32; 2], size: [f32; 2], radii: [f32; 4], bw: f32) -> (f32, f32) {
+fn ring_arc(p: [f32; 2], origin: [f32; 2], size: [f32; 2], radii: [f32; 4], bw: f32) -> RingSide {
     let h = bw * 0.5;
     let half = [size[0] * 0.5, size[1] * 0.5];
     let m = half[0].min(half[1]);
@@ -383,43 +391,81 @@ fn ring_arc(p: [f32; 2], size: [f32; 2], radii: [f32; 4], bw: f32) -> (f32, f32)
     let right = s_right + p[1] - e[1];
     let bottom = s_bottom + size[0] - e[2] - p[0];
     let left = s_left + size[1] - e[3] - p[1];
-    let s = if p[0] > half[0] {
+    let (s, index, wrap) = if p[0] > half[0] {
         if p[1] > half[1] {
             let v = [p[0] - (size[0] - e[2]), p[1] - (size[1] - e[2])];
-            if v[0] > 0.0 && v[1] > 0.0 { s_br + v[1].atan2(v[0]) * rc[2] } else if size[0] - p[0] < size[1] - p[1] { right } else { bottom }
+            if v[0] > 0.0 && v[1] > 0.0 {
+                (s_br + v[1].atan2(v[0]) * rc[2], if v[1] >= v[0] { 2 } else { 1 }, false)
+            } else if size[0] - p[0] < size[1] - p[1] {
+                (right, 1, false)
+            } else {
+                (bottom, 2, false)
+            }
         } else {
             let v = [p[0] - (size[0] - e[1]), p[1] - e[1]];
-            if v[0] > 0.0 && v[1] < 0.0 { s_tr + v[0].atan2(-v[1]) * rc[1] } else if size[0] - p[0] < p[1] { right } else { top }
+            if v[0] > 0.0 && v[1] < 0.0 {
+                (s_tr + v[0].atan2(-v[1]) * rc[1], if v[0] >= -v[1] { 1 } else { 0 }, false)
+            } else if size[0] - p[0] < p[1] {
+                (right, 1, false)
+            } else {
+                (top, 0, false)
+            }
         }
     } else if p[1] > half[1] {
         let v = [p[0] - e[3], p[1] - (size[1] - e[3])];
-        if v[0] < 0.0 && v[1] > 0.0 { s_bl + (-v[0]).atan2(v[1]) * rc[3] } else if p[0] < size[1] - p[1] { left } else { bottom }
+        if v[0] < 0.0 && v[1] > 0.0 {
+            (s_bl + (-v[0]).atan2(v[1]) * rc[3], if -v[0] >= v[1] { 3 } else { 2 }, false)
+        } else if p[0] < size[1] - p[1] {
+            (left, 3, false)
+        } else {
+            (bottom, 2, false)
+        }
     } else {
         let v = [p[0] - e[0], p[1] - e[0]];
-        if v[0] < 0.0 && v[1] < 0.0 { s_tl + (-v[1]).atan2(-v[0]) * rc[0] } else if p[0] < p[1] { left } else { top }
+        if v[0] < 0.0 && v[1] < 0.0 {
+            let wrap = -v[1] >= -v[0];
+            (s_tl + (-v[1]).atan2(-v[0]) * rc[0], if wrap { 0 } else { 3 }, wrap)
+        } else if p[0] < p[1] {
+            (left, 3, false)
+        } else {
+            (top, 0, false)
+        }
     };
     let b = [-arc[0] * 0.5, s_tr + arc[1] * 0.5, s_br + arc[2] * 0.5, s_bl + arc[3] * 0.5, s_tl + arc[0] * 0.5];
-    let (lo, hi) = if s >= b[4] {
-        (b[4], b[4] + b[1] - b[0])
-    } else if s >= b[3] {
-        (b[3], b[4])
-    } else if s >= b[2] {
-        (b[2], b[3])
-    } else if s >= b[1] {
-        (b[1], b[2])
-    } else {
-        (b[0], b[1])
-    };
-    (s - lo, hi - lo)
+    let flat = [s_tr, s_br - s_right, s_bl - s_bottom, s_tl - s_left];
+    let edge = [
+        arc[0] * 0.5 - origin[0] - e[0],
+        arc[1] * 0.5 - origin[1] - e[1],
+        arc[2] * 0.5 + origin[0] + size[0] - e[2],
+        arc[3] * 0.5 + origin[1] + size[1] - e[3],
+    ];
+    let lo = if wrap { b[4] } else { b[index] };
+    let start = arc[index] * 0.5;
+    RingSide { at: s - lo, len: b[index + 1] - b[index], edge: edge[index], flat: [start, start + flat[index]], index }
 }
 
 /// `dash_cov`.
-fn dash_cov(side: (f32, f32), d: [f32; 4], ring: f32, n: f32, h: f32, soft: f32) -> f32 {
-    let (s, len) = side;
-    let a = if s < len * 0.5 { s } else { len - s } + d[2];
-    let period = (d[0] + d[1]).max(shader_consts::DASH_MIN_PERIOD);
-    let m = (a - period * (a / period + 0.5).floor()).abs();
-    if d[3] > 0.5 {
+fn dash_cov(side: &RingSide, d: [f32; 4], held: [f32; 2], ring: f32, n: f32, h: f32, soft: f32) -> f32 {
+    let round_caps = d[1] < 0.0;
+    let period = (d[0] + d[1].abs()).max(shader_consts::DASH_MIN_PERIOD);
+    let pair = held[side.index / 2];
+    let hi = (pair / shader_consts::DASH_COUNT_BASE).floor();
+    let mine = if side.index & 1 == 1 { pair - hi * shader_consts::DASH_COUNT_BASE } else { hi };
+    let count = if mine >= 1.0 { mine } else { (side.len / period + 0.4921875).floor().max(1.0) };
+    let step = (side.len / count).max(shader_consts::DASH_MIN_PERIOD);
+    let phase = d[2] / period * step;
+    let ends = d[0] * 0.5 + if round_caps { h } else { 0.0 };
+    let j = ((side.at + phase) / step + 0.5).floor();
+    let m = [-1.0f32, 0.0, 1.0]
+        .map(|k| {
+            let c = (j + k) * step - phase;
+            let t = side.edge + ends - c;
+            let straight = clamp01((c - side.flat[0]).min(side.flat[1] - c));
+            (side.at - c - (t - (t + 0.4921875).floor()) * straight).abs()
+        })
+        .into_iter()
+        .fold(f32::MAX, f32::min);
+    if round_caps {
         let along = (m - d[0] * 0.5).max(0.0);
         let reach = (along * along + n * n).sqrt();
         return ring.min(clamp01(0.5 + (h - reach) / (soft * 2.0)));
@@ -525,8 +571,8 @@ pub(super) fn boxes(i: &Instance, kind: Kind, p: [f32; 2]) -> [f32; 4] {
             let d = sd_rounded(q, half, i.radii);
             let bw = i.params[0];
             let ring = clamp01(0.5 - d / (soft * 2.0)) - clamp01(0.5 - (d + bw) / (soft * 2.0));
-            let side = ring_arc([p[0] - i.rect[0], p[1] - i.rect[1]], [i.rect[2], i.rect[3]], i.radii, bw);
-            scale4(mix4(i.fill, i.border, t_y()), dash_cov(side, i.uv, ring, d + bw * 0.5, bw * 0.5, soft))
+            let side = ring_arc([p[0] - i.rect[0], p[1] - i.rect[1]], [i.rect[0], i.rect[1]], [i.rect[2], i.rect[3]], i.radii, bw);
+            scale4(mix4(i.fill, i.border, t_y()), dash_cov(&side, i.uv, [i.params[3], i.uv[3]], ring, d + bw * 0.5, bw * 0.5, soft))
         }
         Kind::Radial => radial(i, p, false),
         Kind::Glyph | Kind::Image | Kind::Layer | Kind::LayerEnd | Kind::Effect | Kind::BackdropBlur => [0.0; 4],

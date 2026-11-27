@@ -127,7 +127,7 @@ impl TextField {
 
     pub fn build(self, k: &Kit) -> El {
         let c = &k.c;
-        let body = TextStyle::new(14.0, 400.0).lh(21.0);
+        let body = k.text(TextStyle::new(14.0, 400.0).lh(21.0));
         let field = text_input(&self.edit, body)
             .key("input")
             .grow(1.0)
@@ -171,11 +171,11 @@ impl TextField {
                 .key("copy")
                 .role("button")
                 .label("Copy")
-                .size(24.0, 24.0)
+                .size(k.text_size(24.0), k.text_size(24.0))
                 .center()
                 .radius(k.radius.md)
                 .hover(c.hover)
-                .child(icon(k.glyph.copy, 16.0).color(c.std_icon))
+                .child(icon(k.glyph.copy, k.text_size(16.0)).color(c.std_icon))
                 .disabled(self.state == State::Disabled);
             if self.state != State::Disabled {
                 b = self.copy_acts.apply(k.interactive(b.hit()), true);
@@ -189,7 +189,7 @@ impl TextField {
         root = root.child(wrapper);
         if let Some(e) = &self.error {
             // Announced as it appears, and read again as the field's description.
-            root = root.child(text(e.clone()).key("error").font(k.ty.text_xsmall_medium).color(c.danger.fg)
+            root = root.child(text(e.clone()).key("error").font(k.ty.text_xsmall_medium).color(k.roles.error)
                 .wrap().w_full().live_region(rune::LiveRegion::Assertive));
         }
         k.disabled_dim(root, self.state == State::Disabled)

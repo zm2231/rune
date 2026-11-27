@@ -57,7 +57,7 @@ impl Keybind {
         };
         let m = k.keybind_metrics();
         let (height, radius, padding_x) = (m.height, m.radius, m.padding_x);
-        let font = TextStyle { line_height: 11.0, ..k.ty.small_medium };
+        let font = TextStyle { line_height: k.text_size(11.0), ..k.ty.small_medium };
         let label = self.keys.join(" ");
         let keep_case = self.keep_case;
         row().role("group").label(label).gap(2.0).center_y().children(self.keys.into_iter().enumerate().map(

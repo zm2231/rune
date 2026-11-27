@@ -92,6 +92,7 @@ impl RuntimeCore {
         self.keep_begin(tree_order, vp, default_ring, &sel_ranges, &mark_ranges);
         let mut active_cache: Option<ActiveCache> = None;
         self.paint.pixel_snap.begin_frame(self.t, [vp[2], vp[3]]);
+        self.paint.dash_counts.begin_frame();
         // One past the subtree the last one copied from the last paint.
         let mut skip_to = 0;
         for paint_index in 0..n_nodes {

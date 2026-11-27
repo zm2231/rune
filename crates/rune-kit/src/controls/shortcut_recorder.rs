@@ -281,7 +281,7 @@ impl RecorderCore {
         let mut root = col().key(format!("{}-field", self.key)).w(self.width).gap(4.0).child(control);
         if let Some(error) = self.state.error() {
             root = root.child(text((self.message)(error, self.state.refused())).key("error").role("alert")
-                .font(k.ty.small_medium).color(k.c.danger.fg).wrap().w_full());
+                .font(k.ty.small_medium).color(k.roles.error).wrap().w_full());
         }
         root
     }

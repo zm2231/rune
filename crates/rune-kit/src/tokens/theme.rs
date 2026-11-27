@@ -4,6 +4,7 @@ use std::rc::Rc;
 use rune::{Color, Cx, Provided};
 
 use super::kit::Kit;
+use super::text_scale::{Scale, TextScale};
 
 const BUILT: usize = 4;
 
@@ -21,13 +22,17 @@ pub struct KitEnv {
     pub increased_contrast: bool,
     /// [`rune::Cx::accent`]: the system accent for this appearance.
     pub accent: Color,
+    /// The [`TextScale`](crate::TextScale) in scope ([`KitCx::with_text_scale`]), 1 outside one.
+    /// [`KitTheme`] applies it to the kits it builds ([`Kit::with_text_scale`]).
+    pub text_scale: f32,
 }
 
 impl KitEnv {
     /// `dark`, in the blend mode of the window building the view ([`rune::theme::blends_srgb`],
-    /// sRGB outside one), without increased contrast, with the default system accent.
+    /// sRGB outside one), without increased contrast, with the default system accent and the
+    /// theme's own text size.
     pub fn new(dark: bool) -> Self {
-        Self { dark, srgb_blend: rune::theme::blends_srgb(), increased_contrast: false, accent: rune::SystemAccent::default().accent(dark) }
+        Self { dark, srgb_blend: rune::theme::blends_srgb(), increased_contrast: false, accent: rune::SystemAccent::default().accent(dark), text_scale: 1.0 }
     }
 
     /// The environment of the window `cx` builds.
@@ -37,6 +42,7 @@ impl KitEnv {
             srgb_blend: rune::theme::blends_srgb(),
             increased_contrast: cx.system_increased_contrast(),
             accent: cx.accent(),
+            text_scale: cx.provided::<Scale>().map_or(1.0, |s| s.0),
         }
     }
 
@@ -55,6 +61,12 @@ impl KitEnv {
     /// This environment with or without the system's increased contrast.
     pub fn increased_contrast(mut self, on: bool) -> Self {
         self.increased_contrast = on;
+        self
+    }
+
+    /// This environment with type at `scale` times the theme's.
+    pub fn text_scale(mut self, scale: f32) -> Self {
+        self.text_scale = scale;
         self
     }
 
@@ -117,7 +129,8 @@ impl KitTheme {
             return kit;
         }
         drop(built);
-        let kit = rune::theme::with_blend(env.srgb_blend, || (self.0.build)(env));
+        let built = rune::theme::with_blend(env.srgb_blend, || (self.0.build)(env));
+        let kit = if (built.text_scale - env.text_scale).abs() < 1e-6 { built } else { Rc::new(built.with_text_scale(env.text_scale)) };
         let mut built = self.0.built.borrow_mut();
         built.insert(0, (*env, kit.clone()));
         built.truncate(BUILT);
@@ -137,6 +150,10 @@ pub trait KitCx {
 
     /// Runs `build` with `theme` as the kit [`Self::kit`] returns inside it.
     fn with_kit<R>(&mut self, theme: &KitTheme, build: impl FnOnce(&mut Self) -> R) -> R;
+
+    /// Runs `build` with kits read inside it at `scale`'s text size, whichever theme they come
+    /// from.
+    fn with_text_scale<R>(&mut self, scale: &TextScale, build: impl FnOnce(&mut Self) -> R) -> R;
 }
 
 impl<S> KitCx for Cx<S> {
@@ -150,6 +167,10 @@ impl<S> KitCx for Cx<S> {
 
     fn with_kit<R>(&mut self, theme: &KitTheme, build: impl FnOnce(&mut Self) -> R) -> R {
         self.provide(&theme.0, build)
+    }
+
+    fn with_text_scale<R>(&mut self, scale: &TextScale, build: impl FnOnce(&mut Self) -> R) -> R {
+        self.provide(&scale.0, build)
     }
 }
 

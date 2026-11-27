@@ -192,10 +192,10 @@ pub struct Type {
 
 impl Type {
     /// Secondary text under a control or row (a setting's explanation, a file's size): `small`
-    /// on a 16 line, so 11 / 16 in the built-in themes. A method rather than a field, so a
-    /// theme's own `Type` gets it from its `small`.
+    /// on a line 16/11 of its size, so 11 / 16 in the built-in themes at their own text size. A
+    /// method rather than a field, so a theme's own `Type` gets it from its `small`.
     pub fn caption(&self) -> TextStyle {
-        self.small.lh(16.0)
+        self.small.lh(self.small.size * 16.0 / 11.0)
     }
 }
 
@@ -256,6 +256,13 @@ pub struct Kit {
     /// Component metrics a theme sets in place of the built-in ones (button and switch sizes,
     /// field box, text area type, checkbox colours). `Metrics::default()` keeps them all.
     pub metrics: crate::Metrics,
+    /// How much larger than the theme's own the type is: 1 as a theme builds it, and the scale
+    /// a [`TextScale`](crate::TextScale) in scope gives [`Kit::with_text_scale`] otherwise.
+    /// [`Kit::text`] and [`Kit::text_size`] scale an app's own styles and sizes by it.
+    pub text_scale: f32,
+    /// The text colour of each [`TextRole`](crate::TextRole): timestamps, links, code, live
+    /// work, diffs, peers' messages and states.
+    pub roles: crate::TextRoles,
 }
 
 impl Kit {

@@ -109,6 +109,7 @@ impl Kit {
             input: Vec::new(),
         };
         let ui = TextStyle::new(13.0, 400.0).lh(20.0);
+        let roles = crate::TextRoles::from_palette(&c);
         Kit {
             dark,
             c,
@@ -139,6 +140,8 @@ impl Kit {
             invalid_text: false,
             forced: None,
             metrics: crate::Metrics::default(),
+            text_scale: 1.0,
+            roles,
         }
     }
 }

@@ -243,7 +243,7 @@ fn lead(avatar: Option<El>, glyph: Option<&'static rune::Icon>, active: bool, ba
     let c = &k.c;
     let mark = match (avatar, glyph) {
         (Some(a), _) => a,
-        (None, Some(i)) => icon(i, 16.0).key("icon").color(if active { c.icon_base } else { c.icon_muted }),
+        (None, Some(i)) => icon(i, k.text_size(16.0)).key("icon").color(if active { c.icon_base } else { c.icon_muted }),
         (None, None) => el().size(16.0, 16.0).radius(3.0).border(1.0, c.border_muted),
     };
     if !badge {
@@ -489,8 +489,8 @@ fn grounded(e: El, ground: [Color; 2], radius: f32) -> El {
 
 fn dot_color(status: Option<TabItemStatus>, k: &Kit) -> Color {
     match status {
-        Some(TabItemStatus::Attention) => k.c.warning.fg,
-        Some(TabItemStatus::Failed) => k.c.danger.fg,
+        Some(TabItemStatus::Attention) => k.roles.needs_attention,
+        Some(TabItemStatus::Failed) => k.roles.error,
         _ => k.c.bg_accent,
     }
 }

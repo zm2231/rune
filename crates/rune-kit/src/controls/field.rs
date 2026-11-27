@@ -109,16 +109,16 @@ impl Field {
         root = root.description(help.join(". "));
         if let Some(l) = self.label {
             root = root.label(l.clone());
-            let mut lab = row().key("label").w_full().min_h(16.0).gap(4.0).center_y().child(
-                text(l).key("text").font(rune::TextStyle { line_height: 16.0, ..k.ty.ui_medium }).color(c.text_base),
+            let mut lab = row().key("label").w_full().min_h(k.text_size(16.0)).gap(4.0).center_y().child(
+                text(l).key("text").font(rune::TextStyle { line_height: k.text_size(16.0), ..k.ty.ui_medium }).color(c.text_base),
             );
             if self.info {
-                lab = lab.child(icon(&INFO, 16.0).key("info").color(c.icon_muted).a11y_hidden());
+                lab = lab.child(icon(&INFO, k.text_size(16.0)).key("info").color(c.icon_muted).a11y_hidden());
             }
             root = root.child(lab.a11y_hidden());
         }
         let aside =
-            |key: &str, s: String| text(s).key(key).w_full().min_h(11.0).font(k.ty.small.lh(11.0)).color(c.text_muted).wrap().a11y_hidden();
+            |key: &str, s: String| text(s).key(key).w_full().min_h(k.text_size(11.0)).font(k.ty.small.lh(k.text_size(11.0))).color(c.text_muted).wrap().a11y_hidden();
         if let Some(p) = self.prefix {
             root = root.child(aside("prefix", p));
         }

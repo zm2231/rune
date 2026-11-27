@@ -384,7 +384,7 @@ impl Slider {
                 .child(
                     text(l)
                         .key("label")
-                        .font(TextStyle { line_height: 16.0, ..k.ty.small })
+                        .font(TextStyle { line_height: k.text_size(16.0), ..k.ty.small })
                         .color(if disabled { c.text_muted } else { c.text_base })
                         .a11y_hidden(),
                 )

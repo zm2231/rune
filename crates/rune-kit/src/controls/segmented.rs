@@ -285,7 +285,7 @@ impl SegmentedControl {
         let (inset, gap) = (m.inset, m.gap);
         let (inner_h, inner_r) = (height - 2.0 * inset, (radius - inset).max(0.0));
         let n = self.labels.len().max(1);
-        let font = TextStyle { line_height: 13.0, ..k.ty.ui };
+        let font = TextStyle { line_height: k.text_size(13.0), ..k.ty.ui };
         let mut root = row()
             .role(if self.as_tabs { "tablist" } else { "radiogroup" })
             .focus_group()
@@ -388,7 +388,7 @@ impl SegmentedControl {
                 seg = seg.controls(ctrl);
             }
             if let Some(ic) = extra.icon {
-                let mut glyph = icon(ic, 14.0).key("icon").color(ink).a11y_hidden();
+                let mut glyph = icon(ic, k.text_size(14.0)).key("icon").color(ink).a11y_hidden();
                 if hovers {
                     glyph = glyph.group_color(c.text_base);
                 }

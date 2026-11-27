@@ -16,7 +16,7 @@ pub struct Collapsible {
     ghost: bool,
     arrow_always: bool,
     arrow_end: bool,
-    arrow_size: f32,
+    arrow_size: Option<f32>,
     trailing: Vec<El>,
     content: Vec<El>,
     state: State,
@@ -31,7 +31,7 @@ impl Collapsible {
             ghost: false,
             arrow_always: false,
             arrow_end: false,
-            arrow_size: 14.0,
+            arrow_size: None,
             trailing: Vec::new(),
             content: Vec::new(),
             state: State::Rest,
@@ -54,10 +54,10 @@ impl Collapsible {
         self.arrow_end = true;
         self
     }
-    /// The arrow icon's size in points; else `14.0`. Its box stays 24 points, or the icon's
+    /// The arrow icon's size in points; else `14.0` at the kit's [`Kit::text_scale`]. Its box stays 24 points, or the icon's
     /// size when larger.
     pub fn arrow_size(mut self, size: f32) -> Self {
-        self.arrow_size = size.max(0.0);
+        self.arrow_size = Some(size.max(0.0));
         self
     }
     /// Adds content at the end of the header row, such as a reset button or a switch. It sits
@@ -92,14 +92,15 @@ impl Collapsible {
     pub fn build(self, k: &Kit) -> El {
         let c = &k.c;
         let show = self.arrow_always || self.open || self.state == State::Hover;
-        let arrow_box = self.arrow_size.max(24.0);
+        let arrow_size = self.arrow_size.unwrap_or_else(|| k.text_size(14.0));
+        let arrow_box = arrow_size.max(24.0);
         let glyph = if self.open { k.glyph.triangle_down } else { k.glyph.triangle_right };
         let arrow = el()
             .key("arrow")
             .size(arrow_box, arrow_box)
             .center()
             .opacity(if show { 1.0 } else { 0.0 })
-            .child(icon(glyph, self.arrow_size).color(c.icon_weaker));
+            .child(icon(glyph, arrow_size).color(c.icon_weaker));
         let header_height = k.disclosure_header_height();
         let enabled = self.state != State::Disabled;
         let title = text(self.title.clone()).key("title").font(k.ty.text_small_medium).color(c.std_text);

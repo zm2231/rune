@@ -124,12 +124,14 @@ pub(crate) struct Member<S: 'static> {
 }
 
 impl<S: 'static> Member<S> {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn connect(&self, wake: Waker) {
         let mut members = self.cell.members.borrow_mut();
         members.retain(|(id, _)| *id != self.id);
         members.push((self.id, wake));
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn resident(&self) -> bool { self.resident }
 
     pub(crate) fn enter(&mut self, rt: &mut Runtime<S>) -> bool {

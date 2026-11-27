@@ -70,6 +70,14 @@ pub(crate) struct FrameSummary {
     pub(crate) animating: bool,
     pub(crate) wake_after_secs: Option<f64>,
     pub(crate) cpu_us: u64,
+    pub(crate) drawn: Option<Drawn>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Drawn {
+    pub(crate) started: Instant,
+    pub(crate) submitted: Instant,
+    pub(crate) update_ms: f64,
 }
 
 /// What an embedded host serves itself. Everything else an app asks of its window is refused
@@ -267,6 +275,7 @@ impl<E: EmbedSurface> FrameHost for EmbedFrameHost<'_, E> {
         self.surface.surface_health_mut().step(EmbedSurfaceEvent::Presented);
         let (_, rt) = self.surface.clock_and_rt_mut();
         self.summary = frame_summary_presented(rt, submitted, t0, info.animating);
+        self.summary.drawn = Some(Drawn { started: t0, submitted, update_ms: info.update_ms });
         self.surface.presented(self.summary.animating);
     }
 }
@@ -361,6 +370,7 @@ pub(crate) fn missed_after_step(
         animating: retry_now || comp_animating || rt.animating || rt.stale() || rt.has_pending_input() || rt.live_pending(),
         wake_after_secs: wake_after_secs(rt),
         cpu_us: t0.elapsed().as_micros() as u64,
+        drawn: None,
     }
 }
 
@@ -379,6 +389,7 @@ fn frame_summary_presented(
         animating: keep_ticking,
         wake_after_secs: wake_after_secs(rt),
         cpu_us,
+        drawn: None,
     }
 }
 

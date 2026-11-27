@@ -143,7 +143,8 @@ pub struct Menu {
     standard: bool,
     placement: Placement,
     gutter: f32,
-    min_width: f32,
+    min_width: Option<f32>,
+    floor: f32,
     at: Option<(f32, f32)>,
     /// Explicit anchor rectangle `[x, y, w, h]` in view points (e.g. from `PopupMenuRequest`).
     anchor_rect: Option<[f32; 4]>,
@@ -183,7 +184,8 @@ impl Menu {
             standard: false,
             placement: Placement::BottomStart,
             gutter: 6.0,
-            min_width: 160.0,
+            min_width: None,
+            floor: 0.0,
             at: None,
             anchor_rect: None,
             focus_return: None,
@@ -284,7 +286,6 @@ impl Menu {
     /// The older bordered look (`appearance="standard"`).
     pub fn standard(mut self) -> Self {
         self.standard = true;
-        self.min_width = 128.0;
         self
     }
     pub fn placement(mut self, p: Placement) -> Self {
@@ -295,8 +296,15 @@ impl Menu {
         self.gutter = g;
         self
     }
+    /// The menu's least width in points. By default it is 160 (128 for [`Self::standard`]) at
+    /// the default text size and follows the kit's text size; a width given here is used as
+    /// is. Past it the menu is as wide as its widest row, up to the window.
     pub fn min_width(mut self, w: f32) -> Self {
-        self.min_width = w;
+        self.min_width = Some(w);
+        self
+    }
+    pub(crate) fn at_least(mut self, w: f32) -> Self {
+        self.floor = w;
         self
     }
     /// A context menu: open at a window point (where the secondary press landed).
@@ -345,7 +353,7 @@ impl Menu {
     fn surface(self, k: &Kit, tree: &Closers, layer: &mut Vec<El>) -> El {
         let c = &k.c;
         let standard = self.standard;
-        let mut frame = col().key(format!("{}-menu", self.key)).role("menu").focus_group().min_w(self.min_width).items_stretch();
+        let mut frame = col().key(format!("{}-menu", self.key)).role("menu").focus_group().min_w(self.min_width.unwrap_or_else(|| k.text_size(if standard { 128.0 } else { 160.0 })).max(self.floor)).items_stretch();
         if let Some(label) = self.label {
             frame = frame.label(label);
         }

@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use super::appearance::Appearance;
 use super::dropped::{Kind, Reported};
+use super::feedback::Feedback;
 use super::field_touch;
 use super::lifecycle;
 use super::park;
@@ -33,6 +34,7 @@ pub(crate) fn entry<S: 'static>(spec: crate::WindowSpec<S>, handle: Option<crate
 
 pub(crate) fn mount<S: 'static>(mut app: App<S>, key: Option<&str>) -> Mount {
     let on_ready = app.on_ready.take();
+    let (on_encoded, on_presented, reported) = (app.on_frame_encoded.take(), app.on_frame_presented.take(), key.unwrap_or("main").to_owned());
     let open_urls = crate::open_url::incoming::listen(&app);
     let mut dropped = Reported::default();
     if !app.windows.is_empty() { report(&mut dropped, Kind::Windows); }
@@ -46,7 +48,7 @@ pub(crate) fn mount<S: 'static>(mut app: App<S>, key: Option<&str>) -> Mount {
             (spec, state, shared, config, None)
         }
     };
-    Box::new(move |layer, size, scale, dark, wake| {
+    Box::new(move |layer, size, scale, dark, wake, presents| {
         // SAFETY: `layer` is the `CAMetalLayer` of the view that owns this surface, and the
         // view calls this on the main thread.
         let host = unsafe { LayerHost::from_core_animation_layer(layer, &spec, state, size, scale, dark, wake.clone())? };
@@ -65,7 +67,8 @@ pub(crate) fn mount<S: 'static>(mut app: App<S>, key: Option<&str>) -> Mount {
         let menus = crate::native_menu::MenuGuard::attach(&shared, false);
         let overlays = pending.into_iter().map(|overlay| overlay.into_slot()).collect();
         let role = Role::App(Box::new(AppRole { shared, menus, on_ready, dropped, on_quit, on_rest, on_close, _open_urls: open_urls, window: None, undrawn: true, overlays }));
-        Ok(Box::new(Hosted { host, role, accessibility: AccessibilityLink::with_wake(wake.clone()), wake, title: spec.title, lifecycle: lifecycle::State::default(), field: field_touch::State::default(), appearance, park: park::State::default(), member }))
+        let feedback = Feedback::new(on_encoded, on_presented, &reported, layer, presents);
+        Ok(Box::new(Hosted { host, role, accessibility: AccessibilityLink::with_wake(wake.clone()), wake, title: spec.title, lifecycle: lifecycle::State::default(), field: field_touch::State::default(), appearance, park: park::State::default(), feedback, member }))
     })
 }
 
@@ -77,7 +80,7 @@ pub(crate) fn overlay_slot<T: 'static>(built: Built<T>) -> OverlaySlot {
         if let Some(setup) = setup { setup(&mut rt.state, wake); }
         feed.available(rt, on_availability);
     }
-    let mount: Mount = Box::new(move |layer, size, scale, dark, wake| {
+    let mount: Mount = Box::new(move |layer, size, scale, dark, wake, presents| {
         let Parked { rt, clipboard } = parked.borrow_mut().take().ok_or_else(|| format!("overlay {name} mounted twice"))?;
         // SAFETY: as in `mount`: the overlay's own view owns `layer` and calls this on the
         // main thread.
@@ -91,7 +94,8 @@ pub(crate) fn overlay_slot<T: 'static>(built: Built<T>) -> OverlaySlot {
         host = host.with_clipboard(clipboard, wake.clone()).with_system_links();
         host.runtime_mut().set_live_visible(false);
         let role = Role::Overlay(Box::new(OverlayRole { feed }));
-        Ok(Box::new(Hosted { host, role, accessibility: AccessibilityLink::with_wake(wake.clone()), wake, title: name, lifecycle: lifecycle::State::default(), field: field_touch::State::default(), appearance: Appearance::new(crate::ColorScheme::System), park: park::State::default(), member: None }))
+        let feedback = Feedback::new(None, None, name, layer, presents);
+        Ok(Box::new(Hosted { host, role, accessibility: AccessibilityLink::with_wake(wake.clone()), wake, title: name, lifecycle: lifecycle::State::default(), field: field_touch::State::default(), appearance: Appearance::new(crate::ColorScheme::System), park: park::State::default(), feedback, member: None }))
     });
     OverlaySlot { control: Rc::new(RefCell::new(control)), mount, standby }
 }

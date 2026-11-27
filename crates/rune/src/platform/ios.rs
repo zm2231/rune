@@ -11,6 +11,8 @@ pub(crate) mod appearance;
 mod controller;
 pub(crate) mod dropped;
 pub(crate) mod edit_menu;
+#[cfg(target_os = "ios")]
+mod feedback;
 pub(crate) mod field_touch;
 pub(crate) mod keys;
 pub(crate) mod lifecycle;

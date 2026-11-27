@@ -99,8 +99,8 @@ fn surface_error_policy_child() {
     let instance = Gpu::wgpu_instance();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
         .expect("wgpu adapter");
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-        .expect("wgpu device");
+    let descriptor = wgpu::DeviceDescriptor { required_limits: adapter.limits(), ..Default::default() };
+    let (device, queue) = pollster::block_on(adapter.request_device(&descriptor)).expect("wgpu device");
     let external = Gpu::from_device(instance, adapter, device, queue);
     assert!(external.has_surface_error_policy());
     assert!(

@@ -393,7 +393,7 @@ impl RuntimeCore {
             one.live_only();
             return true;
         }
-        let Some((mov, shift)) = crate::edit::classify_caret_key(ev, cfg!(target_os = "macos"), false) else {
+        let Some((mov, shift)) = crate::edit::classify_caret_key(ev, crate::edit::MAC_KEYS, false) else {
             return false;
         };
         self.cancel_pending_caret();

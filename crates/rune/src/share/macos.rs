@@ -158,8 +158,8 @@ fn check(mtm: MainThreadMarker, delegate: &Retained<Delegate>) {
                 && window.sheetParent().is_none()
                 && !has(&entry.before, window)
                 && !has(&entry.watched, window)
-                && !crate::platform::macos::has_subclass(object, b"Winit")
-                && !crate::platform::macos::has_subclass(object, b"Rune")
+                && !crate::platform::objc_class::has_subclass(object, b"Winit")
+                && !crate::platform::objc_class::has_subclass(object, b"Rune")
         }).collect();
         entry.watched.extend(opened);
         !entry.watched.is_empty() && entry.watched.iter().all(|w| !w.isVisible())

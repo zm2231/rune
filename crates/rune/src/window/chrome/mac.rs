@@ -8,7 +8,8 @@ use objc2::{msg_send, sel};
 use objc2_app_kit::{NSEvent, NSWindowButton, NSWindowStyleMask};
 use objc2_foundation::{NSString, NSUserDefaults};
 use winit::window::Window;
-use crate::platform::macos::{content_view, has_subclass, is_panel, is_panel_object, kvo_observed, ns_window};
+use crate::platform::macos::{content_view, is_panel, is_panel_object, ns_window};
+use crate::platform::objc_class::{has_subclass, kvo_observed};
 
 #[cfg(test)]
 #[path = "mac_tests.rs"]

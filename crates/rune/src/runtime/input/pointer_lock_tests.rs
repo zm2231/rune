@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use super::{LockEffect, LockEvent, LockState, PointerLock, step};
+use super::{LockEffect, LockEvent, LockPolicy, LockState, PointerLock, step};
 use crate::runtime::input::action::Action;
 use crate::tooling::{Kind, ScriptEvent, load_script, script_input};
 use crate::{
@@ -133,6 +133,7 @@ fn fixture_view(s: &Scene, cx: &mut Cx<Scene>) -> El {
 
 fn make_rt(scene: Scene) -> Runtime<Scene> {
     let mut rt = Runtime::new(scene, fixture_view, (300.0, 200.0), Env::new(true, 1.0));
+    rt.core_mut().set_pointer_lock_policy(LockPolicy::Immediate);
     rt.on_key = Some(|s, ev, _| {
         if ev.key == Key::Escape {
             s.app_escapes += 1;
@@ -180,6 +181,7 @@ fn state_machine_transitions_and_effect_cancellation() {
 
     // PointerLock cancels opposite owed effects before host sync.
     let mut lock = PointerLock::new();
+    lock.set_policy(LockPolicy::Immediate);
     assert!(!lock.step(LockEvent::Asked(true)));
     assert!(lock.step(LockEvent::Pressed));
     assert!(lock.is_locked());

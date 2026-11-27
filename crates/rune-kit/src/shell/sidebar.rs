@@ -377,7 +377,9 @@ impl SidebarRow {
         self.icon = Some(i);
         self
     }
-    /// A 16 point leading element in place of the icon: a project's avatar, an initial.
+    /// A leading element in place of the icon, in a 16 point slot that follows the kit's text
+    /// size: a project's avatar, an initial. Size it with `k.text_size(16.0)` so it fills the
+    /// slot at every text size.
     pub fn avatar(mut self, e: El) -> Self {
         self.avatar = Some(e);
         self

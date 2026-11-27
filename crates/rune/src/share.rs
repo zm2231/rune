@@ -209,7 +209,7 @@ pub(crate) fn step(state: &mut State, event: Event) -> Effects<Effect> {
 
 /// Where a host sends what its sheet answered, on the main thread, any time later. The answer
 /// waits for the runtime's next frame, which `wake` asks for.
-#[cfg(any(target_os = "ios", target_os = "macos", target_arch = "wasm32", test))]
+#[cfg(any(test, target_os = "ios", target_os = "macos", target_arch = "wasm32"))]
 #[derive(Clone)]
 pub(crate) struct Reply {
     id: u64,
@@ -217,7 +217,7 @@ pub(crate) struct Reply {
     wake: Waker,
 }
 
-#[cfg(any(target_os = "ios", target_os = "macos", target_arch = "wasm32", test))]
+#[cfg(any(test, target_os = "ios", target_os = "macos", target_arch = "wasm32"))]
 impl Reply {
     pub(crate) fn send(&self, result: ShareResult) {
         self.answered.borrow_mut().push((self.id, result));
@@ -227,7 +227,7 @@ impl Reply {
 
 /// What a host shows: the share, where its anchor is in window points (none when its element
 /// is gone), and where its answer goes.
-#[cfg(any(target_os = "ios", target_os = "macos", target_arch = "wasm32", test))]
+#[cfg(any(test, target_os = "ios", target_os = "macos", target_arch = "wasm32"))]
 pub(crate) struct Shown {
     pub(crate) share: Share,
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
@@ -257,7 +257,7 @@ impl crate::runtime::RuntimeCore {
     pub(crate) fn share_requested(&self) -> bool { matches!(self.host.sharing.state, State::Requested(_)) }
 
     /// The share for the host to show, marked shown, with its answer's way back.
-    #[cfg(any(target_os = "ios", target_os = "macos", target_arch = "wasm32", test))]
+    #[cfg(any(test, target_os = "ios", target_os = "macos", target_arch = "wasm32"))]
     pub(crate) fn take_share(&mut self, wake: Waker) -> Option<Shown> {
         let State::Requested(p) = &self.host.sharing.state else { return None };
         let (id, share) = (p.id, p.share.clone());
@@ -275,12 +275,12 @@ impl crate::runtime::RuntimeCore {
         if !matches!(self.host.sharing.state, State::Idle) { self.share_step(Event::Refused(why.into())); }
     }
 
-    #[cfg(any(not(target_arch = "wasm32"), test))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn dismiss_share(&mut self) {
         self.answer_share(Ok(None));
     }
 
-    #[cfg(any(not(target_arch = "wasm32"), test))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn drop_shares(&mut self) {
         self.host.sharing.state = State::Idle;
         self.host.sharing.callbacks.clear();

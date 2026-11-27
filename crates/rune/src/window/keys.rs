@@ -233,7 +233,7 @@ pub(crate) fn key_base(event: &winit::event::KeyEvent, m: ModifiersState) -> Opt
 ///   (`'+'` from `Shift+=`, `'{'` from `Shift+[`, `'/'` from German `Shift+7`, `'¿'` from
 ///   Spanish `Shift+¡`) as `None` so `Chord::matches_tx` never mistakes them for unmodified keys.
 /// - Dead keys, named keys, control characters, and multi-character strings return `None`.
-#[cfg(any(test, target_arch = "wasm32"))]
+#[cfg(any(all(test, not(target_os = "ios")), target_arch = "wasm32"))]
 pub(crate) fn web_key_base(logical: &WKey, mods: Mods) -> Option<char> {
     match logical {
         WKey::Named(winit::keyboard::NamedKey::Space) => Some(' '),
@@ -267,7 +267,7 @@ fn web_char_base(s: &str, mods: Mods) -> Option<char> {
     Some(crate::input::chord::lower(c))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "ios")))]
 pub(super) fn map_web_winit_key(
     physical: PhysicalKey,
     logical: &WKey,
@@ -285,7 +285,7 @@ pub(super) fn map_web_winit_key(
     (ev, web_key_base(logical, mods))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "ios")))]
 #[path = "keys_tests.rs"]
 mod layout_tests;
 

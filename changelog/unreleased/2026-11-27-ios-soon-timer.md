@@ -1,0 +1,1 @@
+- An iOS view whose runtime asks to wake within two 60 Hz refreshes keeps its display link ticking instead of pausing it and starting it again, so motion an app steps from `poll` each frame (`Tx::scroll_to_instant`, `Tx::wake_at`) draws on every refresh.

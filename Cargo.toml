@@ -33,6 +33,7 @@ members = [
     "examples/ios-windows",
     "examples/swiftui-host",
     "examples/ios-system",
+    "examples/ios-perf",
     "examples/shared-windows",
     "examples/notify-threads",
     "examples/hello-floor",

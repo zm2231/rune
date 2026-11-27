@@ -7,12 +7,19 @@ static ARC: Icon = Icon {
     body: r#"<path d="M8 2A6 6 0 0 1 13.258 10.89" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>"#,
 };
 
-fn loader(fps: &f32, _: &mut Cx<f32>) -> El {
-    el().size(40.0, 40.0).child(icon(&ARC, 16.0).key("arc").looping(rune_motion::LoopSpec::rotation(0.9).fps(*fps)))
+#[derive(Default)]
+struct Spin {
+    fps: f32,
+    polls: usize,
+    next: f64,
 }
 
-fn turning(fps: f32, frames: usize) -> Runtime<f32> {
-    let mut rt = Runtime::new(fps, loader, (40.0, 40.0), Env::new(true, 2.0));
+fn loader(spin: &Spin, _: &mut Cx<Spin>) -> El {
+    el().size(40.0, 40.0).child(icon(&ARC, 16.0).key("arc").looping(rune_motion::LoopSpec::rotation(0.9).fps(spin.fps)))
+}
+
+fn turning(fps: f32, frames: usize) -> Runtime<Spin> {
+    let mut rt = Runtime::new(Spin { fps, ..Spin::default() }, loader, (40.0, 40.0), Env::new(true, 2.0));
     rt.wall_start = Some(crate::time::now());
     rt.frame(0.0);
     for _ in 0..frames {
@@ -21,7 +28,7 @@ fn turning(fps: f32, frames: usize) -> Runtime<f32> {
     rt
 }
 
-fn turns(rt: &Runtime<f32>) -> Vec<f32> {
+fn turns(rt: &Runtime<Spin>) -> Vec<f32> {
     rt.instances.iter().filter(|q| q.params[1] == KIND_GLYPH).map(|q| q.params[0]).collect()
 }
 
@@ -42,25 +49,95 @@ fn a_turning_icon_steps_without_a_paint_and_lands_where_a_frame_would() {
     assert_ne!(step[0], turns(&turning(display, 3))[0], "the step moved the turn on");
 }
 
-#[test]
-fn a_rotation_with_a_rate_wakes_at_that_rate_instead_of_every_display_frame() {
-    let mut rt = Runtime::new(40.0, loader, (40.0, 40.0), Env::new(true, 2.0));
-    rt.wall_start = Some(crate::time::now());
-    rt.frame.set_test_clock(crate::ManualClock::new(120.0));
-    let mut animating = rt.frame(0.0);
-    for _ in 0..3 {
-        let clock = rt.frame.test_clock_mut().unwrap();
-        clock.seek(clock.now() + 1.0 / 120.0);
-        animating |= rt.frame(1.0 / 120.0);
+struct Host {
+    rt: Runtime<Spin>,
+    clock: crate::frame::clock::FrameClock,
+    start: crate::time::Instant,
+    frames: u32,
+}
+
+impl Host {
+    fn new(fps: f32) -> Host {
+        Host::with_poll(fps, None)
     }
-    assert!(!animating, "a stepped rotation asks for no display-rate frames");
-    let due = rt.wake_deadline().expect("it wakes for its next step");
-    assert!(due - rt.clock <= 1.0 / 40.0 + 1e-9, "next step {} s away", due - rt.clock);
-    let before = turns(&rt);
-    rt.frame.test_clock_mut().unwrap().seek(due);
-    let dt = due - rt.clock;
-    let patched = rt.core_mut().loop_step(dt).expect("its wake takes a loop-only step");
+
+    fn with_poll(fps: f32, poll: Option<fn(&mut Spin, f64, &mut crate::Tx) -> bool>) -> Host {
+        let start = crate::time::now();
+        let mut rt = Runtime::new(Spin { fps, ..Spin::default() }, loader, (40.0, 40.0), Env::new(true, 2.0));
+        rt.wall_start = Some(start);
+        rt.frame.set_test_clock(crate::ManualClock::new(120.0));
+        rt.poll = poll;
+        let mut host = Host { rt, clock: crate::frame::clock::FrameClock::new(start), start, frames: 0 };
+        host.frame();
+        host
+    }
+
+    fn next(&mut self) -> crate::time::Instant {
+        self.frames += 1;
+        let secs = f64::from(self.frames) / 60.0 + 0.0013;
+        self.rt.frame.test_clock_mut().unwrap().seek(secs);
+        self.start + std::time::Duration::from_secs_f64(secs)
+    }
+
+    fn frame(&mut self) -> bool {
+        let at = self.next();
+        let (core, mut app) = self.rt.split_mut();
+        self.clock.advance_core(core, &mut app, at, false).0
+    }
+
+    fn step(&mut self) -> Result<Vec<u32>, &'static str> {
+        let at = self.next();
+        crate::frame::loop_frame::step(&mut self.clock, self.rt.core_mut(), at).map(|(patched, _)| patched)
+    }
+}
+
+#[test]
+fn a_rotation_with_a_rate_wakes_at_that_rate_and_keeps_its_speed() {
+    let (mut framed, mut stepped) = (Host::new(60.0), Host::new(60.0));
+    for host in [&mut framed, &mut stepped] {
+        for _ in 0..6 {
+            assert!(!host.frame(), "a stepped rotation asks for no display-rate frames");
+            let due = host.rt.wake_deadline().expect("it wakes for its next step");
+            assert!(due - host.rt.clock <= 1.0 / 60.0 + 1e-9, "next step {} s away", due - host.rt.clock);
+        }
+    }
+    let before = turns(&framed.rt)[0];
+    framed.frame();
+    let turned = (turns(&framed.rt)[0] - before).rem_euclid(std::f32::consts::TAU);
+    let full = std::f32::consts::TAU / 0.9 / 60.0;
+    assert!((turned - full).abs() < 1e-3, "a frame of a resting window turns it {turned}, a 60th of a second turns it {full}");
+
+    let patched = stepped.step().expect("its wake, reached frame by frame, takes a loop-only step");
     assert_eq!(patched.len(), 1);
-    assert_ne!(turns(&rt), before, "the step moved the turn on");
-    assert!(rt.wake_deadline().is_some_and(|next| next > due), "the step armed the next wake");
+    let (step, frame) = (turns(&stepped.rt)[0], turns(&framed.rt)[0]);
+    assert!((step - frame).abs() < 1e-4, "step turned to {step}, a frame to {frame}");
+    assert!(stepped.rt.wake_deadline().is_some_and(|next| next > stepped.rt.clock), "the step armed the next wake");
+}
+
+#[test]
+fn a_spinner_beside_an_idle_poll_runs_the_poll_only_at_its_own_wakes() {
+    fn poll(spin: &mut Spin, clock: f64, tx: &mut crate::Tx) -> bool {
+        spin.polls += 1;
+        while spin.next <= clock {
+            spin.next += 0.25;
+        }
+        tx.wake_at(spin.next);
+        false
+    }
+    let mut host = Host::with_poll(60.0, Some(poll));
+    host.rt.state.polls = 0;
+    let (mut steps, mut refused) = (0, Vec::new());
+    for _ in 0..120 {
+        match host.step() {
+            Ok(_) => steps += 1,
+            Err(why) => {
+                refused.push(why);
+                host.frames -= 1;
+                host.frame();
+            }
+        }
+    }
+    let polls = host.rt.state.polls;
+    assert!(polls <= 9, "two seconds of a 60 fps spinner ran the app's 4-a-second poll {polls} times; refusals: {refused:?}");
+    assert!(steps >= 110, "{steps} of 120 frames were loop-only; refusals: {refused:?}");
 }

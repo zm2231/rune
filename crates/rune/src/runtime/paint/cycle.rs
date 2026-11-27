@@ -8,6 +8,8 @@
 
 use super::*;
 
+const WAKE_SLACK: f64 = 1e-6;
+
 #[derive(Default)]
 pub(in crate::runtime) struct CyclePaint {
     /// Counts paints: a renderer told the instances are the same paint's as last frame's knows
@@ -135,7 +137,7 @@ impl RuntimeCore {
         let Some((due, _)) = self.motion.loop_wake() else { return false };
         let wall = self.now_clock();
         let keep = &self.paint.keep.cycles;
-        if wall < due || keep.mixed || !keep.icons.is_empty() || keep.generation != self.commit.commits || keep.slots.is_empty()
+        if wall + WAKE_SLACK < due || keep.mixed || !keep.icons.is_empty() || keep.generation != self.commit.commits || keep.slots.is_empty()
             || keep.slots.len() != self.motion.loops_len() || self.reduced_motion || self.time_scale <= 0.0
             || !self.live_visible() || !self.rests_except_loop() || self.tracing()
             || self.poll_wake_deadline().is_some_and(|d| d <= wall)
@@ -174,7 +176,7 @@ impl RuntimeCore {
             else { "" };
         if !why.is_empty() { return Err(why); }
         // Running, only loops move; resting, a stepped cycle's or animated icon's wake is due.
-        let due = self.motion.loop_wake().is_some_and(|(due, _)| wall >= due);
+        let due = self.motion.loop_wake().is_some_and(|(due, _)| wall + WAKE_SLACK >= due);
         if self.animating && self.motion.anim_sources != AnimSource::LOOP {
             let other = [(AnimSource::TRACKS, "motion: a track"), (AnimSource::GROWTH, "motion: growth"), (AnimSource::SCROLL, "motion: a scroll"),
                 (AnimSource::REVEAL, "motion: a reveal"), (AnimSource::LIVE, "motion: a live value"), (AnimSource::TEXT_FILL, "motion: text filling"),
@@ -384,7 +386,7 @@ impl RuntimeCore {
             // differ from what it holds.
             patched.push(s.at as u32);
         }
-        if let (Some((due, phase)), Some(dt)) = (self.motion.loop_wake(), self.ambient.map(f64::from)) && self.clock >= due {
+        if let (Some((due, phase)), Some(dt)) = (self.motion.loop_wake(), self.ambient.map(f64::from)) && self.clock + WAKE_SLACK >= due {
             self.motion.set_loop_wake((self.clock + dt, phase + (self.clock + dt - due) * f64::from(self.time_scale)));
         }
     }

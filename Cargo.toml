@@ -30,6 +30,7 @@ members = [
     "themes/opencode",
     "examples/hello",
     "examples/ios-fields",
+    "examples/ios-zoom",
     "examples/ios-windows",
     "examples/swiftui-host",
     "examples/ios-system",

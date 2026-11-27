@@ -82,6 +82,10 @@ pub struct MagnifyEvent {
     /// notch, independent of OS scroll-lines settings, matching Chromium); for pixel-precise
     /// deltas, `delta` is `dy / 200`.
     pub wheel: bool,
+    /// For a Ctrl + wheel ([`Self::wheel`]), the vertical travel the same wheel would have
+    /// brought an [`El::on_wheel`] handler, in view points (positive moves content down), so a
+    /// handler can zoom exactly as its own Ctrl + wheel does. 0 for a pinch gesture.
+    pub wheel_dy: f32,
 }
 
 impl MagnifyEvent {

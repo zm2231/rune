@@ -231,10 +231,9 @@ impl ImageZoom {
     }
 
     fn magnify(&mut self, e: rune::MagnifyEvent, tx: &mut Tx) -> bool {
+        if e.wheel { return self.wheel(math::pinch_wheel(e), tx); }
         let v = self.view();
-        // A browser's `deltaY`: Ctrl + wheel's own, or what Chromium makes of a macOS pinch.
-        let delta_y = if e.wheel { -e.delta * 200.0 } else { -100.0 * (1.0 + e.delta).max(0.01).ln() };
-        let factor = math::wheel_zoom_factor(delta_y);
+        let factor = math::wheel_zoom_factor(-100.0 * (1.0 + e.delta).max(0.01).ln());
         let to = math::zoom_at(v, v.scale * factor, self.centred([e.x, e.y]), &self.bounds.get());
         self.follow(to, tx);
         true
@@ -286,15 +285,11 @@ struct PreviewHandlers<S> {
 impl<S: 'static> PreviewBind for PreviewHandlers<S> {
     fn body(&self, e: El) -> El {
         let (drag_lens, wheel_lens, magnify_lens, close) = (self.lens.clone(), self.lens.clone(), self.lens.clone(), self.close.clone());
-        let mut e = e
-            .on_drag(move |s: &mut S, d: &mut Drag, tx: &mut Tx| {
-                if drag_lens(s).press(d, true, tx) && let Some(c) = &close { c(s, tx); }
-            })
-            .on_wheel(move |s: &mut S, ev, tx| wheel_lens(s).wheel(ev, tx));
-        if cfg!(target_os = "macos") {
-            e = e.on_magnify(move |s: &mut S, ev, tx| magnify_lens(s).magnify(ev, tx));
-        }
-        e
+        e.on_drag(move |s: &mut S, d: &mut Drag, tx: &mut Tx| {
+            if drag_lens(s).press(d, true, tx) && let Some(c) = &close { c(s, tx); }
+        })
+        .on_wheel(move |s: &mut S, ev, tx| wheel_lens(s).wheel(ev, tx))
+        .on_magnify(move |s: &mut S, ev, tx| magnify_lens(s).magnify(ev, tx))
     }
 
     fn root(&self, e: El) -> El {

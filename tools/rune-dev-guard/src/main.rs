@@ -30,21 +30,36 @@ impl<'ast> Visit<'ast> for Contracts {
     }
 }
 
+fn inert(attrs: &[syn::Attribute]) -> bool {
+    // Unknown attributes can expand a body into types or statics, even on an ordinary function.
+    let inert = ["doc", "inline", "cold", "allow"];
+    attrs.iter().all(|a| a.path().get_ident().is_some_and(|i| inert.iter().any(|s| i == s)))
+}
+
 #[derive(Default)]
 struct Scrub(Contracts);
+impl Scrub {
+    fn body(&mut self, sig: &syn::Signature, attrs: &[syn::Attribute], block: &mut syn::Block) {
+        // Const bodies can determine persistent layouts.
+        if sig.constness.is_some() || !inert(attrs) { return; }
+        self.0.visit_block(block);
+        *block = syn::parse_quote!({});
+    }
+}
 impl VisitMut for Scrub {
     fn visit_item_fn_mut(&mut self, f: &mut syn::ItemFn) {
-        // Const bodies can determine persistent layouts. Unknown attributes can
-        // expand the body into types or statics, even on an ordinary function.
-        let inert = ["doc", "inline", "cold", "allow"];
-        if f.sig.ident == "main" || f.sig.constness.is_some()
-            || f.attrs.iter().any(|a| !a.path().get_ident().is_some_and(|i| inert.iter().any(|s| i == s)))
-        { return; }
-        self.0.visit_block(&f.block);
-        f.block = syn::parse_quote!({});
+        if f.sig.ident == "main" { return; }
+        self.body(&f.sig, &f.attrs, &mut f.block);
     }
-    // Impl methods, initializers, constants, attributes and module declarations stay byte-token exact.
-    fn visit_impl_item_fn_mut(&mut self, _: &mut syn::ImplItemFn) {}
+    fn visit_item_impl_mut(&mut self, i: &mut syn::ItemImpl) {
+        // Inherent method bodies are layout neutral like free fn bodies. Trait impls stay
+        // exact (dispatch tables), as do impl attributes, headers, generics and other items.
+        if i.trait_.is_some() || !inert(&i.attrs) { return; }
+        for item in &mut i.items {
+            if let syn::ImplItem::Fn(f) = item { self.body(&f.sig, &f.attrs, &mut f.block); }
+        }
+    }
+    // Initializers, constants, attributes and module declarations stay byte-token exact.
 }
 
 fn contract(src: &str) -> Result<String, syn::Error> {
@@ -78,10 +93,49 @@ mod tests {
     }
     #[test]
     fn nested_types_and_impls_cannot_change() {
-        let base = "fn view() { struct S { x: u32 } } impl S { fn init() -> u32 { 1 } }";
+        let base = "fn view() { struct S { x: u32 } } impl T for S { fn init() -> u32 { 1 } }";
         assert_ne!(contract(base).unwrap(), contract(&base.replace("x: u32", "x: f32")).unwrap());
         assert_ne!(contract(base).unwrap(), contract(&base.replace("{ 1 }", "{ 2 }")).unwrap());
         assert!(contract("fn view( {").is_err());
+    }
+
+    #[test]
+    fn inherent_method_bodies_patch_but_headers_and_signatures_do_not() {
+        let base = "struct S; impl S { const N: u32 = 1; fn title(&self) -> &'static str { \"Home\" } }";
+        assert_eq!(contract(base).unwrap(), contract(&base.replace("\"Home\"", "\"Start\"")).unwrap());
+        for edit in [
+            base.replace("&self", "&mut self"),
+            base.replace("impl S", "impl<X> S"),
+            base.replace("N: u32 = 1", "N: u32 = 2"),
+            base.replace("\"Home\"", "{ static X: &str = \"Start\"; X }"),
+        ] {
+            assert_ne!(contract(base).unwrap(), contract(&edit).unwrap());
+        }
+        for kept in [
+            "impl S { const fn n() -> usize { 1 } }",
+            "impl S { #[persistent] fn n() -> usize { 1 } }",
+            "#[persistent] impl S { fn n() -> usize { 1 } }",
+            "impl T for S { fn n() -> usize { 1 } }",
+        ] {
+            assert_ne!(contract(kept).unwrap(), contract(&kept.replace("{ 1 }", "{ 2 }")).unwrap());
+        }
+    }
+
+    #[test]
+    fn inherent_method_named_main_patches_while_free_main_does_not() {
+        let base = "struct Layout; impl Layout { fn main(&self) -> &'static str { \"Home\" } } struct App; impl App { fn main() -> u32 { 1 } } fn main() { let x = 1; }";
+        assert_eq!(contract(base).unwrap(), contract(&base.replace("\"Home\"", "\"Start\"")).unwrap());
+        assert_eq!(contract(base).unwrap(), contract(&base.replace("{ 1 }", "{ 2 }")).unwrap());
+        assert_ne!(contract(base).unwrap(), contract(&base.replace("let x = 1;", "let x = 2;")).unwrap());
+        assert_ne!(contract(base).unwrap(), contract(&base.replace("\"Home\"", "{ static X: &str = \"Start\"; X }")).unwrap());
+        for kept in [
+            "impl Layout { const fn main() -> usize { 1 } }",
+            "impl Layout { #[persistent] fn main(&self) -> usize { 1 } }",
+            "#[persistent] impl Layout { fn main(&self) -> usize { 1 } }",
+            "impl T for Layout { fn main(&self) -> usize { 1 } }",
+        ] {
+            assert_ne!(contract(kept).unwrap(), contract(&kept.replace("{ 1 }", "{ 2 }")).unwrap());
+        }
     }
 
     #[test]

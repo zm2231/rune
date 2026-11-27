@@ -60,6 +60,9 @@ use crate::{KeyPolicy, OverlayOptions};
 use crate::{DisplayTarget, OverlayInput, OverlayPlacement, OverlaySupport};
 
 #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+#[path = "overlay/after_hidden.rs"]
+mod after_hidden;
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 #[path = "overlay/any_host.rs"]
 mod any_host;
 #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
@@ -280,12 +283,13 @@ impl SharedCore {
 pub(in crate::overlay) struct Shared<T> {
     pub(in crate::overlay) core: Arc<SharedCore>,
     pub(in crate::overlay) updates: Mutex<Vec<Update<T>>>,
+    pub(in crate::overlay) after_hidden: Mutex<requests::AfterHiddenQueue<T>>,
 }
 
 #[cfg(test)]
 impl<T> Default for Shared<T> {
     fn default() -> Self {
-        Self { core: Arc::default(), updates: Mutex::default() }
+        Self { core: Arc::default(), updates: Mutex::default(), after_hidden: Mutex::default() }
     }
 }
 
@@ -303,7 +307,13 @@ impl<T> Clone for OverlayHandle<T> {
 impl<T: 'static> OverlayHandle<T> {
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn disconnected() -> Self {
-        Self { shared: Arc::new(Shared { core: Arc::default(), updates: Mutex::default() }) }
+        Self {
+            shared: Arc::new(Shared {
+                core: Arc::default(),
+                updates: Mutex::default(),
+                after_hidden: Mutex::new(requests::AfterHiddenQueue::Closed),
+            }),
+        }
     }
 
     /// Takes effect on the next event-loop turn, or after the current owned drag releases.
@@ -444,6 +454,37 @@ impl<T: 'static> OverlayHandle<T> {
 
     #[inline(always)]
     pub fn hide(&self) { self.shared.core.hide(); }
+
+    /// Runs `f` once on the event thread after the overlay is hidden and the hide took effect.
+    ///
+    /// On Wayland this waits for a `wl_display.sync` roundtrip after the surface is destroyed,
+    /// so the compositor has handled the destroy and moved focus on before `f` runs. Asked while
+    /// shown (or fading out), `f` waits for the next hide; asked while already hidden, the sync
+    /// is sent at once. If the overlay is shown again before the answer arrives, `f` waits for
+    /// the next hide. Elsewhere `f` runs in the event-loop turn after the hide. Closing the
+    /// overlay or ending the app drops pending callbacks unrun.
+    ///
+    /// ```no_run
+    /// # fn pick_entry(overlay: &rune::OverlayHandle<()>) {
+    /// overlay.hide();
+    /// overlay.after_hidden(|_state, _tx| {
+    ///     // The compositor has processed the hide and moved focus back to the window below.
+    /// });
+    /// # }
+    /// ```
+    pub fn after_hidden(&self, f: impl FnOnce(&mut T, &mut Tx) + Send + 'static) {
+        let rejected = self
+            .shared
+            .after_hidden
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Box::new(f));
+        if let Some(f) = rejected {
+            drop(f);
+        } else {
+            self.shared.core.wake();
+        }
+    }
 
     /// Like `show`, fading the window's alpha in from zero over `duration` on macOS
     /// (AppKit's default ease). Elsewhere the overlay appears at once.
@@ -711,6 +752,9 @@ pub(in crate::overlay) struct OverlayCore {
     gpu_loss_latch: Option<Arc<crate::render::loss_latch::GpuLossLatch>>,
     /// Whether terminal GPU teardown has already run on this overlay.
     terminal_gpu_entered: bool,
+    /// Tracks whether a `wgpu::SurfaceTexture` acquired from this overlay's surface is alive on
+    /// the stack so surface/GPU teardown never runs before the frame's texture drops.
+    frame_teardown: crate::render::loss_latch::FrameTeardownState,
     /// `ConfiguredOverlay::frame_latency`, read when the surface is made.
     pub(in crate::overlay) frame_latency: Option<u32>,
     /// `ConfiguredOverlay::on_materials`, called before each present.
@@ -733,6 +777,8 @@ pub(in crate::overlay) struct OverlayCore {
     pub(in crate::overlay) wayland_resize: sizing::WaylandResize,
     /// Declarative content-sizing mode and optional `(min_size, max_size)` bounds.
     pub(in crate::overlay) sizing: sizing::SizingConfig,
+    /// One-shot `OverlayHandle::after_hidden` coordination and Wayland hide sync.
+    pub(in crate::overlay) after_hidden: after_hidden::AfterHiddenState,
     /// Test hooks for Wayland frame callbacks and headless window-backed drag assertions.
     #[cfg(test)]
     layer_frame_pending: bool,
@@ -760,16 +806,14 @@ impl OverlayCore {
         release_after: Option<Duration>,
     ) -> Self {
         let meter = crate::frame::surface_stats::SurfaceMeter::new(name, shared.stats.clone());
-        rt.set_system_reduced_motion(crate::platform::preferences::reduced_motion());
-        #[cfg(target_os = "linux")]
-        { rt.double_click_interval = crate::platform::preferences::double_click_interval(); }
+        crate::input::host_events::refresh_accessibility_preferences(rt);
         crate::platform::accent::watch();
         rt.set_system_accent(crate::system_accent());
         crate::platform::scroll_bars::watch();
         rt.set_system_scroll_bars_state(crate::platform::scroll_bars::current());
         rt.wall_start = Some(crate::time::now());
         rt.host.native_overlay = true;
-        rt.set_os_drag(crate::drag_out::SUPPORTED);
+        rt.set_os_drag(crate::drag_out::supported(false));
         rt.set_pointer_lock_supported(false);
         rt.host.surface_stats = Some(meter.shared());
         OverlayCore {
@@ -835,6 +879,7 @@ impl OverlayCore {
             prewarm_effects: crate::PrewarmEffects::NONE,
             gpu_loss_latch: None,
             terminal_gpu_entered: false,
+            frame_teardown: crate::render::loss_latch::FrameTeardownState::Idle,
             frame_latency: None,
             on_materials: None,
             requested_renderer: crate::RendererKind::Gpu,
@@ -846,6 +891,7 @@ impl OverlayCore {
             last_work_area: None,
             wayland_resize: sizing::WaylandResize::Ready,
             sizing: sizing::SizingConfig::default(),
+            after_hidden: after_hidden::AfterHiddenState::default(),
             #[cfg(test)]
             layer_frame_pending: false,
             #[cfg(test)]

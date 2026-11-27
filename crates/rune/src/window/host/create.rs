@@ -548,12 +548,7 @@ impl Host {
         self.apply_placement(event_loop);
         #[cfg(target_os = "macos")]
         if visible && let Some(w) = &mut self.win && w.native.panel.is_some() { w.show(focus); }
-        crate::marks::mark("window.created");
-        if let Some(created) = self.on_created.take() { created(self.native_handle.clone()); }
-        if let Some(on_window) = self.on_window.as_mut() { on_window(&self.native_handle); }
-        if self.poll_gpu_loss() { return Ok(()); }
-        // After `on_window`, which may resize it, and before its first focus and frame.
-        self.creation_geometry();
+        if !self.announce_created(true) { return Ok(()); }
         if let (Some(w), Some((gpu, ..))) = (self.win.as_mut(), self.gpu.as_ref()) {
             #[cfg(target_os = "macos")]
             if let Some(pacing) = &mut w.native.pacing { pacing.update_display(&w.window); }
@@ -579,7 +574,7 @@ impl Host {
         #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
         let mut drew = false;
         #[cfg(target_os = "macos")]
-        if visible && !self.app.rt().host.minimize.field() && !self.life.finished() && !event_loop.exiting()
+        if visible && !self.closing_at_creation() && !self.life.finished() && !event_loop.exiting()
             && self.win.as_ref().is_some_and(|w| w.native.panel.is_none() && w.window.is_minimized() != Some(true))
         {
             let presents = self.meter.totals().presents;
@@ -669,6 +664,7 @@ impl Host {
     /// this keeps failing.
     #[allow(unsafe_code)]
     pub(in crate::window) fn reattach(&mut self, mode: crate::gpu::fallback::GpuMode) -> Result<(), ReattachError> {
+        self.assert_no_live_frame_texture();
         if self.is_terminal_gpu_policy() {
             return Err(ReattachError::other("terminal GPU loss policy refuses device replacement"));
         }
@@ -933,6 +929,7 @@ impl Host {
     /// and hides the native window (`stop_showing`, `wind_down`), then the window, device and
     /// surface go. An app sees `window_error` and can `open` the window again.
     pub(in crate::window) fn give_up_surface(&mut self, reason: String) -> bool {
+        self.assert_no_live_frame_texture();
         eprintln!("rune: {reason}");
         self.record_live_window_state();
         self.stop_showing();

@@ -188,7 +188,7 @@ impl RuntimeCore {
             else if loops != self.motion.loops_len() { self.loop_refusal() }
             else if keep.mixed || keep.generation != self.commit.commits { "other motion or a commit" }
             else if (self.wall_start.is_none() && !virtual_check) || self.reduced_motion || self.time_scale <= 0.0 || !self.live_visible() || self.tracing() { "not live" }
-            else if dt < 0.0 || (!has_icons && dt > 1.0 / 30.0) { "late" }
+            else if dt < 0.0 || (!has_icons && dt > crate::frame::clock::MAX_GAP) { "late" }
             else if self.poll_wake_deadline().is_some_and(|d| d <= wall) { "timer due" }
             else if self.commit.virtual_fill.resuming(wall) || self.commit.virtual_items.fill_resuming(wall) { "a list filling" }
             else if let Some(work) = self.waiting_work() { work }
@@ -204,7 +204,7 @@ impl RuntimeCore {
                 (AnimSource::ICON_ANIM, "motion: an animated icon")];
             return Err(other.iter().find(|(bit, _)| self.motion.anim_sources & bit != 0).map_or("motion: unknown", |o| o.1));
         }
-        if !self.animating && !due { return Err("no loop due"); }
+        if !self.animating && !due { return if checking() { Err("no loop due") } else { Ok(Vec::new()) }; }
         if has_icons {
             if self.animating || !self.slots_hold() { return Err("a slot moved"); }
             if !self.icon_slots_ready() { return Err("an animated icon needs an atlas slot"); }

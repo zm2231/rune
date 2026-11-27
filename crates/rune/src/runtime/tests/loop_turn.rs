@@ -73,6 +73,7 @@ struct Host {
     clock: crate::frame::clock::FrameClock,
     start: crate::time::Instant,
     frames: u32,
+    tick: u32,
 }
 
 impl Host {
@@ -86,14 +87,14 @@ impl Host {
         rt.wall_start = Some(start);
         rt.frame.set_test_clock(crate::ManualClock::new(120.0));
         rt.poll = poll;
-        let mut host = Host { rt, clock: crate::frame::clock::FrameClock::new(start), start, frames: 0 };
+        let mut host = Host { rt, clock: crate::frame::clock::FrameClock::new(start), start, frames: 0, tick: 2 };
         host.frame();
         host
     }
 
     fn next(&mut self) -> crate::time::Instant {
-        self.frames += 1;
-        let secs = f64::from(self.frames) / 60.0 + 0.0013;
+        self.frames += self.tick;
+        let secs = f64::from(self.frames) / 120.0 + 0.0013;
         self.rt.frame.test_clock_mut().unwrap().seek(secs);
         self.start + std::time::Duration::from_secs_f64(secs)
     }
@@ -152,7 +153,7 @@ fn a_spinner_beside_an_idle_poll_runs_the_poll_only_at_its_own_wakes() {
                 Ok(_) => steps += 1,
                 Err(why) => {
                     refused.push(why);
-                    host.frames -= 1;
+                    host.frames -= host.tick;
                     host.frame();
                 }
             }
@@ -191,4 +192,35 @@ fn a_spinner_under_a_faded_row_steps_and_keeps_the_row_s_opacity() {
     let patched = stepped.step().expect("a dot alone in a faded row and one beside a label in another both step");
     assert_eq!(patched.len(), 2);
     assert_eq!(bytemuck::cast_slice::<_, u8>(&stepped.rt.instances), bytemuck::cast_slice::<_, u8>(&framed.rt.instances), "the step draws what a frame would");
+}
+
+#[test]
+fn a_late_loop_frame_still_steps_and_lands_where_a_frame_would() {
+    for (spin, what) in [(Spin { fps: 60.0, dots: true, ..Spin::default() }, "dots at 60 fps"),
+        (Spin { fps: rune_motion::Cycle::DISPLAY_RATE, ..Spin::default() }, "an arc at the display rate")] {
+        let make = || Host::with_poll(Spin { ..spin }, None);
+        let (mut framed, mut stepped) = (make(), make());
+        for host in [&mut framed, &mut stepped] {
+            for _ in 0..3 {
+                host.frame();
+            }
+            host.tick = 12;
+        }
+        framed.frame();
+        stepped.step().unwrap_or_else(|why| panic!("{what}: a loop frame 100 ms late steps: {why:?}"));
+        assert_eq!(bytemuck::cast_slice::<_, u8>(&stepped.rt.instances), bytemuck::cast_slice::<_, u8>(&framed.rt.instances), "{what}: the late step draws what a frame would");
+    }
+}
+
+#[test]
+fn a_loop_frame_before_its_wake_redraws_what_is_drawn() {
+    let mut host = Host::with_poll(Spin { fps: 60.0, dots: true, ..Spin::default() }, None);
+    for _ in 0..3 {
+        host.frame();
+    }
+    let drawn = host.rt.instances.clone();
+    host.tick = 1;
+    assert_eq!(host.step(), Ok(Vec::new()), "half way to its wake, nothing moves and nothing runs");
+    assert_eq!(bytemuck::cast_slice::<_, u8>(&host.rt.instances), bytemuck::cast_slice::<_, u8>(&drawn));
+    assert_eq!(host.step().map(|p| p.len()), Ok(3), "at its wake it steps");
 }

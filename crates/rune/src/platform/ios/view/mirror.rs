@@ -1,5 +1,6 @@
 #![allow(unsafe_code)]
 
+use crate::platform::objc_boundary::guarded;
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, NSObject};
@@ -30,7 +31,7 @@ define_class!(
     impl Mirror {
         #[unsafe(method_id(hitTest:withEvent:))]
         fn hit_test(&self, _point: CGPoint, _event: Option<&AnyObject>) -> Option<Retained<AnyObject>> {
-            None
+            guarded("hitTest:withEvent:", || None)
         }
     }
 );

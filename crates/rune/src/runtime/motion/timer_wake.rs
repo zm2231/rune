@@ -470,10 +470,20 @@ impl RuntimeCore {
     /// every frame.
     pub(crate) fn resting_wake(&mut self, app: &mut dyn AppDriver) -> Option<bool> {
         if !self.rests() { return None; }
+        Some(self.poll_alone_wants_frame(app))
+    }
+
+    fn poll_alone_wants_frame(&mut self, app: &mut dyn AppDriver) -> bool {
         let stale = self.poll_alone(app);
         let steps = self.frame.pending.wakes.iter().any(|w| w.due_by(self.clock, self.clock));
         // A starved fill's wake draws the frame that resumes it; the poll alone never does.
-        Some(stale || self.host.window_frame.is_some() || steps || self.commit.virtual_fill.resuming(self.clock) || self.commit.virtual_items.fill_resuming(self.clock))
+        stale || self.host.window_frame.is_some() || steps || self.commit.virtual_fill.resuming(self.clock) || self.commit.virtual_items.fill_resuming(self.clock)
+    }
+
+    pub(in crate::runtime) fn poll_wants_frame(&mut self, app: &mut dyn AppDriver) -> bool {
+        let frame = self.poll_alone_wants_frame(app);
+        self.resting_wake_frame(frame);
+        frame
     }
 
     /// Whether the host asked for a frame after `resting_wake`. That frame doesn't poll again

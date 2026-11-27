@@ -179,9 +179,14 @@ impl<E: EmbedSurface> FrameHost for EmbedFrameHost<'_, E> {
         let target = self.target.unwrap_or(t0);
         let compositing = self.surface.compositor_animating();
         if self.only_loops && !compositing {
-            let (clock, rt) = self.surface.clock_and_rt_mut();
-            if let Ok((patched, dt)) = loop_frame::step(clock, rt, target) {
-                let animating = rt.animating;
+            let stepped = if self.surface.clock_and_rt_mut().1.poll_timer_due() {
+                self.surface.with_driver(|clock, rt, app| loop_frame::step(clock, rt, Some((app, false)), target))
+            } else {
+                let (clock, rt) = self.surface.clock_and_rt_mut();
+                loop_frame::step(clock, rt, None, target)
+            };
+            if let Ok((patched, dt)) = stepped {
+                let animating = self.surface.clock_and_rt_mut().1.animating;
                 self.looped = Some(patched);
                 return StepInfo { runtime_animating: animating, animating, dt, update_ms: t0.elapsed().as_secs_f64() * 1000.0, presents_at: self.target };
             }

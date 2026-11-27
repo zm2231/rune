@@ -81,6 +81,10 @@ impl dyn WindowApp + '_ {
         self.driver(|rt, app| clock.advance_core(rt, app, at, compositing))
     }
 
+    pub(in crate::window) fn loop_step(&mut self, clock: &mut FrameClock, at: Instant, woke: bool) -> Result<(Vec<u32>, f64), &'static str> {
+        self.driver(|rt, app| crate::frame::loop_frame::step(clock, rt, Some((app, woke)), at))
+    }
+
     pub(in crate::window) fn covered_wake(&mut self) {
         self.driver(|rt, app| { rt.covered_wake(app); });
     }

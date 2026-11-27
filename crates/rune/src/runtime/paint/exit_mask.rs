@@ -42,6 +42,11 @@ impl RuntimeCore {
     pub(in crate::runtime) fn begin_exit_mask(&mut self) {
         let mut exiting = std::mem::take(&mut self.tree.exit_mask).into_flags();
         exiting.clear();
+        if self.scene.exiting().is_empty() {
+            exiting.resize(self.tree.nodes.len(), false);
+            self.tree.exit_mask = Mask::Fresh { exiting, commit: self.commit.commit_gen() };
+            return;
+        }
         exiting.reserve(self.tree.nodes.len());
         for i in 0..self.tree.nodes.len() {
             let n = &self.tree.nodes[i];
@@ -56,6 +61,7 @@ impl RuntimeCore {
     }
 
     pub(crate) fn subtree_exiting(&self, mut i: usize) -> bool {
+        if self.scene.exiting().is_empty() { return false; }
         if let Some(exiting) = self.tree.exit_mask.get(i, self.tree.nodes.len(), self.commit.commit_gen()) {
             return exiting;
         }

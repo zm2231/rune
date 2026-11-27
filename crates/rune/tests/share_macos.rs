@@ -120,17 +120,46 @@ mod mac {
         }
     }
 
-    fn dismiss(handle: &AppHandle<Main>) {
-        on_main(handle, |_, _| {
+    #[derive(Clone, Copy, Debug)]
+    enum Dismiss { Escape, CloseWindow }
+
+    fn dismiss(handle: &AppHandle<Main>, how: Dismiss) {
+        on_main(handle, move |_, _| {
             let baseline = BASELINE.with(|b| b.borrow().clone());
-            // SAFETY: main thread (an update); the tracking NSMenu and the app's live windows.
+            // SAFETY: main thread (an update); the tracking NSMenu, the app's live windows, and an
+            // autoreleased NSEvent that postEvent:atStart: retains.
             unsafe {
                 if let Some(menu) = MENU.with(|slot| slot.borrow().clone()) {
                     let _: () = msg_send![&*menu, cancelTracking];
                     return;
                 }
-                for w in windows().into_iter().filter(|w| !baseline.contains(w)) {
-                    let _: () = msg_send![w as *mut AnyObject, close];
+                let added: Vec<usize> = windows().into_iter().filter(|w| !baseline.contains(w)).filter(|&w| {
+                    let visible: bool = msg_send![w as *mut AnyObject, isVisible];
+                    visible
+                }).collect();
+                for &w in &added {
+                    let class: *const AnyObject = msg_send![w as *mut AnyObject, className];
+                    let class = &*(class as *const NSString);
+                    println!("share_macos: picker window class {class}");
+                }
+                match how {
+                    Dismiss::Escape => {
+                        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+                        let chars = NSString::from_str("\u{1b}");
+                        for &w in &added {
+                            let number: isize = msg_send![w as *mut AnyObject, windowNumber];
+                            for kind in [10usize, 11] {
+                                let info: *mut AnyObject = msg_send![class!(NSProcessInfo), processInfo];
+                                let now: f64 = msg_send![info, systemUptime];
+                                let event: *mut AnyObject = msg_send![class!(NSEvent), keyEventWithType: kind, location: objc2_foundation::NSPoint::new(0.0, 0.0),
+                                    modifierFlags: 0usize, timestamp: now, windowNumber: number, context: std::ptr::null::<AnyObject>(),
+                                    characters: &*chars, charactersIgnoringModifiers: &*chars, isARepeat: false, keyCode: 53u16];
+                                assert!(!event.is_null(), "NSEvent made the Escape key event");
+                                let _: () = msg_send![app, postEvent: event, atStart: false];
+                            }
+                        }
+                    }
+                    Dismiss::CloseWindow => for &w in &added { let _: () = msg_send![w as *mut AnyObject, close]; },
                 }
             }
         });
@@ -192,7 +221,11 @@ mod mac {
         assert!(main_during >= 10, "the sharing window stalled while the picker was open ({main_during} frames in 500 ms)");
         assert!(answers().is_empty(), "nothing answers while the picker is open: {:?}", answers());
 
-        dismiss(handle);
+        dismiss(handle, Dismiss::Escape);
+        if !wait("an answer to Escape", Duration::from_secs(3), || !answers().is_empty()) {
+            println!("share_macos: Escape didn't dismiss the picker; closing its window");
+            dismiss(handle, Dismiss::CloseWindow);
+        }
         assert!(wait("the dismissal's answer", Duration::from_secs(5), || !answers().is_empty()), "the dismissal never answered");
         std::thread::sleep(Duration::from_millis(300));
         assert_eq!(answers(), ["Ok(None)"], "the dismissal reaches the callback once");
@@ -202,8 +235,8 @@ mod mac {
 
         handle.update(share);
         assert!(wait("the picker again", Duration::from_secs(5), || TRACKING.load(Ordering::SeqCst) || picker_windows(handle) > 0), "the picker didn't open a second time");
-        dismiss(handle);
-        assert!(wait("the second answer", Duration::from_secs(5), || answers().len() == 2), "the second dismissal never answered");
+        dismiss(handle, Dismiss::CloseWindow);
+        assert!(wait("the second answer", Duration::from_secs(5), || answers().len() == 2), "closing the picker's window never answered");
         assert_eq!(answers(), ["Ok(None)", "Ok(None)"]);
     }
 }

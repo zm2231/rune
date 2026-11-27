@@ -83,6 +83,8 @@ pub use fonts::full_faces::add_font;
 pub use fonts::language::set_language;
 pub use fonts::system_fonts::InstalledFamily;
 pub use fonts::system_fonts::installed_families;
+pub use fonts::system_fonts::set_system_fonts;
+pub use fonts::system_fonts::system_fonts_enabled;
 #[doc(hidden)]
 pub use icon::Facing;
 pub use icon::Icon;
@@ -271,7 +273,7 @@ use layout::cache::STALE_BYTES;
 use layout::decorations::Decoration;
 use layout::id::LayoutIds;
 use layout::rich::mono_tab_stops;
-use layout::span::{HIDDEN_SIZE, PILL_BOX, SPAN_BOX, is_hidden_size};
+use layout::span::{HIDDEN_SIZE, PILL_BARE, PILL_BOX, SPAN_BOX, is_hidden_size, pill_index};
 use layout::{cursor, hash, line_break, line_metrics, span};
 use raster::{macos, support, windfoil, windows};
 

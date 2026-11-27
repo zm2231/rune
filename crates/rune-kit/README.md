@@ -138,7 +138,10 @@ input moves the caret or selection, skipped when disabled), `on_input_copy` (int
 keyboard and context-menu Copy/Cut, skipped when disabled), and `on_input_paste` (intercepting
 pastes before plain-text insertion, skipped when disabled), `on_blur` (when the focused editor
 loses focus to another app, Tab, a click elsewhere or `Tx::focus`, so a form can commit a half-typed
-value; Return stays `on_submit`; skipped when disabled), as well as `on_submit` and accessible
+value; Return stays `on_submit`; skipped when disabled), `on_focus_change` (forwarding
+`El::on_focus_change` to the inner editor for in-window focus gain and loss, including disabling or
+removing while focused, while staying silent on window deactivation and return), as well as
+`on_submit` and accessible
 `description`. They also accept `.decorations(spans)` (or `.spans(spans)`), `.line_fill(fill)` / `.line_fills(fills)`,
 and `.rich_style(style)` for attributed `TextEdit` marks, paragraph blocks, full-width code/quote
 line decorations and per-frame syntax highlights, and `.pill_style(f)` / `.pill_image(f)` /
@@ -503,6 +506,10 @@ search still see the shortcode. The pictures are drawn only, with no hover or pr
   that off with `table_tabular_figures(false)`. `table(border, header_fill)` sets the outline,
   row rules and header fill; `table_outline(None)`, `table_rules` and `table_header_text` give
   the look of a web table (no outline, a rule under every row, a dimmer header).
+  `table_column_rules(Some(color))` draws a zero-width hairline at the leading edge of every column
+  after the first, `table_row_hover(Some(color))` adds a hover overlay on body rows only, and
+  `table_shrink(TableShrink::WidestFirst)` narrows the widest columns first so short columns stay
+  on one line beside prose (all three off / `TableShrink::Proportional` by default).
 - **Code fences are syntax-coloured** in Rust, JavaScript/JSX, TypeScript/TSX, JSON, Python,
   Go, Swift, shell, SQL, HTML/XML, CSS and YAML (common aliases such as `ts`, `rs`, `py`,
   `golang`, `sh`, `yml` work). Other languages, and fences with none, stay plain. Colour is all

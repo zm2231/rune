@@ -383,6 +383,14 @@ impl<S: 'static> LayerHost<S> {
     /// after the frame whose handler made it, a paste when the clipboard's worker answers,
     /// which calls `wake` for the frame that delivers it. Without this a host reads
     /// [`Runtime::copy_request`] itself and pastes arrive only from a clipboard a test supplies.
+    #[cfg(target_os = "ios")]
+    pub(crate) fn settle_hidden(&mut self) {
+        let serves = EmbedSurface::serves(self);
+        let (core, mut app) = self.rt.split_mut();
+        crate::overlay::ios::settle(core, &mut app, serves);
+        EmbedSurface::flush_clipboard(self);
+    }
+
     pub fn with_system_clipboard(mut self, wake: Waker) -> Self {
         let mut clipboard = crate::clipboard::Client::default();
         clipboard.connect(wake);

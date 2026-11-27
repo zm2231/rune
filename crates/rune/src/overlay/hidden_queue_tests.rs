@@ -121,3 +121,23 @@ fn an_overlay_that_cannot_mount_drops_its_waiting_callbacks_and_refuses_later_on
     handle.after_hidden(move |s, _| { let _flag = &flag; s.runs.push("late"); });
     assert!(late.load(Ordering::Relaxed));
 }
+
+#[test]
+fn a_callbacks_clipboard_write_lands_and_its_window_requests_settle_while_the_overlay_stays_hidden() {
+    let (mut after_hidden, handle, unmounted) = overlay();
+    let clipboard = crate::clipboard::memory();
+    after_hidden.use_memory(&clipboard);
+    handle.after_hidden(|s, tx| {
+        s.runs.push("copied");
+        tx.copy("picked entry");
+        tx.close_window();
+    });
+    turn(&mut after_hidden, true, None);
+    assert!(turn(&mut after_hidden, true, None).run);
+    assert_eq!(clipboard.text().as_deref().map(String::as_str), Some("picked entry"));
+    let held = unmounted.borrow();
+    let rt = held.as_ref().expect("the overlay never mounted");
+    assert!(rt.copy_request.is_none());
+    assert!(rt.shell_request.is_none(), "a hidden overlay drops the window request it cannot serve");
+    assert_eq!(rt.state.runs, ["copied"]);
+}

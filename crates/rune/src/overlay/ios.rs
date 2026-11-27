@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-pub(crate) use super::hidden_queue::{AfterHidden, Turn};
+pub(crate) use super::hidden_queue::{AfterHidden, Turn, settle};
 use super::requests::{KeyRequest, Visibility};
 use super::{Availability, OverlayHandle, Placement, Shared, SharedCore};
 use crate::compose::Compositor;

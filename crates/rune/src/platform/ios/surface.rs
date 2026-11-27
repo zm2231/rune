@@ -144,6 +144,7 @@ pub(crate) trait Surface {
     fn takes_touch(&self, control: &Control, x: f32, y: f32) -> bool;
     fn take_overlays(&mut self) -> Vec<OverlaySlot>;
     fn runtime_any(&mut self) -> &mut dyn std::any::Any;
+    fn settle_hidden(&mut self);
     fn set_window(&mut self, key: String);
     fn close(&mut self);
 }
@@ -533,6 +534,8 @@ impl<S: 'static> Surface for Hosted<S> {
     }
 
     fn runtime_any(&mut self) -> &mut dyn std::any::Any { self.host.runtime_mut() }
+
+    fn settle_hidden(&mut self) { self.host.settle_hidden(); }
 
     fn take_overlays(&mut self) -> Vec<OverlaySlot> {
         match &mut self.role {

@@ -94,7 +94,10 @@ impl RuneView {
         let view = self.ivars().overlays.borrow()[at].view.clone();
         let mut overlays = self.ivars().overlays.borrow_mut();
         let after_hidden = &mut overlays[at].after_hidden;
-        let ran = view.and_then(|view| view.with_surface(|surface| after_hidden.run(Some(surface.runtime_any()))));
+        let ran = view.and_then(|view| view.with_surface(|surface| {
+            after_hidden.run(Some(surface.runtime_any()));
+            surface.settle_hidden();
+        }));
         if ran.is_none() { after_hidden.run(None); }
     }
 

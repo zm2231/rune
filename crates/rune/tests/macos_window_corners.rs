@@ -99,7 +99,7 @@ mod mac {
         rune::orderly_exit();
         count_invalidations();
         let spec = AppSpec::new("corners", (240.0, 160.0), || State { frame: 0 }, view);
-        let options = WindowOptions { transparent: true, borderless: true, min_size: Some((0.0, 0.0)), ..Default::default() }
+        let options = WindowOptions { transparent: true, borderless: true, always_on_top: true, min_size: Some((0.0, 0.0)), ..Default::default() }
             .macos(MacWindowOptions::default().shadow(true).corner_radius(16.0));
         let window = &WINDOW;
         let (ready_tx, ready_rx) = mpsc::channel();

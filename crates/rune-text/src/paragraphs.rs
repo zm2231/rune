@@ -22,7 +22,7 @@ mod keying;
 mod lazy;
 #[cfg(test)]
 mod tests;
-use keying::{Found, Runs, count_newlines, flow_of, key_paragraphs, next_line_start, reuse_keys, with_isolates};
+use keying::{Found, Keyed, Runs, count_newlines, flow_of, key_paragraphs, next_line_start, reuse_keys, with_isolates};
 pub(crate) use keying::LineScan;
 pub use keying::{common_end, common_start};
 pub use lazy::AsciiLine;
@@ -104,8 +104,9 @@ pub struct ParagraphLayout {
     pub(super) blank_box: [f32; 3],
     /// Whether `spec.spans` is sorted and non-overlapping, allowing binary-search slicing.
     pub(super) disjoint_spans: bool,
-    /// What the next edit's keys start from (`Keys`): the text it laid out, when it had no
-    /// spans or pills, in the style and starting direction its keys were made in.
+    /// What the next edit's keys start from (`Keyed`): the text and layout spans it laid out,
+    /// when it had no pills, boxes, indent or non-paragraph blocks, in the style and starting
+    /// direction its keys were made in.
     keyed: Option<Keyed>,
     /// While some of its paragraphs wait to be shaped: what shapes them.
     lazy: Option<Rc<Lazy>>,
@@ -121,15 +122,6 @@ impl ParagraphLayout {
     pub fn waiting_ascii(&self) -> Option<&AsciiLine> {
         self.lazy.as_deref().filter(|_| self.align == Alignment::Start).map(|l| &*l.ascii)
     }
-}
-
-
-/// A plain text's content and the key inputs that aren't per paragraph, so an edit keys only the
-/// paragraphs it touched and takes the others' keys as they were.
-pub(crate) struct Keyed {
-    content: Rc<str>,
-    style_key: u64,
-    start_flow: Flow,
 }
 
 /// One paragraph: content bytes `start..end` (its newline left out), laid out at `y`.
@@ -487,6 +479,24 @@ impl<'a> TextFlow<'a> {
         bb.y0 += p.y as f64;
         bb.y1 += p.y as f64;
         bb
+    }
+
+    /// Vertical line-box extent `(top, bottom)` in device px of the visual line holding content
+    /// byte `at` on `side`: `[block_min_coord, block_max_coord]` (or `[p.y, p.y + p.height]` on a
+    /// blank or unlined paragraph), matching [`Self::line_span`] and [`Self::block_lines`] so
+    /// stacked lines never overlap or protrude above the field when a font has negative
+    /// half-leading.
+    #[doc(hidden)]
+    pub fn line_bounds(self, at: usize, side: parley::layout::Affinity) -> (f32, f32) {
+        let p = self.piece_at(at);
+        if p.is_blank() {
+            return (p.y, p.y + p.height);
+        }
+        let c = parley::editing::Cursor::from_byte_index(p.layout, p.shaped(at), side);
+        match cursor::line_block_bounds(&c, p.layout) {
+            Some((y0, y1)) => (p.y + y0, p.y + y1),
+            None => (p.y, p.y + p.height),
+        }
     }
 
     /// The caret a press at `(x, y)` puts down.
@@ -890,16 +900,16 @@ impl TextSystem {
             (hash::text_hash("", &[], style, scale, None), spec.wrap_anywhere).hash(&mut h);
             h.finish()
         };
-        // A plain or colour-only text's edit keys only the paragraphs it touched: those before it
-        // and after it keep their keys (`reuse_keys`), so a keystroke or recolour costs no full scan.
+        // An edit without pills, boxes, indent or non-paragraph blocks keys only the paragraphs it
+        // touched: those before it and after it keep their keys (`reuse_keys`), so a keystroke or
+        // recolour costs no full scan and never re-defers already-shaped paragraphs.
         let layout_spans: Vec<Span> = span::layout_spans(spec.spans).cloned().collect();
         let layout_disjoint = layout_spans.len() <= 1 || layout_spans.windows(2).all(|w| w[0].start < w[0].end && w[0].end <= w[1].start);
         let no_pills_or_blocks = spec.pills.is_empty() && spec.span_boxes.is_empty() && spec.inline_boxes.is_empty() && spec.text_indent == 0.0 && spec.blocks.iter().all(|&b| b == Block::Paragraph);
-        let plain = layout_spans.is_empty() && no_pills_or_blocks;
         let disjoint_spans = spec.spans.len() <= 1 || spec.spans.windows(2).all(|w| w[0].start < w[0].end && w[0].end <= w[1].start);
         let forced = spec.paragraphs_flow();
         let start_flow = forced.unwrap_or(spec.plaintext_flow());
-        let reused = prev.filter(|_| plain).and_then(|p| reuse_keys(p, content, style_key, start_flow, &mut self.last_diff));
+        let reused = prev.filter(|_| no_pills_or_blocks).and_then(|p| reuse_keys(p, content, &layout_spans, layout_disjoint, style_key, start_flow, &mut self.last_diff));
         let (mut found, tail, entering) = reused.map_or((Vec::new(), Vec::new(), start_flow), |r| (r.head, r.tail, r.entering));
         let bytes = content.as_bytes();
         let at = found.last().map_or(0, |f| next_line_start(bytes, f.1));
@@ -990,7 +1000,7 @@ impl TextSystem {
                 (_, Some(o)) => {
                     fresh += b - a;
                     let mut l = o.layout.clone();
-                    line_break::rebreak(Rc::make_mut(&mut l), blocks, para_indent, style.size, scale, max_width, align);
+                    line_break::rebreak(Rc::make_mut(&mut l), blocks, para_indent, style.size, scale, max_width, spec.wrap_anywhere, align);
                     // Re-broken, in place or as a copy: the lines it draws now are new.
                     self.layout_ids.build(&l);
                     l
@@ -1015,7 +1025,7 @@ impl TextSystem {
             let want_frac = if layout.len() > 1 { (y - y.floor()) as f32 } else { 0.0 };
             let have_frac = match (kept, again) { (Some(o), None) => o.y_frac, _ => 0.0 };
             if (want_frac - have_frac).abs() > 1e-5 {
-                line_break::rebreak_at_y(Rc::make_mut(&mut layout), blocks, para_indent, style.size, scale, max_width, align, f64::from(want_frac));
+                line_break::rebreak_at_y(Rc::make_mut(&mut layout), blocks, para_indent, style.size, scale, max_width, spec.wrap_anywhere, align, f64::from(want_frac));
                 self.layout_ids.build(&layout);
                 (height, widths) = (if a == b { layout.height().max(line) } else { layout.height() }, [layout.width(), layout.full_width()]);
             }
@@ -1029,12 +1039,11 @@ impl TextSystem {
         let newline = 0.25 * (asc_px + desc_px);
         let (qa, qd) = (asc_px.round(), desc_px.round());
         let blank_box = [qa + ((line - (qa + qd)) * 0.5).floor(), asc_px, desc_px];
-        // One copy of a long text for both widths a measure asks for, not one each.
-        let shared = self.last_paragraphs.as_ref().and_then(|l| l.keyed.as_ref()).map(|k| k.content.clone()).filter(|c| **c == *content);
-        let keyed = plain.then(|| Keyed { content: shared.unwrap_or_else(|| Rc::from(content)), style_key, start_flow });
+        // One copy of a long text and its layout spans for both widths a measure asks for.
+        let keyed = no_pills_or_blocks.then(|| Keyed::new(self.last_paragraphs.as_deref(), content, &layout_spans, layout_disjoint, style_key, start_flow));
         let lazy = (waiting > 0).then(|| self.ascii_line(style, scale, spec.wrap_anywhere)).flatten().map(|ascii| Rc::new(Lazy {
             content: keyed.as_ref().map_or_else(|| Rc::from(content), |k| k.content.clone()),
-            spans: if layout_spans.is_empty() { Rc::from(&[][..]) } else { Rc::from(layout_spans.as_slice()) },
+            spans: keyed.as_ref().and_then(|k| k.spans.clone()).unwrap_or_else(|| if layout_spans.is_empty() { Rc::from(&[][..]) } else { Rc::from(layout_spans.as_slice()) }),
             disjoint_spans: layout_disjoint,
             style, scale, wrap_anywhere: spec.wrap_anywhere, cache_key, style_key, forced, start_flow, ascii,
         }));

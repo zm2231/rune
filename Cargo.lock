@@ -4649,6 +4649,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rune-cli"
+version = "0.0.1"
+dependencies = [
+ "blake3",
+ "quote",
+ "serde_json",
+ "syn 2.0.119",
+ "toml_edit",
+]
+
+[[package]]
 name = "rune-core"
 version = "0.0.1"
 dependencies = [
@@ -5127,7 +5138,9 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "sctk-adwaita"
 version = "0.10.1"
 dependencies = [
+ "ab_glyph",
  "log",
+ "memmap2",
  "smithay-client-toolkit",
  "tiny-skia",
 ]
@@ -6063,6 +6076,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

@@ -63,7 +63,7 @@ class Tools:
     """
 
     def __init__(self, platform="IOSSIMULATOR", minos="16.0", stdout=None, json=None, profile=None, fails=None, stderr=None):
-        self.calls, self.platform, self.minos = [], platform, minos
+        self.calls, self.platform, self.minos, self.slept = [], platform, minos, []
         self.stdout, self.json, self.fails, self.stderr = {"find-identity": FIND_IDENTITY, **(stdout or {})}, json or {}, fails or {}, stderr or {}
         if profile:
             # What `security cms -D` prints: the profile out of its signed envelope.
@@ -599,20 +599,20 @@ class DistributionRegression(unittest.TestCase):
 
 
 class LaunchRegression(unittest.TestCase):
-    def simulator(self, tmp, ps, launched="com.example.hello: 4242\n", **over):
+    def simulator(self, tmp, ps, launched="com.example.hello: 4242\n", over=None):
         """Install and launch on a simulator whose `ps` answers this; returns the fake tools."""
         tools = Tools(stdout={"launch": launched, "ps": ps})
         with patch.object(ios_app, "command", tools), patch.object(ios_app.time, "sleep") as sleep, \
                 patch.object(ios_app, "REPORTS", Path(tmp) / "reports"), contextlib.redirect_stdout(io.StringIO()):
             try:
-                ios_app.install_simulator(Path(tmp) / "Hello.app", args(tmp, **{"wait": 3, **over}))
+                ios_app.install_simulator(Path(tmp) / "Hello.app", args(tmp, **{"wait": 3, **(over or {})}))
             finally:
                 tools.slept = [call.args[0] for call in sleep.call_args_list]
         return tools
 
     def test_a_simulator_app_still_running_after_the_wait_is_a_launch(self):
         with tempfile.TemporaryDirectory() as tmp:
-            tools = self.simulator(tmp, " 4242\n", wait=1.5)
+            tools = self.simulator(tmp, " 4242\n", over={"wait": 1.5})
             self.assertEqual(tools.slept, [1.5])
             self.assertEqual(tools.calls[-1], ("ps", "-p", "4242", "-o", "pid="))
 
@@ -634,7 +634,7 @@ class LaunchRegression(unittest.TestCase):
     def test_a_wait_of_zero_and_no_launch_watch_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             for over in (dict(wait=0), dict(no_launch=True)):
-                tools = self.simulator(tmp, "", **over)
+                tools = self.simulator(tmp, "", over=over)
                 self.assertEqual(tools.slept, [])
                 self.assertEqual(tools.ran("ps"), [])
 

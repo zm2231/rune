@@ -164,7 +164,7 @@ def built_for(args):
     except ValueError as error:
         raise RuntimeError(f"{args.bin}: {error}") from None
     problem = min_os_mismatch(args.bin, built, args.min_os)
-    if problem:
+    if problem or built is None:
         raise RuntimeError(problem)
     return built[0]
 
@@ -283,22 +283,22 @@ def outlive(args, launched, pid, alive, crash_log):
 
 
 def devicectl(*argv, check=True):
-    """Run a `devicectl device` command, whose first two words name it; its JSON result is the answer's `json`."""
+    """Run a `devicectl device` command, whose first two words name it; returns the run and its JSON result."""
     with tempfile.TemporaryDirectory() as tmp:
         result = Path(tmp) / "result.json"
         # devicectl's own flags go before the app's identifier, which its arguments follow.
         ran = command("xcrun", "devicectl", "device", *argv[:2], "--json-output", str(result), *argv[2:], check=check, timeout=SLOW)
-        ran.json = json.loads(result.read_text()) if not ran.returncode and result.is_file() else {}
-        return ran
+        answer = json.loads(result.read_text()) if not ran.returncode and result.is_file() else {}
+        return ran, answer
 
 
 def install_device(stage, args):
     """Replace the app on a paired device and, unless told not to, launch it in place of a running one."""
     command("xcrun", "devicectl", "device", "install", "app", "--device", args.device, str(stage), timeout=SLOW)
     if not args.no_launch:
-        launched = devicectl("process", "launch", "--device", args.device, "--terminate-existing", args.id, *args.args, check=False)
-        outlive(args, launched, launched_pid(launched.json),
-                lambda pid: alive_device(devicectl("info", "processes", "--device", args.device).json, pid), lambda: device_crash_logs(args.device))
+        launched, answer = devicectl("process", "launch", "--device", args.device, "--terminate-existing", args.id, *args.args, check=False)
+        outlive(args, launched, launched_pid(answer),
+                lambda pid: alive_device(devicectl("info", "processes", "--device", args.device)[1], pid), lambda: device_crash_logs(args.device))
 
 
 def flags():

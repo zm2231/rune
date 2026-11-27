@@ -74,7 +74,7 @@ impl Toast {
         }
         let mut top = row().key("top").w_full().gap(12.0).items_start();
         if let Some(i) = self.icon {
-            top = top.child(el().key("icon").size(16.0, 20.0).center().child(i).a11y_hidden());
+            top = top.child(el().key("icon").size(k.text_size(16.0), k.text_size(20.0)).center().child(i).a11y_hidden());
         }
         top = top.child(content);
         if let Some(a) = self.close {

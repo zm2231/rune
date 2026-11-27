@@ -272,10 +272,12 @@ impl crate::runtime::RuntimeCore {
         if !matches!(self.host.sharing.state, State::Idle) { self.share_step(Event::Refused(why.into())); }
     }
 
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn dismiss_share(&mut self) {
         self.answer_share(Ok(None));
     }
 
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn drop_shares(&mut self) {
         self.host.sharing.state = State::Idle;
         self.host.sharing.callbacks.clear();

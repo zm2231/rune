@@ -165,6 +165,7 @@ impl LayerHostCore {
         if let Some(renderer) = &mut self.renderer { crate::window::rebuild_renderer_core(&self.gpu.device, renderer, target_format, rt); }
     }
 
+    #[cfg(target_os = "ios")]
     fn release(&mut self, rt: &mut RuntimeCore) {
         if self.renderer.take().is_none() { return; }
         self.config.width = 1;
@@ -454,6 +455,7 @@ impl<S: 'static> LayerHost<S> {
 
     /// Sends on what the app copied or cleared since the last frame, as a frame does: for a
     /// hook that runs when no frame will follow it.
+    #[cfg(target_os = "ios")]
     pub(crate) fn flush_clipboard(&mut self) {
         match &self.core.clipboard {
             Some(clipboard) => clipboard.flush_core(self.rt.core_mut()),
@@ -505,6 +507,7 @@ impl<S: 'static> LayerHost<S> {
         }
     }
 
+    #[cfg(target_os = "ios")]
     pub(crate) fn release_gpu(&mut self) {
         self.rest(None, true);
         if let Some(compositor) = &mut self.compositor { compositor.release_gpu(); }

@@ -422,7 +422,7 @@ pub(crate) mod metal {
         #[cfg_attr(target_os = "ios", allow(dead_code))]
         pub(crate) fn watch(&self, on: bool) { self.watch.store(on, Ordering::Release); }
 
-        #[cfg(test)]
+        #[cfg(all(test, target_os = "macos"))]
         pub(crate) fn callback_watching(&self) -> bool {
             self.callback_presented.lock().unwrap().watch
         }

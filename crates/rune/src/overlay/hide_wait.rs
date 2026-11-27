@@ -30,10 +30,10 @@ pub(in crate::overlay) enum Event {
     /// A new event-loop turn began (`AnyHost::new_events`).
     NewTurn,
     /// The in-flight Wayland `wl_display.sync` callback answered (`wl_callback.done`).
-    #[cfg_attr(target_os = "ios", allow(dead_code))]
+    #[cfg(any(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")), all(test, not(target_os = "ios"))))]
     SyncAnswered,
     /// Starting or polling the Wayland `wl_display.sync` failed (fatal display error).
-    #[cfg_attr(target_os = "ios", allow(dead_code))]
+    #[cfg(any(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")), all(test, not(target_os = "ios"))))]
     SyncFailed,
     /// The host reached `about_to_wait` while hidden (`Presence::Hidden`).
     AboutToWaitHidden,
@@ -128,16 +128,20 @@ pub(in crate::overlay) fn step(phase: &mut Phase, event: Event) -> Effects<Effec
         }
         (_, Event::NewTurn) => Effects::none(),
 
+        #[cfg(any(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")), all(test, not(target_os = "ios"))))]
         (Phase::WaitingSync, Event::SyncAnswered) => {
             *phase = Phase::Idle;
             Effects::one(Effect::RunCallbacks)
         }
+        #[cfg(any(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")), all(test, not(target_os = "ios"))))]
         (_, Event::SyncAnswered) => Effects::none(),
 
+        #[cfg(any(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")), all(test, not(target_os = "ios"))))]
         (Phase::WaitingSync, Event::SyncFailed) => {
             *phase = Phase::Idle;
             Effects::two(Effect::CancelSync, Effect::DropCallbacks)
         }
+        #[cfg(any(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")), all(test, not(target_os = "ios"))))]
         (_, Event::SyncFailed) => Effects::none(),
 
         (Phase::ReadyToRun, Event::AboutToWaitHidden) => {

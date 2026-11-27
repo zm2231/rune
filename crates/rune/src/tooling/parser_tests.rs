@@ -170,7 +170,7 @@ fn a_script_key_with_a_code_reaches_handlers_with_its_physical_key() {
         }
         rt.frame(0.0);
     }
-    assert_eq!(rt.state, [(Key::Command('&'), Some(crate::PhysicalKeyCode::Digit7)), (Key::Command('&'), None)]);
+    assert_eq!(*rt.state, [(Key::Command('&'), Some(crate::PhysicalKeyCode::Digit7)), (Key::Command('&'), None)]);
 }
 
 #[test]
@@ -198,7 +198,7 @@ fn a_script_key_with_a_code_reaches_handlers_with_its_unmodified_character() {
         }
         rt.frame(0.0);
     }
-    assert_eq!(rt.state, [
+    assert_eq!(*rt.state, [
         (Key::Text("å".into()), Some('a')),
         (Key::Command('k'), Some('k')),
         (Key::Command('&'), None),
@@ -226,7 +226,7 @@ fn a_script_key_can_be_a_held_keys_repeat() {
         }
     }
     rt.frame(0.0);
-    assert_eq!(rt.state, [false, true]);
+    assert_eq!(*rt.state, [false, true]);
     assert_eq!(physical, [(true, true), (false, false)], "the release that ends a hold is not a repeat");
 }
 
@@ -240,7 +240,7 @@ fn window_panel_headless_focus_steps_preserve_false_and_event_order() {
         let Kind::Focus(focused) = event.kind else { panic!("focus parsed as pointer action") };
         rt.window_focus(focused);
     }
-    assert_eq!(rt.state, [true, false]);
+    assert_eq!(*rt.state, [true, false]);
 }
 
 #[test]

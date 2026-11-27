@@ -151,7 +151,7 @@ fn span_ring_subranges_case_elision_and_cache_changes() {
     assert_eq!(hovered.iter().find(|i| i.params[0] == 1.0).unwrap().rect, ring.rect);
     assert!(hovered.iter().all(|i| i.fill == Color::BLACK.premul(1.0)));
     rt.pointer_move(299.0, 79.0);
-    rt.state = Color::WHITE;
+    *rt.state = Color::WHITE;
     rt.invalidate();
     rt.settle_all();
     rt.frame(0.0);
@@ -315,7 +315,7 @@ fn span_ring_draws_inset_border_on_light_page_merges_runs_wraps_and_stays_on_hov
 
     // Fading the text element scales both the fill and the ring border alpha.
     rt.pointer_move(0.0, 0.0);
-    rt.state = 0.5;
+    *rt.state = 0.5;
     rt.invalidate();
     rt.settle_all();
     rt.frame(0.0);

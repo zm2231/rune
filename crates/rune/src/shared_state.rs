@@ -8,10 +8,11 @@ use crate::runtime::{Runtime, Waker};
 ///
 /// The windows of one app take turns: Rune moves the state into a window's runtime for each
 /// turn that reaches it (input, a frame, a timer, an update) and back out when the turn ends,
-/// so views and handlers get the usual `&S` and `&mut S`. When a window's turn changes the
-/// state (a handler without [`Tx::live_only`](crate::Tx::live_only), a `poll` that returns true,
-/// an update), the other windows run their views again on their next frame. A window that
-/// isn't in its turn holds a placeholder no view or handler sees.
+/// so views and handlers get the usual `&S` and `&mut S`. Only the box holding the state
+/// changes hands, never the state itself, so a turn costs the same for any `S`. When a
+/// window's turn changes the state (a handler without [`Tx::live_only`](crate::Tx::live_only),
+/// a `poll` that returns true, an update), the other windows run their views again on their
+/// next frame. A window that isn't in its turn holds a placeholder no view or handler sees.
 ///
 /// `poll` runs in each window's frames: work for the whole app belongs in one window's `poll`,
 /// or checks [`Tx::window`](crate::Tx::window). Use the state from the UI thread only.
@@ -40,7 +41,7 @@ impl<S: 'static> Clone for SharedState<S> {
 type Hook<S> = fn(&mut S, &str);
 
 struct Shared<S: 'static> {
-    home: RefCell<S>,
+    home: RefCell<Box<S>>,
     placeholder: fn() -> S,
     resident: RefCell<Option<Rc<str>>>,
     generation: Cell<u64>,
@@ -62,7 +63,7 @@ impl<S: 'static> SharedState<S> {
     pub fn with_placeholder(state: S, placeholder: fn() -> S) -> Self {
         Self {
             cell: Rc::new(Shared {
-                home: RefCell::new(state),
+                home: RefCell::new(Box::new(state)),
                 placeholder,
                 resident: RefCell::new(None),
                 generation: Cell::new(0),
@@ -95,7 +96,7 @@ impl<S: 'static> SharedState<S> {
 
     pub(crate) fn take_for_one(&self) -> S {
         assert!(!self.cell.taken.replace(true), "rune: a SharedState that one window already took was given to another");
-        std::mem::replace(&mut *self.cell.home.borrow_mut(), self.placeholder())
+        std::mem::replace(&mut **self.cell.home.borrow_mut(), self.placeholder())
     }
 
     pub(crate) fn member(&self, key: &str) -> Member<S> {
@@ -171,8 +172,11 @@ impl<S: 'static> Member<S> {
         let generation = self.cell.generation.get() + 1;
         self.cell.generation.set(generation);
         self.seen = generation;
-        let others: Vec<Waker> = self.cell.members.borrow().iter().filter(|(id, _)| *id != self.id).map(|(_, wake)| wake.clone()).collect();
-        for wake in others { wake(); }
+        let mut i = 0;
+        while let Some(wake) = self.cell.members.borrow().get(i).map(|(id, wake)| (*id != self.id).then(|| wake.clone())) {
+            if let Some(wake) = wake { wake(); }
+            i += 1;
+        }
     }
 }
 

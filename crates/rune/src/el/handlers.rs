@@ -296,7 +296,7 @@ impl Drag {
     /// rt.touch(1, TouchPhase::Moved, 40.0, 100.0, 0.02);
     /// rt.touch(1, TouchPhase::Ended, 40.0, 100.0, 0.04);
     /// rt.frame(1.0 / 60.0);
-    /// assert_eq!(rt.state, Some(SwipeEdge::Left));
+    /// assert_eq!(*rt.state, Some(SwipeEdge::Left));
     /// ```
     pub fn edge(&self) -> Option<SwipeEdge> {
         self.edge

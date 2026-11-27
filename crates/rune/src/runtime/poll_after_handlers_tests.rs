@@ -398,6 +398,6 @@ fn request_poll_live_only_and_zero_overhead_for_idle_anim_layout_and_no_poll() {
     no_poll.pointer_down(10.0, 10.0);
     no_poll.pointer_up(10.0, 10.0);
     no_poll.frame(1.0 / 60.0);
-    assert_eq!((no_poll.state, no_poll.stats.commits - c0), (1, 1));
+    assert_eq!((*no_poll.state, no_poll.stats.commits - c0), (1, 1));
     assert_eq!(no_poll.wake_deadline(), None);
 }

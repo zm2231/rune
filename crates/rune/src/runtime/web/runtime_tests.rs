@@ -139,7 +139,7 @@ fn web_key_forwards_dom_code_for_digits_letters_and_punctuation() {
         rt.frame(0.0);
     }
     use crate::PhysicalKeyCode::*;
-    assert_eq!(rt.state, [
+    assert_eq!(*rt.state, [
         (crate::Key::Command('/'), Some(Digit7), false),
         (crate::Key::Command('/'), Some(Slash), true),
         (crate::Key::Command(':'), Some(Period), false),
@@ -159,7 +159,7 @@ fn web_key_forwards_function_keys_f1_through_f24() {
         rt.frame(0.0);
     }
     use crate::PhysicalKeyCode::*;
-    assert_eq!(rt.state, [
+    assert_eq!(*rt.state, [
         (crate::Key::Function(1), Some(F1)),
         (crate::Key::Function(12), Some(F12)),
         (crate::Key::Function(24), Some(F24)),
@@ -217,7 +217,7 @@ fn web_key_keeps_cmd_space_as_text_and_normalizes_non_ascii_chords() {
     rt.frame(0.0);
     rt.web_key(&json!({"kind":"key", "key":"Dead", "code":"Equal", "ctrl":true}));
     rt.frame(0.0);
-    assert_eq!(rt.state, [
+    assert_eq!(*rt.state, [
         (crate::Key::Text(" ".into()), Some(crate::PhysicalKeyCode::Space), Some(' ')),
         (crate::Key::Command('v'), Some(crate::PhysicalKeyCode::KeyV), Some('м')),
         (crate::Key::Command(';'), Some(crate::PhysicalKeyCode::Semicolon), Some('ö')),

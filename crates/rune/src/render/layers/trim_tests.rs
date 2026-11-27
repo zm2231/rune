@@ -138,7 +138,7 @@ impl<S: 'static> Pair<S> {
     }
 
     fn set(&mut self, gpu: &Gpu, state: S) {
-        self.rt.state = state;
+        *self.rt.state = state;
         self.rt.invalidate();
         self.frame(gpu, 1.0 / 120.0);
     }
@@ -326,7 +326,7 @@ fn a_trim_after_a_frame_that_was_built_but_not_presented() {
     let mut pairs = [Pair::new(&gpu, true, page, (320, 240), 2.0), Pair::new(&gpu, true, page, (320, 240), 2.0)];
     for pair in &mut pairs {
         pair.frame(&gpu, 0.0);
-        pair.rt.state = false;
+        *pair.rt.state = false;
         pair.rt.invalidate();
         pair.build(1.0 / 120.0);
         for _ in 0..240 { pair.build(1.0 / 120.0); }

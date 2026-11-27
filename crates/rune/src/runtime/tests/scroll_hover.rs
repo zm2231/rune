@@ -179,7 +179,7 @@ fn a_row_leaving_the_tree_under_a_held_glide_hears_the_pointer_leave() {
     rt.pointer_move(100.0, 110.0);
     rt.frame(1.0 / 120.0);
     rt.frame(1.0 / 120.0);
-    assert_eq!(rt.state, [(5, true)]);
+    assert_eq!(*rt.state, [(5, true)]);
     rt.update(|_, tx| tx.scroll_to("scroll", 0.0, 3000.0));
     rt.frame(1.0 / 120.0);
     assert!(rt.pointer.hover_hold().held());
@@ -261,7 +261,7 @@ fn an_app_stepping_its_own_glide_holds_a_still_pointers_hover_until_it_stops() {
     rt.pointer_move(100.0, 110.0);
     rt.frame(1.0 / 120.0);
     rt.frame(1.0 / 120.0);
-    assert_eq!(rt.state, [(5, true)]);
+    assert_eq!(*rt.state, [(5, true)]);
     // The app glides 400 points itself, an instant scroll each frame.
     let mut flashes = 0;
     for f in 1..=100 {
@@ -274,7 +274,7 @@ fn an_app_stepping_its_own_glide_holds_a_still_pointers_hover_until_it_stops() {
     let commits = rt.state.len() - 1;
     assert_eq!((commits, flashes), (0, 0), "no hover commits or chrome under the still pointer mid-scroll: {:?}", rt.state);
     for _ in 0..30 { rt.frame(1.0 / 120.0); }
-    assert_eq!(rt.state, [(5, true), (5, false), (25, true)], "once it stops, hover resolves once at the pointer");
+    assert_eq!(*rt.state, [(5, true), (5, false), (25, true)], "once it stops, hover resolves once at the pointer");
     assert!(!rt.pointer.hover_hold().held(), "and lets go");
 }
 

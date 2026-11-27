@@ -350,7 +350,7 @@ fn secure_multiline_conceal_snaps_geometry_scroll_and_bypasses_caches() {
     fn narrow(s: &crate::TextEdit, _: &mut Cx<crate::TextEdit>) -> El {
         crate::text_input(s, crate::TextStyle::new(14.0, 400.0)).wrap_anywhere().w(12.0)
     }
-    let mut narrow = Runtime::new(rt.state.clone(), narrow, (50.0, 100.0), Env::new(true, 1.0));
+    let mut narrow = Runtime::new((*rt.state).clone(), narrow, (50.0, 100.0), Env::new(true, 1.0));
     narrow.frame(0.0);
     assert_eq!(narrow.tree.nodes[0].text_layout.as_ref().and_then(crate::text::TextLayout::single).unwrap().len(), 1);
 }

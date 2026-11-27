@@ -144,7 +144,7 @@ fn declined_element_key_does_not_hide_an_ancestor_change() {
     let before = rt.stats.commits;
     rt.key(KeyEvent { key: Key::Right, mods: Mods::default() });
     rt.frame(0.0);
-    assert_eq!(rt.state, 1);
+    assert_eq!(*rt.state, 1);
     assert_eq!(rt.stats.commits, before + 1);
 }
 

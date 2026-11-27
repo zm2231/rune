@@ -123,7 +123,7 @@ impl<S: 'static> Runtime<S> {
     /// rt.pointer_motion(12.0, -3.0);
     /// rt.pointer_motion(0.5, 0.0);
     /// rt.frame(0.0);
-    /// assert_eq!(rt.state, [12.5, -3.0]);
+    /// assert_eq!(*rt.state, [12.5, -3.0]);
     /// ```
     #[inline(always)]
     pub fn pointer_motion(&mut self, dx: f32, dy: f32) { self.core_mut().pointer_motion(dx, dy); }
@@ -274,7 +274,7 @@ impl<S: 'static> Runtime<S> {
     /// rt.frame(0.0);
     /// rt.key(KeyEvent::from(Key::Media(MediaKey::PlayPause)));
     /// rt.frame(0.0);
-    /// assert!(rt.state);
+    /// assert!(*rt.state);
     /// ```
     #[inline(always)]
     pub fn set_media_keys(&mut self, enabled: bool) { self.core_mut().set_media_keys(enabled); }
@@ -312,7 +312,7 @@ impl<S: 'static> Runtime<S> {
     ///     Some('j'),
     /// );
     /// rt.frame(0.0);
-    /// assert!(rt.state);
+    /// assert!(*rt.state);
     /// ```
     #[inline(always)]
     pub fn key_with(&mut self, event: KeyEvent, physical: crate::PhysicalKeyCode, base: Option<char>) {
@@ -342,7 +342,7 @@ impl<S: 'static> Runtime<S> {
     ///     Some('j'),
     /// );
     /// rt.frame(0.0);
-    /// assert!(rt.state);
+    /// assert!(*rt.state);
     /// ```
     #[inline(always)]
     pub fn physical_key_input(&mut self, event: PhysicalInput, key: KeyEvent, base: Option<char>) {

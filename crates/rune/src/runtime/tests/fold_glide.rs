@@ -79,7 +79,7 @@ fn a_fold_moves_only_what_shows_of_it() {
     let mut rt = Runtime::new(false, folded, (400.0, 300.0), Env::new(true, 2.0));
     rt.frame(0.0);
     rt.frame(1.0 / 120.0);
-    rt.state = true;
+    *rt.state = true;
     rt.commit.dirty = true;
     let mut heights = Vec::new();
     for _ in 0..60 {
@@ -482,7 +482,7 @@ fn block(opening: bool, frames: usize) -> Vec<([f32; 3], f32)> {
     }
     let mut rt = Runtime::new(!opening, view, (400.0, 600.0), Env::new(true, 2.0));
     rt.frame(0.0);
-    rt.state = opening;
+    *rt.state = opening;
     rt.commit.dirty = true;
     (0..frames).map(|_| {
         rt.frame(1.0 / 120.0);

@@ -45,11 +45,11 @@ fn window_panel_focus_is_local_deduplicated_and_runs_without_frames() {
     rt.window_focus(true);
     rt.window_focus(false);
     rt.window_focus(false);
-    assert_eq!(rt.state, [true, false]);
+    assert_eq!(*rt.state, [true, false]);
     assert_eq!(rt.shell_request, Some(Shell::Close));
     assert!(other.state.is_empty());
     other.window_focus(false);
-    assert_eq!(other.state, [false]);
+    assert_eq!(*other.state, [false]);
     other.hooks.on_focus = None;
     other.frame(0.0);
     assert!(!other.stale());
@@ -254,9 +254,9 @@ fn a_standard_close_or_minimize_key_acts_only_when_no_handler_takes_it() {
     assert!(rt.minimize_step(crate::window::MinimizeEvent::Taken) && rt.shell_request.is_none());
     rt.on_key = Some(|n, ev, _| { *n += 1; ev.is_command('w') });
     press(&mut rt, Code::KeyW, 'w', Unhandled::Close);
-    assert_eq!((rt.state, rt.shell_request, rt.take_user_close_request()), (1, None, false), "the app's own ⌘W wins, once");
+    assert_eq!((*rt.state, rt.shell_request, rt.take_user_close_request()), (1, None, false), "the app's own ⌘W wins, once");
     press(&mut rt, Code::KeyM, 'm', Unhandled::Minimize);
-    assert_eq!(rt.state, 2, "the app saw ⌘M first");
+    assert_eq!(*rt.state, 2, "the app saw ⌘M first");
     assert!(rt.host.minimize.latched(), "and didn't take it");
 }
 
@@ -473,7 +473,7 @@ fn on_close_request_defaults_to_none_and_keeps_on_close_independent() {
     let f = app.on_close_request.unwrap();
     rt.update(|s, tx| resp = f(s, tx));
     assert_eq!(resp, crate::CloseResponse::Close);
-    assert_eq!(rt.state, 1);
+    assert_eq!(*rt.state, 1);
 }
 
 #[test]
@@ -498,5 +498,5 @@ fn on_quit_request_defaults_to_none_and_keeps_on_close_request_and_on_quit_indep
     let f = app.on_quit_request.unwrap();
     rt.update(|s, tx| resp = f(s, tx));
     assert_eq!(resp, crate::QuitResponse::Quit);
-    assert_eq!(rt.state, 1);
+    assert_eq!(*rt.state, 1);
 }

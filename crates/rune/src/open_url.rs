@@ -519,7 +519,7 @@ mod tests {
         rt.frame(1.0 / 60.0);
         rt.frame(1.0 / 60.0);
         assert_eq!(refused, Some(Err(OpenUrlError::UnsupportedScheme("file".into()))));
-        assert_eq!(rt.state, [("docs", Ok(()))], "a recorded link counts as taken; a refused one never calls back");
+        assert_eq!(*rt.state, [("docs", Ok(()))], "a recorded link counts as taken; a refused one never calls back");
         assert_eq!(rt.take_url_requests(), ["https://example.com/docs"]);
 
         rt.state.clear();
@@ -535,7 +535,7 @@ mod tests {
         assert!(!rt.core().rests(), "a queued result asks for a frame");
         assert!(rt.keys_queued(), "a hidden window, say behind the browser, steps a frame to deliver it");
         rt.frame(1.0 / 60.0);
-        assert_eq!(rt.state, [("a", Ok(())), ("c", Err(OpenUrlError::Failed("blocked".into())))]);
+        assert_eq!(*rt.state, [("a", Ok(())), ("c", Err(OpenUrlError::Failed("blocked".into())))]);
         assert!(rt.take_url_requests().is_empty(), "the seam's opener stands in for the host");
     }
 

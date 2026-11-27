@@ -152,20 +152,20 @@ fn two_runtimes_share_a_memory_clipboard() {
         rt
     });
     a.update(|s, tx| *s = Some(tx.copy_secret("from a", LONG))); a.frame(0.0);
-    assert!(a.state.as_ref().unwrap().holds());
+    assert!((*a.state).as_ref().unwrap().holds());
     b.update(|s, tx| *s = Some(tx.copy_secret("from b", LONG))); b.frame(0.0);
     assert_eq!(text(&m).as_deref(), Some("from b"));
-    assert_eq!(a.state.as_ref().unwrap().state(), SecretState::Replaced);
+    assert_eq!((*a.state).as_ref().unwrap().state(), SecretState::Replaced);
     a.update(|_, tx| tx.clear_secret_clipboard()); a.frame(0.0);
     assert_eq!(text(&m), None, "either window clears the latest secret");
-    assert_eq!(b.state.as_ref().unwrap().state(), SecretState::Cleared);
+    assert_eq!((*b.state).as_ref().unwrap().state(), SecretState::Cleared);
 
     a.update(|s, tx| *s = Some(tx.copy_secret("no frame", LONG)));
     assert_eq!(text(&m).as_deref(), Some("no frame"), "update writes without waiting for a frame");
 
     let mut headless = Runtime::new(None, view, (100.0, 100.0), Env::new(true, 1.0));
     headless.update(|s, tx| *s = Some(tx.copy_secret("nowhere", LONG))); headless.frame(0.0);
-    assert_eq!(headless.state.as_ref().unwrap().state(), SecretState::Pending, "no clipboard, no write");
+    assert_eq!((*headless.state).as_ref().unwrap().state(), SecretState::Pending, "no clipboard, no write");
 }
 
 #[test]
@@ -387,7 +387,7 @@ fn a_clear_after_an_unwritten_copy_drops_the_stale_secret() {
     rt.update(|s, tx| *s = Some(tx.copy_secret("stale", LONG)));
     rt.update(|_, tx| tx.clear_secret_clipboard());
     assert!(rt.copy_request.is_none() && rt.edit.clear_secret_request);
-    assert_eq!(rt.state.as_ref().unwrap().state(), SecretState::Replaced);
+    assert_eq!((*rt.state).as_ref().unwrap().state(), SecretState::Replaced);
 
     // The same in one handler, and with a memory clipboard on the next flush.
     let m = memory();
@@ -395,7 +395,7 @@ fn a_clear_after_an_unwritten_copy_drops_the_stale_secret() {
     rt.update(|s, tx| { *s = Some(tx.copy_secret("stale", LONG)); tx.clear_secret_clipboard(); });
     rt.frame(0.0);
     assert_eq!(text(&m), None);
-    assert_eq!(rt.state.as_ref().unwrap().state(), SecretState::Replaced);
+    assert_eq!((*rt.state).as_ref().unwrap().state(), SecretState::Replaced);
 }
 
 #[test]

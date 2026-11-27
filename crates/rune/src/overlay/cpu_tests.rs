@@ -316,7 +316,7 @@ fn engine_paints_degradable_gpu_features_live_and_clears_degraded_status_when_go
     }
 
     // Removing the blur returns to non-degraded CpuPainter.
-    rt.state = false;
+    *rt.state = false;
     rt.invalidate();
     rt.settle_all();
     rt.frame(0.0);
@@ -433,7 +433,7 @@ fn engine_steady_fade_dpi_hide_and_initial_seam_failure() {
     assert_eq!(engine.presenter().seam().updates.len(), 1);
 
     // Recolouring card produces a partial prcDirty update without reallocating the DIB.
-    rt.state = Color { r: 0.9, g: 0.2, b: 0.3, a: 0.9 };
+    *rt.state = Color { r: 0.9, g: 0.2, b: 0.3, a: 0.9 };
     rt.invalidate();
     rt.frame(0.0);
     let out3 = engine.paint_and_present("pill", 42, (10, 20), (64, 32), 255, rt.core_mut());

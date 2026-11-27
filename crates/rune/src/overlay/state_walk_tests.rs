@@ -725,7 +725,7 @@ fn wayland_hide_drops_pixels_references_atlas_pages_and_gpu_textures_and_reuploa
 
     // Hide drops CPU atlas pages, GPU textures and tree/memo Pixels references with no extra frame.
     overlay.drop_hidden_images();
-    overlay.rt.state = State { frame: None, memo_frame: None, inline_frame: None };
+    *overlay.rt.state = State { frame: None, memo_frame: None, inline_frame: None };
     assert!(overlay.rt.images.pages.is_empty(), "hidden overlay drops CPU image atlas pages");
     assert!(!overlay.core.renderer.as_ref().unwrap().has_images(), "hidden overlay drops GPU image textures");
     assert!(weak_shot.upgrade().is_none(), "tree no longer pins El::pixels handle");

@@ -123,13 +123,13 @@ fn window_focus_delivers_ordered_transitions_including_before_first_frame() {
     }
     let mut rt = Runtime::new(Vec::new(), view, (100.0, 100.0), Env::default());
     rt.window_focus(true); rt.window_focus(true); rt.window_focus(false); rt.frame(0.0);
-    assert_eq!(rt.state, vec![true, false]);
+    assert_eq!(*rt.state, vec![true, false]);
     assert_eq!(rt.copy_request.as_deref(), Some("focus"));
     let commits = rt.stats.commits;
     rt.window_focus(false); rt.frame(0.0);
     assert_eq!(rt.stats.commits, commits);
     rt.window_focus(true); rt.frame(0.0);
-    assert_eq!(rt.state, vec![true, false, true]);
+    assert_eq!(*rt.state, vec![true, false, true]);
 }
 
 #[test]

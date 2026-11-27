@@ -101,7 +101,7 @@ fn a_rolling_button_with_an_icon_and_neighbour_springs_without_jumps() {
     let rest_icon_gap = icon_gap(&rt);
     let cancel_from = rect(&rt, "cancel")[0];
 
-    rt.state = "Importing…".into();
+    *rt.state = "Importing…".into();
     rt.invalidate();
     rt.frame(0.0);
     let mut cancel_xs = vec![rect(&rt, "cancel")[0]];

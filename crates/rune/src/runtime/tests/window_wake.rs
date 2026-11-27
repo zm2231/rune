@@ -126,7 +126,7 @@ fn timed_wakes_are_exact_coalesced_and_do_not_commit_or_animate() {
     assert!(!rt.frame(0.0));
     assert_eq!(rt.frame.wake_deadlines(), [0.25, 0.375]);
     assert!(!rt.frame(0.5));
-    assert_eq!(rt.state, [0.0, 0.25, 0.375, 0.5]);
+    assert_eq!(*rt.state, [0.0, 0.25, 0.375, 0.5]);
     assert_eq!(rt.commit.commits, 1);
     assert_eq!(rt.wake_deadline(), None);
     assert!((rt.t - 0.05).abs() < 1e-8);
@@ -219,7 +219,7 @@ fn a_wake_at_asked_again_for_the_same_instant_adds_nothing() {
     assert_eq!(rt.frame.wake_deadlines(), [0.7]);
     rt.state.clear();
     rt.frame(1.0);
-    assert_eq!(rt.state, [0.7, 1.23], "one poll at the deadline, and the step's own");
+    assert_eq!(*rt.state, [0.7, 1.23], "one poll at the deadline, and the step's own");
 }
 
 #[test]
@@ -254,7 +254,7 @@ fn a_zero_wake_does_not_hide_a_later_wake_in_a_coarse_frame() {
     rt.poll = Some(poll);
     rt.frame(0.0);
     rt.frame(0.1);
-    assert_eq!(rt.state, [0.0, 0.017, 0.05, 0.1]);
+    assert_eq!(*rt.state, [0.0, 0.017, 0.05, 0.1]);
 }
 
 #[test]

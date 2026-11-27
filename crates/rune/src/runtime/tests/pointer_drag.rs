@@ -124,7 +124,7 @@ fn a_lost_release_without_a_drag_still_releases_the_press() {
     rt.pointer_release_lost(10.0, 10.0);
     rt.frame(0.0);
     assert!(!rt.pointer_captured());
-    assert_eq!(rt.state, 1);
+    assert_eq!(*rt.state, 1);
 }
 
 #[test]
@@ -141,10 +141,10 @@ fn native_escape_with_a_logical_fallback_cancels_the_drag() {
     rt.physical_key_input(crate::PhysicalInput::Key { key: crate::PhysicalKeyCode::Escape,
         mods: crate::Mods::default(), pressed: true, repeat: false, text: None, consumed_mods: Default::default() }, KeyEvent { key: crate::Key::Escape, mods: crate::Mods::default() }, None);
     rt.frame(0.0);
-    assert_eq!(rt.state, [true]);
+    assert_eq!(*rt.state, [true]);
     rt.pointer_up(10.0, 10.0);
     rt.frame(0.0);
-    assert_eq!(rt.state, [true]);
+    assert_eq!(*rt.state, [true]);
 }
 
 #[derive(Default)]
@@ -583,7 +583,7 @@ fn a_held_press_hears_its_drag_again_until_released() {
     rt.pointer_move(10.0, 10.0);
     rt.pointer_down(10.0, 10.0);
     rt.frame(1.0 / 60.0);
-    assert_eq!(rt.state, vec![(Phase::Down, false, 10.0)]);
+    assert_eq!(*rt.state, vec![(Phase::Down, false, 10.0)]);
     assert!(rt.wake_deadline().is_some(), "a still window wakes for the repeat");
     for _ in 0..15 { rt.frame(1.0 / 60.0); }
     assert_eq!(repeats(&rt), 0, "not before the delay");

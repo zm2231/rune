@@ -31,7 +31,7 @@ fn headless_run_open_files_delivers_batches_in_order_and_skips_empty() {
     app.run_open_files(&[PathBuf::from("a.torrent"), PathBuf::from("b.torrent")]);
     app.run_open_files(&[PathBuf::from("c.torrent")]);
     assert!(app.rt.needs_commit(), "non-empty open_files commits and redraws");
-    assert_eq!(app.rt.state, [
+    assert_eq!(*app.rt.state, [
         vec![PathBuf::from("a.torrent"), PathBuf::from("b.torrent")],
         vec![PathBuf::from("c.torrent")],
     ]);

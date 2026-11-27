@@ -178,7 +178,7 @@ fn a_declined_event_takes_back_its_live_only() {
     let before = rt.stats.commits;
     rt.magnify_event(MagnifyEvent::new(0.5).at(50.0, 50.0));
     rt.frame(1.0 / 120.0);
-    assert_eq!((rt.state, rt.stats.commits - before, rt.live_only_events()), (1, 1, 0), "the outer handler took it and committed");
+    assert_eq!((*rt.state, rt.stats.commits - before, rt.live_only_events()), (1, 1, 0), "the outer handler took it and committed");
 }
 
 #[test]

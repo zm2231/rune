@@ -9,7 +9,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=root, **kwargs)
 
-    def log_message(self, *args):
+    def log_message(self, format, *args):
         pass
 
     def do_POST(self):

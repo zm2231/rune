@@ -1,5 +1,6 @@
 #![allow(unsafe_code)]
 
+use crate::platform::objc_boundary::guarded;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
 use objc2::{ClassType, MainThreadMarker, MainThreadOnly, define_class, extern_class, msg_send};
@@ -28,21 +29,25 @@ define_class!(
     impl RuneViewController {
         #[unsafe(method(preferredStatusBarStyle))]
         fn preferred_status_bar_style(&self) -> isize {
-            // SAFETY: `traitCollection` is never nil, and `userInterfaceStyle` is an `NSInteger` enum.
-            let style: isize = unsafe {
-                let traits: Retained<AnyObject> = msg_send![self, traitCollection];
-                msg_send![&*traits, userInterfaceStyle]
-            };
-            status_bar_style(style)
+            guarded("preferredStatusBarStyle", || {
+                // SAFETY: `traitCollection` is never nil, and `userInterfaceStyle` is an `NSInteger` enum.
+                let style: isize = unsafe {
+                    let traits: Retained<AnyObject> = msg_send![self, traitCollection];
+                    msg_send![&*traits, userInterfaceStyle]
+                };
+                status_bar_style(style)
+            })
         }
 
         #[unsafe(method(traitCollectionDidChange:))]
         fn trait_collection_did_change(&self, previous: Option<&AnyObject>) {
-            // SAFETY: `UIViewController` implements both with these signatures.
-            unsafe {
-                let _: () = msg_send![super(self), traitCollectionDidChange: previous];
-                let _: () = msg_send![self, setNeedsStatusBarAppearanceUpdate];
-            }
+            guarded("traitCollectionDidChange:", || {
+                // SAFETY: `UIViewController` implements both with these signatures.
+                unsafe {
+                    let _: () = msg_send![super(self), traitCollectionDidChange: previous];
+                    let _: () = msg_send![self, setNeedsStatusBarAppearanceUpdate];
+                }
+            })
         }
     }
 );

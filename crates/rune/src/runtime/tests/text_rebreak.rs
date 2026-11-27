@@ -330,3 +330,70 @@ fn spanned_multiline_text_input_keystrokes_shape_only_edited_paragraph() {
         );
     }
 }
+
+fn memo_resize_view(_: &bool, _: &mut Cx<bool>) -> El {
+    let para = "Paragraph text long enough to wrap over several lines as the window narrows.";
+    col().w_full().children((0..2).map(|i| crate::memo(format!("m{i}"), 0, move || crate::el::text(format!("{i}. {para}")).w_full().wrap().key(format!("t{i}")))))
+}
+
+/// A memoized text keeps its layout while its width holds, and on a resize lets go of it so the
+/// cache re-breaks it in place, after a rest as before one.
+#[test]
+fn a_memoized_text_keeps_its_layout_at_its_width_and_rebreaks_in_place_on_a_resize() {
+    let mut rt = Runtime::new(true, memo_resize_view, (700.0, 900.0), Env::new(true, 2.0));
+    rt.frame(0.0);
+    let held = Rc::as_ptr(layout_of(&rt, "m0"));
+    let lines = layout_of(&rt, "m0").len();
+    rt.invalidate();
+    rt.frame(1.0 / 120.0);
+    assert_eq!(Rc::as_ptr(layout_of(&rt, "m0")), held, "kept at the same width");
+    rt.rest();
+    let shaped = rt.text.shaped;
+    rt.set_viewport((300.0, 900.0), 2.0);
+    rt.frame(2.0 / 120.0);
+    assert_eq!(Rc::as_ptr(layout_of(&rt, "m0")), held, "re-broken in place");
+    assert!(layout_of(&rt, "m0").len() > lines, "re-wrapped at the new width");
+    rt.update(|s, _| *s = !*s);
+    rt.frame(3.0 / 120.0);
+    rt.rest();
+    rt.set_viewport((200.0, 900.0), 2.0);
+    rt.frame(4.0 / 120.0);
+    assert_eq!(rt.text.shaped, shaped, "a resize after a rest re-breaks rather than shapes again");
+}
+
+/// New families drop what was shaped in the old ones: a memoized text kept across them, one
+/// line or by paragraph, is laid out and painted again in the new families rather than drawn
+/// from its old layout.
+#[test]
+fn a_memoized_text_lays_out_again_in_new_families() {
+    let view = |s: &bool, cx: &mut Cx<bool>| {
+        let by_line = crate::memo("p", 0, || crate::el::text("First paragraph of a memoized log.\nSecond paragraph of it.").w_full().wrap().by_line());
+        memo_resize_view(s, cx).child(by_line)
+    };
+    let mut rt = Runtime::new(true, view, (700.0, 900.0), Env::new(true, 2.0));
+    rt.frame(0.0);
+    let old = layout_of(&rt, "m0").clone();
+    assert!(rt.text.set_families("serif", "monospace"));
+    rt.invalidate();
+    rt.frame(1.0 / 120.0);
+    assert!(!Rc::ptr_eq(layout_of(&rt, "m0"), &old), "laid out again after the families changed");
+    let p = rt.tree.nodes.iter().find(|n| n.key.as_deref() == Some("p")).unwrap();
+    assert!(matches!(p.text_layout, Some(TextLayout::Paragraphs(_))));
+}
+
+fn memo_truncated_view(wide: &bool, _: &mut Cx<bool>) -> El {
+    let label = "A label long enough to be cut short in the room its row leaves it";
+    col().child(col().w(if *wide { 100.0 } else { 250.0 }).child(crate::memo("m", 0, move || crate::el::text(label).truncate().w_full().key("t"))))
+}
+
+/// A memoized truncated text whose room changes because its parent did cuts itself short again.
+#[test]
+fn a_memoized_truncated_text_cuts_again_when_its_room_changes() {
+    let mut rt = Runtime::new(true, memo_truncated_view, (700.0, 900.0), Env::new(true, 2.0));
+    rt.frame(0.0);
+    let elided = |rt: &Runtime<bool>| rt.tree.nodes.iter().find(|n| n.key.as_deref() == Some("m")).and_then(|n| n.elided.as_ref().map(|e| e.head));
+    let narrow = elided(&rt).expect("cut short at 100");
+    rt.update(|s, _| *s = false);
+    rt.frame(1.0 / 120.0);
+    assert!(elided(&rt).is_some_and(|wide| wide > narrow), "{:?} vs {narrow}", elided(&rt));
+}

@@ -349,29 +349,32 @@ impl Measurement<'_> {
             compute_layout(&mut taffy, root_id, room, &nodes, text, scale);
             self.place(&taffy, &mut nodes);
         }
+        let epoch = text.shaped_epoch();
+        let same_shaping = epoch == self.memo.laid_epoch;
+        if self.committing { self.memo.laid_epoch = epoch; }
         let mut span_idx = 0usize;
         for i in 0..nodes.len() {
             let Some(spec) = nodes[i].text.as_deref() else { continue };
             let w = (taffy.box_layout(nodes[i].taffy).w - nodes[i].inset[0] - nodes[i].inset[2]).max(0.0);
-            if spec.cold.live.is_some() {
-                while span_idx < reused.len() && reused[span_idx].new_start + reused[span_idx].len <= i {
-                    span_idx += 1;
+            let live = spec.cold.live.is_some();
+            while span_idx < reused.len() && reused[span_idx].new_start + reused[span_idx].len <= i {
+                span_idx += 1;
+            }
+            let reused_old = reused
+                .get(span_idx)
+                .filter(|s| i >= s.new_start && i < s.new_start + s.len)
+                .and_then(|s| self.nodes.get(s.old_start + (i - s.new_start)));
+            let width_sensitive = spec.wrap || spec.truncate || spec.max_lines > 0;
+            let same_width = reused_old.is_some_and(|old| !width_sensitive || (old.local.w - old.inset[0] - old.inset[2]).max(0.0) == w);
+            let carried = nodes[i].text_layout.is_some() && same_width && (live || (same_shaping && spec.cold.advance_in.is_none()));
+            let reused_here = reused_old.is_some();
+            if carried {
+                if nodes[i].text.as_ref().is_some_and(|t| !t.cold.inline_boxes.is_empty()) {
+                    inline::place_inline_children(&mut taffy, text, &mut nodes, i, scale);
                 }
-                let reused_old = reused
-                    .get(span_idx)
-                    .filter(|s| i >= s.new_start && i < s.new_start + s.len)
-                    .and_then(|s| self.nodes.get(s.old_start + (i - s.new_start)));
-                let width_sensitive = spec.wrap || spec.truncate || spec.max_lines > 0;
-                let kept_valid = nodes[i].text_layout.is_some()
-                    && reused_old.is_some_and(|old| {
-                        !width_sensitive || (old.local.w - old.inset[0] - old.inset[2]).max(0.0) == w
-                    });
-                if kept_valid {
-                    if nodes[i].text.as_ref().is_some_and(|t| !t.cold.inline_boxes.is_empty()) {
-                        inline::place_inline_children(&mut taffy, text, &mut nodes, i, scale);
-                    }
-                    continue;
-                }
+                continue;
+            }
+            if live {
                 if nodes[i].cold.get().is_some_and(|c| c.live_text_seen.is_some()) {
                     lay_out_text_inner(text, &mut nodes[i], w, scale, true);
                     nodes[i].epoch = crate::runtime::paint_keep::next_epoch();
@@ -380,7 +383,12 @@ impl Measurement<'_> {
                     }
                     continue;
                 }
-                if reused_old.is_some() {
+                if reused_here {
+                    nodes[i].epoch = crate::runtime::paint_keep::next_epoch();
+                }
+            } else if nodes[i].input.is_none() {
+                let dropped = nodes[i].text_layout.take().is_some();
+                if reused_here && (dropped || !same_shaping || !same_width) {
                     nodes[i].epoch = crate::runtime::paint_keep::next_epoch();
                 }
             }

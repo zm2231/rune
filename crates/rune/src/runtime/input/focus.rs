@@ -663,7 +663,7 @@ impl RuntimeCore {
         // A newly requested text field wins; a focused control otherwise retains focus. Nothing
         // inside an `El::inert` subtree or disabled by `El::disabled` takes or keeps it.
         let requested = (0..nodes.len())
-            .filter(|&j| shown(j) && !nodes[j].focus.opt_out && !ancestor_disabled(nodes, j) && nodes[j].input.as_ref().is_some_and(|i| i.edit.focused))
+            .filter(|&j| nodes[j].input.as_ref().is_some_and(|i| i.edit.focused) && !nodes[j].focus.opt_out && shown(j) && !ancestor_disabled(nodes, j))
             .map(|j| (nodes[j].path.as_str(), &nodes[j].input.as_ref().unwrap().edit));
         // Hash iteration must not decide between simultaneous offscreen requests. Select
         // only the winning path rather than allocating and sorting every focused field.

@@ -163,8 +163,8 @@ impl TextSystem {
         self.generation = g.wrapping_add(1);
     }
 
-    /// A window at rest (`window::rest`): drops every layout not used by the last commit,
-    /// shrinks sparse cache tables and scratch buffers, and drops orphaned glyph runs.
+    /// A window at rest (`window::rest`): drops every layout not used by the last commit that
+    /// no element holds, shrinks sparse cache tables and scratch buffers, and drops orphaned glyph runs.
     /// The two-commit grace stays in `end_commit` for active view flips; at rest only what
     /// redraws the current screen stays cached.
     #[doc(hidden)]
@@ -184,7 +184,7 @@ impl TextSystem {
         if self.generation > 0 {
             // `end_commit` moved the generation on after the last commit.
             let g = self.generation.wrapping_sub(1);
-            self.layouts.retain(|_, e| e.used == g);
+            self.layouts.retain(|_, e| e.used == g || Rc::strong_count(&e.value) > 1);
             self.paragraphs.retain(|_, e| e.used == g);
             self.elisions.retain(|_, e| e.used == g);
             self.runs.retain(|_, e| e.used == g);

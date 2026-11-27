@@ -221,6 +221,11 @@ export function FastAppsView() {
             Anything the closure reads that can change belongs in the version, except <code>Cx::layout</code> reads,
             which Rune tracks.
           </p>
+          <p>
+            The id is the item's stable identity, such as its database id, never its position. A row keyed by its
+            index is renamed when a row is inserted above it, so one insert misses every memo below. With the{" "}
+            <code>frame-profile</code> feature, <code>RUNE_FRAME_LOG</code> counts each frame's memo hits and misses.
+          </p>
         </div>
         <Pair before={memoBefore} after={memoAfter} />
       </section>

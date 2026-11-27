@@ -363,6 +363,8 @@ pub struct TextSystem {
     pub shaped: u32,
     /// Layouts re-broken at a new width from an earlier shaping, a running count.
     pub rebroken: u32,
+    /// Layouts asked for, cached or not, a running count.
+    pub laid: u32,
     /// Reused across lines and frames when mapping glyphs back to cluster start bytes.
     cluster_scratch: Vec<u32>,
     /// Byte ranges `(start, end, ink)` of coloured spans set by [`Self::set_glyph_inks`].
@@ -515,6 +517,7 @@ impl TextSystem {
             animated_icons: AnimatedIcons::default(),
             shaped: 0,
             rebroken: 0,
+            laid: 0,
             cluster_scratch: Vec::new(),
             ink_spans: Vec::new(),
             coords_scratch: Vec::new(),

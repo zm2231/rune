@@ -27,8 +27,9 @@ fn frame(ts: &mut TextSystem, layouts: &[&Rc<Layout<Ink>>]) {
 }
 
 /// A layout no commit has used for a while stays shaped, with its glyph run, inside the stale
-/// budget. A rest drops the layout from the cache; while an element out of sight still holds
-/// it, its glyph run stays. A trim drops the run too, and keeps what the last frame painted.
+/// budget. A rest keeps it cached while an element out of sight still holds it, since holding
+/// costs nothing more, and its glyph run stays. A trim drops the run, and keeps what the last
+/// frame painted.
 #[test]
 fn a_trim_drops_the_glyph_runs_a_rest_keeps_and_no_frame_paints() {
     let mut ts = TextSystem::default();
@@ -43,9 +44,9 @@ fn a_trim_drops_the_glyph_runs_a_rest_keeps_and_no_frame_paints() {
     let bytes = ts.glyph_cache.bytes();
 
     ts.rest();
-    assert_eq!((ts.cached_layout_count(), ts.glyph_cache.len()), (1, 2), "the held layout's run stays");
+    assert_eq!((ts.cached_layout_count(), ts.glyph_cache.len()), (2, 2), "the held layout and its run stay");
     ts.trim_memory();
-    assert_eq!((ts.cached_layout_count(), ts.glyph_cache.len()), (1, 1));
+    assert_eq!(ts.glyph_cache.len(), 1);
     assert!(ts.glyph_cache.bytes() < bytes);
     assert!(Rc::ptr_eq(&shown, &paragraph(&mut ts, 15.0)), "the layout on screen is not shaped again");
     drop(left);

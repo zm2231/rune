@@ -384,9 +384,6 @@ pub(crate) mod metal {
                 self.on_screen.fetch_max(seq, Ordering::AcqRel);
                 wake |= self.watch.load(Ordering::Acquire);
             }
-            if self.watch.load(Ordering::Acquire) {
-                crate::platform::macos::window_shape::trace(format_args!("drawable {seq} presented at {at}"));
-            }
             wake
         }
 
@@ -524,37 +521,26 @@ pub(crate) mod metal {
             // SAFETY: the layer is only retained and has its class swapped for a subclass of its
             // class without state; wgpu keeps using it as a CAMetalLayer.
             // Under wgpu's lock until the class is swapped, so wgpu doesn't use the layer in between.
-            let hooked = crate::gpu::with_layer(surface, |layer| Self::hook(layer.retain(), log));
-            if hooked.is_none() { crate::platform::macos::window_shape::trace(format_args!("the surface has no Metal layer")); }
-            hooked?
+            crate::gpu::with_layer(surface, |layer| Self::hook(layer.retain(), log))?
         }
 
         fn hook(layer: Retained<AnyObject>, log: Arc<Log>) -> Option<Self> {
             let metal = AnyClass::get(c"CAMetalLayer")?;
             // SAFETY: isKindOfClass: takes any class.
             let is_metal: bool = unsafe { msg_send![&*layer, isKindOfClass: metal] };
-            if !is_metal {
-                crate::platform::macos::window_shape::trace(format_args!("layer isn't a CAMetalLayer: {}", layer.class().name().to_string_lossy()));
-                return None;
-            }
+            if !is_metal { return None; }
             Self::hook_instance(layer, log)
         }
 
         pub(super) fn hook_instance(layer: Retained<AnyObject>, log: Arc<Log>) -> Option<Self> {
             // SAFETY: `layer` is a live ObjC object; never place a subclass above KVO's.
-            if unsafe { crate::platform::macos::kvo_observed(&layer) } {
-                crate::platform::macos::window_shape::trace(format_args!("layer is key-value observed ({}), not hooked", layer.class().name().to_string_lossy()));
-                return None;
-            }
+            if unsafe { crate::platform::macos::kvo_observed(&layer) } { return None; }
             let (base, class) = if crate::platform::macos::has_subclass(&layer, HOOKED_PREFIX.as_bytes()) {
                 let top = layer.class();
                 (original_class(top), top)
             } else {
                 let base = layer.class();
-                let Some(class) = hooked_class(base) else {
-                    crate::platform::macos::window_shape::trace(format_args!("no hooked subclass of {}", base.name().to_string_lossy()));
-                    return None;
-                };
+                let class = hooked_class(base)?;
                 (base, class)
             };
             LAYERS.lock().unwrap().push(Hooked { addr: Retained::as_ptr(&layer) as usize, base, log });

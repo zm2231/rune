@@ -217,7 +217,7 @@ fn main() {
     });
     let app = if background() { app.open_inactive() } else { app };
     app.on_ready(|window| {
-        WINDOW.with(|w| { let _ = w.set(window.clone()); });
+        WINDOW.with(|w| { w.set(window.clone()).ok(); });
         if std::env::var_os("NATIVE_VIEW_CALL").is_some() { call::open(window); }
         #[cfg(target_os = "macos")]
         if background() { ax_check::spawn(); }

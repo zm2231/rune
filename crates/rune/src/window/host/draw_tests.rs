@@ -94,6 +94,7 @@ impl MockWindowFrame {
             turn_scope: None,
             keep_layout: None,
             kept_layout: None,
+            member: None,
         };
         let reports = FrameReports::new(
             Some(Box::new(move |f| outcomes.borrow_mut().push(f.outcome()))),
@@ -310,6 +311,7 @@ fn cursor_moved_skips_redraw_within_same_hovered_row_and_keeps_quiet_timer_and_l
         turn_scope: None,
         keep_layout: None,
         kept_layout: None,
+        member: None,
     };
     let mut timer = TimerFrame::default();
     let mut loops = LoopFrame::default();
@@ -673,6 +675,7 @@ fn window_app_forwards_release_compositor_gpu() {
         turn_scope: None,
         keep_layout: None,
         kept_layout: None,
+        member: None,
     });
     app.release_compositor_gpu();
     assert_eq!(releases.load(Ordering::Relaxed), 1);
@@ -771,6 +774,7 @@ fn cursor_moved_core_wakes_and_produces_drag_when_deferred_titlebar_press_crosse
         turn_scope: None,
         keep_layout: None,
         kept_layout: None,
+        member: None,
     };
     let mut timer = TimerFrame::default();
     let mut loops = LoopFrame::default();

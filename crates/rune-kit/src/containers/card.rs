@@ -67,7 +67,7 @@ impl Card {
                     .key("title")
                     .gap(8.0)
                     .center_y()
-                    .child(el().size(16.0, 16.0).center().child(icon(glyph, 14.0).color(color)).a11y_hidden())
+                    .child(el().size(k.text_size(16.0), k.text_size(16.0)).center().child(icon(glyph, k.text_size(14.0)).color(color)).a11y_hidden())
                     .child(text(t).font(k.ty.body_medium).color(c.text_base)),
             );
         }

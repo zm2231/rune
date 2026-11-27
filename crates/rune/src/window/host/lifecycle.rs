@@ -551,6 +551,7 @@ impl Host {
             // A tracking menu holds the event loop until it ends.
             self.app.popup_cancel(&mut self.popup);
             self.app.file_dialog_cancel(&mut self.file_dialog);
+            self.app.share_cancel();
             if !crate::quit::programmatic_quit() {
                 event_loop.exit();
             }
@@ -684,6 +685,7 @@ impl Host {
                     let _ = crate::quit::send(crate::quit::Event::Start { ending: false, after });
                     self.app.popup_cancel(&mut self.popup);
                     self.app.file_dialog_cancel(&mut self.file_dialog);
+                    self.app.share_cancel();
                     if !crate::quit::programmatic_quit() {
                         event_loop.exit();
                     }
@@ -696,6 +698,7 @@ impl Host {
             if self.life.finished() || event_loop.exiting() {
                 self.app.popup_cancel(&mut self.popup);
                 self.app.file_dialog_cancel(&mut self.file_dialog);
+                self.app.share_cancel();
                 return;
             }
             if self.gpu_loss_failed() {
@@ -850,6 +853,7 @@ impl Host {
             let _ = crate::quit::send(crate::quit::Event::Start { ending: false, after });
             self.app.popup_cancel(&mut self.popup);
             self.app.file_dialog_cancel(&mut self.file_dialog);
+            self.app.share_cancel();
             if !crate::quit::programmatic_quit() {
                 event_loop.exit();
             }
@@ -858,6 +862,7 @@ impl Host {
         if !self.keep_running {
             self.app.popup_cancel(&mut self.popup);
             self.app.file_dialog_cancel(&mut self.file_dialog);
+            self.app.share_cancel();
             self.app.rt_mut().cancel_pointer();
             self.files = FileDrop::default();
             #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
@@ -957,6 +962,7 @@ impl Host {
         self.app.rt_mut().cancel_timer_frame();
         self.app.popup_cancel(&mut self.popup);
         self.app.file_dialog_cancel(&mut self.file_dialog);
+        self.app.share_cancel();
         self.app.rt_mut().cancel_pointer();
         self.files = FileDrop::default();
         if let Some(w) = &mut self.win { w.apply_cursor_core(self.app.rt(), false); w.apply_pointer_lock_core(self.app.rt_mut()); }

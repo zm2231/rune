@@ -23,6 +23,7 @@ pub mod panel_bridge;
 mod pointer;
 pub(crate) mod presence;
 mod presentation;
+mod run_loop;
 mod surface;
 pub(crate) mod traffic_lights;
 pub(crate) mod window_shape;
@@ -30,6 +31,7 @@ pub(crate) mod window_shape;
 pub(crate) use geometry::{backing_scale, content_origin, display_bounds, outer_size, overlay_rect, overlay_screen_area, place_window, pointer_display, set_window_frame, window_geometry};
 pub(crate) use pointer::PointerState;
 pub(crate) use presentation::Prewarm;
+pub(crate) use run_loop::run_later;
 #[cfg(test)]
 pub(crate) use surface::layer_occluded;
 pub(crate) use surface::{PresumeShown, flush_while_launching, launching, pin_contents_top_left, present_with_transaction, surface_occluded, sync_contents_scale, window_occluded};

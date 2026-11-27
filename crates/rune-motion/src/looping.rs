@@ -8,7 +8,9 @@ pub enum LoopKind {
     OpacityCycle(Cycle),
     /// Finite opacity/scale/translate/rotate choreography; holds its last pose at rest.
     Sequence(Sequence),
-    Rotation,
+    /// A turn once a period, clockwise. `fps` steps it at a fixed cadence
+    /// ([`LoopSpec::fps`]); [`Cycle::DISPLAY_RATE`] turns it on every display frame.
+    Rotation { fps: f32 },
     /// An eased one-way sweep that wraps, in fractions of the node's own size (an
     /// indeterminate progress segment). Descendants and hit tests follow it.
     Slide { from: [f32; 2], to: [f32; 2] },
@@ -33,8 +35,20 @@ impl LoopSpec {
     pub const fn opacity(period: f64, delay: f64, low: f32, high: f32) -> Self {
         Self { period, delay, kind: LoopKind::Opacity { low, high } }
     }
+    /// A turn once every `period` seconds, on every display frame until [`Self::fps`] steps it.
     pub const fn rotation(period: f64) -> Self {
-        Self { period, delay: 0.0, kind: LoopKind::Rotation }
+        Self { period, delay: 0.0, kind: LoopKind::Rotation { fps: Cycle::DISPLAY_RATE } }
+    }
+    /// Steps a rotation `fps` times a second instead of on every display frame, so an idle
+    /// window wakes only that often for it. A stepped rotation turns on the wall clock, as a
+    /// stepped cycle does: every one with the same period shares its phase, and it keeps its
+    /// speed while nothing else on screen moves. Only rotations take a rate here; a cycle keeps
+    /// its own ([`Cycle::fps`]).
+    pub const fn fps(mut self, fps: f32) -> Self {
+        if let LoopKind::Rotation { .. } = self.kind {
+            self.kind = LoopKind::Rotation { fps };
+        }
+        self
     }
     /// Reduced motion holds the sweep's midpoint; removal cools it back to no offset.
     pub const fn slide(period: f64, from: [f32; 2], to: [f32; 2]) -> Self {
@@ -230,10 +244,12 @@ impl LoopTrack {
             _ => None,
         }
     }
-    /// A stepped cycle's timer interval. Continuous tracks use the host's frame request.
+    /// A stepped cycle's or rotation's timer interval. Continuous tracks use the host's frame
+    /// request.
     pub fn frame_interval(&self) -> Option<f64> {
         match self.spec.kind {
             LoopKind::OpacityCycle(c) => c.frame_interval(),
+            LoopKind::Rotation { fps } => crate::cycle::step_interval(fps),
             _ => None,
         }
     }
@@ -246,7 +262,10 @@ impl LoopTrack {
         match self.spec.kind {
             LoopKind::Sequence(_) => self.pose(now, reduced).unwrap().opacity,
             LoopKind::OpacityCycle(c) => if reduced { c.still } else { c.sample(wall) },
-            LoopKind::Rotation => phase * core::f32::consts::TAU,
+            LoopKind::Rotation { fps } if !reduced && fps != Cycle::DISPLAY_RATE => {
+                (wall / self.spec.period).rem_euclid(1.0) as f32 * core::f32::consts::TAU
+            }
+            LoopKind::Rotation { .. } => phase * core::f32::consts::TAU,
             LoopKind::Slide { .. } | LoopKind::SlideEased { .. } => 1.0,
             LoopKind::Opacity { low, high } => {
                 let triangle = if phase < 0.5 { phase * 2.0 } else { (1.0 - phase) * 2.0 };

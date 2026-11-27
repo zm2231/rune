@@ -426,8 +426,8 @@ impl<'a, S: 'static> TabStrip<'a, S> {
     pub fn overflow(mut self, policy: TabOverflow) -> Self { self.core.overflow = Some(policy); self }
     /// Points between tabs (default 6 horizontal, 3 vertical).
     pub fn gap(mut self, points: f32) -> Self { self.core.gap = Some(points.max(0.0)); self }
-    /// A tab's height (default 28).
-    pub fn row_height(mut self, points: f32) -> Self { self.core.row_height = points.max(1.0); self }
+    /// A tab's height (default 28 at the kit's [`Kit::text_scale`]).
+    pub fn row_height(mut self, points: f32) -> Self { self.core.row_height = Some(points.max(1.0)); self }
     /// Whether a press selects the tab as the button goes down, so a drag selects it too (default
     /// true, as tab-nav.tsx's onMouseDown does in either orientation), or the release does and
     /// a drag leaves the selection (for touch, where a long press opens a menu).

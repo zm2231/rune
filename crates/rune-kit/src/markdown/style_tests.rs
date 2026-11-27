@@ -768,3 +768,19 @@ fn list_quote_rule_margins_first_last_nesting_collapsing_and_cache_isolation() {
     assert!(((loose_h - tight_h) - 48.0).abs() < 1.0, "two styles on same source must not collide in memo: tight={tight_h} loose={loose_h}");
 }
 
+
+#[test]
+fn links_and_diffs_take_the_kit_text_roles() {
+    let mut k = crate::Kit::neutral(true);
+    let [link, added, removed] = [0.1, 0.2, 0.3].map(|r| rune::Color { r, g: 0.5, b: 0.5, a: 1.0 });
+    k.roles.link = link;
+    k.roles.added = added;
+    k.roles.removed = removed;
+    let code = rune::Color { r: 0.4, g: 0.5, b: 0.5, a: 1.0 };
+    k.roles.code = code;
+    let style = MarkdownStyle::from_kit(&k);
+    assert_eq!(style.accent, link);
+    assert_eq!(style.diff_hues, [added, removed]);
+    assert_eq!(style.inline_code_text, Some(code));
+    assert_eq!(MarkdownStyle::from_kit(&crate::Kit::neutral(true)).inline_code_text, None, "code at body ink inherits the run's colour");
+}

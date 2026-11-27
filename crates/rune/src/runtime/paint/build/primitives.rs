@@ -249,15 +249,18 @@ impl RuntimeCore {
         // A dashed ring is its own instance over the fill, which then draws without a ring.
         let round = n.vis.border_dash_cap == crate::LineCap::Round;
         let dash = n.vis.border_dash.filter(|[dash, _]| *dash > 0.0 || round);
-        let dashed = dash.filter(|_| has_area && bw > 0.0 && border_a > 0.0005).map(|[dash, gap]| Instance {
-            rect: [r[0], r[1], w, h],
-            radii,
-            fill: border,
-            border: border_bottom.unwrap_or(border),
-            params: [bw, KIND_DASHED, blur * s, 1.0],
-            uv: [dash * k_px, gap * k_px, n.vis.border_dash_phase * k_px, if round { 1.0 } else { 0.0 }],
-            clip,
-            fade: crate::render::pack_fade(fade, clip, clip),
+        let dashed = dash.filter(|_| has_area && bw > 0.0 && border_a > 0.0005).map(|[dash, gap]| {
+            let [near, far] = self.paint.dash_counts.packed(n.id, [w, h], radii, bw, (dash + gap) * k_px);
+            Instance {
+                rect: [r[0], r[1], w, h],
+                radii,
+                fill: border,
+                border: border_bottom.unwrap_or(border),
+                params: [bw, KIND_DASHED, blur * s, near],
+                uv: [dash * k_px, if round { -gap } else { gap } * k_px, n.vis.border_dash_phase * k_px, far],
+                clip,
+                fade: crate::render::pack_fade(fade, clip, clip),
+            }
         });
         // Per-side widths (`El::border_sides`), each snapped as `bw` is; the widest is `bw`.
         let sides = n.vis.border_sides.filter(|_| bw > 0.0).map(|ws| ws.map(|v| pixel_snap::line_width(v * s) * sc));
@@ -496,6 +499,7 @@ impl RuntimeCore {
         } else {
             clip
         };
+        let content_start = self.instances.len();
         self.paint_content(
             i,
             paint_content::LeafBox {
@@ -535,6 +539,9 @@ impl RuntimeCore {
             mark_ranges,
             glyph_count,
         );
+        if !isolate && !in_cache && !skip_paint && loop_vis && !turned && !gliding && cover.is_none() && scale_motion == ScaleMotion::Still {
+            self.record_turn(i, content_start);
+        }
         faded_slot
     }
 }

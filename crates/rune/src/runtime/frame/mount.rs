@@ -75,6 +75,7 @@ impl RuntimeCore {
                     one.color_motion = None;
                 } else {
                     dirty = true;
+                    self.note_state_change();
                 }
                 merge(&mut round_tx, one);
             }

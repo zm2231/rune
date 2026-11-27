@@ -14,6 +14,7 @@ mod rects;
 #[cfg(feature = "test-support")]
 mod requested;
 mod scroll;
+mod window;
 
 #[cfg(feature = "test-support")]
 pub use requested::{FocusKind, FocusRequest, Requested, RevealRequest};
@@ -186,6 +187,7 @@ pub struct Tx {
     pub(crate) evict_memos: Vec<String>,
     /// `Tx::clock`.
     pub(crate) clock: f64,
+    pub(crate) window: Option<std::sync::Arc<str>>,
     /// `Tx::scale` (0 when unset on `Tx::default()`, which reads as 1.0).
     pub(crate) scale: f32,
 }
@@ -424,9 +426,9 @@ impl Tx {
     /// poll runs in between, and deadlines due by the same frame share its one poll. So a
     /// poll that asks `wake_after(d)` on every run starts a new chain of wakes each time
     /// something else makes it run, and an idle window polls more and more often (debug
-    /// builds say so once more than 8 are pending). To repeat, either ask only when arming
-    /// the timer, or ask [`Tx::wake_at`] on a fixed schedule, which a repeat of the same
-    /// deadline doesn't add to:
+    /// builds say so once a poll asks again while its last wake is pending, several runs in
+    /// a row). To repeat, either ask only when arming the timer, or ask [`Tx::wake_at`] on a
+    /// fixed schedule, which a repeat of the same deadline doesn't add to:
     ///
     /// ```
     /// # struct State { next: f64 }

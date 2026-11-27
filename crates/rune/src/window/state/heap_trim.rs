@@ -190,7 +190,7 @@ pub(super) fn probe_glibc_used(
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 #[allow(unsafe_code)]
-mod glibc {
+pub(super) mod glibc {
     use super::{TrimEffect, TrimEvent, TrimState, probe_glibc_used, step, trim_enabled};
     use std::ffi::{CStr, c_int};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -233,22 +233,15 @@ mod glibc {
     type MallinfoFn = unsafe extern "C" fn() -> Mallinfo;
     type MallocTrimFn = unsafe extern "C" fn(pad: libc::size_t) -> c_int;
 
-    struct Coordinator {
+    pub(in crate::window::state) struct Trimmer {
         state: Mutex<TrimState>,
         done: Condvar,
+        calls: AtomicU64,
+        last_nanos: AtomicU64,
     }
 
     static GLIBC_TRIM: OnceLock<Option<MallocTrimFn>> = OnceLock::new();
-    static COORD: OnceLock<Coordinator> = OnceLock::new();
-    static TRIM_CALLS: AtomicU64 = AtomicU64::new(0);
-    static LAST_TRIM_NANOS: AtomicU64 = AtomicU64::new(0);
-
-    fn coord() -> &'static Coordinator {
-        COORD.get_or_init(|| Coordinator {
-            state: Mutex::new(TrimState::default()),
-            done: Condvar::new(),
-        })
-    }
+    pub(super) static TRIMMER: Trimmer = Trimmer::new();
 
     unsafe fn dlsym_default<F: Copy>(symbol: &CStr) -> Option<F> {
         debug_assert_eq!(size_of::<F>(), size_of::<*mut libc::c_void>());
@@ -265,6 +258,7 @@ mod glibc {
     fn resolve_glibc_trim() -> Option<MallocTrimFn> {
         // SAFETY: `malloc_trim`, `mallinfo2`, and `mallinfo` match glibc `<malloc.h>` ABI.
         let trim_fn: MallocTrimFn = unsafe { dlsym_default(c"malloc_trim")? };
+        // SAFETY: `Mallinfo2Fn` is glibc's `mallinfo2` signature from `<malloc.h>`.
         let probed = if let Some(info2) = unsafe { dlsym_default::<Mallinfo2Fn>(c"mallinfo2") } {
             probe_glibc_used(
                 usize::MAX,
@@ -282,7 +276,10 @@ mod glibc {
                     unsafe { std::alloc::dealloc(ptr, layout) };
                 },
             )
-        } else if let Some(info1) = unsafe { dlsym_default::<MallinfoFn>(c"mallinfo") } {
+        } else if let Some(info1) = {
+            // SAFETY: `MallinfoFn` is glibc's `mallinfo` signature from `<malloc.h>`.
+            unsafe { dlsym_default::<MallinfoFn>(c"mallinfo") }
+        } {
             probe_glibc_used(
                 u32::MAX as usize,
                 || {
@@ -309,66 +306,75 @@ mod glibc {
         GLIBC_TRIM.get_or_init(resolve_glibc_trim).is_some()
     }
 
-    pub(super) fn maybe_trim_heap() {
-        if !trim_enabled() {
-            return;
+    impl Trimmer {
+        pub(in crate::window::state) const fn new() -> Self {
+            Self {
+                state: Mutex::new(TrimState::Idle { last_done: None }),
+                done: Condvar::new(),
+                calls: AtomicU64::new(0),
+                last_nanos: AtomicU64::new(0),
+            }
         }
-        let Some(trim_fn) = *GLIBC_TRIM.get_or_init(resolve_glibc_trim) else {
-            return;
-        };
-        let c = coord();
-        let should_spawn = {
-            let mut g = c.state.lock().unwrap_or_else(PoisonError::into_inner);
-            step(&mut g, TrimEvent::Rested { now: crate::time::now() })
-                .into_iter()
-                .any(|e| matches!(e, TrimEffect::Trim))
-        };
-        if !should_spawn {
-            return;
+
+        pub(in crate::window::state) fn rest(&'static self) {
+            if !trim_enabled() {
+                return;
+            }
+            let Some(trim_fn) = *GLIBC_TRIM.get_or_init(resolve_glibc_trim) else {
+                return;
+            };
+            let should_spawn = {
+                let mut g = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+                step(&mut g, TrimEvent::Rested { now: crate::time::now() })
+                    .into_iter()
+                    .any(|e| matches!(e, TrimEffect::Trim))
+            };
+            if !should_spawn {
+                return;
+            }
+            let spawned = rune_core::task::spawn("malloc-trim", move || {
+                let t0 = crate::time::now();
+                // SAFETY: glibc `malloc_trim(0)` takes no pointers and returns free arena pages to
+                // the OS without invalidating any live allocations.
+                let _ = unsafe { trim_fn(0) };
+                let elapsed_ns = t0.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+                self.last_nanos.store(elapsed_ns, Ordering::Relaxed);
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                self.finish();
+            });
+            if spawned.is_err() {
+                self.finish();
+            }
         }
-        let spawned = rune_core::task::spawn("malloc-trim", move || {
-            let t0 = crate::time::now();
-            // SAFETY: glibc `malloc_trim(0)` takes no pointers and returns free arena pages to
-            // the OS without invalidating any live allocations.
-            let _ = unsafe { trim_fn(0) };
-            let elapsed_ns = t0.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
-            LAST_TRIM_NANOS.store(elapsed_ns, Ordering::Relaxed);
-            TRIM_CALLS.fetch_add(1, Ordering::Relaxed);
-            let c = coord();
+
+        fn finish(&self) {
             {
-                let mut g = c.state.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut g = self.state.lock().unwrap_or_else(PoisonError::into_inner);
                 let _ = step(&mut g, TrimEvent::Finished { now: crate::time::now() });
             }
-            c.done.notify_all();
-        });
-        if spawned.is_err() {
-            let mut g = c.state.lock().unwrap_or_else(PoisonError::into_inner);
-            let _ = step(&mut g, TrimEvent::Finished { now: crate::time::now() });
-            c.done.notify_all();
+            self.done.notify_all();
         }
-    }
 
-    pub(super) fn wait_idle() {
-        let c = coord();
-        let mut g = c.state.lock().unwrap_or_else(PoisonError::into_inner);
-        while matches!(*g, TrimState::Running) {
-            g = c.done.wait(g).unwrap_or_else(PoisonError::into_inner);
+        pub(in crate::window::state) fn wait_idle(&self) {
+            let mut g = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            while matches!(*g, TrimState::Running) {
+                g = self.done.wait(g).unwrap_or_else(PoisonError::into_inner);
+            }
         }
-    }
 
-    pub(super) fn trim_calls() -> u64 {
-        TRIM_CALLS.load(Ordering::Relaxed)
-    }
+        pub(in crate::window::state) fn calls(&self) -> u64 {
+            self.calls.load(Ordering::Relaxed)
+        }
 
-    pub(super) fn last_trim_duration() -> Duration {
-        Duration::from_nanos(LAST_TRIM_NANOS.load(Ordering::Relaxed))
-    }
+        pub(super) fn last_duration(&self) -> Duration {
+            Duration::from_nanos(self.last_nanos.load(Ordering::Relaxed))
+        }
 
-    pub(super) fn reset_cooldown_for_test() {
-        let c = coord();
-        let mut g = c.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if matches!(*g, TrimState::Idle { .. }) {
-            *g = TrimState::Idle { last_done: None };
+        pub(in crate::window::state) fn reset_cooldown(&self) {
+            let mut g = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if matches!(*g, TrimState::Idle { .. }) {
+                *g = TrimState::Idle { last_done: None };
+            }
         }
     }
 }
@@ -377,7 +383,7 @@ mod glibc {
 /// Compiles to nothing on every target other than Linux with glibc.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub(crate) fn maybe_trim_heap() {
-    glibc::maybe_trim_heap();
+    glibc::TRIMMER.rest();
 }
 
 /// No-op off Linux/glibc (macOS, Windows, musl, Android, iOS).
@@ -413,7 +419,7 @@ pub mod test_support {
     /// Blocks until any in-flight background `malloc-trim` task finishes.
     pub fn wait_idle() {
         #[cfg(all(target_os = "linux", target_env = "gnu"))]
-        super::glibc::wait_idle();
+        super::glibc::TRIMMER.wait_idle();
     }
 
     /// Returns whether the runtime allocator probe detected glibc's allocator.
@@ -425,7 +431,7 @@ pub mod test_support {
     pub fn trim_calls() -> u64 {
         #[cfg(all(target_os = "linux", target_env = "gnu"))]
         {
-            super::glibc::trim_calls()
+            super::glibc::TRIMMER.calls()
         }
         #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
         {
@@ -437,7 +443,7 @@ pub mod test_support {
     pub fn last_trim_duration() -> Duration {
         #[cfg(all(target_os = "linux", target_env = "gnu"))]
         {
-            super::glibc::last_trim_duration()
+            super::glibc::TRIMMER.last_duration()
         }
         #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
         {
@@ -448,6 +454,6 @@ pub mod test_support {
     /// Clears the 30 s cooldown when idle so multi-scenario tests can measure back-to-back trims.
     pub fn reset_cooldown() {
         #[cfg(all(target_os = "linux", target_env = "gnu"))]
-        super::glibc::reset_cooldown_for_test();
+        super::glibc::TRIMMER.reset_cooldown();
     }
 }

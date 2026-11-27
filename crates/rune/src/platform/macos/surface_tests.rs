@@ -422,10 +422,10 @@ fn detached_metal_layer_retires_presented_drawables_on_idle_poll_and_bounds_resi
         unsafe { let _: () = msg_send![&*layer, setPresentsWithTransaction: Bool::NO]; }
 
         assert!(crate::window::rest::should_poll_on_idle_rest(true, false));
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = crate::time::now() + Duration::from_secs(5);
         let status = loop {
             let status = device.poll(wgpu::PollType::Poll).expect("non-blocking Metal poll");
-            if status == wgpu::PollStatus::QueueEmpty || std::time::Instant::now() > deadline {
+            if status == wgpu::PollStatus::QueueEmpty || crate::time::now() > deadline {
                 break status;
             }
             std::thread::sleep(Duration::from_millis(5));

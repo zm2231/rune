@@ -42,7 +42,7 @@ pub(crate) fn passing(capture: Capture, playback: Playback) -> (Render, Heard) {
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn cancelling(rate: u32, capture: Capture, playback: Playback) -> (Render, Heard) {
     let (producer, consumer) = RingBuffer::new(rate as usize);
-    let cancel = Cancel { aec: Aec::new(rate), reference: consumer, scratch: vec![0.0; rate as usize / 100].into_boxed_slice() };
+    let cancel = Cancel { aec: Aec::new(rate, capture.meters.clone()), reference: consumer, scratch: vec![0.0; rate as usize / 100].into_boxed_slice() };
     (Render { playback, reference: Some(producer) }, Heard { capture, cancel: Some(Box::new(cancel)) })
 }
 
@@ -61,6 +61,11 @@ pub(crate) fn join(render: Render, heard: Heard) -> (Capture, Playback) {
 }
 
 impl Render {
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+    pub(crate) fn silence(&mut self, frames: u64) {
+        self.playback.meters.count_speaker_gap(frames);
+    }
+
     pub(crate) fn render(&mut self, out: &mut [f32]) {
         self.playback.render(out);
         #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -71,6 +76,11 @@ impl Render {
 }
 
 impl Heard {
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+    pub(crate) fn lost(&mut self, frames: u64) {
+        self.capture.meters.count_mic_gap(frames);
+    }
+
     pub(crate) fn capture(&mut self, heard: &[f32]) {
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         if let Some(cancel) = &mut self.cancel {

@@ -88,6 +88,7 @@ pub struct MarkdownStyle {
     pub(super) math_scale: f32,
     /// The icon before a link to a web page: its size and gap (`None`: no icon).
     pub(super) link_icon: Option<[f32; 2]>,
+    pub(super) broken_glyph: f32,
     pub(super) diff_add: Color,
     pub(super) diff_remove: Color,
     pub(super) diff_add_text: Color,
@@ -187,15 +188,15 @@ pub(crate) struct DiagramPaint {
 impl MarkdownStyle {
     pub fn from_kit(k: &Kit) -> MarkdownStyle {
         let c = &k.c;
-        let body = TextStyle { line_height: 22.4, ..k.ty.body };
-        let heading = |size, lh| TextStyle { size, weight: 600.0, line_height: lh, ..body };
+        let body = TextStyle { line_height: k.text_size(22.4), ..k.ty.body };
+        let heading = |size: f32, lh: f32| TextStyle { size: k.text_size(size), weight: 600.0, line_height: k.text_size(lh), ..body };
         MarkdownStyle {
             text: c.text_base,
             muted: c.text_muted,
-            accent: c.text_accent,
-            link_underline: k.alpha(c.text_accent, 0.4),
+            accent: k.roles.link,
+            link_underline: k.alpha(k.roles.link, 0.4),
             code_bg: k.alpha(c.text_base, 0.08),
-            inline_code_text: None,
+            inline_code_text: (k.roles.code != c.text_base).then_some(k.roles.code),
             code_block_fill: c.layer_01,
             code_block_border: c.border_muted,
             quote_rule: c.layer_03,
@@ -203,7 +204,7 @@ impl MarkdownStyle {
             rule: c.border_base,
             body,
             headings: [heading(17.0, 24.0), heading(15.0, 24.0), heading(13.0, 20.0), heading(13.0, 20.0)],
-            code_block: TextStyle { size: 13.0, line_height: 20.0, ..k.ty.mono },
+            code_block: TextStyle { size: k.text_size(13.0), line_height: k.text_size(20.0), ..k.ty.mono },
             code_text: None,
             plain_code_text: None,
             shell: None,
@@ -249,11 +250,12 @@ impl MarkdownStyle {
             wide_fade: 12.0,
             math_scale: 2.0,
             link_icon: None,
-            diff_add: tint(c.layer_01, c.success.icon, if k.dark { 0.11 } else { 0.14 }),
-            diff_remove: tint(c.layer_01, c.danger.icon, if k.dark { 0.11 } else { 0.14 }),
+            broken_glyph: k.text_size(16.0),
+            diff_add: tint(c.layer_01, k.roles.added, if k.dark { 0.11 } else { 0.14 }),
+            diff_remove: tint(c.layer_01, k.roles.removed, if k.dark { 0.11 } else { 0.14 }),
             diff_add_text: c.text_base,
             diff_remove_text: c.text_base,
-            diff_hues: [c.success.icon, c.danger.icon],
+            diff_hues: [k.roles.added, k.roles.removed],
             diff_hunk: c.text_muted,
             syntax: SyntaxTheme::from_kit(k),
             highlight: true,
@@ -275,7 +277,7 @@ impl MarkdownStyle {
                 check: k.glyph.check,
                 radius: k.radius.sm,
                 motion: k.motion.control,
-                size: 16.0,
+                size: k.text_size(16.0),
                 left: 8.0,
                 top: None,
             },
@@ -290,7 +292,7 @@ impl MarkdownStyle {
                 cluster_fill: k.alpha(c.text_base, if k.dark { 0.04 } else { 0.025 }),
                 note_fill: c.warning.bg,
                 note_border: c.warning.border,
-                font: TextStyle { size: 13.0, line_height: 18.0, ..k.ty.body },
+                font: TextStyle { size: k.text_size(13.0), line_height: k.text_size(18.0), ..k.ty.body },
                 max_width: 680.0,
                 min_scale: 0.6,
                 max_items: DEFAULT_DIAGRAM_MAX_ITEMS,
@@ -753,6 +755,7 @@ impl std::hash::Hash for MarkdownStyle {
             wide_fade,
             math_scale,
             link_icon,
+            broken_glyph,
             diff_add,
             diff_remove,
             diff_add_text,
@@ -780,7 +783,7 @@ impl std::hash::Hash for MarkdownStyle {
         (table_outline, table_rule, table_col_rule, table_row_hover, table_shrink, table_head_fill, table_head_text, table_head_rule, table_head_weight.map(f32_bits), table_tabular, table_font).hash(state);
         ([f32_bits(table_pad[0]), f32_bits(table_pad[1])], table_flush_left, table_head_pad.map(|p| p.map(f32_bits)), table_full_width, paragraph_margin.map(f32_bits), heading_margin.map(|m| m.map(f32_bits)), image_margin.map(f32_bits), table_margin.map(f32_bits), code_margin.map(f32_bits), block_margin.map(|m| m.map(f32_bits))).hash(state);
         table_frame.map(|TableFrame { fill, ring, pad }| (fill, ring, f32_bits(pad))).hash(state);
-        (table_bar, text_width.map(f32_bits), prose_width.map(f32_bits), f32_bits(wide_fade), f32_bits(math_scale), link_icon.map(|l| l.map(f32_bits))).hash(state);
+        (table_bar, text_width.map(f32_bits), prose_width.map(f32_bits), f32_bits(wide_fade), f32_bits(math_scale), link_icon.map(|l| l.map(f32_bits)), f32_bits(broken_glyph)).hash(state);
         match table_body {
             None => 0u8.hash(state),
             Some(TableBody { fill, radius, shadows }) => {

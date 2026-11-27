@@ -2,7 +2,7 @@
 
 use rune::{Key, KeyEvent, Tx};
 
-use super::{DiffState, Expand, GAP_H, HEADER_H, LINE_H, LineRef, NOTE_H, Row};
+use super::{DiffState, Expand, LineRef, Row, RowHeights};
 use crate::diff::model::Side;
 
 impl DiffState {
@@ -86,7 +86,7 @@ impl DiffState {
         let mut r = self.visible_rows.start;
         if self.sticky().is_some() {
             let mut room = 0.0;
-            while r + 1 < self.rows.len() && room < HEADER_H {
+            while r + 1 < self.rows.len() && room < self.heights.get().header {
                 room += self.estimate(r);
                 r += 1;
             }
@@ -127,9 +127,10 @@ impl DiffState {
         self.view_w.set(r[2]);
     }
 
-    /// The height the view draws a code line at, so row estimates match what it lays out.
-    pub(crate) fn set_line_height(&self, h: f32) {
-        self.line_h.set(if h > 0.0 { h } else { LINE_H });
+    pub(crate) fn set_row_heights(&self, h: RowHeights) {
+        let pick = |v: f32, base: f32| if v > 0.0 { v } else { base };
+        let b = RowHeights::BASE;
+        self.heights.set(RowHeights { line: pick(h.line, b.line), header: pick(h.header, b.header), gap: pick(h.gap, b.gap), note: pick(h.note, b.note) });
     }
 
     pub(crate) fn view_width(&self) -> f32 {
@@ -196,7 +197,7 @@ impl DiffState {
             return;
         }
         let mut room = 0.0;
-        while top > 0 && room < HEADER_H {
+        while top > 0 && room < self.heights.get().header {
             if matches!(self.rows[top], Row::File(_)) {
                 break;
             }
@@ -207,11 +208,12 @@ impl DiffState {
     }
 
     fn estimate(&self, r: usize) -> f32 {
+        let h = self.heights.get();
         match self.rows[r] {
-            Row::File(_) => HEADER_H,
-            Row::Note(_) => NOTE_H,
-            Row::Gap { .. } => GAP_H,
-            _ => self.line_h.get(),
+            Row::File(_) => h.header,
+            Row::Note(_) => h.note,
+            Row::Gap { .. } => h.gap,
+            _ => h.line,
         }
     }
 }

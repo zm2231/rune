@@ -22,9 +22,10 @@ use super::keys;
 use super::pacing::{self, Effect, Event};
 use super::surface::{Mount, Surface};
 use super::text::input::RuneTextInput;
-use crate::platform::objc_boundary::guarded;
+use crate::frame::loop_frame::LoopFrame;
 use crate::machine::Seq;
 use crate::platform::main_queue::after_main;
+use crate::platform::objc_boundary::guarded;
 use crate::runtime::TouchPhase;
 
 mod accessibility;
@@ -102,6 +103,7 @@ pub(crate) struct Ivars {
     stage: RefCell<Stage>,
     pacing: Cell<pacing::State>,
     seq: Cell<Seq>,
+    loop_frame: Cell<LoopFrame>,
     link: RefCell<Option<Retained<AnyObject>>>,
     /// A wake from another thread is on its way to the main queue: later ones ride with it.
     wake_queued: Arc<AtomicBool>,
@@ -470,6 +472,7 @@ impl RuneView {
             stage: RefCell::new(Stage::Waiting(mount)),
             pacing: Cell::new(pacing::State::Detached),
             seq: Cell::new(Seq::default()),
+            loop_frame: Cell::new(LoopFrame::default()),
             link: RefCell::new(None),
             wake_queued: Arc::new(AtomicBool::new(false)),
             text: RefCell::new(None),
@@ -519,7 +522,7 @@ impl RuneView {
 
     pub(super) fn with_surface<R>(&self, f: impl FnOnce(&mut dyn Surface) -> R) -> Option<R> {
         match &mut *self.ivars().stage.borrow_mut() {
-            Stage::Live(surface) => Some(f(surface.as_mut())),
+            Stage::Live(surface) => Some(super::surface::in_turn(surface.as_mut(), f)),
             Stage::Waiting(_) | Stage::Failed => None,
         }
     }
@@ -528,7 +531,10 @@ impl RuneView {
     fn draw(&self) {
         let Some(target) = self.frame_target() else { return };
         let refresh_hz = self.frame_rate();
-        let drawn = self.with_surface(|surface| (surface.frame(target, refresh_hz), surface.text(), surface.accessibility(), surface.popup(), surface.file_dialog(), surface.share(), surface.interface_style()));
+        let mut loops = self.ivars().loop_frame.get();
+        let only_loops = loops.only_loops();
+        self.ivars().loop_frame.set(loops);
+        let drawn = self.with_surface(|surface| (surface.frame(target, refresh_hz, only_loops), surface.text(), surface.accessibility(), surface.popup(), surface.file_dialog(), surface.share(), surface.interface_style()));
         let Some((frame, text, tree, popup, file, share, style)) = drawn else {
             self.pace(Event::Frame { animating: false, wake_after: None });
             return;
@@ -555,8 +561,18 @@ impl RuneView {
         self.pace(Event::Frame { animating: frame.animating, wake_after: frame.wake_after_secs });
     }
 
+    pub(super) fn touched(&self) {
+        let mut loops = self.ivars().loop_frame.get();
+        loops.touched();
+        self.ivars().loop_frame.set(loops);
+    }
+
     fn pace(&self, event: Event) {
         let ivars = self.ivars();
+        if event == Event::Wake && ivars.pacing.get() == pacing::State::Detached && let Some(control) = ivars.control.borrow().as_ref() {
+            control.borrow().woke();
+        }
+        if !matches!(event, Event::Tick | Event::Timer(_) | Event::Frame { .. }) { self.touched(); }
         let (mut seq, mut state) = (ivars.seq.get(), ivars.pacing.get());
         let effects = pacing::step(&mut seq, &mut state, event);
         ivars.seq.set(seq);

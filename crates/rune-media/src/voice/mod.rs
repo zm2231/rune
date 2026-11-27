@@ -19,7 +19,7 @@
 //! and resumes afterwards.
 //!
 //! **Linux.** The stream opens a record and a playback stream on the default devices through
-//! PulseAudio's simple API, which PipeWire desktops serve through `pipewire-pulse`, and falls back
+//! PulseAudio's asynchronous API, which PipeWire desktops serve through `pipewire-pulse`, and falls back
 //! to ALSA's `default` device. Both libraries are loaded at run time, so a system without either
 //! fails to open with [`VoiceError::OpenFailed`]. Echo cancellation and noise suppression run in
 //! the app, with WebRTC's AEC3 and noise suppressor, using exactly the samples Rune plays as the
@@ -29,9 +29,15 @@
 //! about 700 ms after it was played (a long virtual-cable or network loop) may not be found, and
 //! then isn't cancelled; the sound server moves the streams when the default devices change, and a stream that fails is
 //! rebuilt ([`VoiceEvent::DeviceChanged`]). If the default source is already PipeWire's or
-//! PulseAudio's echo-cancel node, the echo is cancelled twice, which is harmless. Verified
-//! against a real PulseAudio server whose microphone hears the speaker directly; a desktop with
-//! a sound card and PipeWire hasn't been verified yet. Linux has no microphone permission, so
+//! PulseAudio's echo-cancel node, the echo is cancelled twice, which is harmless. When the
+//! speaker runs dry and plays silence, the stream measures the gap (PulseAudio: from the two
+//! streams' timing; ALSA: from the device's delay when it reports an underrun) and counts it in
+//! [`VoiceStats::speaker_gap_frames`]; frames the microphone loses (a hole in PulseAudio's
+//! record stream, or an ALSA overrun) are counted in [`VoiceStats::mic_gap_frames`] and filled
+//! with silence, so later audio keeps its timing. Verified against a real PulseAudio server
+//! whose microphone hears the speaker directly, including a speaker underrun on both
+//! PulseAudio and ALSA; a microphone overrun and a desktop with a sound card and PipeWire
+//! haven't been verified yet. Linux has no microphone permission, so
 //! [`Voice::permission`] is [`MicPermission::Granted`].
 //!
 //! **Windows.** The stream opens shared-mode WASAPI clients on the default communications
@@ -45,8 +51,12 @@
 //! [`Voice::permission`] reads the system's microphone privacy setting for desktop apps; when it
 //! is off the stream fails with a message saying where to turn it on. Windows may lower other
 //! apps' sound during a call, following the Communications setting in the Sound control panel.
-//! Echo cancellation on real Windows hardware hasn't been verified yet; the code is checked by
-//! compiling it and by tests that run without audio devices.
+//! When the speaker runs dry and plays silence, or the microphone drops frames, the stream
+//! measures the gap from the device's clock and positions and counts it in
+//! [`VoiceStats::speaker_gap_frames`] and [`VoiceStats::mic_gap_frames`]. A microphone gap is
+//! filled with silence, so later audio keeps its timing. Echo cancellation on real Windows
+//! hardware hasn't been verified yet; the code is checked by compiling it and by tests that
+//! run without audio devices.
 //!
 //! **The web.** The stream asks the browser for the microphone with its own echo cancellation,
 //! noise suppression and gain control on, and runs both directions through one AudioWorklet in
@@ -87,6 +97,8 @@ mod machine;
 mod rates;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 mod streams;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+mod underrun;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple;
 #[cfg(target_os = "linux")]
@@ -246,7 +258,7 @@ pub enum VoiceEvent {
 }
 
 /// Counters from a [`Voice`]'s audio thread.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[non_exhaustive]
 pub struct VoiceStats {
     pub captured_frames: u64,
@@ -258,8 +270,40 @@ pub struct VoiceStats {
     /// app's thread and the audio thread in time. Only the web counts these: there the audio
     /// passes through the page's main thread, so a long frame or a busy script shows up here.
     pub late_frames: u64,
+    /// Silence the speaker device played because the audio thread fed it late (an underrun),
+    /// as the device reports it. Linux and Windows count these.
+    pub speaker_gap_frames: u64,
+    /// Frames the microphone device lost in a glitch, as the device reports it. They are
+    /// replaced with silence, so later audio keeps its timing. Linux and Windows count these.
+    pub mic_gap_frames: u64,
     /// From the last [`Voice::start`] to the device's first callback.
     pub start_to_audio: Option<Duration>,
+    /// What Rune's own echo canceller reports, refreshed once a second while it runs (Linux, and
+    /// Windows without the system's canceller); `None` when the system cancels the echo.
+    pub echo_canceller: Option<EchoCancellerStats>,
+}
+
+/// The in-app echo canceller's view of the echo, from [`VoiceStats::echo_canceller`]. For
+/// diagnosing a leak: a fall in `erle_db` with a jump in `alignment` means the canceller lost and
+/// re-found the echo; a steady trend in `reference_lead_frames` means the speaker's and
+/// microphone's clocks drift apart; a wider range than usual means speaker and microphone audio
+/// reached the canceller unevenly that second. It doesn't say why delivery was uneven (device
+/// packet sizes or thread scheduling).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct EchoCancellerStats {
+    /// How much the canceller estimates it removes from the echo, in dB (echo return loss
+    /// enhancement).
+    pub erle_db: f32,
+    /// How much quieter than the speaker the canceller estimates the echo is, in dB (echo
+    /// return loss).
+    pub erl_db: f32,
+    /// How far back in the speaker's signal the canceller lines up the echo. It holds a fixed
+    /// starting value until the canceller has found the echo.
+    pub alignment: Duration,
+    /// Speaker frames given to the canceller minus microphone frames, lowest and highest over the
+    /// last second.
+    pub reference_lead_frames: (i64, i64),
 }
 
 /// An echo-cancelled, full-duplex voice stream. Dropping it stops the stream and releases the

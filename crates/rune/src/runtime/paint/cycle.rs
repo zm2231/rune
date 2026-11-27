@@ -1,11 +1,14 @@
 //! A loop-only step: what a loop changes on screen, without the scene being built again. The
 //! ordinary paint records the instances each eligible loop drew: a spinner's dot (a hidden,
-//! decorative leaf with one plain fill and an opacity cycle, nothing else about it moving), and
-//! a shimmer's sliding window (`slide.rs`). A step samples the loops into those instances, and
-//! nothing else runs. Every paint starts the record again. The host draws only what changed
+//! decorative leaf with one plain fill and an opacity cycle, nothing else about it moving), a
+//! loader's turning icon (one glyph whose turn is all that moves), and a shimmer's sliding window
+//! (`slide.rs`). A step samples the loops into those instances, and nothing else runs. Every
+//! paint starts the record again. The host draws only what changed
 //! (`Renderer::arm_cycle` on the web, `Renderer::arm_loop` in a window).
 
 use super::*;
+
+const WAKE_SLACK: f64 = 1e-6;
 
 #[derive(Default)]
 pub(in crate::runtime) struct CyclePaint {
@@ -14,6 +17,7 @@ pub(in crate::runtime) struct CyclePaint {
     paint: u64,
     generation: u64,
     slots: Vec<Slot>,
+    turns: Vec<Turn>,
     pub(super) slides: Vec<super::slide::Slide>,
     pub(super) icons: Vec<IconSlot>,
     mixed: bool,
@@ -45,6 +49,14 @@ struct Slot {
     rect: [f32; 4],
 }
 
+struct Turn {
+    node: usize,
+    id: NodeId,
+    at: usize,
+    base: f32,
+    rect: [f32; 4],
+}
+
 #[derive(Clone, Copy)]
 pub(in crate::runtime) struct IconSlot {
     pub(in crate::runtime) at: usize,
@@ -63,6 +75,7 @@ impl CyclePaint {
         self.paint += 1;
         self.generation = generation;
         self.slots.clear();
+        self.turns.clear();
         self.slides.clear();
         self.icons.clear();
         self.open = None;
@@ -77,6 +90,25 @@ impl CyclePaint {
 
     pub(in crate::runtime) fn record(&mut self, node: usize, at: usize, curve: crate::Cycle, (ink, scale): ([f32; 4], f32), rect: [f32; 4]) {
         self.slots.push(Slot { node, at, curve, ink, scale, rect });
+    }
+
+    pub(in crate::runtime) fn folded(&mut self, marker: usize, opacity: f32) {
+        for s in &mut self.slots {
+            if s.at > marker {
+                s.at -= 1;
+                if s.at == marker { s.scale *= opacity; }
+            }
+        }
+        for t in &mut self.turns {
+            if t.at > marker { t.at -= 1; }
+        }
+        for i in &mut self.icons {
+            if i.at > marker { i.at -= 1; }
+        }
+        for sl in &mut self.slides {
+            if sl.instances.start > marker { sl.instances.start -= 1; }
+            if sl.instances.end > marker { sl.instances.end -= 1; }
+        }
     }
 
     pub(in crate::runtime) fn record_icon(&mut self, slot: IconSlot) {
@@ -124,8 +156,8 @@ impl RuntimeCore {
         let Some((due, _)) = self.motion.loop_wake() else { return false };
         let wall = self.now_clock();
         let keep = &self.paint.keep.cycles;
-        if wall < due || keep.mixed || !keep.icons.is_empty() || keep.generation != self.commit.commits || keep.slots.is_empty()
-            || keep.slots.len() != self.motion.loops_len() || self.reduced_motion || self.time_scale <= 0.0
+        if wall + WAKE_SLACK < due || keep.mixed || !keep.icons.is_empty() || keep.generation != self.commit.commits || keep.slots.is_empty()
+            || keep.slots.len() + self.unseen_loops() != self.motion.loops_len() || self.reduced_motion || self.time_scale <= 0.0
             || !self.live_visible() || !self.rests_except_loop() || self.tracing()
             || self.poll_wake_deadline().is_some_and(|d| d <= wall)
         { return false; }
@@ -149,21 +181,21 @@ impl RuntimeCore {
         let virtual_check = checking() && self.wall_start.is_none();
         let wall = if virtual_check { self.clock + dt } else { self.now_clock() };
         let keep = &self.paint.keep.cycles;
-        let loops = keep.slots.len() + 2 * keep.slides.len();
+        let loops = keep.slots.len() + keep.turns.len() + 2 * keep.slides.len() + self.unseen_loops();
         let has_icons = !keep.icons.is_empty();
         let why = if self.motion.loops_is_empty() && !has_icons { "no loop" }
             else if has_icons && !self.motion.loops_is_empty() { "an animated icon beside a loop" }
             else if loops != self.motion.loops_len() { self.loop_refusal() }
             else if keep.mixed || keep.generation != self.commit.commits { "other motion or a commit" }
             else if (self.wall_start.is_none() && !virtual_check) || self.reduced_motion || self.time_scale <= 0.0 || !self.live_visible() || self.tracing() { "not live" }
-            else if dt < 0.0 || (!has_icons && dt > 1.0 / 30.0) { "late" }
+            else if dt < 0.0 || (!has_icons && dt > crate::frame::clock::MAX_GAP) { "late" }
             else if self.poll_wake_deadline().is_some_and(|d| d <= wall) { "timer due" }
             else if self.commit.virtual_fill.resuming(wall) || self.commit.virtual_items.fill_resuming(wall) { "a list filling" }
             else if let Some(work) = self.waiting_work() { work }
             else { "" };
         if !why.is_empty() { return Err(why); }
         // Running, only loops move; resting, a stepped cycle's or animated icon's wake is due.
-        let due = self.motion.loop_wake().is_some_and(|(due, _)| wall >= due);
+        let due = self.motion.loop_wake().is_some_and(|(due, _)| wall + WAKE_SLACK >= due);
         if self.animating && self.motion.anim_sources != AnimSource::LOOP {
             let other = [(AnimSource::TRACKS, "motion: a track"), (AnimSource::GROWTH, "motion: growth"), (AnimSource::SCROLL, "motion: a scroll"),
                 (AnimSource::REVEAL, "motion: a reveal"), (AnimSource::LIVE, "motion: a live value"), (AnimSource::TEXT_FILL, "motion: text filling"),
@@ -172,7 +204,7 @@ impl RuntimeCore {
                 (AnimSource::ICON_ANIM, "motion: an animated icon")];
             return Err(other.iter().find(|(bit, _)| self.motion.anim_sources & bit != 0).map_or("motion: unknown", |o| o.1));
         }
-        if !self.animating && !due { return Err("no loop due"); }
+        if !self.animating && !due { return if checking() { Err("no loop due") } else { Ok(Vec::new()) }; }
         if has_icons {
             if self.animating || !self.slots_hold() { return Err("a slot moved"); }
             if !self.icon_slots_ready() { return Err("an animated icon needs an atlas slot"); }
@@ -191,6 +223,7 @@ impl RuntimeCore {
         if !self.slots_hold() || (due && self.ambient.is_none()) { return Err("a slot moved"); }
         let t = self.t + dt * f64::from(self.time_scale);
         let poses = self.paint.slide_poses(&self.tree.nodes, &self.motion, &self.scene, &self.instances, self.t, self.reduced_motion, t)?;
+        let turns = self.turn_poses(t, wall)?;
         if checking() {
             // What the step would draw, for the ordinary frame that runs instead (`loop_checked`).
             let mut predicted = self.instances.clone();
@@ -202,6 +235,7 @@ impl RuntimeCore {
             for (sl, &(clip, fade)) in self.paint.keep.cycles.slides.iter().zip(&poses) {
                 for q in &mut predicted[sl.instances.clone()] { q.clip = clip; q.fade = fade; }
             }
+            for (s, &turn) in self.paint.keep.cycles.turns.iter().zip(&turns) { predicted[s.at].params[0] = turn; }
             self.paint.keep.cycles.check = Some(predicted);
             self.paint.keep.cycles.check_clock = Some(wall);
             return Err("checked against an ordinary frame");
@@ -212,13 +246,42 @@ impl RuntimeCore {
         let _ = self.text.mask_cache_frame(false);
         let mut patched = Vec::new();
         self.sample_cycles(&mut patched);
+        for (s, &turn) in self.paint.keep.cycles.turns.iter().zip(&turns) {
+            self.instances[s.at].params[0] = turn;
+            patched.push(s.at as u32);
+        }
         self.paint.apply_slides(&poses, &mut self.instances, &mut patched);
         patched.sort_unstable();
         Ok(patched)
     }
 
+    pub(in crate::runtime) fn record_turn(&mut self, node: usize, at: usize) {
+        let n = &self.tree.nodes[node];
+        let (Some(rune_motion::LoopKind::Rotation { .. }), Some((ic, _))) = (n.looping.as_ref().map(|l| l.kind), n.vis.icon) else { return };
+        if self.instances.len() != at + 1 || self.text.icon_kind(ic) != crate::text::IconKind::Mono { return; }
+        let q = &self.instances[at];
+        if q.params[1] != KIND_GLYPH || q.params[0] == 0.0 { return; }
+        let base = if self.scene.store().has(n.id, P_ICON_TURN) { self.scene.get(n.id, P_ICON_TURN).unwrap_or(n.vis.icon_turn) } else { n.vis.icon_turn };
+        let turn = Turn { node, id: n.id, at, base, rect: q.rect };
+        self.paint.keep.cycles.turns.push(turn);
+    }
+
+    fn turn_poses(&self, t: f64, wall: f64) -> Result<Vec<f32>, &'static str> {
+        let store = self.scene.store();
+        self.paint.keep.cycles.turns.iter().map(|s| {
+            let track = self.motion.loop_track(s.id).ok_or("a rotation without its loop")?;
+            let at = store.node_time(s.id) + (t - store.now()) * f64::from(store.node_time_scale(s.id));
+            let turn = track.sample_at(at, wall, self.reduced_motion) + s.base;
+            if turn == 0.0 { Err("a rotation at rest") } else { Ok(turn) }
+        }).collect()
+    }
+
     /// `RUNE_LOOP_CHECK=1` is set (`checking`).
     pub(crate) fn loop_check_on(&self) -> bool { checking() }
+
+    fn unseen_loops(&self) -> usize {
+        self.motion.loop_ids().filter(|id| self.tree.node_index.get(id).is_some_and(|&i| !self.paint.seen.get(i).copied().unwrap_or(false))).count()
+    }
 
     /// Why a loop on screen has no slot or window (`loop_step`'s answer): the first such loop's
     /// reason, from what paint read.
@@ -227,12 +290,15 @@ impl RuntimeCore {
         if let Some(why) = c.missed { return why; }
         for id in self.motion.loop_ids() {
             let Some(&i) = self.tree.node_index.get(&id) else { continue };
-            if c.slots.iter().any(|s| s.node == i) || c.slides.iter().any(|s| s.window == i || s.counter == i) { continue; }
+            if !self.paint.seen.get(i).copied().unwrap_or(false) { continue; }
+            if c.slots.iter().any(|s| s.node == i) || c.turns.iter().any(|s| s.node == i) || c.slides.iter().any(|s| s.window == i || s.counter == i) { continue; }
             let n = &self.tree.nodes[i];
+            if let Some(rune_motion::LoopKind::Rotation { .. }) = n.looping.as_ref().map(|l| l.kind) {
+                return if n.vis.icon.is_none() { "a rotation that isn't an icon" } else { "a rotation paint didn't record" };
+            }
             let Some(rune_motion::LoopKind::OpacityCycle(_)) = n.looping.as_ref().map(|l| l.kind) else { return "a loop that isn't a cycle or a window" };
             let parent = n.parent.map_or_else(|| self.root_inh(), |p| self.paint.inh_scratch[p]);
-            return if !self.paint.seen.get(i).copied().unwrap_or(false) { "a cycle out of sight" }
-                else if !n.a11y.hidden { "a cycle screen readers see" }
+            return if !n.a11y.hidden { "a cycle screen readers see" }
                 else if self.tree.nodes.get(i + 1).is_some_and(|m| m.parent == Some(i)) { "a cycle with children" }
                 else if n.vis.layer_opacity != 1.0 || n.vis.paint_alpha != 1.0 { "a cycle that fades itself" }
                 else if parent.in_cache() || parent.skip_paint() || parent.turn != 0 { "a cycle in a layer" }
@@ -272,6 +338,7 @@ impl RuntimeCore {
     /// instance, even if the instance count stayed the same.
     fn slots_hold(&self) -> bool {
         self.paint.keep.cycles.slots.iter().all(|s| self.instances.get(s.at).is_some_and(|q| q.rect == s.rect && q.params[1] == KIND_RECT))
+            && self.paint.keep.cycles.turns.iter().all(|s| self.instances.get(s.at).is_some_and(|q| q.rect == s.rect && q.params[1] == KIND_GLYPH))
             && self.paint.keep.cycles.icons.iter().all(|s| self.instances.get(s.at).is_some_and(|q| q.rect == s.rect && q.params[1] == KIND_GLYPH))
     }
 
@@ -342,7 +409,7 @@ impl RuntimeCore {
             // differ from what it holds.
             patched.push(s.at as u32);
         }
-        if let (Some((due, phase)), Some(dt)) = (self.motion.loop_wake(), self.ambient.map(f64::from)) && self.clock >= due {
+        if let (Some((due, phase)), Some(dt)) = (self.motion.loop_wake(), self.ambient.map(f64::from)) && self.clock + WAKE_SLACK >= due {
             self.motion.set_loop_wake((self.clock + dt, phase + (self.clock + dt - due) * f64::from(self.time_scale)));
         }
     }

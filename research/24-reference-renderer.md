@@ -9,8 +9,8 @@ bug: interpolated screen coordinates selected an adjacent atlas column. Its
 single-primitive regression differed by up to 83 channel levels before the fix.
 After the fix, measured single-primitive errors are at most 1 level; composited
 scenes reach 2 on Metal, AMD DX12 and WARP, and 3 on NVIDIA under DX12. The gate
-allows 2 per channel (3 for multi-draw composites on NVIDIA under DX12) and
-**zero outlier pixels**.
+allows 2 per channel (3 for multi-draw composites on NVIDIA under DX12, and one
+more per draw on lavapipe) and **zero outlier pixels**.
 
 ## The oracle evaluates the formulas Rune actually ships
 
@@ -126,6 +126,30 @@ draws can accumulate 3 LSB against the CPU oracle while single draws stay within
 only when the adapter is NVIDIA under DX12 (vendor `0x10DE`, `Backend::Dx12`)
 and keeps 2 everywhere else (and 2 for every single draw). NVIDIA under Vulkan
 has not been measured and stays at 2 until measured.
+
+### Measured budget on lavapipe (Vulkan, Mesa llvmpipe)
+
+Lavapipe (`llvmpipe (LLVM 20.1.2, 256 bits)`, vendor `0x10005`) passes every
+single-draw check at 2 LSB, but composite checks of translucent draws over dark
+pixels drift one LSB per draw. The drift comes from lavapipe's linear-to-sRGB
+encode, not from shader math:
+
+- Opaque grey fills of 4096 linear values in `[0, 0.3]` land on the next sRGB
+  level up for 250 of them, as far as 0.644 LSB from the exact value. The
+  misses cluster in dark tones.
+- Shader output matches the oracle. A blurred shadow alone over a transparent
+  target is identical in every channel. Over the clear `[0.025, 0.04, 0.06]`,
+  all 454 differing pixels round, in an f64 model of the same scene, to the
+  oracle's value and never to lavapipe's.
+- Rect and shadow pipelines drift identically on flat translucent fills.
+- Every draw re-encodes the pixels it covers, so same-signed misses add up. In a
+  four-draw proptest scene the error at one pixel goes 1, 2, 3, 4 as each draw
+  is added.
+
+`CompositeTolerance::PerDraw` therefore allows 2 plus one per draw after the
+first, on lavapipe only. A fixed cap keeps being exceeded by the proptest: 3
+fails on a four-draw scene. Over 1,500 random proptest scenes the maximum was
+3 (by draw count: 1 for one draw, 2 for two or three, 3 for four to eight).
 
 Also passed: 128 GPU proptest scenes, 128 CPU metamorphic cases, 32 GPU
 metamorphic scenes, and the saved glyph regression. The allocation gates passed

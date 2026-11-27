@@ -333,8 +333,8 @@ impl Select {
                 .child(
                     text(o.clone()).key("label").font(k.ty.ui_compact).color(c.text_base).grow(1.0).shrink().truncate().a11y_hidden(),
                 )
-                .child(el().key("indicator").size(16.0, 16.0).center().a11y_hidden().child(
-                    icon(k.glyph.check_small, 14.0).color(c.icon_base).opacity(if selected { 1.0 } else { 0.0 }),
+                .child(el().key("indicator").size(k.text_size(16.0), k.text_size(16.0)).center().a11y_hidden().child(
+                    icon(k.glyph.check_small, k.text_size(14.0)).color(c.icon_base).opacity(if selected { 1.0 } else { 0.0 }),
                 ));
             if let Some(d) = self.details.get(i).cloned().flatten() {
                 item = item.description(d);
@@ -382,8 +382,8 @@ impl Select {
         let anchor_key = trigger_key(&self.key);
         let red = self.invalid && !disabled && k.invalid_text;
         let (label, ink) = match &self.current {
-            Some(v) => (v.clone(), if red { c.danger.fg } else { c.text_base }),
-            None => (self.placeholder.clone(), if red { c.danger.fg } else { c.text_faint }),
+            Some(v) => (v.clone(), if red { k.roles.error } else { c.text_base }),
+            None => (self.placeholder.clone(), if red { k.roles.error } else { c.text_faint }),
         };
         let sm = k.select_metrics();
         let chevron: &'static Icon = if self.open { k.glyph.chevron_up } else { k.glyph.chevron_down };
@@ -398,13 +398,13 @@ impl Select {
         }
         trigger = match self.appearance {
             SelectAppearance::Inline => {
-                let font = TextStyle { line_height: 16.0, ..k.ty.ui_medium };
+                let font = TextStyle { line_height: k.text_size(16.0), ..k.ty.ui_medium };
                 let hover = self.state == State::Hover || self.open;
                 // select.css: the inline trigger takes the default ring, 2 out, while closed
                 // (opencode#64909).
                 let t = if self.open { trigger.no_focus_ring() } else { k.focus_ring_state(trigger, 2.0, 2.0, self.state == State::Focus) };
                 let t = t
-                    .h(24.0)
+                    .h(k.text_size(24.0))
                     .pl(8.0)
                     .pr(4.0)
                     .py(4.0)
@@ -417,7 +417,7 @@ impl Select {
             SelectAppearance::Field => {
                 let t = if self.fill { trigger.w_full().shrink() } else { trigger.w_full().max_w(self.width).shrink() };
                 let mut t = t
-                    .h(28.0)
+                    .h(k.text_size(28.0))
                     .pr(6.0)
                     .gap(8.0)
                     .radius(k.radius.md)

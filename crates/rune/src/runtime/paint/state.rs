@@ -58,6 +58,7 @@ pub(crate) struct PaintState {
     /// Drawn videos' state generations; a change re-runs the view.
     pub(super) video_signature: u64,
     pub(super) pixel_snap: pixel_snap::Glides,
+    pub(super) dash_counts: super::dash::DashCounts,
     /// Last scale observation per node that has a scale or had one. See [`ScaleMotion`].
     pub(super) static_scales: HashMap<NodeId, ScaleSettle>,
     /// What the last paint painted, for subtrees that would paint it again (`paint_keep`).
@@ -154,6 +155,7 @@ impl PaintState {
             seen: Vec::new(),
             video_signature: 0,
             pixel_snap: Default::default(),
+            dash_counts: Default::default(),
             static_scales: HashMap::default(),
             keep: Default::default(),
             turn_scratch: Vec::new(),

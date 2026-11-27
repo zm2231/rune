@@ -61,24 +61,61 @@ impl From<&Primitive> for Instance {
 /// Default per-channel tolerance for a single draw and for exact-blending composites.
 pub const DEFAULT_TOLERANCE: u8 = 2;
 
-/// `(backend, pci_vendor_id, composite_tolerance)` entries measured on hardware whose fixed-function
-/// sRGB ROP pre-quantizes linear fragment output to 8 bits before blending.
+/// How far a composite of several draws may drift from the CPU oracle on one adapter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompositeTolerance {
+    /// The same per-channel tolerance however many draws the scene has.
+    Fixed(u8),
+    /// [`DEFAULT_TOLERANCE`] plus one per draw after the first: the adapter's linear-to-sRGB
+    /// encode is not correctly rounded, and every draw re-encodes the pixels it covers.
+    PerDraw,
+}
+
+impl CompositeTolerance {
+    /// The per-channel tolerance for a scene of `draws` primitives.
+    pub fn for_draws(self, draws: usize) -> u8 {
+        match self {
+            Self::Fixed(tol) => tol,
+            Self::PerDraw => {
+                let extra = u8::try_from(draws.saturating_sub(1)).unwrap_or(u8::MAX);
+                DEFAULT_TOLERANCE.saturating_add(extra)
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for CompositeTolerance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fixed(tol) => write!(f, "{tol}"),
+            Self::PerDraw => write!(f, "{DEFAULT_TOLERANCE}+1/draw"),
+        }
+    }
+}
+
+/// `(backend, pci_vendor_id, tolerance)` entries measured on adapters whose sRGB blend is less
+/// precise than the CPU oracle's (research/24-reference-renderer.md).
 ///
 /// Direct3D 11.3 Functional Specification §17.5 permits fixed-point render target blending at
 /// output-format precision (8 bits). On NVIDIA under DX12, four to five overlapping translucent
-/// draws into `Rgba8UnormSrgb` accumulate up to 3 LSB against the CPU oracle, whereas AMD Radeon
-/// DX12, WARP DX12, and Apple M4 Pro / Metal stay within 2 LSB. Single draws stay within 2 LSB on
-/// every measured adapter. NVIDIA under Vulkan is not measured and stays at 2 until measured.
-const MEASURED_COMPOSITE_TOLERANCE: [(wgpu::Backend, u32, u8); 1] =
-    [(wgpu::Backend::Dx12, 0x10DE, 3)];
+/// draws into `Rgba8UnormSrgb` accumulate up to 3 LSB against the CPU oracle. Mesa's lavapipe
+/// (Vulkan, vendor `0x10005`) writes the next sRGB level up for about 6% of linear values, so each
+/// translucent draw over a dark pixel can add one LSB. AMD Radeon DX12, WARP DX12, and Apple M4
+/// Pro / Metal stay within 2 LSB. Single draws stay within 2 LSB on every measured adapter. NVIDIA
+/// under Vulkan is not measured and stays at 2 until measured.
+const MEASURED_COMPOSITE_TOLERANCE: [(wgpu::Backend, u32, CompositeTolerance); 2] = [
+    (wgpu::Backend::Dx12, 0x10DE, CompositeTolerance::Fixed(3)),
+    (wgpu::Backend::Vulkan, 0x10005, CompositeTolerance::PerDraw),
+];
 
-/// Composite per-channel tolerance for `info`: 3 for NVIDIA under DX12 (vendor `0x10DE`), and 2
-/// everywhere else. Single-primitive checks always stay at [`DEFAULT_TOLERANCE`] (2).
-pub fn composite_tolerance(info: &wgpu::AdapterInfo) -> u8 {
+/// Composite tolerance for `info`: 3 for NVIDIA under DX12 (vendor `0x10DE`), one more per draw
+/// for lavapipe (Vulkan, vendor `0x10005`), and 2 everywhere else. Single-primitive checks always
+/// stay at [`DEFAULT_TOLERANCE`] (2).
+pub fn composite_tolerance(info: &wgpu::AdapterInfo) -> CompositeTolerance {
     MEASURED_COMPOSITE_TOLERANCE
         .iter()
         .find(|&&(backend, vendor, _)| backend == info.backend && vendor == info.vendor)
-        .map_or(DEFAULT_TOLERANCE, |&(_, _, tol)| tol)
+        .map_or(CompositeTolerance::Fixed(DEFAULT_TOLERANCE), |&(_, _, tol)| tol)
 }
 
 pub struct GpuRenderer {
@@ -133,15 +170,15 @@ impl GpuRenderer {
         self.gpu.adapter.get_info()
     }
 
-    pub fn composite_tolerance(&self) -> u8 {
+    pub fn composite_tolerance(&self) -> CompositeTolerance {
         composite_tolerance(&self.adapter_info())
     }
 
     /// Tolerance for `scene`: [`DEFAULT_TOLERANCE`] (2) for a single draw, and
-    /// [`Self::composite_tolerance`] when several draws can blend into a pixel.
+    /// [`Self::composite_tolerance`] for its draw count when several draws can blend into a pixel.
     pub fn scene_tolerance(&self, scene: &Scene) -> u8 {
         if scene.primitives.len() > 1 {
-            self.composite_tolerance()
+            self.composite_tolerance().for_draws(scene.primitives.len())
         } else {
             DEFAULT_TOLERANCE
         }

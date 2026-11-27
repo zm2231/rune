@@ -525,6 +525,11 @@ impl<S: 'static> Runtime<S> {
         core.cancel_file_dialogs(&mut app);
     }
     #[cfg(test)]
+    pub(crate) fn cancel_shares(&mut self) {
+        let (core, mut app) = self.split_mut();
+        core.cancel_shares(&mut app);
+    }
+    #[cfg(test)]
     #[inline(always)]
     pub(crate) fn file_dialog_json(&self) -> Option<serde_json::Value> { self.core().file_dialog_json() }
     #[inline(always)]

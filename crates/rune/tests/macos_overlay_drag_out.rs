@@ -219,6 +219,7 @@ mod mac {
             return;
         }
         std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(60)); eprintln!("timeout"); std::process::exit(2) });
+        rune::orderly_exit();
         let file = std::env::temp_dir().join(format!("rune-overlay-drag-out-{}.txt", std::process::id()));
         std::fs::write(&file, "dragged out of a Rune overlay\n").unwrap();
         *FILE.lock().unwrap() = Some(file.clone());
@@ -248,6 +249,7 @@ mod mac {
                     std::process::exit(0);
                 }
             }));
+            if run.is_err() { eprintln!("macos_overlay_drag_out: failed"); std::process::exit(1); }
             *out.lock().unwrap() = Some(run.is_ok());
             handle.quit();
         });

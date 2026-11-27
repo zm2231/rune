@@ -83,13 +83,13 @@ impl Dialog {
         if !self.open { return; }
         let dm = k.dialog_metrics();
         let title_font = dm.title.unwrap_or_else(|| {
-            if self.description.is_some() { TextStyle { size: 15.0, tracking: -0.13, ..k.ty.ui_medium }.lh(20.0) }
-            else { k.ty.ui_medium.lh(16.0) }
+            if self.description.is_some() { TextStyle { size: k.text_size(15.0), tracking: k.text_size(-0.13), ..k.ty.ui_medium }.lh(k.text_size(20.0)) }
+            else { k.ty.ui_medium.lh(k.text_size(16.0)) }
         });
         let mut title = col().grow(1.0).shrink().gap(4.0).child(text(self.title.clone())
             .font(title_font).color(k.c.text_base));
         if let Some(description) = self.description.clone() {
-            title = title.child(text(description).font(k.ty.ui.lh(20.0)).color(k.c.text_muted).wrap().w_full());
+            title = title.child(text(description).font(k.ty.ui.lh(k.text_size(20.0))).color(k.c.text_muted).wrap().w_full());
         }
         let mut header = row().key("header").w_full().padding(dm.padding).items_start().child(title);
         if let Some(button) = self.button {

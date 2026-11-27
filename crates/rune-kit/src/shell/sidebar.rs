@@ -11,10 +11,10 @@ use crate::{ControlSize, IconButton, IconButtonVariant, Kit, Spinner};
 type Apply = Box<dyn FnOnce(El) -> El>;
 type Themed = Box<dyn FnOnce(&Kit) -> El>;
 
-/// A sidebar row's height (AppKit's medium source-list row).
+/// A sidebar row's height (AppKit's medium source-list row), at the theme's own text size.
 pub const ROW_HEIGHT: f32 = 28.0;
 /// A two-line sidebar row's default height when [`SidebarRow::subtitle`] is set without
-/// [`SidebarRow::height`].
+/// [`SidebarRow::height`], at the theme's own text size.
 pub const TWO_LINE_ROW_HEIGHT: f32 = 40.0;
 /// Each level of [`SidebarRow::depth`] indents this far.
 pub const INDENT: f32 = 16.0;
@@ -40,7 +40,7 @@ pub struct Sidebar {
     header_gap: f32,
     header_pad: [f32; 2],
     row_gap: f32,
-    row_height: f32,
+    row_height: Option<f32>,
 }
 
 impl Sidebar {
@@ -54,7 +54,7 @@ impl Sidebar {
             header_gap: 2.0,
             header_pad: [0.0, INSET],
             row_gap: 0.0,
-            row_height: ROW_HEIGHT,
+            row_height: None,
         }
     }
     /// Points between the sidebar's sides and its rows, header and footer (default 8).
@@ -78,10 +78,11 @@ impl Sidebar {
         self.row_gap = points.max(0.0);
         self
     }
-    /// The height of [`Self::virtual_rows`]' rows (default [`ROW_HEIGHT`]). Give the rows the
+    /// The height of [`Self::virtual_rows`]' rows (default [`ROW_HEIGHT`] at the kit's
+    /// [`Kit::text_scale`]). Give the rows the
     /// same height with [`SidebarRow::height`].
     pub fn row_height(mut self, points: f32) -> Self {
-        self.row_height = points.max(1.0);
+        self.row_height = Some(points.max(1.0));
         self
     }
     /// The list's accessible name.
@@ -133,7 +134,7 @@ impl Sidebar {
         let list = col().key("sidebar-list").role("list").label(self.label).focus_group().focus_follows().w_full().px(inset);
         let list = match self.body {
             Body::Items(items) => list.pb(INSET).gap(self.row_gap).children(items.into_iter().map(|f| f(k))),
-            Body::Virtual(rows) => rows(list.growth(GrowthSpec::default()), self.row_height),
+            Body::Virtual(rows) => rows(list.growth(GrowthSpec::default()), self.row_height.unwrap_or_else(|| k.text_size(ROW_HEIGHT))),
         };
         let mut root = col().key("sidebar").w_full().h_full().min_h(0.0);
         if !self.header.is_empty() {
@@ -214,7 +215,7 @@ impl SidebarHeader {
         }
         if let Some(collapsed) = self.collapsed {
             let glyph = if collapsed { k.glyph.triangle_right } else { k.glyph.triangle_down };
-            title = title.child(icon(glyph, 12.0).key("disclosure").color(c.icon_faint));
+            title = title.child(icon(glyph, k.text_size(12.0)).key("disclosure").color(c.icon_faint));
         }
         // Its title names it, the count describes it, and a reader hears it expanded or collapsed.
         let mut header = row()
@@ -573,7 +574,7 @@ impl SidebarRow {
         let renaming = self.rename.is_some();
         let (ink, glyph) = if self.selected { (c.text_base, c.icon_base) } else { (c.text_muted, c.icon_muted) };
         let two_lines = self.subtitle.is_some();
-        let height = self.height.unwrap_or(if two_lines { TWO_LINE_ROW_HEIGHT } else { ROW_HEIGHT });
+        let height = self.height.unwrap_or_else(|| k.text_size(if two_lines { TWO_LINE_ROW_HEIGHT } else { ROW_HEIGHT }));
         let font = self.title_style.unwrap_or(if two_lines {
             TextStyle { weight: 500.0, ..k.ty.ui_compact }
         } else {
@@ -616,8 +617,8 @@ impl SidebarRow {
             r = r.fill(c.pressed);
         }
         let lead = match (self.avatar, self.icon) {
-            (Some(a), _) => Some(row().key("avatar").size(16.0, 16.0).center().child(a).a11y_hidden()),
-            (None, Some(i)) => Some(icon(i, 16.0).key("icon").color(glyph).a11y_hidden()),
+            (Some(a), _) => Some(row().key("avatar").size(k.text_size(16.0), k.text_size(16.0)).center().child(a).a11y_hidden()),
+            (None, Some(i)) => Some(icon(i, k.text_size(16.0)).key("icon").color(glyph).a11y_hidden()),
             _ => None,
         };
         let has_lead = lead.is_some();
@@ -641,7 +642,7 @@ impl SidebarRow {
             Some(sub) => {
                 let first = row().key("line1").w_full().gap(6.0).center_y().children(lead).child(label);
                 let second = text(sub).key("subtitle").font(sub_font).color(self.subtitle_color.unwrap_or(c.text_faint)).truncate().w_full().a11y_hidden();
-                let second = row().key("line2").w_full().pl(if has_lead { 16.0 + 6.0 } else { 0.0 }).child(second);
+                let second = row().key("line2").w_full().pl(if has_lead { k.text_size(16.0) + 6.0 } else { 0.0 }).child(second);
                 r.child(col().key("lines").grow(1.0).shrink().min_w(0.0).child(first).child(second))
             }
             None => r.children(lead).child(label),
@@ -654,7 +655,7 @@ impl SidebarRow {
                 row()
                     .a11y_hidden()
                     .key("badge")
-                    .h(16.0)
+                    .h(k.text_size(16.0))
                     .px(5.0)
                     .center()
                     .radius(8.0)
@@ -666,16 +667,16 @@ impl SidebarRow {
             r = r.child(t);
         }
         if self.status.is_some() || self.close.is_some() {
-            let dot = |color| el().size(7.0, 7.0).radius(3.5).fill(color);
+            let dot = |color| el().size(k.text_size(7.0), k.text_size(7.0)).radius(k.text_size(3.5)).fill(color);
             let status = self.status.map(|s| match s {
-                RowStatus::Busy => Spinner::new().size(12.0).color(c.icon_muted).build(k),
+                RowStatus::Busy => Spinner::new().size(k.text_size(12.0)).color(c.icon_muted).build(k),
                 RowStatus::Attention => dot(c.warning.icon),
                 RowStatus::Unread => dot(c.bg_accent),
                 RowStatus::Other(e) => e,
             });
-            let mut slot = row().key("status").size(20.0, 20.0).center();
+            let mut slot = row().key("status").size(k.text_size(20.0), k.text_size(20.0)).center();
             if let Some(st) = status {
-                let st = row().key("status-mark").size(20.0, 20.0).center().child(st).a11y_hidden();
+                let st = row().key("status-mark").size(k.text_size(20.0), k.text_size(20.0)).center().child(st).a11y_hidden();
                 slot = slot.child(if self.close.is_some() { st.group_opacity(1.0, 0.0) } else { st });
             }
             if let Some(bind) = self.close {

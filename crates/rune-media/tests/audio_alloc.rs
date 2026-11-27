@@ -113,7 +113,7 @@ fn audio_worker_thread_allocates_nothing_while_playing() {
     // Stream ~120 ms of live audio across the worker thread while pushing and polling position.
     while audio.heard_frames() < start_heard + 5_760 {
         if audio.has_capacity(480) {
-            let _ = audio.push_i16(&chunk);
+            assert_eq!(audio.push_i16(&chunk), Ok(480));
         }
         let _ = audio.position();
         std::thread::sleep(Duration::from_millis(5));

@@ -247,7 +247,7 @@ impl MenuItem {
             content = content.child(l);
         }
         if let Some(i) = self.icon {
-            content = content.child(icon(i, 14.0).key("icon").color(if danger {
+            content = content.child(icon(i, k.text_size(14.0)).key("icon").color(if danger {
                 c.danger.fg
             } else if standard {
                 c.std_icon
@@ -301,7 +301,7 @@ impl MenuItem {
         }
         e = e.child(content);
         if let Some(s) = self.shortcut {
-            let st = TextStyle { line_height: 11.0, ..k.ty.small_medium };
+            let st = TextStyle { line_height: k.text_size(11.0), ..k.ty.small_medium };
             e = e.child(text(s).key("shortcut").font(st).color(c.text_faint).a11y_hidden());
         }
         if let Some(b) = self.badge {
@@ -309,20 +309,20 @@ impl MenuItem {
                 row()
                     .a11y_hidden()
                     .key("badge")
-                    .h(16.0)
+                    .h(k.text_size(16.0))
                     .px(4.0)
                     .center()
                     .radius(2.0)
                     .fill(c.layer_02)
                     .border(0.5, c.border_base)
-                    .child(text(b).font(TextStyle { line_height: 11.0, ..k.ty.small_medium }).color(c.text_muted)),
+                    .child(text(b).font(TextStyle { line_height: k.text_size(11.0), ..k.ty.small_medium }).color(c.text_muted)),
             );
         }
         if let Some(on) = self.checked {
-            let mark = icon(k.glyph.check_small, 14.0)
+            let mark = icon(k.glyph.check_small, k.text_size(14.0))
                 .color(if standard { c.std_icon } else { c.icon_base })
                 .opacity(if on { 1.0 } else { 0.0 });
-            e = e.child(el().key("indicator").size(16.0, 16.0).center().child(mark).a11y_hidden());
+            e = e.child(el().key("indicator").size(k.text_size(16.0), k.text_size(16.0)).center().child(mark).a11y_hidden());
         }
         let sub_open = self.sub.as_ref().is_some_and(|s| s.1);
         let toggle = self.sub.as_ref().and(self.sub_toggle.clone()).filter(|_| !disabled);
@@ -382,7 +382,7 @@ impl MenuItem {
         }
         if let Some((entries, open)) = self.sub {
             // It points where the submenu opens: left, right to left (`menu.css`).
-            e = e.child(icon(k.glyph.caret_right, 16.0).key("chevron").a11y_hidden().mirror_in_rtl().color(if standard {
+            e = e.child(icon(k.glyph.caret_right, k.text_size(16.0)).key("chevron").a11y_hidden().mirror_in_rtl().color(if standard {
                 c.std_icon
             } else {
                 c.text_faint

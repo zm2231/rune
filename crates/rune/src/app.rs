@@ -115,6 +115,7 @@ pub struct App<S: 'static> {
     pub(crate) chrome: crate::Chrome,
     pub(crate) titlebar: Option<crate::Titlebar>,
     init: Option<Box<dyn FnOnce() -> S>>,
+    pub(crate) shared_state: Option<crate::SharedState<S>>,
     argv: Option<Vec<String>>,
     pub(crate) open: bool,
     pub(crate) release_gpu: bool,
@@ -204,6 +205,7 @@ impl<S: 'static> App<S> {
             chrome: crate::Chrome::DEFAULT,
             titlebar: None,
             init: None,
+            shared_state: None,
             argv: None,
             open: true,
             release_gpu: false,
@@ -1378,10 +1380,13 @@ impl<S: 'static> App<S> {
     }
 
     pub(crate) fn into_parts(self, scene: Option<&str>) -> (AppSpec<S>, S, Arc<Shared<S>>, RuntimeConfig<S>) {
-        let state = crate::tooling::perf_warn::launch::init(|| match self.init {
-            Some(init) => crate::tooling::with_scene(&self.spec, init(), scene),
-            None => crate::tooling::initial_state(&self.spec, scene),
-        });
+        let state = match &self.shared_state {
+            Some(shared) => shared.take_for_one(),
+            None => crate::tooling::perf_warn::launch::init(|| match self.init {
+                Some(init) => crate::tooling::with_scene(&self.spec, init(), scene),
+                None => crate::tooling::initial_state(&self.spec, scene),
+            }),
+        };
         (self.spec, state, self.shared, self.runtime)
     }
 }
@@ -1391,6 +1396,7 @@ pub(crate) use config::RuntimeConfig;
 mod handle;
 pub use handle::AppHandle;
 mod requests;
+mod shared_windows;
 pub(crate) use requests::{window_request_order, Activation, Shared, SharedCore, WindowRequest, WindowRequests};
 
 #[cfg(test)]

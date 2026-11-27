@@ -56,8 +56,9 @@ pub(crate) trait Surface {
     // Size and frames.
     /// The view's size in points and its display scale.
     fn resize(&mut self, size: (f32, f32), scale: f32);
-    /// Steps the app to `target`, when the frame will be on screen, and presents it.
-    fn frame(&mut self, target: Instant, refresh_hz: Option<f64>) -> EmbedFrame;
+    /// Steps the app to `target`, when the frame will be on screen, and presents it: with
+    /// `only_loops`, when nothing but its loops asked for the frame, a loop-only step may do.
+    fn frame(&mut self, target: Instant, refresh_hz: Option<f64>, only_loops: bool) -> EmbedFrame;
     fn presents(&mut self);
 
     // Touch and pointer.
@@ -145,13 +146,25 @@ pub(crate) trait Surface {
 
     fn takes_touch(&self, control: &Control, x: f32, y: f32) -> bool;
     fn take_overlays(&mut self) -> Vec<OverlaySlot>;
+    fn hidden_parts(&mut self) -> crate::overlay::ios::Mounted<'_>;
     fn set_window(&mut self, key: String);
     fn close(&mut self);
+
+    fn enter_turn(&mut self);
+    fn leave_turn(&mut self);
+}
+
+pub(super) fn in_turn<R>(surface: &mut dyn Surface, f: impl FnOnce(&mut dyn Surface) -> R) -> R {
+    surface.enter_turn();
+    let result = f(&mut *surface);
+    surface.leave_turn();
+    result
 }
 
 pub(crate) struct OverlaySlot {
     pub(crate) control: Rc<RefCell<Control>>,
     pub(crate) mount: Mount,
+    pub(crate) standby: crate::overlay::ios::Standby,
 }
 
 pub(super) struct Hosted<S: 'static> {
@@ -168,6 +181,13 @@ pub(super) struct Hosted<S: 'static> {
     pub(super) appearance: Appearance,
     pub(super) park: park::State,
     pub(super) feedback: Feedback,
+    pub(super) member: Option<crate::shared_state::Member<S>>,
+}
+
+impl<S: 'static> Drop for Hosted<S> {
+    fn drop(&mut self) {
+        if let Some(member) = &mut self.member { member.release(self.host.runtime_mut()); }
+    }
 }
 
 pub(super) enum Role<S: 'static> {
@@ -275,13 +295,13 @@ impl<S: 'static> Surface for Hosted<S> {
     // Size and frames.
     fn resize(&mut self, size: (f32, f32), scale: f32) { self.host.resize(size, scale); }
 
-    fn frame(&mut self, target: Instant, refresh_hz: Option<f64>) -> EmbedFrame {
+    fn frame(&mut self, target: Instant, refresh_hz: Option<f64>, only_loops: bool) -> EmbedFrame {
         self.accessibility.receive(self.host.runtime_mut().core_mut(), self.title);
         self.park_step(park::Event::Drawing);
         self.app_requests();
         if let Role::Overlay(overlay) = &self.role { overlay.feed.drain(self.host.runtime_mut()); }
         self.host.runtime_mut().core_mut().take_late_link_answers();
-        let summary = self.host.frame_summary(Some(target));
+        let summary = self.host.frame_summary(Some(target), only_loops);
         if summary.drawn.is_some() { crate::marks::presented(); }
         self.feedback.frame(&summary, target, refresh_hz);
         let frame = EmbedFrame::from(summary);
@@ -541,6 +561,8 @@ impl<S: 'static> Surface for Hosted<S> {
         control.takes(self.host.runtime().hit_regions(), x, y)
     }
 
+    fn hidden_parts(&mut self) -> crate::overlay::ios::Mounted<'_> { self.host.hidden_parts() }
+
     fn take_overlays(&mut self) -> Vec<OverlaySlot> {
         match &mut self.role {
             Role::App(app) => std::mem::take(&mut app.overlays),
@@ -555,6 +577,14 @@ impl<S: 'static> Surface for Hosted<S> {
     fn close(&mut self) {
         if let Role::App(app) = &self.role && let Some(close) = app.on_close { self.host.runtime_mut().update(close); }
         (self.wake)();
+    }
+
+    fn enter_turn(&mut self) {
+        if let Some(member) = &mut self.member { member.enter(self.host.runtime_mut()); }
+    }
+
+    fn leave_turn(&mut self) {
+        if let Some(member) = &mut self.member { member.leave(self.host.runtime_mut()); }
     }
 }
 

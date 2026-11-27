@@ -49,9 +49,9 @@ impl Badge {
             BadgeVariant::Subtle => (c.layer_03, c.text_muted, None),
         };
         let (h, px, radius, font) = if self.standard {
-            (18.0, 6.0, k.radius.xs, k.ty.text_small_medium)
+            (k.text_size(18.0), 6.0, k.radius.xs, k.ty.text_small_medium)
         } else {
-            (16.0, 4.0, 2.0, TextStyle { line_height: 11.0, ..k.ty.small_medium })
+            (k.text_size(16.0), 4.0, 2.0, TextStyle { line_height: k.text_size(11.0), ..k.ty.small_medium })
         };
         let e = row().role("status").label(self.label.clone()).center().gap(4.0).h(h).px(px).radius(radius).fill(fill);
         // A status: assistive technology announces a change to its label, politely.

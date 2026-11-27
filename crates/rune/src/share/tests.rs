@@ -91,3 +91,31 @@ fn a_host_without_a_share_sheet_refuses_it() {
     rt.frame(2.0 / 60.0);
     assert_eq!(rt.state.heard, [Err(ShareError::Unsupported("no share sheet here".into()))]);
 }
+
+#[test]
+fn a_window_going_away_answers_its_waiting_or_shown_share_once_while_its_state_lives() {
+    let mut rt = app(link());
+    press(&mut rt);
+    rt.cancel_shares();
+    assert_eq!(rt.state.heard, [Ok(None)], "a share the host never took answers at once");
+    assert!(rt.share_json().is_none());
+
+    press(&mut rt);
+    let shown = rt.core_mut().take_share(Arc::new(|| {})).expect("the host takes it");
+    rt.cancel_shares();
+    assert_eq!(rt.state.heard, [Ok(None), Ok(None)], "a shown share answers too");
+    shown.reply.send(Ok(Some("com.apple.share.Mail".into())));
+    rt.frame(2.0 / 60.0);
+    rt.frame(3.0 / 60.0);
+    assert_eq!(rt.state.heard.len(), 2, "the picker's late answer is ignored");
+
+    rt.update(|_, tx| {
+        tx.share(link(), "share", |s: &mut App, result, tx| {
+            s.heard.push(result);
+            tx.share(link(), "share", |s: &mut App, follow, _| s.heard.push(follow));
+        });
+    });
+    rt.cancel_shares();
+    assert_eq!(rt.state.heard[2..], [Ok(None), Ok(None)], "a share its callback asks for is answered as well");
+    assert!(rt.share_json().is_none());
+}

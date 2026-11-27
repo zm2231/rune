@@ -5,20 +5,26 @@
 //! (`El::cutout_circles`), nearest-neighbour pixel-art scaling (`El::image_filter`,
 //! `ImageFilter::Nearest`), runtime alpha-tinted symbolic icons (`El::pixels_tint`), and
 //! wrapped/tiled images (`El::pixels_wrap`, `El::pixels_tile`, `PixelsWrap::{Repeat, Mirror, Extend}`),
-//! and dashes: dashed and dotted borders (`El::border_dash`, `El::border_dash_cap`) on a box
-//! whose width animates without its dashes moving, and dashed strokes (`Shape::stroke_dashed`).
+//! and dashes: dashed and dotted borders (`El::border_dash`, `El::border_dash_cap`), a box that
+//! springs wider and back every 1.6 s with a dash held on each corner, and dashed strokes
+//! (`Shape::stroke_dashed`).
 //! `cargo run -p shapes -- --snap shapes.png` renders it headless; time animates the waveform,
 //! so `--at 1.5` shows another moment.
 
 #![forbid(unsafe_code)]
 
+use std::time::Duration;
+
 use rune::{
     AppSpec, Color, Cx, Dash, El, FillRule, ImageFilter, LineCap, Path, Pixels, PixelsWrap, Shape,
-    SurfaceFit, Tx, canvas, col, el, memo, row, text,
+    Spring, SurfaceFit, Tx, canvas, col, el, memo, row, text,
 };
 
 struct State {
     t: f32,
+    grow_w: f32,
+    grow_v: f32,
+    grow_at: f64,
     sprite: Pixels,
     symbolic: Pixels,
     motif: Pixels,
@@ -435,7 +441,7 @@ fn dashed_strokes() -> Shape {
         .stroke_dashed(vec![[184.0, 48.0], [264.0, 48.0]], false, 1.0, Dash::new(8.0, 4.0).phase(4.0), INK)
 }
 
-fn dashes(t: f32) -> El {
+fn dashes(grow_w: f32) -> El {
     let notice = el()
         .size(150.0, 64.0)
         .radius(10.0)
@@ -451,7 +457,7 @@ fn dashes(t: f32) -> El {
         .border_dash(0.0, 5.0)
         .border_dash_cap(LineCap::Round);
     let growing = el()
-        .size(80.0 + 60.0 * (0.5 - 0.5 * (t * 1.3).cos()), 64.0)
+        .size(grow_w, 64.0)
         .radius(12.0)
         .border(1.5, WARM)
         .border_dash(6.0, 4.0)
@@ -460,7 +466,7 @@ fn dashes(t: f32) -> El {
         .gap(16.0)
         .child(notice)
         .child(dots)
-        .child(el().w(140.0).child(growing))
+        .child(el().w(GROW_WIDE + 12.0).child(growing))
         .child(memo("dashed_strokes", (), || canvas(dashed_strokes()).size(270.0, 68.0)))
 }
 
@@ -537,13 +543,41 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
         .child(
             col()
                 .gap(8.0)
-                .child(label("Dashes: a dashed notice, round-capped dots, a growing box whose dashes stay put, dashed strokes"))
-                .child(dashes(s.t)),
+                .child(label("Dashes: a dashed notice, round-capped dots, a box springing wider with a dash on each corner, dashed strokes"))
+                .child(dashes(s.grow_w)),
         )
 }
 
-fn poll(s: &mut State, t: f64, _: &mut Tx) -> bool {
+const GROW_EVERY: f64 = 1.6;
+const GROW_NARROW: f32 = 80.0;
+const GROW_WIDE: f32 = 140.0;
+const GROW_SPRING: Spring = Spring::new(0.7, 0.15);
+
+fn grow_target(period: u64) -> f32 {
+    if period % 2 == 1 { GROW_WIDE } else { GROW_NARROW }
+}
+
+fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
     s.t = t as f32;
+    let now = (t / GROW_EVERY).floor() as u64;
+    let target = grow_target(now);
+    let (mut w, mut v) = (s.grow_w, s.grow_v);
+    let mut period = (s.grow_at / GROW_EVERY).floor() as u64;
+    while period < now {
+        let flip = (period + 1) as f64 * GROW_EVERY;
+        (w, v) = GROW_SPRING.sample(w, v, grow_target(period), (flip - s.grow_at).max(0.0) as f32);
+        s.grow_at = flip;
+        period += 1;
+    }
+    (w, v) = GROW_SPRING.sample(w, v, target, (t - s.grow_at).max(0.0) as f32);
+    s.grow_at = t;
+    if (w - target).abs() < 0.01 && v.abs() < 0.01 {
+        (s.grow_w, s.grow_v) = (target, 0.0);
+        tx.wake_after(Duration::from_secs_f64(GROW_EVERY - t.rem_euclid(GROW_EVERY)));
+    } else {
+        (s.grow_w, s.grow_v) = (w, v);
+        tx.wake_after(Duration::ZERO);
+    }
     true
 }
 
@@ -555,6 +589,9 @@ fn main() {
             (820.0, 1110.0),
             || State {
                 t: 0.0,
+                grow_w: GROW_NARROW,
+                grow_v: 0.0,
+                grow_at: 0.0,
                 sprite: pixel_sprite(),
                 symbolic: symbolic_icon(),
                 motif: wrap_motif(),

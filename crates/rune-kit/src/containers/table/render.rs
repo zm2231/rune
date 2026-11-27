@@ -140,7 +140,7 @@ pub(super) fn header_row(
         let mut inner = row().key("inner").gap(2.0).center_y().min_w(0.0).shrink().child(title).a11y_hidden();
         if let Some(d) = sorted {
             let glyph = if d == SortDir::Ascending { k.glyph.chevron_up } else { k.glyph.chevron_down };
-            inner = inner.child(icon(glyph, 14.0).key("sort").color(style.text));
+            inner = inner.child(icon(glyph, k.text_size(14.0)).key("sort").color(style.text));
         }
         let mut cell = justify(
             sized(

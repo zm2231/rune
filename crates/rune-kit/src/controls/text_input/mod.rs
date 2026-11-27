@@ -5,10 +5,10 @@ use rune::{Color, El, Icon, RichStyle, Span, TextEdit, TextStyle, Tx, el, icon, 
 
 use crate::{Acts, Kit, State};
 
-fn kit_rich_style(k: &Kit) -> RichStyle {
+pub(crate) fn kit_rich_style(k: &Kit) -> RichStyle {
     RichStyle {
-        link: k.c.text_accent,
-        code_fg: None,
+        link: k.roles.link,
+        code_fg: (k.roles.code != k.c.text_base).then_some(k.roles.code),
         code_bg: k.c.layer_03,
         code_block_bg: k.c.layer_02,
         quote_bar: k.c.border_strong,
@@ -383,7 +383,7 @@ pub struct TextInput {
     height: Option<f32>,
     width: Option<f32>,
     leading: Option<&'static Icon>,
-    leading_size: f32,
+    leading_size: Option<f32>,
     plain: bool,
     trailing: Option<El>,
     copy: bool,
@@ -464,7 +464,7 @@ impl TextInput {
             height: None,
             width: Some(280.0),
             leading: None,
-            leading_size: 16.0,
+            leading_size: None,
             plain: false,
             trailing: None,
             copy: false,
@@ -524,10 +524,10 @@ impl TextInput {
         self.leading = Some(i);
         self
     }
-    /// The leading icon's side in points (default 16). The icon stays vertically centred in the
+    /// The leading icon's side in points (default 16 at the kit's [`Kit::text_scale`]). The icon stays vertically centred in the
     /// box and the text's start moves with it.
     pub fn leading_icon_size(mut self, points: f32) -> Self {
-        self.leading_size = points.max(1.0);
+        self.leading_size = Some(points.max(1.0));
         self
     }
     /// A borderless field for sitting inside something else, such as a header: no fill, sheen,
@@ -632,8 +632,8 @@ impl TextInput {
         let c = &k.c;
         let disabled = self.state == State::Disabled;
         let red = self.invalid && !disabled && (k.invalid_text || self.plain);
-        let ink = if red { c.danger.fg } else { c.text_base };
-        let hint = if red { c.danger.fg } else { c.text_faint };
+        let ink = if red { k.roles.error } else { c.text_base };
+        let hint = if red { k.roles.error } else { c.text_faint };
         let style = self.style.unwrap_or(k.ty.ui_compact);
         let m = k.field_metrics();
         let base: f32 = if self.large { m.large_height } else { m.height };
@@ -662,7 +662,7 @@ impl TextInput {
         // there, as an `input` cuts its own text, rather than running on to the border.
         let mut value = row().key("value").grow(1.0).shrink().min_w(0.0).gap(6.0).center_y().clip_rounded(0.0);
         if let Some(i) = self.leading {
-            value = value.child(el().key("leading").pl(m.padding_x).center().child(icon(i, self.leading_size).color(c.icon_muted)).a11y_hidden());
+            value = value.child(el().key("leading").pl(m.padding_x).center().child(icon(i, self.leading_size.unwrap_or_else(|| k.text_size(16.0))).color(c.icon_muted)).a11y_hidden());
         } else {
             // With the 6 point gap after it, the text starts `padding_x` in (6 at least).
             value = value.child(el().w((m.padding_x - 6.0).max(0.0)));
@@ -684,7 +684,7 @@ impl TextInput {
         }
         if (self.copy && !self.edit.is_secure()) || self.clear {
             let (glyph, side, radius) =
-                if self.clear { (k.glyph.clear, 28.0, k.radius.md) } else { (k.glyph.copy, 20.0, k.radius.sm) };
+                if self.clear { (k.glyph.clear, k.text_size(28.0), k.radius.md) } else { (k.glyph.copy, k.text_size(20.0), k.radius.sm) };
             let mut b = row()
                 .key("action")
                 .role("button")
@@ -695,7 +695,7 @@ impl TextInput {
                 .radius(radius)
                 // Inside, clear of the field's edge it sits on (`text-input.css`, opencode#64909).
                 .focus_ring(2.0, -2.0, c.border_focus)
-                .child(icon(glyph, 16.0).color(c.icon_muted))
+                .child(icon(glyph, k.text_size(16.0)).color(c.icon_muted))
                 .disabled(disabled);
             if self.clear {
                 b = b.mr(-m.padding_x);

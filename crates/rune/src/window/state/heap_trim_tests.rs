@@ -4,17 +4,17 @@ use std::time::Duration;
 
 use super::heap_trim::{
     PROBE_SIZE, TRIM_MIN_GAP, TrimEffect, TrimEvent, TrimState, env_allows_trim,
-    maybe_trim_heap, probe_glibc_used, set_trim_enabled, step, test_support, trim_enabled,
-    uses_glibc_allocator,
+    probe_glibc_used, set_trim_enabled, step, trim_enabled, uses_glibc_allocator,
 };
 use super::rest::{self, REST_AFTER, Rest, RestEffect, RestEvent};
-use crate::time::Instant;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+use super::heap_trim::glibc::Trimmer;
 
 static OPT_OUT_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn trim_state_first_rest_trims_concurrent_coalesces_and_respects_30s_cooldown() {
-    let t0 = Instant::now();
+    let t0 = crate::time::now();
     let mut state = TrimState::default();
 
     // First rest triggers one trim.
@@ -53,7 +53,7 @@ fn trim_state_first_rest_trims_concurrent_coalesces_and_respects_30s_cooldown() 
 
 #[test]
 fn rest_triggers_trim_once_and_arms_no_periodic_idle_timer() {
-    let t0 = Instant::now();
+    let t0 = crate::time::now();
     let mut rest_state = Rest::default();
     let mut trim_state = TrimState::default();
 
@@ -183,6 +183,7 @@ fn platform_guard_matches_target_abi_and_coalesces_live_trim() {
 
     #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
     {
+        use super::heap_trim::{maybe_trim_heap, test_support};
         assert!(!uses_glibc_allocator());
         maybe_trim_heap();
         assert_eq!(test_support::trim_calls(), 0);
@@ -194,28 +195,25 @@ fn platform_guard_matches_target_abi_and_coalesces_live_trim() {
             uses_glibc_allocator(),
             "default Linux/glibc unit test binary should detect glibc allocator"
         );
-        test_support::wait_idle();
-        test_support::reset_cooldown();
-        let before = test_support::trim_calls();
+        let trimmer: &'static Trimmer = Box::leak(Box::new(Trimmer::new()));
 
         // Trigger two rests back-to-back: must coalesce into a single background trim.
-        maybe_trim_heap();
-        maybe_trim_heap();
-        test_support::wait_idle();
-        let after_first = test_support::trim_calls();
-        assert_eq!(after_first, before + 1);
+        trimmer.rest();
+        trimmer.rest();
+        trimmer.wait_idle();
+        assert_eq!(trimmer.calls(), 1);
 
         // Another rest immediately inside the 30 s cooldown must be skipped.
-        maybe_trim_heap();
-        test_support::wait_idle();
-        assert_eq!(test_support::trim_calls(), after_first);
+        trimmer.rest();
+        trimmer.wait_idle();
+        assert_eq!(trimmer.calls(), 1);
 
         // Opting out prevents trimming even after resetting cooldown.
         set_trim_enabled(false);
-        test_support::reset_cooldown();
-        maybe_trim_heap();
-        test_support::wait_idle();
-        assert_eq!(test_support::trim_calls(), after_first);
+        trimmer.reset_cooldown();
+        trimmer.rest();
+        trimmer.wait_idle();
+        assert_eq!(trimmer.calls(), 1);
         set_trim_enabled(true);
     }
 }

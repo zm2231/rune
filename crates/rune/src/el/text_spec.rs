@@ -1,4 +1,6 @@
 //! [`TextSpec`]: what a text element shows and how it lays out.
+#[cfg(doc)]
+use crate::El;
 use crate::cold::{Cold, Empty};
 use crate::color::Color;
 use crate::el::{Align, LinkFn, LinkHoverFn, LinkSecondaryFn};
@@ -652,10 +654,9 @@ impl crate::El {
     /// a real address opens Rune's default Open Link / Copy Link context menu (`true` by default).
     ///
     /// The default menu appears only for non-redacted `role("link")` spans that carry an explicit
-    /// [`Link::href`] or an `id` passing [`crate::open_url::check`] (`http:`, `https:`,
-    /// `mailto:`), and yields to [`El::on_link_secondary`] and any element or ancestor
-    /// [`El::on_secondary_press`]. Pass `false` to opt out while keeping plain selectable-text
-    /// Copy.
+    /// [`Link::href`] or an `id` that is an `http:`, `https:` or `mailto:` address, and yields
+    /// to [`El::on_link_secondary`] and any element or ancestor [`El::on_secondary_press`].
+    /// Pass `false` to opt out while keeping plain selectable-text Copy.
     ///
     /// ```
     /// use rune::{Link, text};

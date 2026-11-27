@@ -284,10 +284,23 @@ fn wrap_texel(k: i32, n: i32, mode: u32) -> i32 {
     return clamp(k, 0, n - 1);
 }
 
-// Where `p` (rect-local) falls along the centre line of a `bw`-wide ring inside the rounded rect,
-// by side: the arc length from the middle of the corner before it, clockwise, and the length of
-// that side from corner middle to corner middle. Corners count along their arcs.
-fn ring_arc(p: vec2<f32>, size: vec2<f32>, radii: vec4<f32>, bw: f32) -> vec2<f32> {
+// One side of a ring, from the middle of the corner before it to the middle of the next,
+// clockwise (`index` 0 top, 1 right, 2 bottom, 3 left): `at` is how far along it a point falls
+// and `len` how long it is, corners counted along their arcs. It runs straight from `flat0` to
+// `flat1`, and there device pixel edges fall at `at` values a whole number from `edge`.
+struct RingSide {
+    at: f32,
+    len: f32,
+    edge: f32,
+    flat0: f32,
+    flat1: f32,
+    index: u32,
+}
+
+// Where `p` (local to the rect at `origin`, device px) falls along the centre line of a
+// `bw`-wide ring inside the rounded rect. A point on a corner's diagonal goes to the side after
+// it, decided by comparing its offsets rather than its arc length, so every renderer agrees.
+fn ring_arc(p: vec2<f32>, origin: vec2<f32>, size: vec2<f32>, radii: vec4<f32>, bw: f32) -> RingSide {
     let h = bw * 0.5;
     let half = size * 0.5;
     let rc = max(min(abs(radii), vec4<f32>(min(half.x, half.y))) - vec4<f32>(h), vec4<f32>(0.0));
@@ -305,48 +318,98 @@ fn ring_arc(p: vec2<f32>, size: vec2<f32>, radii: vec4<f32>, bw: f32) -> vec2<f3
     let bottom = s_bottom + size.x - e.z - p.x;
     let left = s_left + size.y - e.w - p.y;
     var s: f32;
+    var k = 0u;
+    var wrap = false;
     if (p.x > half.x) {
         if (p.y > half.y) {
             let v = p - (size - vec2<f32>(e.z));
-            if (v.x > 0.0 && v.y > 0.0) { s = s_br + atan2(v.y, v.x) * rc.z; }
-            else { s = select(bottom, right, size.x - p.x < size.y - p.y); }
+            if (v.x > 0.0 && v.y > 0.0) {
+                s = s_br + atan2(v.y, v.x) * rc.z;
+                k = select(1u, 2u, v.y >= v.x);
+            } else {
+                let r = size.x - p.x < size.y - p.y;
+                s = select(bottom, right, r);
+                k = select(2u, 1u, r);
+            }
         } else {
             let v = p - vec2<f32>(size.x - e.y, e.y);
-            if (v.x > 0.0 && v.y < 0.0) { s = s_tr + atan2(v.x, -v.y) * rc.y; }
-            else { s = select(top, right, size.x - p.x < p.y); }
+            if (v.x > 0.0 && v.y < 0.0) {
+                s = s_tr + atan2(v.x, -v.y) * rc.y;
+                k = select(0u, 1u, v.x >= -v.y);
+            } else {
+                let r = size.x - p.x < p.y;
+                s = select(top, right, r);
+                k = select(0u, 1u, r);
+            }
         }
     } else if (p.y > half.y) {
         let v = p - vec2<f32>(e.w, size.y - e.w);
-        if (v.x < 0.0 && v.y > 0.0) { s = s_bl + atan2(-v.x, v.y) * rc.w; }
-        else { s = select(bottom, left, p.x < size.y - p.y); }
+        if (v.x < 0.0 && v.y > 0.0) {
+            s = s_bl + atan2(-v.x, v.y) * rc.w;
+            k = select(2u, 3u, -v.x >= v.y);
+        } else {
+            let l = p.x < size.y - p.y;
+            s = select(bottom, left, l);
+            k = select(2u, 3u, l);
+        }
     } else {
         let v = p - vec2<f32>(e.x);
-        if (v.x < 0.0 && v.y < 0.0) { s = s_tl + atan2(-v.y, -v.x) * rc.x; }
-        else { s = select(top, left, p.x < p.y); }
+        if (v.x < 0.0 && v.y < 0.0) {
+            s = s_tl + atan2(-v.y, -v.x) * rc.x;
+            wrap = -v.y >= -v.x;
+            k = select(3u, 0u, wrap);
+        } else {
+            let l = p.x < p.y;
+            s = select(top, left, l);
+            k = select(0u, 3u, l);
+        }
     }
     let b0 = -arc.x * 0.5;
     let b1 = s_tr + arc.y * 0.5;
     let b2 = s_br + arc.z * 0.5;
     let b3 = s_bl + arc.w * 0.5;
     let b4 = s_tl + arc.x * 0.5;
-    var lo = b0;
-    var hi = b1;
-    if (s >= b4) { lo = b4; hi = b4 + b1 - b0; }
-    else if (s >= b3) { lo = b3; hi = b4; }
-    else if (s >= b2) { lo = b2; hi = b3; }
-    else if (s >= b1) { lo = b1; hi = b2; }
-    return vec2<f32>(s - lo, hi - lo);
+    let lo = select(select(select(select(b0, b1, k == 1u), b2, k == 2u), b3, k == 3u), b4, wrap);
+    let len = vec4<f32>(b1 - b0, b2 - b1, b3 - b2, b4 - b3);
+    let flat = vec4<f32>(s_tr, s_br - s_right, s_bl - s_bottom, s_tl - s_left);
+    let edge = vec4<f32>(
+        arc.x * 0.5 - origin.x - e.x,
+        arc.y * 0.5 - origin.y - e.y,
+        arc.z * 0.5 + origin.x + size.x - e.z,
+        arc.w * 0.5 + origin.y + size.y - e.w,
+    );
+    return RingSide(s - lo, len[k], edge[k], arc[k] * 0.5, arc[k] * 0.5 + flat[k], k);
 }
 
-// Coverage of a dash pattern `d` (dash, gap, phase, round caps when w > 0.5) at `side` (from
-// `ring_arc`), within a ring of coverage `ring` whose centre line is `n` away and `h` half wide.
-// Each side runs the pattern out from both of its corners, `phase` into it, and the two runs meet
-// in its middle, so a side that changes length moves only that meeting point.
-fn dash_cov(side: vec2<f32>, d: vec4<f32>, ring: f32, n: f32, h: f32, soft: f32) -> f32 {
-    let a = select(side.y - side.x, side.x, side.x < side.y * 0.5) + d.z;
-    let period = max(d.x + d.y, 0.001);
-    let m = abs(a - period * floor(a / period + 0.5));
-    if (d.w > 0.5) {
+// Coverage of a dash pattern `d` (dash, gap, phase; a negative gap gives the dashes round caps)
+// at `side`, within a ring of coverage `ring` whose centre line is `n` away and `h` half wide.
+// Each side holds a whole number of periods, so a dash is centred on every corner (`phase` of a
+// period into the pattern, scaled with the side's) and every gap matches: its count is `held`
+// (packed two to a float, 4096 apart, top and right in `x`, bottom and left in `y`), or the
+// nearest whole number when that is 0.
+// Along a straight run each dash moves under half a pixel so its ends, caps included, fall where
+// the ring's edges do on the pixel grid, and every dot draws the same shape; the move eases in
+// over the run's first and last pixel.
+fn dash_cov(side: RingSide, d: vec4<f32>, held: vec2<f32>, ring: f32, n: f32, h: f32, soft: f32) -> f32 {
+    let round_caps = d.y < 0.0;
+    let gap = abs(d.y);
+    let period = max(d.x + gap, 0.001);
+    let pair = select(held.x, held.y, side.index >= 2u);
+    let hi = floor(pair / 4096.0);
+    let mine = select(hi, pair - hi * 4096.0, (side.index & 1u) == 1u);
+    let count = select(max(floor(side.len / period + 0.4921875), 1.0), mine, mine >= 1.0);
+    let step = max(side.len / count, 0.001);
+    let phase = d.z / period * step;
+    let ends = d.x * 0.5 + select(0.0, h, round_caps);
+    let j = floor((side.at + phase) / step + 0.5);
+    var m = 3.0e38;
+    for (var k = -1.0; k <= 1.0; k = k + 1.0) {
+        let c = (j + k) * step - phase;
+        let t = side.edge + ends - c;
+        let straight = clamp(min(c - side.flat0, side.flat1 - c), 0.0, 1.0);
+        m = min(m, abs(side.at - c - (t - floor(t + 0.4921875)) * straight));
+    }
+    if (round_caps) {
         let reach = length(vec2<f32>(max(m - d.x * 0.5, 0.0), n));
         return min(ring, clamp(0.5 + (h - reach) / (soft * 2.0), 0.0, 1.0));
     }
@@ -523,13 +586,14 @@ fn fs(i: Out) -> @location(0) vec4<f32> {
             }
         } else if (kind > 9.5) {
             // Dashed border: kind 0's ring, colour running from `fill` (top) to `border`
-            // (bottom), masked by the dash pattern in `uv` along the ring's centre line.
+            // (bottom), masked by the dash pattern in `uv.xyz` along the ring's centre line, with
+            // each side's dash count in `params.w` and `uv.w`.
             let soft = max(i.params.z, 0.5);
             let bw = i.params.x;
             let ring = clamp(0.5 - d / (soft * 2.0), 0.0, 1.0) - clamp(0.5 - (d + bw) / (soft * 2.0), 0.0, 1.0);
             let t = clamp((screen.y - i.rect.y) / max(i.rect.w, 1.0), 0.0, 1.0);
-            let side = ring_arc(screen - i.rect.xy, i.rect.zw, i.radii, bw);
-            col = mix(i.fill, i.border, t) * dash_cov(side, i.uv, ring, d + bw * 0.5, bw * 0.5, soft);
+            let side = ring_arc(screen - i.rect.xy, i.rect.xy, i.rect.zw, i.radii, bw);
+            col = mix(i.fill, i.border, t) * dash_cov(side, i.uv, vec2<f32>(i.params.w, i.uv.w), ring, d + bw * 0.5, bw * 0.5, soft);
         } else {
             // Image (kind 7): params.z is a bitmask: bit 0 = premultiplied, bit 1 = alpha tint in
             // fill, bit 2 = nearest-neighbour sampling. params.w selects wrap mode: <= 1.5 uses

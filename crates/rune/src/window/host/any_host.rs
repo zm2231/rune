@@ -284,6 +284,7 @@ impl Host {
         self.close_hook();
         self.app.popup_cancel(&mut self.popup);
         self.app.file_dialog_cancel(&mut self.file_dialog);
+        self.app.share_cancel();
         #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
         self.wayland_drop_closed();
     }
@@ -297,6 +298,7 @@ impl Host {
     fn cancel_menus_in_turn(&mut self) {
         self.app.popup_cancel(&mut self.popup);
         self.app.file_dialog_cancel(&mut self.file_dialog);
+        self.app.share_cancel();
     }
 
     fn reopen_hook_in_turn(&mut self, event_loop: &ActiveEventLoop, has_visible_windows: bool) -> bool {

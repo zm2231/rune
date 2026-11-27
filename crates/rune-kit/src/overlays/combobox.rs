@@ -325,7 +325,7 @@ impl ComboboxCore {
         let items: Vec<_> = choices.iter().map(|&i| {
             let option = &self.options[i];
             PopupItem::new(&option.id, &option.label).description(&option.detail).disabled(option.disabled).trailing(
-                icon(k.glyph.check_small, 14.0)
+                icon(k.glyph.check_small, k.text_size(14.0))
                     .color(k.c.icon_base)
                     .opacity(if self.current.as_deref() == Some(option.id.as_str()) { 1.0 } else { 0.0 }),
             )

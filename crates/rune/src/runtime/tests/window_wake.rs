@@ -184,6 +184,7 @@ fn a_poll_asking_wake_at_on_a_fixed_schedule_keeps_its_cadence_after_a_busy_stre
     let rt = busy_then_idle(poll);
     assert_eq!(rt.state.0, 20, "four polls a second");
     assert!(rt.frame.app_wake_count() <= 1, "{} wakes pending", rt.frame.app_wake_count());
+    assert!(!rt.frame.polls_stacking());
 }
 
 #[test]
@@ -196,6 +197,7 @@ fn a_poll_asking_wake_after_on_every_run_stacks_its_wakes() {
     let rt = busy_then_idle(poll);
     assert!(rt.state.0 > 20, "each early poll's wake still fires: {} polls", rt.state.0);
     assert!(rt.frame.app_wake_count() > 1);
+    assert!(rt.frame.polls_stacking());
 }
 
 #[test]

@@ -219,14 +219,18 @@ impl DisplayLink {
     }
 
     /// Starts or resumes the link into `Active`; false if Core Video refused `CVDisplayLinkStart`.
+    #[cfg_attr(feature = "frame-profile", track_caller)]
     pub(crate) fn start(&mut self) -> bool {
         self.sync_period();
         for effect in self.core.start() {
+            log(effect);
             match effect {
                 LinkEffect::StartLink => {
                     self.callback.arm_active();
                     let status = self.link.start();
                     if status != 0 {
+                        #[cfg(feature = "frame-profile")]
+                        crate::frame::live_log::link("start_failed", std::panic::Location::caller());
                         eprintln!("display link start failed: {status}");
                         self.core.start_failed();
                         return false;
@@ -245,9 +249,15 @@ impl DisplayLink {
         true
     }
 
+    pub(crate) fn draw_rested(&mut self) {
+        self.sync_period();
+        let _ = self.core.claim(None, crate::time::now());
+    }
+
     /// Claims one display opportunity: a tick and its target presentation time, or at once
     /// when the surface has rested (`rested`). Consume before rendering so a tick arriving
     /// during rendering can queue the next opportunity.
+    #[cfg_attr(feature = "frame-profile", track_caller)]
     pub(crate) fn next_frame(&mut self) -> Opportunity {
         if !self.start() { return Opportunity::Now; }
         let host_target = self.callback.take_target();
@@ -284,9 +294,11 @@ impl DisplayLink {
 
     /// Keeps an active link coasting briefly (~150 ms) with zero draws and zero presents after
     /// a visible window settles idle. A stopped link stays stopped.
+    #[cfg_attr(feature = "frame-profile", track_caller)]
     pub(crate) fn coast(&mut self) {
         self.sync_period();
         for effect in self.core.coast() {
+            log(effect);
             if let LinkEffect::ArmCoast { ticks_left } = effect {
                 self.callback.arm_coast(ticks_left);
             }
@@ -294,10 +306,12 @@ impl DisplayLink {
     }
 
     /// Stops a coasting link once its keep-alive tick budget hits zero (zero redraws).
+    #[cfg_attr(feature = "frame-profile", track_caller)]
     pub(crate) fn stop_expired(&mut self) -> bool {
         let expired = self.callback.coast_expired();
         let mut stopped = false;
         for effect in self.core.stop_if_expired(expired) {
+            log(effect);
             if effect == LinkEffect::StopLink {
                 self.link.stop();
                 self.callback.reset();
@@ -309,8 +323,10 @@ impl DisplayLink {
 
     /// Hard-stops the link immediately (occlusion, hide, minimize, backoff, zero resize,
     /// prewarm, device loss, or drop).
+    #[cfg_attr(feature = "frame-profile", track_caller)]
     pub(crate) fn stop(&mut self) {
         for effect in self.core.stop() {
+            log(effect);
             if effect == LinkEffect::StopLink {
                 self.link.stop();
             }
@@ -321,6 +337,21 @@ impl DisplayLink {
 
 impl Drop for DisplayLink {
     fn drop(&mut self) { self.stop(); }
+}
+
+#[cfg_attr(feature = "frame-profile", track_caller)]
+fn log(effect: LinkEffect) {
+    #[cfg(feature = "frame-profile")]
+    crate::frame::live_log::link(match effect {
+        LinkEffect::StartLink => "start",
+        LinkEffect::ResumeActive => "resume",
+        LinkEffect::ArmCoast { .. } => "coast",
+        LinkEffect::StopLink => "stop",
+        #[cfg(test)]
+        LinkEffect::WakeToStop => "wake_to_stop",
+    }, std::panic::Location::caller());
+    #[cfg(not(feature = "frame-profile"))]
+    let _ = effect;
 }
 
 fn cv_period_ns(value: i64, scale: i32) -> Option<u64> {

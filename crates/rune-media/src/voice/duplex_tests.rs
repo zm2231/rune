@@ -1,8 +1,9 @@
 use super::duplex::{self, Heard, Render};
 use super::echo_path::{EchoPath, SystemAec, choose};
-use super::io::{self, Ends};
+use super::io::{self, Ends, Meters};
 use super::{VoiceMic, VoiceSpeaker};
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 const RATE: u32 = 16_000;
 
@@ -12,15 +13,16 @@ struct Room {
     mic: VoiceMic,
     speaker: VoiceSpeaker,
     air: VecDeque<f32>,
+    meters: Arc<Meters>,
     seed: u32,
 }
 
 impl Room {
     fn new(path: EchoPath, delay_ms: usize) -> Self {
-        let Ends { capture, playback, mic, speaker, .. } = io::ends(RATE as usize * 20, RATE as usize * 20);
+        let Ends { capture, playback, mic, speaker, meters } = io::ends(RATE as usize * 20, RATE as usize * 20);
         let air = std::iter::repeat_n(0.0, RATE as usize * delay_ms / 1_000).collect();
         let (render, heard) = duplex::for_path(path, RATE, capture, playback);
-        Self { render, heard, mic, speaker, air, seed: 7 }
+        Self { render, heard, mic, speaker, air, meters, seed: 7 }
     }
 
     fn noise(&mut self) -> f32 {
@@ -73,6 +75,47 @@ fn in_process_cancelling_removes_a_delayed_speaker_echo() {
 }
 
 #[test]
+fn a_speaker_thread_stall_that_starves_the_canceller_leaves_the_echo_cancelled() {
+    let mut room = Room::new(EchoPath::InProcess, 80);
+    let (block, period, burst) = (160, RATE as usize * 2, RATE as usize / 5);
+    let talk: Vec<f32> = (0..period * 6).map(|i| if i % period < burst { room.speech(i) } else { 0.0 }).collect();
+    room.speaker.write(&talk);
+    let mut device: VecDeque<Vec<f32>> = VecDeque::new();
+    let mut out = vec![0.0; block];
+    let mut cleaned = Vec::new();
+    let mut read = vec![0.0; RATE as usize];
+    let mut silence = 0;
+    for tick in 0..talk.len() / block {
+        if !(650..658).contains(&tick) {
+            room.render.silence(std::mem::take(&mut silence));
+            while device.len() < 4 {
+                room.render.render(&mut out);
+                device.push_back(out.clone());
+            }
+        }
+        let played = device.pop_front().unwrap_or_else(|| {
+            silence += block as u64;
+            vec![0.0; block]
+        });
+        let input: Vec<f32> = played
+            .iter()
+            .map(|&sample| {
+                room.air.push_back(sample);
+                0.5 * room.air.pop_front().unwrap_or(0.0) + 0.0005 * room.noise()
+            })
+            .collect();
+        room.heard.capture(&input);
+        let n = room.mic.read(&mut read);
+        cleaned.extend_from_slice(&read[..n]);
+    }
+    let burst_energy: f64 = talk[..burst].iter().map(|&s| f64::from(s * s)).sum();
+    let echo = |p: usize| db(cleaned[p * period..(p + 1) * period].iter().map(|&s| f64::from(s * s)).sum::<f64>() / burst_energy);
+    let (before, after) = (echo(2), echo(4));
+    assert_eq!(room.meters.stats().speaker_gap_frames, 5 * block as u64);
+    assert!(after <= -40.0, "the burst after the stall came back at {after:.1} dB (before it, {before:.1} dB)");
+}
+
+#[test]
 fn in_process_cancelling_keeps_the_near_talker() {
     let mut room = Room::new(EchoPath::InProcess, 80);
     room.run(RATE as usize * 2, 160, true, false);
@@ -107,4 +150,24 @@ fn uneven_device_callbacks_reach_the_mic_in_ten_millisecond_blocks() {
     }
     let ten_ms = RATE as usize / 100;
     assert_eq!(room.mic.available(), fed / ten_ms * ten_ms);
+}
+
+#[test]
+fn the_canceller_reports_where_it_found_the_echo() {
+    let mut room = Room::new(EchoPath::InProcess, 200);
+    assert_eq!(room.meters.stats().echo_canceller, None);
+    room.run(RATE as usize * 6, 160, true, false);
+    let canceller = room.meters.stats().echo_canceller.expect("the in-app canceller reports once a second");
+    let aligned = canceller.alignment.as_millis();
+    assert!((180..=210).contains(&aligned), "aligned at {aligned} ms for a 200 ms echo");
+    assert!(canceller.erle_db >= 10.0, "ERLE {:.1} dB", canceller.erle_db);
+    let (low, high) = canceller.reference_lead_frames;
+    assert!(high - low <= 160, "lead ranged {low}..{high} with render and capture in step");
+}
+
+#[test]
+fn a_system_canceller_leaves_no_in_app_canceller_stats() {
+    let mut room = Room::new(EchoPath::System, 80);
+    room.run(RATE as usize * 2, 160, true, false);
+    assert_eq!(room.meters.stats().echo_canceller, None);
 }

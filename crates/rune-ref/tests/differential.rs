@@ -9,15 +9,11 @@ use rune_ref::{
 };
 use std::{cell::RefCell, path::PathBuf};
 
-// Single draws stay at 2 LSB on every adapter; measured maxima and backends in research/24.
-// Composites use `GpuRenderer::composite_tolerance` (2 everywhere except 3 on NVIDIA DX12),
-// never multiplied by primitive count.
-const BUDGET: [u8; 5] = [DEFAULT_TOLERANCE; 5];
-fn check(gpu: &mut GpuRenderer, scene: &Scene, tolerance: u8) -> Result<u8, String> {
+fn check(gpu: &mut GpuRenderer, scene: &Scene) -> Result<u8, String> {
     let mut cpu = Frame::new(scene.width, scene.height, true);
     cpu.render(scene);
     let actual = gpu.render(scene);
-    let diff = compare(scene, &cpu, &actual, tolerance);
+    let diff = compare(scene, &cpu, &actual, gpu.scene_tolerance(scene));
     if diff.outlier_pixels > 0 {
         Err(serde_json::to_string(&diff).unwrap())
     } else {
@@ -46,7 +42,7 @@ fn cpu_gpu_corpus() {
             let mut single = scene.clone();
             single.primitives = vec![primitive.clone()];
             let kind = primitive.params[1] as usize;
-            match check(&mut gpu, &single, BUDGET[kind]) {
+            match check(&mut gpu, &single) {
                 Ok(max) => maxima[kind] = maxima[kind].max(max),
                 Err(e) => {
                     save(&format!("seed-{seed}-kind-{kind}"), &single);
@@ -54,7 +50,7 @@ fn cpu_gpu_corpus() {
                 }
             }
         }
-        match check(&mut gpu, &scene, composite_tol) {
+        match check(&mut gpu, &scene) {
             Ok(max) => maxima[5] = maxima[5].max(max),
             Err(e) => {
                 save(&format!("seed-{seed}-composite"), &scene);
@@ -65,7 +61,7 @@ fn cpu_gpu_corpus() {
     for seed in 0..16 {
         let mut scene = generate::seeded(seed, 4);
         text_run(&mut scene, seed);
-        if let Err(e) = check(&mut gpu, &scene, composite_tol) {
+        if let Err(e) = check(&mut gpu, &scene) {
             save(&format!("text-{seed}"), &scene);
             panic!("{e}");
         }
@@ -93,8 +89,7 @@ fn cpu_gpu_proptest() {
     let strategy = prop::collection::vec(any::<[u8; 32]>(), 1..9);
     let result = runner.run(&strategy, |records| {
         let scene = generate::scene(&records);
-        let tol = gpu.borrow().scene_tolerance(&scene);
-        check(&mut gpu.borrow_mut(), &scene, tol).map_err(TestCaseError::fail)?;
+        check(&mut gpu.borrow_mut(), &scene).map_err(TestCaseError::fail)?;
         Ok(())
     });
     if let Err(TestError::Fail(reason, records)) = &result {
@@ -119,8 +114,7 @@ fn saved_regressions() {
         }
         let scene: Scene = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         scene.validate().unwrap();
-        let tol = gpu.scene_tolerance(&scene);
-        assert!(check(&mut gpu, &scene, tol).is_ok(), "{}", path.display());
+        assert!(check(&mut gpu, &scene).is_ok(), "{}", path.display());
     }
 }
 
@@ -154,7 +148,7 @@ fn rotated_glyphs() {
                     turn: None,
                     clip_radii: None,
                 });
-                if let Err(e) = check(&mut gpu, &scene, 2) {
+                if let Err(e) = check(&mut gpu, &scene) {
                     save(&format!("rotated-{n}-{}-clip-{c}", uv[2]), &scene);
                     panic!("{e}");
                 }
@@ -236,7 +230,7 @@ fn cpu_gpu_dashed() {
         for (n, primitive) in scene.primitives.iter().enumerate() {
             let mut single = scene.clone();
             single.primitives = vec![primitive.clone()];
-            match check(&mut gpu, &single, DEFAULT_TOLERANCE) {
+            match check(&mut gpu, &single) {
                 Ok(m) => max = max.max(m),
                 Err(e) => {
                     save(&format!("dashed-{seed}-{n}"), &single);
@@ -244,7 +238,7 @@ fn cpu_gpu_dashed() {
                 }
             }
         }
-        if let Err(e) = check(&mut gpu, &scene, composite_tol) {
+        if let Err(e) = check(&mut gpu, &scene) {
             save(&format!("dashed-{seed}-composite"), &scene);
             panic!("{e}");
         }
@@ -258,7 +252,6 @@ fn cpu_gpu_dashed() {
 #[test]
 fn cpu_gpu_effect_slots() {
     let Some(mut gpu) = GpuRenderer::test_new() else { return };
-    let composite_tol = gpu.composite_tolerance();
     for seed in 0..16 {
         let mut scene = generate::seeded(seed, 8);
         let mut slots = scene.primitives.clone();
@@ -270,7 +263,7 @@ fn cpu_gpu_effect_slots() {
         }
         scene.primitives.extend(slots);
         scene.primitives.rotate_right(4);
-        if let Err(e) = check(&mut gpu, &scene, composite_tol) {
+        if let Err(e) = check(&mut gpu, &scene) {
             save(&format!("effect-{seed}"), &scene);
             panic!("{e}");
         }
@@ -288,7 +281,7 @@ fn cpu_gpu_radial() {
         for (n, primitive) in scene.primitives.iter().enumerate() {
             let mut single = scene.clone();
             single.primitives = vec![primitive.clone()];
-            match check(&mut gpu, &single, DEFAULT_TOLERANCE) {
+            match check(&mut gpu, &single) {
                 Ok(m) => max = max.max(m),
                 Err(e) => {
                     save(&format!("radial-{seed}-{n}"), &single);
@@ -296,7 +289,7 @@ fn cpu_gpu_radial() {
                 }
             }
         }
-        if let Err(e) = check(&mut gpu, &scene, composite_tol) {
+        if let Err(e) = check(&mut gpu, &scene) {
             save(&format!("radial-{seed}-composite"), &scene);
             panic!("{e}");
         }
@@ -327,7 +320,7 @@ fn cpu_gpu_radial() {
         ..base.clone()
     };
     multi.primitives = vec![base, outer];
-    match check(&mut gpu, &multi, 2) {
+    match check(&mut gpu, &multi) {
         Ok(m) => max = max.max(m),
         Err(e) => {
             save("radial-multi", &multi);
@@ -394,14 +387,13 @@ fn cpu_gpu_cached_subtrees() {
         cached.primitives.iter().any(|p| p.params[1] == 8.0 && p.params[3] == 1.0),
         "cached scene must emit KIND_LAYER with cache marker"
     );
-    let composite_tol = gpu.composite_tolerance();
-    check(&mut gpu, &uncached, composite_tol).expect("uncached CPU vs GPU");
-    check(&mut gpu, &cached, composite_tol).expect("cached CPU vs GPU");
+    check(&mut gpu, &uncached).expect("uncached CPU vs GPU");
+    check(&mut gpu, &cached).expect("cached CPU vs GPU");
     let gpu_uncached = gpu.render(&uncached);
     let gpu_cached = gpu.render(&cached);
     let mut cpu_uncached = Frame::new(64, 64, true);
     cpu_uncached.render(&uncached);
-    let diff = compare(&cached, &cpu_uncached, &gpu_cached, composite_tol);
+    let diff = compare(&cached, &cpu_uncached, &gpu_cached, gpu.scene_tolerance(&cached));
     assert_eq!(diff.outlier_pixels, 0, "cached GPU vs uncached CPU: {diff:?}");
     for (a, b) in gpu_uncached.iter().zip(&gpu_cached) {
         assert!(a.abs_diff(*b) <= 1, "cached vs uncached GPU mismatch: {a} vs {b}");
@@ -443,7 +435,7 @@ fn cpu_gpu_cached_subtrees() {
             data: rt.text.atlas.data.clone(),
         },
     };
-    check(&mut gpu, &scrolled_scene, composite_tol).expect("scrolled multi-line text CPU vs GPU");
+    check(&mut gpu, &scrolled_scene).expect("scrolled multi-line text CPU vs GPU");
 }
 
 #[test]
@@ -468,14 +460,14 @@ fn cpu_gpu_cached_rounded_clip() {
     assert_eq!(f32::from_bits(Instance::from(&scene.primitives[0]).fade[3]), 8.0,
         "replay capture must preserve the rounded clip, not compare two square layers");
     let Some(mut gpu) = GpuRenderer::test_new() else { return };
-    check(&mut gpu, &scene, 2).expect("rounded layer survives replay capture");
+    check(&mut gpu, &scene).expect("rounded layer survives replay capture");
 
     let mut mixed = Instance::begin_layer([0.0, 0.0, 24.0, 24.0], [0.0, 0.0, 24.0, 24.0], LayerSpec::default());
     mixed.fade[3] = rune::render::pack_clip_radii(mixed.clip, [-10.0, -10.0, 0.0, -4.0]);
     scene.primitives = vec![Primitive::from_instance(&mixed, 1, "mixed-continuous".into()), paint,
         Primitive::from_instance(&Instance::end_layer(), 3, "end".into())];
     assert_eq!(scene.primitives[0].border, [-10.0, -10.0, 0.0, -4.0]);
-    check(&mut gpu, &scene, 2).expect("mixed continuous-corner layer matches CPU oracle");
+    check(&mut gpu, &scene).expect("mixed continuous-corner layer matches CPU oracle");
 }
 
 #[test]
@@ -525,8 +517,7 @@ fn cpu_gpu_turned_layers() {
                 data: rt.text.atlas.data.clone(),
             },
         };
-        let composite_tol = gpu.composite_tolerance();
-        if let Err(e) = check(&mut gpu, &scene, composite_tol) {
+        if let Err(e) = check(&mut gpu, &scene) {
             save(&format!("turned-{n}"), &scene);
             panic!("{e}");
         }
@@ -615,8 +606,7 @@ fn cpu_gpu_plus_lighter_layers() {
         .enumerate()
         .map(|(i, inst)| Primitive::from_instance(inst, i as u32 + 1, format!("plus-lighter/{i}")))
         .collect();
-    let composite_tol = gpu.composite_tolerance();
-    if let Err(e) = check(&mut gpu, &scene, composite_tol) {
+    if let Err(e) = check(&mut gpu, &scene) {
         save("plus-lighter", &scene);
         panic!("{e}");
     }
@@ -665,7 +655,7 @@ fn cpu_gpu_continuous_corners() {
         .map(|(i, inst)| Primitive::from_instance(inst, i as u32 + 1, format!("continuous/{i}")))
         .collect();
     scene.validate().expect("continuous-corner primitives must validate");
-    if let Err(e) = check(&mut gpu, &scene, 2) {
+    if let Err(e) = check(&mut gpu, &scene) {
         save("continuous-corners", &scene);
         panic!("{e}");
     }
@@ -698,7 +688,7 @@ fn cpu_gpu_linear_fade_offset() {
     let roundtrip = Instance::from(&prim);
     assert_eq!(roundtrip.fade[2], inst.fade[2], "linear fade origin offsets must survive round-trip");
     scene.primitives = vec![prim];
-    if let Err(e) = check(&mut gpu, &scene, 2) {
+    if let Err(e) = check(&mut gpu, &scene) {
         save("linear-fade-offset", &scene);
         panic!("{e}");
     }
@@ -742,7 +732,7 @@ fn cpu_gpu_rounded_clip_on_primitive() {
     assert_eq!(Instance::from(&prim_a).fade[3], rect_a.fade[3], "uniform rounded clip must survive round-trip");
     assert_eq!(Instance::from(&prim_b).fade[3], rect_b.fade[3], "mixed continuous rounded clip must survive round-trip");
     scene.primitives = vec![prim_a, prim_b];
-    if let Err(e) = check(&mut gpu, &scene, 2) {
+    if let Err(e) = check(&mut gpu, &scene) {
         save("rounded-clip-primitive", &scene);
         panic!("{e}");
     }
@@ -813,8 +803,7 @@ fn cpu_gpu_turned_plus_lighter_saturates_before_interpolation() {
     }
     assert!(gpu_max <= 1, "GPU turned PlusLighter clamped after interpolation: max={gpu_max} worst={gpu_worst:?}");
 
-    let composite_tol = gpu.composite_tolerance();
-    if let Err(e) = check(&mut gpu, &doubled, composite_tol) {
+    if let Err(e) = check(&mut gpu, &doubled) {
         save("turned-plus-lighter", &doubled);
         panic!("{e}");
     }

@@ -5,6 +5,7 @@ struct FakeStatusItem {
     image: RefCell<Option<Retained<NSImage>>>,
     titles: RefCell<Vec<String>>,
     tooltips: RefCell<Vec<Option<String>>>,
+    accessibility: RefCell<Option<(String, String)>>,
     highlights: RefCell<Vec<bool>>,
     rect: Cell<Option<[i32; 4]>>,
     attached: RefCell<Option<Retained<NSMenu>>>,
@@ -19,6 +20,7 @@ impl FakeStatusItem {
             image: RefCell::new(None),
             titles: RefCell::new(Vec::new()),
             tooltips: RefCell::new(Vec::new()),
+            accessibility: RefCell::new(None),
             highlights: RefCell::new(Vec::new()),
             rect: Cell::new(Some([2400, 0, 56, 48])),
             attached: RefCell::new(None),
@@ -40,6 +42,10 @@ impl StatusItemHost for FakeStatusItem {
 
     fn set_tooltip(&self, tooltip: Option<&str>) {
         self.tooltips.borrow_mut().push(tooltip.map(str::to_owned));
+    }
+
+    fn set_accessibility(&self, identifier: &str, label: &str) {
+        *self.accessibility.borrow_mut() = Some((identifier.to_owned(), label.to_owned()));
     }
 
     fn set_highlighted(&self, highlighted: bool) {
@@ -82,6 +88,7 @@ fn new_with_fake(
     let image = make_image(&spec.icon, thickness, &label)?;
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let model = Arc::new(Mutex::new(Model {
+        identifier: spec.id,
         accessibility_label: label,
         title: String::new(),
         tooltip: spec.tooltip,
@@ -237,6 +244,9 @@ pub fn fake_host_set_icon_set_title_rect_and_check_menu_items(mtm: MainThreadMar
     })
     .unwrap();
 
+    let accessibility = || fake.accessibility.borrow().clone().expect("accessibility set");
+    assert_eq!(accessibility(), ("dev.rune.live".to_owned(), "Live Status".to_owned()));
+
     // Initial rect comes from host; live updates reflect immediately on main thread.
     assert_eq!(native.rect(), Some([2400, 0, 56, 48]));
     fake.rect.set(Some([2320, 0, 92, 48]));
@@ -260,6 +270,7 @@ pub fn fake_host_set_icon_set_title_rect_and_check_menu_items(mtm: MainThreadMar
     assert_eq!(img.accessibilityDescription().map(|s| s.to_string()), Some("Live Status".into()));
 
     native.set_accessibility_label("Live Status unavailable".into());
+    assert_eq!(accessibility(), ("dev.rune.live".to_owned(), "Live Status unavailable".to_owned()));
     let img = fake.image.borrow().clone().expect("relabelled image");
     assert_eq!(img.accessibilityDescription().map(|s| s.to_string()), Some("Live Status unavailable".into()));
     assert_eq!(img.size(), NSSize::new(44.0, 22.0));

@@ -398,18 +398,33 @@ fn ring_arc(p: [f32; 2], size: [f32; 2], radii: [f32; 4], bw: f32) -> (f32, f32)
         let v = [p[0] - e[0], p[1] - e[0]];
         if v[0] < 0.0 && v[1] < 0.0 { s_tl + (-v[1]).atan2(-v[0]) * rc[0] } else if p[0] < p[1] { left } else { top }
     };
-    (s, s_tl + arc[0])
+    let b = [-arc[0] * 0.5, s_tr + arc[1] * 0.5, s_br + arc[2] * 0.5, s_bl + arc[3] * 0.5, s_tl + arc[0] * 0.5];
+    let (lo, hi) = if s >= b[4] {
+        (b[4], b[4] + b[1] - b[0])
+    } else if s >= b[3] {
+        (b[3], b[4])
+    } else if s >= b[2] {
+        (b[2], b[3])
+    } else if s >= b[1] {
+        (b[1], b[2])
+    } else {
+        (b[0], b[1])
+    };
+    (s - lo, hi - lo)
 }
 
 /// `dash_cov`.
-fn dash_cov(s: f32, total: f32, d: [f32; 3]) -> f32 {
-    let nominal = d[0] + d[1];
-    let k = total.max(shader_consts::DASH_MIN_TOTAL) / ((total / nominal + 0.5).floor().max(1.0) * nominal);
-    let period = nominal * k;
-    let dash = d[0] * k;
-    let a = s + d[2] * k - dash * 0.5;
-    let m = a - period * (a / period + 0.5).floor();
-    clamp01(dash * 0.5 - m.abs() + 0.5)
+fn dash_cov(side: (f32, f32), d: [f32; 4], ring: f32, n: f32, h: f32, soft: f32) -> f32 {
+    let (s, len) = side;
+    let a = if s < len * 0.5 { s } else { len - s } + d[2];
+    let period = (d[0] + d[1]).max(shader_consts::DASH_MIN_PERIOD);
+    let m = (a - period * (a / period + 0.5).floor()).abs();
+    if d[3] > 0.5 {
+        let along = (m - d[0] * 0.5).max(0.0);
+        let reach = (along * along + n * n).sqrt();
+        return ring.min(clamp01(0.5 + (h - reach) / (soft * 2.0)));
+    }
+    ring * clamp01(d[0] * 0.5 - m + 0.5)
 }
 
 /// `border_over`.
@@ -510,8 +525,8 @@ pub(super) fn boxes(i: &Instance, kind: Kind, p: [f32; 2]) -> [f32; 4] {
             let d = sd_rounded(q, half, i.radii);
             let bw = i.params[0];
             let ring = clamp01(0.5 - d / (soft * 2.0)) - clamp01(0.5 - (d + bw) / (soft * 2.0));
-            let (s, total) = ring_arc([p[0] - i.rect[0], p[1] - i.rect[1]], [i.rect[2], i.rect[3]], i.radii, bw);
-            scale4(mix4(i.fill, i.border, t_y()), ring * dash_cov(s, total, [i.uv[0], i.uv[1], i.uv[2]]))
+            let side = ring_arc([p[0] - i.rect[0], p[1] - i.rect[1]], [i.rect[2], i.rect[3]], i.radii, bw);
+            scale4(mix4(i.fill, i.border, t_y()), dash_cov(side, i.uv, ring, d + bw * 0.5, bw * 0.5, soft))
         }
         Kind::Radial => radial(i, p, false),
         Kind::Glyph | Kind::Image | Kind::Layer | Kind::LayerEnd | Kind::Effect | Kind::BackdropBlur => [0.0; 4],

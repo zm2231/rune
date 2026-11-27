@@ -182,7 +182,9 @@ accesskit_atspi_common = { path = "vendor/accesskit_atspi_common" }
 # racing or panicking on the main thread's borrow; and a field past Rune's 64 KiB text-run limit keeps
 # its line, string and selection ranges, answered from its value when a reader asks; and
 # `Adapter::set_hosted_views` puts platform views (`El::native_view`) in the tree as the last child of
-# their element's node, answering hit tests inside it. Re-made by
+# their element's node, answering hit tests inside it; and AXShowMenu performs AccessKit's
+# `ShowContextMenu` on nodes that support it, which AppKit's own menu items and pop-up buttons
+# answer and the published adapter leaves out. Re-made by
 # `scripts/vendor-accesskit-macos.sh <version>` when AccessKit is bumped; apps that build Rune patch it too.
 accesskit_macos = { path = "vendor/accesskit_macos" }
 

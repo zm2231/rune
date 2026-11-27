@@ -1,6 +1,6 @@
 use super::VoiceEvent;
 use super::io::Meters;
-use super::machine::{Effect, Event, Fault, State, step};
+use super::machine::{Effect, Event, Fault, Opened, State, step};
 use crate::video::WakerSlot;
 use rune_core::machine::{Attempt, Seq};
 use rune_core::time::Instant;
@@ -16,6 +16,9 @@ const MAX_EVENTS: usize = 64;
 pub(crate) trait VoiceDevice {
     fn prepare(&mut self) -> Result<(), Fault>;
     fn run(&mut self) -> Result<(), Fault>;
+    fn runs_from_first_audio(&self) -> bool {
+        false
+    }
     fn halt(&mut self);
     fn discard(&mut self);
 }
@@ -31,6 +34,8 @@ pub(crate) enum Signal {
     MediaReset,
     #[cfg_attr(any(target_os = "macos", target_os = "ios"), allow(dead_code))]
     Lost(Fault),
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    AudioArrived,
     Backgrounded,
     Foregrounded,
     Close,
@@ -47,6 +52,7 @@ impl Signal {
             Self::InterruptionEnded { should_resume } => Event::InterruptionEnded { should_resume },
             Self::MediaReset => Event::MediaReset { now },
             Self::Lost(fault) => Event::Lost { fault, now },
+            Self::AudioArrived => Event::AudioArrived,
             Self::Backgrounded => Event::Backgrounded,
             Self::Foregrounded => Event::Foregrounded,
             Self::Close => Event::Close,
@@ -187,7 +193,11 @@ impl Control {
         while let Some(event) = queue.pop_front() {
             for effect in step(&mut self.seq, &mut self.state, event) {
                 match effect {
-                    Effect::Run => queue.push_back(Event::Ran { result: self.device.run(), now: rune_core::time::now() }),
+                    Effect::Run => {
+                        let later = self.device.runs_from_first_audio();
+                        let result = self.device.run().map(|()| if later { Opened::AwaitingAudio } else { Opened::Live });
+                        queue.push_back(Event::Ran { result, now: rune_core::time::now() });
+                    }
                     Effect::Halt => self.device.halt(),
                     Effect::Discard => self.device.discard(),
                     Effect::Mute(muted) => self.meters.muted.store(muted, Ordering::Relaxed),

@@ -74,18 +74,12 @@ impl Span {
     /// What [`Self::affects_layout`] depends on, hashed into a layout's key.
     pub(crate) fn hash_layout(&self, h: &mut impl std::hash::Hasher) {
         use std::hash::Hash;
-        (
-            self.start,
-            self.end,
-            self.mono,
-            self.weight.map(f32::to_bits),
-            self.size.map(f32::to_bits),
-            self.italic,
-            self.bg.is_some(),
-            self.bg.map(|_| self.bg_pad.to_bits()),
-            self.underline.is_some(),
-        )
-            .hash(h);
+        (self.start, self.end, self.layout_attr_key()).hash(h);
+    }
+
+    /// Non-range fields that affect shaping, line metrics, or decorations.
+    pub(crate) fn layout_attr_key(&self) -> (bool, Option<u32>, Option<u32>, bool, bool, Option<u32>, bool) {
+        (self.mono, self.weight.map(f32::to_bits), self.size.map(f32::to_bits), self.italic, self.bg.is_some(), self.bg.map(|_| self.bg_pad.to_bits()), self.underline.is_some())
     }
 
     /// A rounded `color` background padded by `pad` points, as inline code draws.
@@ -200,9 +194,18 @@ impl PillMetrics {
     }
 }
 
-/// Tags the inline boxes around pill labels: the rest of the id is the pill's index shifted
+/// Tags the inline boxes around pill labels: the lower bits carry the pill's index shifted
 /// left once, with the low bit set on the box after the label.
 pub(crate) const PILL_BOX: u64 = 1 << 62;
+
+/// Set alongside [`PILL_BOX`] for a bare inline icon (no chip box, not a replaced image), whose
+/// leading box only needs to stay on the line of its label's first characters.
+pub(crate) const PILL_BARE: u64 = 1 << 59;
+
+/// Pill slice index stored in a [`PILL_BOX`] inline box id.
+pub(crate) const fn pill_index(id: u64) -> usize {
+    ((id & !(PILL_BOX | PILL_BARE)) >> 1) as usize
+}
 
 /// Tags the inline boxes around padded [`SpanBox`] ranges: the rest of the id is the box's index
 /// shifted left once, with the low bit set on the trailing spacer.

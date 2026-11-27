@@ -377,3 +377,118 @@ fn a_first_ask_after_the_first_frame_reads_the_whole_screen_without_waiting_for_
     let next = link.update(rt.core_mut()).map_or_else(Changes::default, |update| mirror.apply(update));
     assert!(!next.layout, "the frame after the answer moves nothing");
 }
+
+fn screen_json(view: fn(&(), &mut crate::Cx<()>) -> crate::El) -> Vec<serde_json::Value> {
+    let mut rt = crate::Runtime::new((), view, (400.0, 300.0), crate::Env::new(true, 1.0));
+    rt.frame(0.0);
+    rt.core().ios_accessibility_json().as_array().cloned().unwrap_or_default()
+}
+
+fn first_label(elements: &[serde_json::Value]) -> Option<&str> {
+    elements.iter().find(|e| e["first"] == true).and_then(|e| e["label"].as_str())
+}
+
+fn titled(title: crate::El) -> crate::El {
+    use crate::{col, row, text};
+    col().child(title)
+        .child(row().key("open").role("button").focusable(true).on_press(|_: &mut ()| {}).child(text("Open details")))
+        .child(row().key("count").role("button").focusable(true).on_press(|_: &mut ()| {}).child(text("Count 0")))
+}
+
+#[test]
+fn a_heading_title_is_a_header_as_a_navigation_title_is_and_plain_text_is_not() {
+    let heading = screen_json(|_, _| titled(crate::text("Windows").role("heading").level(1)));
+    assert_eq!(heading[0]["label"], "Windows");
+    assert_eq!(heading[0]["traits"], serde_json::json!(["static-text", "header"]));
+    let plain = screen_json(|_, _| titled(crate::text("Windows")));
+    assert_eq!(plain[0]["traits"], serde_json::json!(["static-text"]));
+}
+
+#[test]
+fn with_nothing_named_a_reader_lands_where_the_reading_order_starts() {
+    let elements = screen_json(|_, _| titled(crate::text("Windows").role("heading")));
+    assert_eq!(first_label(&elements), None);
+}
+
+#[test]
+fn a_reader_lands_first_on_the_control_the_app_names() {
+    use crate::{row, text};
+    let elements = screen_json(|_, _| {
+        titled(text("Windows").role("heading"))
+            .child(row().key("go").role("button").focusable(true).on_press(|_: &mut ()| {}).accessibility_first().child(text("Go")))
+    });
+    assert_eq!(first_label(&elements), Some("Go"));
+    assert_eq!(elements.iter().filter(|e| e["first"] == true).count(), 1);
+}
+
+#[test]
+fn text_named_inside_a_control_lands_the_reader_on_the_control() {
+    use crate::{col, row, text};
+    let elements = screen_json(|_, _| {
+        col().child(text("Windows").role("heading"))
+            .child(row().key("go").role("button").focusable(true).on_press(|_: &mut ()| {}).child(text("Go").accessibility_first()))
+    });
+    assert_eq!(first_label(&elements), Some("Go"));
+}
+
+#[test]
+fn a_named_container_lands_the_reader_on_its_first_element() {
+    use crate::{col, text};
+    let elements = screen_json(|_, _| titled(text("Windows").role("heading")).accessibility_first());
+    assert_eq!(first_label(&elements), Some("Windows"));
+    let elements = screen_json(|_, _| {
+        use crate::row;
+        col().child(text("Windows").role("heading"))
+            .child(row().key("controls").accessibility_first()
+                .child(row().key("open").role("button").focusable(true).on_press(|_: &mut ()| {}).child(text("Open details"))))
+    });
+    assert_eq!(first_label(&elements), Some("Open details"));
+}
+
+#[test]
+fn a_hidden_element_named_first_leaves_the_reader_to_the_reading_order() {
+    use crate::{row, text};
+    let elements = screen_json(|_, _| {
+        titled(text("Windows").role("heading"))
+            .child(row().key("gone").role("button").focusable(true).on_press(|_: &mut ()| {}).a11y_hidden().accessibility_first().child(text("Gone")))
+    });
+    assert_eq!(first_label(&elements), None);
+}
+
+#[test]
+fn the_landing_follows_the_tree_the_mirror_holds() {
+    let mut mirror = Mirror::default();
+    mirror.set_start(Some(4));
+    mirror.apply(whole(screen()));
+    assert_eq!(mirror.landing(), Some(3), "a label inside a button lands on the button");
+    mirror.set_start(Some(1));
+    mirror.apply(part(Vec::new()));
+    assert_eq!(mirror.landing(), Some(2), "the window lands on its first element");
+    mirror.set_start(Some(99));
+    mirror.apply(part(Vec::new()));
+    assert_eq!(mirror.landing(), None);
+}
+
+#[test]
+fn a_named_leaf_and_a_container_holding_one_element_land_the_reader_there() {
+    use crate::{col, row, text};
+    let elements = screen_json(|_, _| titled(text("Windows").role("heading").accessibility_first()));
+    assert_eq!(first_label(&elements), Some("Windows"));
+    let elements = screen_json(|_, _| {
+        col().child(text("Windows").role("heading"))
+            .child(col().key("one").accessibility_first()
+                .child(row().key("go").role("button").focusable(true).on_press(|_: &mut ()| {}).child(text("Go"))))
+    });
+    assert_eq!(first_label(&elements), Some("Go"));
+}
+
+#[test]
+fn hidden_text_named_inside_a_control_lands_the_reader_nowhere() {
+    use crate::{col, row, text};
+    let elements = screen_json(|_, _| {
+        col().child(text("Windows").role("heading"))
+            .child(row().key("go").role("button").focusable(true).on_press(|_: &mut ()| {})
+                .child(text("Go")).child(text("secret").a11y_hidden().accessibility_first()))
+    });
+    assert_eq!(first_label(&elements), None);
+}

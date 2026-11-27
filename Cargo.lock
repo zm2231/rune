@@ -2484,6 +2484,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e44b0a4eaa4c82f441d50a963f2d5f05a787240aeee097597033e72accfd22f"
 
 [[package]]
+name = "inbox"
+version = "0.0.1"
+dependencies = [
+ "rune",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4645,6 +4652,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rune-cli"
+version = "0.0.1"
+dependencies = [
+ "blake3",
+ "quote",
+ "serde_json",
+ "syn 2.0.119",
+ "toml_edit",
+]
+
+[[package]]
 name = "rune-core"
 version = "0.0.1"
 dependencies = [
@@ -5123,7 +5141,9 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "sctk-adwaita"
 version = "0.10.1"
 dependencies = [
+ "ab_glyph",
  "log",
+ "memmap2",
  "smithay-client-toolkit",
  "tiny-skia",
 ]
@@ -6059,6 +6079,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

@@ -192,6 +192,7 @@ pub(crate) struct A11yMore {
     pub owns: Option<String>,
     /// Starting ordinal of an ordered `"list"` element (HTML `<ol start="…">`).
     pub list_start: Option<u64>,
+    pub first: bool,
 }
 
 /// Accessibility state beyond role and label (`El::level`, `El::expanded`, `El::secure`, and
@@ -288,6 +289,17 @@ impl El {
     /// `aria-busy`): a turn while the reply streams, a tool call while it runs.
     pub fn busy(mut self, busy: bool) -> Self {
         if busy || self.cold.a11y.more.is_some() { self.cold_mut().a11y.more().busy = busy; }
+        self
+    }
+    /// Where a screen reader lands first when the window appears, in place of the first
+    /// element in reading order: the control a screen is for, not the title above it. On iOS the
+    /// window's first frame posts `UIAccessibilityScreenChangedNotification` with this element,
+    /// as a UIKit view controller does for the element it names. A container lands the reader
+    /// on its first element, text inside a control on the control, and a hosted native view on
+    /// that view. A hidden element lands nowhere and leaves the reader to the reading order. The
+    /// first marked element in tree order wins.
+    pub fn accessibility_first(mut self) -> Self {
+        self.cold_mut().a11y.more().first = true;
         self
     }
     /// Whether the value entered here fails validation (ARIA `aria-invalid`).

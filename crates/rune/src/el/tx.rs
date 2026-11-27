@@ -11,7 +11,12 @@ mod keys;
 mod pick;
 mod press;
 mod rects;
+#[cfg(feature = "test-support")]
+mod requested;
 mod scroll;
+
+#[cfg(feature = "test-support")]
+pub use requested::{FocusKind, FocusRequest, Requested, RevealRequest};
 
 #[cfg(test)]
 mod tests;

@@ -417,11 +417,7 @@ impl Host {
                     let rt = self.app.rt_mut();
                     rt.set_system_accent(crate::system_accent());
                     rt.set_system_scroll_bars_state(crate::platform::scroll_bars::current().with_override(self.args.scroll_bars));
-                    #[cfg(target_os = "linux")]
-                    {
-                        rt.set_system_reduced_motion(crate::platform::preferences::reduced_motion());
-                        rt.double_click_interval = crate::platform::preferences::double_click_interval();
-                    }
+                    crate::input::host_events::refresh_accessibility_preferences(rt);
                 }
                 RevealEffect::Build => built = self.build_for_show(),
                 RevealEffect::ApplyFrame => {
@@ -973,6 +969,7 @@ impl Host {
     /// that releases its GPU when closed. The next `open` makes a window, a device and a surface
     /// (an app that sees `AppHandle::window_error` and the window gone can ask for one).
     pub(in crate::window) fn release(&mut self) {
+        self.assert_no_live_frame_texture();
         #[cfg(target_os = "windows")]
         self.on_resize_sync_event(crate::window::win32::resize_sync::Event::Destroy);
         #[cfg(all(target_os = "windows", feature = "windows-system-material"))]
@@ -1107,5 +1104,6 @@ impl Host {
                 renderer.trim_uploads();
             }
         }
+        crate::window::rest::maybe_trim_heap();
     }
 }

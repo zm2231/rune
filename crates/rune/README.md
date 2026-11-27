@@ -3441,8 +3441,9 @@ for event in audio.take_events() { /* AudioEvent::Underrun | Ended | DeviceLost(
 
 ### Voice calls (`Voice`, `crates/rune-media/src/voice/`)
 
-`Voice` is full-duplex call audio. The microphone comes in with the speaker's own output, room
-noise and level differences already removed, and the speaker goes out. Both streams are mono
+`Voice` is full-duplex call audio. The microphone comes in with the speaker's own output and room
+noise removed (and its level evened out on Apple platforms and the web), and the speaker goes
+out. Both streams are mono
 `f32` PCM at a rate the app picks (8–48 kHz, for example 24 kHz for a realtime speech model).
 
 ```rust
@@ -3466,11 +3467,14 @@ let heard = speaker.played_frames();
   default (100 ms to 10 s), so a reply can arrive faster than it plays. `clear` drops
   everything written before it on the next device callback. `played_frames` counts what
   reached the speaker, cleared frames excluded.
-- **The audio thread**: device callbacks touch only the rings and a few atomics. They never
-  allocate, lock or wait on the app (`crates/rune-media/tests/voice_alloc.rs` runs 10,000
-  callbacks with zero allocations).
+- **The audio thread**: the app's ends never block, and the audio side never waits on the app.
+  On Apple platforms the device callbacks touch only the rings and a few atomics and never
+  allocate or lock (`crates/rune-media/tests/voice_alloc.rs` runs 10,000 callbacks with zero
+  allocations). On Linux and Windows audio moves on Rune's own microphone and speaker threads,
+  which take a short uncontended lock per 10 ms block; on the web each block crosses the page's
+  main thread in freshly allocated buffers.
 - **Control**: `start`, `stop` and `set_muted` return at once. A thread per `Voice` runs the
-  device, and `state()` reports `Idle`, `Starting`, `Running`, `Reconnecting`, `Interrupted`
+  device (on the web, the page's main thread), and `state()` reports `Idle`, `Starting`, `Running`, `Reconnecting`, `Interrupted`
   or `Failed`. `take_events()` reports `Started`, `Stopped`, `DeviceChanged`,
   `Interrupted`, `Resumed` and `Failed`. Muting sends silence to `VoiceMic`, and the speaker
   keeps playing. `stats()` counts frames and gives `start_to_audio`, the time from
@@ -3486,13 +3490,27 @@ let heard = speaker.played_frames();
   Hardened Runtime or sandboxed app also needs the `com.apple.security.device.audio-input`
   entitlement. An unbundled binary run from a terminal asks on the terminal's behalf. The
   iOS audio session is covered in "Voice calls" in `IOS.md`.
-- **Windows, Linux and the web**: `Voice::open` returns `VoiceError::Unsupported`.
+- **Linux**: a PulseAudio (or PipeWire, through `pipewire-pulse`) record and playback stream
+  on the default devices, falling back to ALSA, both loaded at run time. Echo cancellation and
+  noise suppression run in the app (WebRTC's AEC3 through `sonora`) with the samples Rune plays
+  as the reference, so no system echo-cancel module is needed. Only Rune's own output is
+  cancelled, and the microphone level isn't adjusted. `scripts/voice-pulse-e2e.sh` measures
+  echo against a real PulseAudio server in Docker.
+- **Windows**: WASAPI on the default communications microphone and speaker, tagged as
+  communications audio. The system's echo canceller is used when the microphone's driver
+  offers one (Windows 11 lists it among the stream's effects); otherwise, as on Windows 10, the
+  in-app canceller from Linux runs. Never both. Not yet run on real Windows audio hardware.
+- **The web**: the browser's own echo cancellation, noise suppression and gain control on
+  `getUserMedia`, with both directions through one AudioWorklet. Audio crosses the page's main
+  thread in 10 ms blocks, so a busy main thread counts `VoiceStats::late_frames`. Call
+  `Voice::start` from a click or key handler. Needs HTTPS or `localhost`. Not yet run in a
+  browser with real speakers.
 - **Tests**: `Voice::open_fake(spec, &FakeVoice)` runs on every platform without hardware.
   `FakeVoice::tick(frames)` runs one device callback. The fake microphone hears what
   `FakeVoice::say` queued plus the speaker's output at the `echo(gain, delay)` you set.
   `change_devices`, `interrupt`, `end_interruption`, `reset_media`, `background` and
   `foreground` drive the same transitions the system would.
-- **Try it**: `cargo run -p voice-loopback` on a Mac (see `examples/README.md`).
+- **Try it**: `cargo run -p voice-loopback` on a Mac, a Linux desktop or Windows, or its web page (see `examples/README.md`).
 
 ### Edge overlays (`App::overlay`, `overlay.rs`, `platform/layer_shell.rs`)
 

@@ -37,7 +37,6 @@ impl Fault {
         Self { message: message.into(), lasting: false }
     }
 
-    #[cfg_attr(not(any(target_os = "macos", target_os = "ios")), allow(dead_code))]
     pub(crate) fn lasting(message: impl Into<String>) -> Self {
         Self { message: message.into(), lasting: true }
     }
@@ -52,6 +51,7 @@ pub(crate) enum Event {
     InterruptionBegan,
     InterruptionEnded { should_resume: bool },
     MediaReset { now: Instant },
+    Lost { fault: Fault, now: Instant },
     Backgrounded,
     Foregrounded,
     Ran { result: Result<(), Fault>, now: Instant },
@@ -166,6 +166,13 @@ pub(crate) fn step(seq: &mut Seq, state: &mut State, event: Event) -> Effects<Ef
             reconnect(seq, state, now + SETTLE, 0, Cause::Device, Discard)
         }
         (_, Event::DevicesChanged { .. } | Event::MediaReset { .. }) => Effects::one(Discard),
+
+        (State::Running, Event::Lost { fault, .. }) if fault.lasting => {
+            *state = State::Failed(fault.message.clone());
+            Effects::Two(Discard, Tell(VoiceEvent::Failed(fault.message)))
+        }
+        (State::Running, Event::Lost { now, .. }) => reconnect(seq, state, now + SETTLE, 0, Cause::Device, Discard),
+        (_, Event::Lost { .. }) => Effects::none(),
 
         (State::Running | State::Starting { .. } | State::Reconnecting { .. }, Event::InterruptionBegan) => {
             *state = State::Interrupted { resume: true };

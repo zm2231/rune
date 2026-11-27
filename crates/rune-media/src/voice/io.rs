@@ -12,6 +12,7 @@ pub(crate) struct Meters {
     played: AtomicU64,
     mic_dropped: AtomicU64,
     oversized: AtomicU64,
+    late: AtomicU64,
     started_at: AtomicU64,
     first_audio_at: AtomicU64,
 }
@@ -26,6 +27,7 @@ impl Meters {
             played: AtomicU64::new(0),
             mic_dropped: AtomicU64::new(0),
             oversized: AtomicU64::new(0),
+            late: AtomicU64::new(0),
             started_at: AtomicU64::new(0),
             first_audio_at: AtomicU64::new(0),
         }
@@ -52,6 +54,13 @@ impl Meters {
         self.oversized.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn count_late(&self, frames: u64) {
+        if frames > 0 {
+            self.late.fetch_add(frames, Ordering::Relaxed);
+        }
+    }
+
     pub(crate) fn stats(&self) -> super::VoiceStats {
         let started = self.started_at.load(Ordering::Acquire);
         let first = self.first_audio_at.load(Ordering::Acquire);
@@ -60,6 +69,7 @@ impl Meters {
             played_frames: self.played.load(Ordering::Relaxed),
             mic_dropped_frames: self.mic_dropped.load(Ordering::Relaxed),
             oversized_callbacks: self.oversized.load(Ordering::Relaxed),
+            late_frames: self.late.load(Ordering::Relaxed),
             start_to_audio: (started != 0 && first >= started).then(|| Duration::from_nanos(first - started)),
         }
     }

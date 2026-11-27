@@ -37,7 +37,7 @@ pub(super) fn open_with(
 
 /// Lazily loads `soname` with `RTLD_LAZY | RTLD_LOCAL` for the lifetime of the process (never
 /// `dlclose`d).
-pub(super) fn dlopen_library(soname: &CStr) -> Result<*mut c_void, String> {
+pub(crate) fn dlopen_library(soname: &CStr) -> Result<*mut c_void, String> {
     // SAFETY: `soname` is a NUL-terminated C string; `RTLD_LAZY | RTLD_LOCAL` keeps loaded
     // symbols out of the global namespace.
     let handle = unsafe { libc::dlopen(soname.as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL) };
@@ -52,7 +52,7 @@ pub(super) fn dlopen_library(soname: &CStr) -> Result<*mut c_void, String> {
 /// # Safety
 /// `handle` must be a non-null handle returned by [`dlopen_library`], and `F` must match the
 /// exact C ABI signature of `symbol`.
-pub(super) unsafe fn dlsym_fn<F: Copy>(handle: *mut c_void, symbol: &CStr) -> Result<F, String> {
+pub(crate) unsafe fn dlsym_fn<F: Copy>(handle: *mut c_void, symbol: &CStr) -> Result<F, String> {
     debug_assert_eq!(size_of::<F>(), size_of::<*mut c_void>());
     // SAFETY: `handle` is valid for the lifetime of the process and `symbol` is NUL-terminated.
     let ptr = unsafe { libc::dlsym(handle, symbol.as_ptr()) };
@@ -67,7 +67,7 @@ pub(super) unsafe fn dlsym_fn<F: Copy>(handle: *mut c_void, symbol: &CStr) -> Re
 ///
 /// # Safety
 /// Same requirements as [`dlsym_fn`].
-pub(super) unsafe fn dlsym_opt<F: Copy>(handle: *mut c_void, symbol: &CStr) -> Option<F> {
+pub(crate) unsafe fn dlsym_opt<F: Copy>(handle: *mut c_void, symbol: &CStr) -> Option<F> {
     debug_assert_eq!(size_of::<F>(), size_of::<*mut c_void>());
     // SAFETY: `handle` is valid for the lifetime of the process and `symbol` is NUL-terminated.
     let ptr = unsafe { libc::dlsym(handle, symbol.as_ptr()) };

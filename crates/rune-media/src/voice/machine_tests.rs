@@ -214,3 +214,31 @@ fn a_failed_stream_comes_back_after_a_device_change_or_media_reset() {
         assert_eq!(rig.state, State::Running);
     }
 }
+
+#[test]
+fn a_stream_lost_while_running_rebuilds_after_settling() {
+    let mut rig = Rig::new().running();
+    let effects = rig.step(Event::Lost { fault: Fault::passing("server restarted"), now: rig.at(5) });
+    let (attempt, due) = rig.wake();
+    assert_eq!(effects, vec![Effect::Discard, Effect::WakeAt { attempt, due }]);
+    assert_eq!(due, rig.at(5) + SETTLE);
+    assert_eq!(rig.step(Event::RetryDue { attempt, now: due }), vec![Effect::Run]);
+    assert_eq!(rig.ran(200, Ok(())), vec![Effect::Tell(VoiceEvent::DeviceChanged)]);
+}
+
+#[test]
+fn a_lasting_loss_while_running_fails_and_start_tries_again() {
+    let mut rig = Rig::new().running();
+    let effects = rig.step(Event::Lost { fault: Fault::lasting("microphone blocked"), now: rig.at(5) });
+    assert_eq!(effects, vec![Effect::Discard, Effect::Tell(VoiceEvent::Failed("microphone blocked".into()))]);
+    assert_eq!(rig.state, State::Failed("microphone blocked".into()));
+    assert_eq!(rig.step(Event::Start), vec![Effect::Discard, Effect::Run]);
+}
+
+#[test]
+fn a_loss_reported_after_stopping_changes_nothing() {
+    let mut rig = Rig::new().running();
+    rig.step(Event::Stop);
+    assert!(rig.step(Event::Lost { fault: Fault::lasting("late"), now: rig.at(5) }).is_empty());
+    assert_eq!(rig.state, State::Idle);
+}

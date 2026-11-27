@@ -7,7 +7,7 @@
 
 mod buffer;
 #[cfg(target_os = "linux")]
-mod linux;
+pub(crate) mod linux;
 mod machine;
 mod silent;
 #[cfg(not(target_os = "linux"))]

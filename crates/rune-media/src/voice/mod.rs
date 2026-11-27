@@ -3,31 +3,59 @@
 //!
 //! [`Voice::open`] returns a control handle and two lock-free stream ends. [`VoiceMic`] reads
 //! what the microphone heard with the speaker's own output removed. [`VoiceSpeaker`] queues
-//! what to play. The device's audio thread touches only the two rings and a few atomics, so it
-//! never allocates, locks or waits on the app.
+//! what to play. The audio side touches only the two rings and a few atomics, so it never locks
+//! or waits on the app. [`Voice::open_fake`] runs anywhere, on a [`FakeVoice`].
 //!
-//! On macOS and iOS the stream runs through Apple's voice-processing I/O unit, which cancels
+//! # Platforms
+//!
+//! **macOS and iOS.** The stream runs through Apple's voice-processing I/O unit, which cancels
 //! echo, suppresses noise and levels the microphone. On iOS the audio session is set to
 //! play-and-record in voice-chat mode, using the loudspeaker unless headphones or a Bluetooth
 //! headset are connected. When the default devices change (headphones plugged in or out) the
 //! stream rebuilds itself on the new route. When a call or another app interrupts it, it pauses
-//! and resumes afterwards. On Windows, Linux and the web, [`Voice::open`] returns
-//! [`VoiceError::Unsupported`]. [`Voice::open_fake`] runs anywhere, on a [`FakeVoice`].
+//! and resumes afterwards.
+//!
+//! **Linux.** The stream opens a record and a playback stream on the default devices through
+//! PulseAudio's simple API, which PipeWire desktops serve through `pipewire-pulse`, and falls back
+//! to ALSA's `default` device. Both libraries are loaded at run time, so a system without either
+//! fails to open with [`VoiceError::OpenFailed`]. Echo cancellation and noise suppression run in
+//! the app, with WebRTC's AEC3 and noise suppressor, using exactly the samples Rune plays as the
+//! reference, so no system echo-cancel module is needed. Limits: only Rune's own output is
+//! cancelled, not other apps' sound; steady pure tones are cancelled far less than speech or
+//! noise; the microphone level isn't adjusted automatically; the
+//! sound server moves the streams when the default devices change, and a stream that fails is
+//! rebuilt ([`VoiceEvent::DeviceChanged`]). If the default source is already PipeWire's or
+//! PulseAudio's echo-cancel node, the echo is cancelled twice, which is harmless. Verified
+//! against a real PulseAudio server whose microphone hears the speaker directly; a desktop with
+//! a sound card and PipeWire hasn't been verified yet. Linux has no microphone permission, so
+//! [`Voice::permission`] is [`MicPermission::Granted`].
+//!
+//! Elsewhere, [`Voice::open`] returns [`VoiceError::Unsupported`].
 //!
 //! Apps reach these types through `rune`, which re-exports them.
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+mod aec;
 mod control;
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+mod duplex;
+#[cfg(any(target_os = "windows", test))]
+mod echo_path;
 mod fake;
 mod io;
 mod machine;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple;
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "linux")))]
 mod unsupported;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use apple as backend;
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+#[cfg(target_os = "linux")]
+use linux as backend;
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "linux")))]
 use unsupported as backend;
 
 pub use fake::FakeVoice;
@@ -318,6 +346,8 @@ impl Drop for Voice {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+mod duplex_tests;
 #[cfg(test)]
 mod io_tests;
 #[cfg(test)]

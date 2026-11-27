@@ -18,7 +18,7 @@ pub(crate) trait VoiceDevice {
     fn discard(&mut self);
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Signal {
     Start,
     Stop,
@@ -27,6 +27,8 @@ pub(crate) enum Signal {
     InterruptionBegan,
     InterruptionEnded { should_resume: bool },
     MediaReset,
+    #[cfg_attr(any(target_os = "macos", target_os = "ios"), allow(dead_code))]
+    Lost(Fault),
     Backgrounded,
     Foregrounded,
     Close,
@@ -42,6 +44,7 @@ impl Signal {
             Self::InterruptionBegan => Event::InterruptionBegan,
             Self::InterruptionEnded { should_resume } => Event::InterruptionEnded { should_resume },
             Self::MediaReset => Event::MediaReset { now },
+            Self::Lost(fault) => Event::Lost { fault, now },
             Self::Backgrounded => Event::Backgrounded,
             Self::Foregrounded => Event::Foregrounded,
             Self::Close => Event::Close,

@@ -68,6 +68,9 @@ pollster = { workspace = true }
 windows = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Media_Audio", "Win32_Media_MediaFoundation", "Win32_Security", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_System_Variant", "Win32_UI_Shell_PropertiesSystem"] }
 windows-sys = { workspace = true, features = ["Win32_Graphics_Dwm", "Win32_System_Performance"] }
 
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+sonora = "=0.3.0"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # The window GPU's render node, for dmabuf producers (`native_surface::linux`): wgpu-hal's version.
 ash = "0.38"

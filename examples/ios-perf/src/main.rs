@@ -198,16 +198,16 @@ fn on_presented(p: &FramePresented, started: &mut Option<std::sync::mpsc::Sender
         first.then(|| (p.presented_at(), r.main_wall))
     });
     let Some((Some(at), main_wall)) = first else { return };
-    say_first_frame(probe::wall_of(at), main_wall);
+    say_first_frame(probe::wall_of(at), "presented", main_wall);
     let marks: String = rune::marks::marks().into_iter()
         .map(|(name, at)| format!(" {name}={}", ms(probe::since_start_ms(probe::wall_of(at))))).collect();
     say(format!("PERF marks{marks}"));
     if let Some(started) = started.take() { started.send(()).ok(); }
 }
 
-fn say_first_frame(at: SystemTime, main_wall: Option<SystemTime>) {
+fn say_first_frame(at: SystemTime, source: &str, main_wall: Option<SystemTime>) {
     let main_ms = main_wall.and_then(probe::since_start_ms);
-    say(format!("PERF first_frame_ms={} main_ms={} mode={:?}", ms(probe::since_start_ms(at)), ms(main_ms), args().mode).to_lowercase());
+    say(format!("PERF first_frame_ms={} main_ms={} mode={:?} source={source}", ms(probe::since_start_ms(at)), ms(main_ms), args().mode).to_lowercase());
 }
 
 fn ms(v: Option<f64>) -> String { v.map_or_else(|| "nan".into(), |v| format!("{v:.1}")) }
@@ -306,7 +306,7 @@ fn run_native() -> ! {
         uikit::show_table_in(root, args().rows);
         uikit::start_link(Box::new(|_, target, link| {
             uikit::stop_link(link);
-            say_first_frame(native::wall_of_media(target), REC.with(|r| r.borrow().main_wall));
+            say_first_frame(native::wall_of_media(target), "link_target", REC.with(|r| r.borrow().main_wall));
             native::after(args().idle, || {
                 say(format!("PERF idle_footprint_mib={:.2} idle_s={}", probe::footprint_mib(), args().idle));
                 if args().auto_scroll { drive_uikit(); }

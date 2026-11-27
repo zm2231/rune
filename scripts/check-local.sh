@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fast, opt-in local developer checks for Rune (pure POSIX bash/awk/grep; no Python required).
-# Usage: scripts/check-local.sh [--wasm] [--hot] [--features] [--all] [--tests] [--help]
+# Usage: scripts/check-local.sh [--wasm] [--hot] [--features] [--docs] [--all] [--tests] [--help]
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
@@ -21,7 +21,8 @@ Options:
   --strict      Run strict web lints (cargo lint-wasm and cargo lint-webgl, warnings denied)
   --hot         Also run cargo check-hot (rune with --features hot)
   --features    Also check optional/no-default feature sets (gpu counters, Linux noop, rune optional features, rune-kit --all-features)
-  --all         Check and lint --workspace --all-targets instead of default members (includes --hot and --features)
+  --docs        Also run cargo doc on rune, denying broken, private and redundant doc links
+  --all         Check and lint --workspace --all-targets instead of default members (includes --hot, --features and --docs)
   --tests       Also run cargo test-fast
   -h, --help    Show this help message and exit
 EOF
@@ -31,6 +32,7 @@ run_wasm=0
 run_strict=0
 run_hot=0
 run_features=0
+run_docs=0
 run_all=0
 run_tests=0
 
@@ -40,6 +42,7 @@ for arg in "$@"; do
     --strict) run_strict=1 ;;
     --hot) run_hot=1 ;;
     --features) run_features=1 ;;
+    --docs) run_docs=1 ;;
     --all) run_all=1 ;;
     --tests) run_tests=1 ;;
     -h|--help) usage; exit 0 ;;
@@ -155,6 +158,11 @@ if [ "$run_features" -eq 1 ] || [ "$run_all" -eq 1 ]; then
   run_step "rune optional features" cargo check -p rune --features tooling,keys-overlay,frame-profile,native-file-dialog,baseline-taffy --tests
   run_step "rune-kit --all-features" cargo check -p rune-kit --all-features --tests
   run_step "no-default-features tests" cargo check --no-default-features -p rune -p rune-gpu -p rune-image -p rune-media -p rune-text -p rune-spell -p rune-kit --tests
+fi
+
+if [ "$run_docs" -eq 1 ] || [ "$run_all" -eq 1 ]; then
+  run_step "rune doc links" env RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::redundant_explicit_links" \
+    cargo doc --no-deps -p rune
 fi
 
 if [ "$run_tests" -eq 1 ]; then

@@ -12,9 +12,9 @@ impl El {
     /// Ranges are UTF-8 bytes of the string `f` is given; an empty one, or one that ends past
     /// the text or off a char boundary, is skipped. Text fields, secure ([`El::secure`]) and
     /// live ([`El::live_text`]) texts are left alone and `f` isn't called for them. It sees the
-    /// subtree as built so far: [`memo`](crate::memo) subtrees (key their deps on the query
-    /// instead) and rows that [`virtual_rows`](crate::virtual_rows) builds later are not visited,
-    /// so call it inside those builders too.
+    /// subtree as built so far: [`memo`](fn@crate::memo) subtrees (key their deps on the query
+    /// instead) and rows that [`virtual_rows`](crate::El::virtual_rows) builds later are not
+    /// visited, so call it inside those builders too.
     ///
     /// ```
     /// use rune::{Span, TextHighlight, col, oklch, rich, text};

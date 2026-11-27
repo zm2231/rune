@@ -1,5 +1,7 @@
 //! View environment (`Env`), background wake handle (`Waker`) and view context (`Cx`).
 use super::*;
+#[cfg(doc)]
+use crate::{DecorationMode, RendererKind};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Env {

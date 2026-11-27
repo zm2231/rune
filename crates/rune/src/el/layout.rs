@@ -800,9 +800,9 @@ impl El {
     /// (`Tx::key_base` its character) instead of the character the keyboard layout composes, and
     /// the input method composes nothing for it. An unselected Option key keeps composing the
     /// layout's characters (for example, right Option on a German layout still types `[` and `@`
-    /// while [`OptionAsAlt::Left`](crate::OptionAsAlt::Left) is active). Ignored off macOS,
-    /// ignored while `mode` is [`OptionAsAlt::None`](crate::OptionAsAlt::None), and reset to
-    /// `None` whenever a text field or another caret takes the input method.
+    /// while [`OptionAsAlt::Left`] is active). Ignored off macOS, ignored while `mode` is
+    /// [`OptionAsAlt::None`], and reset to `None` whenever a text field or another caret takes
+    /// the input method.
     ///
     /// ```
     /// use rune::{OptionAsAlt, el};

@@ -10,11 +10,18 @@ static ARC: Icon = Icon {
 #[derive(Default)]
 struct Spin {
     fps: f32,
+    dots: bool,
     polls: usize,
     next: f64,
 }
 
 fn loader(spin: &Spin, _: &mut Cx<Spin>) -> El {
+    if spin.dots {
+        let stops: &'static [(f32, f32)] = &[(0.0, 0.2), (0.5, 1.0), (1.0, 0.2)];
+        let dot = |k: usize| el().key(format!("dot{k}")).size(4.0, 4.0).fill(crate::Color::WHITE).a11y_hidden()
+            .cycle(rune_motion::Cycle { period: 1.8, phase: k as f32 / 3.0, stops, still: 0.5, fps: spin.fps });
+        return el().size(40.0, 40.0).child(dot(0)).child(dot(1)).child(dot(2));
+    }
     el().size(40.0, 40.0).child(icon(&ARC, 16.0).key("arc").looping(rune_motion::LoopSpec::rotation(0.9).fps(spin.fps)))
 }
 
@@ -58,12 +65,12 @@ struct Host {
 
 impl Host {
     fn new(fps: f32) -> Host {
-        Host::with_poll(fps, None)
+        Host::with_poll(fps, false, None)
     }
 
-    fn with_poll(fps: f32, poll: Option<fn(&mut Spin, f64, &mut crate::Tx) -> bool>) -> Host {
+    fn with_poll(fps: f32, dots: bool, poll: Option<fn(&mut Spin, f64, &mut crate::Tx) -> bool>) -> Host {
         let start = crate::time::now();
-        let mut rt = Runtime::new(Spin { fps, ..Spin::default() }, loader, (40.0, 40.0), Env::new(true, 2.0));
+        let mut rt = Runtime::new(Spin { fps, dots, ..Spin::default() }, loader, (40.0, 40.0), Env::new(true, 2.0));
         rt.wall_start = Some(start);
         rt.frame.set_test_clock(crate::ManualClock::new(120.0));
         rt.poll = poll;
@@ -124,20 +131,22 @@ fn a_spinner_beside_an_idle_poll_runs_the_poll_only_at_its_own_wakes() {
         tx.wake_at(spin.next);
         false
     }
-    let mut host = Host::with_poll(60.0, Some(poll));
-    host.rt.state.polls = 0;
-    let (mut steps, mut refused) = (0, Vec::new());
-    for _ in 0..120 {
-        match host.step() {
-            Ok(_) => steps += 1,
-            Err(why) => {
-                refused.push(why);
-                host.frames -= 1;
-                host.frame();
+    for dots in [false, true] {
+        let mut host = Host::with_poll(60.0, dots, Some(poll));
+        host.rt.state.polls = 0;
+        let (mut steps, mut refused) = (0, Vec::new());
+        for _ in 0..120 {
+            match host.step() {
+                Ok(_) => steps += 1,
+                Err(why) => {
+                    refused.push(why);
+                    host.frames -= 1;
+                    host.frame();
+                }
             }
         }
+        let (polls, what) = (host.rt.state.polls, if dots { "dots" } else { "a turning arc" });
+        assert!(polls <= 9, "two seconds of {what} at 60 fps ran the app's 4-a-second poll {polls} times; refusals: {refused:?}");
+        assert!(steps >= 110, "{what}: {steps} of 120 frames were loop-only; refusals: {refused:?}");
     }
-    let polls = host.rt.state.polls;
-    assert!(polls <= 9, "two seconds of a 60 fps spinner ran the app's 4-a-second poll {polls} times; refusals: {refused:?}");
-    assert!(steps >= 110, "{steps} of 120 frames were loop-only; refusals: {refused:?}");
 }

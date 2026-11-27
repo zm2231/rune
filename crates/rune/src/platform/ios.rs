@@ -21,7 +21,7 @@ pub(crate) mod overlay;
 pub(crate) mod pacing;
 pub(crate) mod park;
 #[cfg(target_os = "ios")]
-mod scenes;
+pub(crate) mod scenes;
 pub(crate) mod size_class;
 #[cfg(target_os = "ios")]
 mod surface;

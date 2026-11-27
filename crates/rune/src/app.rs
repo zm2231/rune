@@ -140,6 +140,7 @@ pub struct App<S: 'static> {
     pub(crate) on_open_url: Option<crate::open_url::incoming::OnOpenUrl<S>>,
     pub(crate) on_open_files: Option<crate::open_url::incoming::OnOpenFiles<S>>,
     pub(crate) on_service: Option<crate::services::OnService<S>>,
+    pub(crate) on_continue_activity: Option<crate::handoff::OnContinue<S>>,
     pub(crate) shared: Arc<Shared<S>>,
     #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
     pub(crate) overlays: Vec<Box<dyn crate::overlay::PendingOverlay>>,
@@ -228,6 +229,7 @@ impl<S: 'static> App<S> {
             on_open_url: None,
             on_open_files: None,
             on_service: None,
+            on_continue_activity: None,
             shared,
             #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
             overlays: Vec::new(),
@@ -1090,6 +1092,28 @@ impl<S: 'static> App<S> {
     /// ```
     pub fn on_service(mut self, f: fn(&mut S, &crate::ServiceInput, &mut Tx)) -> Self {
         self.on_service = Some(f);
+        self
+    }
+
+    /// macOS and iOS: runs on the main thread with an activity the user continues here from
+    /// another of their devices through Handoff, one a window advertised with
+    /// [`Tx::advertise`](crate::Tx::advertise). One that launches the app arrives before the
+    /// window's first frame. The bundle lists each activity type in `NSUserActivityTypes`, and
+    /// both devices are signed in to the same account with Handoff on. A continued web page
+    /// (`NSUserActivityTypeBrowsingWeb`) goes to [`Self::on_open_url`] instead. Never called on
+    /// other platforms.
+    ///
+    /// ```no_run
+    /// use rune::{App, AppSpec, el};
+    ///
+    /// let spec = AppSpec::new("Notes", (640.0, 420.0), || None::<String>, |_, _| el());
+    /// let app = App::new(spec).on_continue_activity(|open, activity, _| {
+    ///     if activity.kind() == "com.example.notes.editing" { *open = activity.info("note").map(str::to_owned); }
+    /// });
+    /// let _ = app;
+    /// ```
+    pub fn on_continue_activity(mut self, f: fn(&mut S, &crate::Activity, &mut Tx)) -> Self {
+        self.on_continue_activity = Some(f);
         self
     }
 

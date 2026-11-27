@@ -119,6 +119,8 @@ define_class!(
             let key = scenes::session_key(session).or_else(|| activities.iter().find_map(|activity| scenes::activity_key(activity)));
             // SAFETY: each member of `userActivities` is an `NSUserActivity`.
             receive(urls, activities.iter().map(|activity| unsafe { read(activity) }).collect());
+            // SAFETY: as above.
+            for activity in &activities { unsafe { crate::handoff::ios::continued(activity) }; }
             scenes::connected(scene, key);
         }
 
@@ -129,11 +131,13 @@ define_class!(
             receive(unsafe { opened(contexts) }, Vec::new());
         }
 
-        /// A universal link opened while the app runs, among the activities an app continues.
+        /// A universal link opened, or a Handoff activity continued, while the app runs.
         #[unsafe(method(scene:continueUserActivity:))]
         fn continue_activity(&self, _scene: &AnyObject, activity: &AnyObject) {
             // SAFETY: `activity` is an `NSUserActivity`.
             receive(Vec::new(), vec![unsafe { read(activity) }]);
+            // SAFETY: as above.
+            unsafe { crate::handoff::ios::continued(activity) };
         }
 
         #[unsafe(method(sceneDidDisconnect:))]

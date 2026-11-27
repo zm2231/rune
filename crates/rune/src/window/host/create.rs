@@ -167,6 +167,8 @@ impl Host {
             let rt = self.app.rt_mut();
             rt.host.represented_file.mark_applied();
             rt.host.document_edited.mark_applied();
+            if let Some(Some(activity)) = rt.host.activity.current() { crate::handoff::macos::advertise(&window, Some(activity)); }
+            rt.host.activity.mark_applied();
         }
         #[cfg(target_os = "macos")]
         let drop_target = crate::platform::macos::drop::install(&window);

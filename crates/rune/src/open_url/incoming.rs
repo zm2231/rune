@@ -224,6 +224,7 @@ pub(crate) struct Listeners {
     _urls: Option<Listening<String>>,
     _files: Option<Listening<Vec<PathBuf>>>,
     _services: Option<Listening<crate::ServiceInput>>,
+    _activities: Option<Listening<crate::Activity>>,
 }
 
 static INBOX: Inbox<String> = Inbox::new();
@@ -250,6 +251,7 @@ pub(crate) fn prepare() {
     INBOX.prepare(&NativeUrl);
     FILES_INBOX.prepare(&NativeFiles);
     crate::services::prepare();
+    crate::handoff::prepare();
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     {
         let (links, files) = super::instance::launch_arguments();
@@ -274,6 +276,7 @@ pub(crate) fn listen<S: 'static>(app: &App<S>) -> Listeners {
         _urls: INBOX.listen(app, &NativeUrl),
         _files: FILES_INBOX.listen_files(app, &NativeFiles),
         _services: crate::services::listen(app),
+        _activities: crate::handoff::listen(app),
     }
 }
 
@@ -282,6 +285,7 @@ pub(crate) fn settle() {
     INBOX.settle(&NativeUrl);
     FILES_INBOX.settle(&NativeFiles);
     crate::services::settle();
+    crate::handoff::settle();
 }
 
 #[cfg(target_os = "macos")]

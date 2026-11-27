@@ -42,7 +42,9 @@ never force-quit.
   - `NSMicrophoneUsageDescription` (when `--mic` is given)
   - every top-level key of each `--plist PATH` given (repeatable), in order, over
     the keys above: how an app adds `NSServices`, `NSUserActivityTypes` and other
-    declarations the flags don't cover
+    declarations the flags don't cover. Services entries show before the app's first
+    launch only after `lsregister -f` on the installed bundle and `pbs -update`
+    (`examples/mac-parity/install.sh` runs both)
 - Signs the bundle with `codesign --force --sign <identity>`, where `<identity>`
   is `MAC_APP_SIGN` if set or ad hoc (`-`) otherwise. It does not pass
   `--options runtime`, `--timestamp`, or `--entitlements`. If signing with

@@ -1108,9 +1108,12 @@ app.run();
   </array>
   ```
 
-  `scripts/mac-app --plist services.plist` merges such keys into a development bundle. macOS
-  rereads Services when the bundle registers; after changing entries run
-  `/System/Library/CoreServices/pbs -flush`. Input comes from another app, so validate it. Never
+  `scripts/mac-app --plist services.plist` merges such keys into a development bundle. The
+  entries show once Launch Services knows the bundle and Services has rescanned: after
+  installing or changing them, run `lsregister -f MyApp.app` (in
+  `/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support`)
+  and `/System/Library/CoreServices/pbs -update`; otherwise they appear only after the app's
+  first launch. Input comes from another app, so validate it. Never
   called on other platforms.
 - Links and relaunches on Windows: Windows starts a new process for each launch, passing a link
   as an argument. The hook receives the links among the first process's arguments

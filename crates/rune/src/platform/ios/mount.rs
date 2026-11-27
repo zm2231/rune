@@ -50,7 +50,7 @@ pub(crate) fn mount<S: 'static>(mut app: App<S>) -> Mount {
         shared.connect(wake.clone());
         let menus = crate::native_menu::MenuGuard::attach(&shared, false);
         let overlays = pending.into_iter().map(|overlay| overlay.into_slot()).collect();
-        let role = Role::App(Box::new(AppRole { shared, menus, on_ready, dropped, on_quit, on_rest, on_close, _open_urls: open_urls, window: None, undrawn: true, overlays }));
+        let role = Role::App(Box::new(AppRole { shared, menus, on_ready, dropped, on_quit, on_rest, on_close, _open_urls: open_urls, window: None, undrawn: true, overlays, advertised: Default::default() }));
         Ok(Box::new(Hosted { host, role, accessibility: AccessibilityLink::with_wake(wake.clone()), wake, title: spec.title, lifecycle: lifecycle::State::default(), field: field_touch::State::default(), appearance, park: park::State::default() }))
     })
 }

@@ -997,6 +997,8 @@ impl<S: 'static> WindowSpec<S> {
         on_open_files(f: fn(&mut S, &[std::path::PathBuf], &mut crate::Tx));
         /// Receives what another app's Services menu sends, like [`App::on_service`].
         on_service(f: fn(&mut S, &crate::ServiceInput, &mut crate::Tx));
+        /// Receives an activity continued here through Handoff, like [`App::on_continue_activity`].
+        on_continue_activity(f: fn(&mut S, &crate::Activity, &mut crate::Tx));
         /// Runs on the UI thread each time the native window is created, like `App::on_window`.
         on_window(f: impl FnMut(&crate::WindowHandle) + 'static);
         /// Called on the event thread after the first frame is ready, once per native creation.

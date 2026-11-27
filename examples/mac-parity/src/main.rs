@@ -3,13 +3,16 @@
 use std::path::{Path, PathBuf};
 
 use rune::tok::{self, radius, space, type_};
-use rune::{App, AppSpec, Cx, El, Key, KeyEvent, QuickLook, ServiceInput, Tx, col, el, text};
+use rune::{Activity, App, AppSpec, Cx, El, Key, KeyEvent, QuickLook, ServiceInput, Tx, col, el, text};
+
+const VIEWING: &str = "dev.rune.mac-parity.viewing";
 
 #[derive(Default)]
 struct State {
     files: Vec<PathBuf>,
     selected: usize,
     received: Vec<String>,
+    continued: Option<String>,
 }
 
 fn sample_files() -> Vec<PathBuf> {
@@ -32,6 +35,24 @@ fn preview(s: &State) -> QuickLook {
     s.files.iter().fold(QuickLook::new(), |look, f| look.file(f)).at(s.selected)
 }
 
+fn file_name(path: &Path) -> String {
+    path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
+}
+
+fn select(s: &mut State, i: usize, tx: &mut Tx) {
+    s.selected = i;
+    if let Some(path) = s.files.get(i) {
+        tx.advertise(Activity::new(VIEWING).with_title(format!("Viewing {}", file_name(path))).with_info("file", file_name(path)));
+    }
+}
+
+fn on_continue(s: &mut State, activity: &Activity, tx: &mut Tx) {
+    if activity.kind() != VIEWING { return; }
+    let Some(name) = activity.info("file") else { return };
+    s.continued = Some(name.to_owned());
+    if let Some(i) = s.files.iter().position(|f| file_name(f) == name) { select(s, i, tx); }
+}
+
 fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
     let moved = match ev.key {
         Key::Up => s.selected.saturating_sub(1),
@@ -42,7 +63,7 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
         }
         _ => return false,
     };
-    s.selected = moved;
+    select(s, moved, tx);
     if tx.quick_look_open() { tx.quick_look(preview(s)); }
     true
 }
@@ -59,10 +80,10 @@ fn on_service(s: &mut State, input: &ServiceInput, _: &mut Tx) {
 
 fn row_for(i: usize, path: &Path, selected: bool, dark: bool) -> El {
     let t = tok::theme(dark);
-    let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+    let name = file_name(path);
     el().key(format!("file-{i}")).w_full().padding(space::S2).radius(radius::SM)
         .fill(if selected { tok::accent(0, dark) } else { t.bg })
-        .on_press(move |s: &mut State| s.selected = i)
+        .on_press_tx(move |s: &mut State, tx: &mut Tx| select(s, i, tx))
         .child(text(name).font(type_::BODY).color(t.text))
 }
 
@@ -75,6 +96,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .child(text("Mac parity").font(type_::TITLE).color(t.text))
         .child(text(status).key("status").font(type_::LABEL).color(t.text_secondary))
         .children(rows)
+        .child(text(match &s.continued { Some(name) => format!("Continued from another device: {name}"), None => "Handoff advertises the selected file".into() }).key("handoff").font(type_::LABEL).color(t.text_secondary))
         .child(text("Received from Services").font(type_::SECTION).color(t.text))
         .children(s.received.iter().rev().take(5).map(|line| text(line.clone()).font(type_::LABEL).color(t.text_secondary)))
 }
@@ -84,5 +106,5 @@ fn main() {
         on_key: Some(on_key),
         ..AppSpec::new("Mac Parity", (420.0, 360.0), || State { files: sample_files(), ..State::default() }, view)
     };
-    App::new(spec).on_service(on_service).run();
+    App::new(spec).on_service(on_service).on_continue_activity(on_continue).run();
 }

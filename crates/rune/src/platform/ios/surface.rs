@@ -189,6 +189,7 @@ pub(super) struct AppRole<S: 'static> {
     pub(super) window: Option<String>,
     pub(super) undrawn: bool,
     pub(super) overlays: Vec<OverlaySlot>,
+    pub(super) advertised: crate::handoff::ios::Advertised,
 }
 
 pub(super) struct OverlayRole<S: 'static> {
@@ -245,9 +246,11 @@ impl<S: 'static> Hosted<S> {
     fn app_frame_done(&mut self, frame: EmbedFrame) {
         let rt = self.host.runtime_mut();
         if let Some(scheme) = rt.host.window_color_scheme.take() { self.appearance.set_window(scheme); }
+        let activity = rt.host.activity.take_change().cloned();
         let (shell, minimize) = (rt.shell_request.take(), rt.host.minimize.field());
         if minimize { rt.minimize_step(crate::window::MinimizeEvent::Lost); }
         let Role::App(app) = &mut self.role else { return };
+        if let Some(activity) = activity { app.advertised.set(activity.as_ref()); }
         let managed = app.window.is_some();
         if let Some(key) = &app.window && shell == Some(crate::Shell::Close) {
             super::scenes::asked(key, Some(crate::app::WindowRequest::Close), false);

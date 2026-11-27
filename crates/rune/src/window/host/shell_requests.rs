@@ -101,6 +101,13 @@ impl Host {
         }
         #[cfg(not(target_os = "macos"))]
         let _ = (represented_change, edited_change);
+        let activity_change = self.app.rt_mut().host.activity.take_change().cloned();
+        #[cfg(target_os = "macos")]
+        if let (Some(w), Some(activity)) = (&self.win, &activity_change) {
+            crate::handoff::macos::advertise(&w.window, activity.as_ref());
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = activity_change;
     }
 }
 

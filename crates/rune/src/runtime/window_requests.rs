@@ -62,6 +62,7 @@ pub(crate) struct HostState {
     pub(crate) represented_file: Latched<Option<std::path::PathBuf>>,
     /// macOS document edited dot (`MacWindowOptions::document_edited`, `Tx::set_document_edited`).
     pub(crate) document_edited: Latched<bool>,
+    pub(crate) activity: Latched<Option<crate::Activity>>,
     /// How the root fits its content (`App::fit_content_height` sets `ContentSizing::FitHeight`;
     /// `ConfiguredOverlay::sizing` / `fit_content_height` sets any `ContentSizing` mode).
     pub(crate) content_sizing: crate::ContentSizing,
@@ -174,6 +175,7 @@ impl HostState {
             window_backdrop_request: None,
             represented_file: Default::default(),
             document_edited: Default::default(),
+            activity: Default::default(),
             content_sizing: crate::ContentSizing::Fixed,
             content_limits: (None, None),
             fit: Default::default(),

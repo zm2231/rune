@@ -21,8 +21,9 @@ examples/mac-parity/install.sh
 ```
 
 It builds a release binary, installs `~/Applications/Mac Parity.app` with `scripts/mac-app`,
-merging `Info.extra.plist` (two `NSServices` entries, both with `NSMessage` `runeService`), and
-flushes the Services cache. Then:
+merging `Info.extra.plist` (two `NSServices` entries, both with `NSMessage` `runeService`),
+registers the bundle with Launch Services (`lsregister -f`) and rescans Services (`pbs -update`),
+so the entries show before the app's first launch. Then:
 
 - Select text in TextEdit or Safari and choose *App menu ▸ Services ▸ Send Text to Mac Parity*.
   The window lists `text: text "…"` under "Received from Services".
@@ -30,3 +31,11 @@ flushes the Services cache. Then:
   Quick Actions/Services). They are listed as `files: file …` and join the file list, ready for
   Quick Look.
 - Quit the app and use a service again: it launches and the input still arrives.
+
+## Handoff
+
+Selecting a file advertises `dev.rune.mac-parity.viewing` (listed in `NSUserActivityTypes` in
+`Info.extra.plist`) with the file's name, through `Tx::advertise`. With the installed app on two
+Macs signed in to the same Apple Account, Handoff on, and the same file names in the list (the
+samples are), the other Mac's Dock shows the app's Handoff icon; clicking it runs
+`App::on_continue_activity`, which selects that file and shows "Continued from another device".

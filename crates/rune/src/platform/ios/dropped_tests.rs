@@ -5,9 +5,13 @@ use crate::{AppHandle, AppSpec, WindowSpec};
 
 /// The kinds a handle's requests hold after `ask`.
 fn kinds(ask: impl FnOnce(&AppHandle<()>)) -> Vec<Kind> {
+    kinds_in(false, ask)
+}
+
+fn kinds_in(managed: bool, ask: impl FnOnce(&AppHandle<()>)) -> Vec<Kind> {
     let handle = AppHandle::<()> { shared: Arc::default() };
     ask(&handle);
-    asked(&handle.shared.take().window_requests).into_iter().filter(|(_, asked)| *asked).map(|(kind, _)| kind).collect()
+    asked(&handle.shared.take().window_requests, managed).into_iter().filter(|(_, asked)| *asked).map(|(kind, _)| kind).collect()
 }
 
 #[test]
@@ -58,7 +62,11 @@ fn each_window_request_is_its_kind() {
 
 /// The kinds a frame's handlers left.
 fn handler_kinds(shell: Option<Shell>, minimize: bool, opened: usize) -> Vec<Kind> {
-    asked_by_handlers(shell, minimize, opened).into_iter().filter(|(_, asked)| *asked).map(|(kind, _)| kind).collect()
+    handler_kinds_in(false, shell, minimize, opened)
+}
+
+fn handler_kinds_in(managed: bool, shell: Option<Shell>, minimize: bool, opened: usize) -> Vec<Kind> {
+    asked_by_handlers(shell, minimize, opened, managed).into_iter().filter(|(_, asked)| *asked).map(|(kind, _)| kind).collect()
 }
 
 #[test]
@@ -107,4 +115,13 @@ fn opened_windows_are_taken_so_none_stays_queued() {
 #[test]
 fn several_requests_in_one_turn_are_each_found() {
     assert_eq!(kinds(|handle| { handle.show(); handle.focus(); handle.quit(); }), [Kind::Window, Kind::Activation, Kind::Quit]);
+}
+
+#[test]
+fn a_window_of_the_registry_drops_only_what_no_ios_window_does() {
+    assert_eq!(kinds_in(true, |handle| { handle.open(); handle.hide(); handle.close(); handle.focus(); }), []);
+    assert_eq!(kinds_in(true, |handle| handle.minimize()), [Kind::Activation]);
+    assert_eq!(kinds_in(true, |handle| handle.set_position((1, 2))), [Kind::Position]);
+    assert_eq!(handler_kinds_in(true, Some(Shell::Close), false, 0), []);
+    assert_eq!(handler_kinds_in(true, Some(Shell::Quit), true, 0), [Kind::Activation, Kind::Quit]);
 }

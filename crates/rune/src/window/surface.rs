@@ -38,10 +38,9 @@ pub(in crate::window) use loop_frame::LoopFrame;
 #[cfg(not(target_arch = "wasm32"))]
 pub(in crate::window) use native::Native;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use pacing::{
-    HiddenPace, TimerFrame, acquire, acquire_checked, poll_timer_deadline_core,
-    timer_deadline_core, timer_wants_frame_core,
-};
+pub(crate) use pacing::{HiddenPace, TimerFrame, acquire, acquire_checked, timer_deadline_core};
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+pub(crate) use pacing::{poll_timer_deadline_core, timer_wants_frame_core};
 pub(crate) use pacing::{Missed, TIMER_FRAME};
 #[cfg(target_os = "windows")]
 pub(crate) use pacing::{motion_wake_wall_core, poll_wake_wall_core};

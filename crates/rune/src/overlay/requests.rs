@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::el::Tx;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 use super::OverlayCore;
 
 pub(super) type Update<T> = Box<dyn FnOnce(&mut T, &mut Tx) -> bool + Send>;
@@ -27,6 +27,7 @@ pub(super) type TokenReply = Box<dyn FnOnce(Option<String>) + Send>;
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) enum TokenQueue {
     Open(Vec<TokenReply>),
+    #[cfg_attr(target_os = "ios", allow(dead_code))]
     Closed,
 }
 
@@ -58,6 +59,7 @@ impl TokenQueue {
     }
 
     /// Transitions to `Closed` and returns every previously queued reply.
+    #[cfg(not(target_os = "ios"))]
     pub(super) fn close(&mut self) -> Vec<TokenReply> {
         match std::mem::replace(self, Self::Closed) {
             Self::Open(pending) => pending,
@@ -110,7 +112,7 @@ pub(super) struct Requests {
     #[cfg(not(target_arch = "wasm32"))]
     pub tokens: TokenQueue,
     /// The `setup` waker fired.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
     pub woken: bool,
 }
 
@@ -120,7 +122,7 @@ impl Requests {
     pub fn visible(&self) -> Option<bool> { self.visibility.map(|v| matches!(v, Visibility::Show(_))) }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 impl OverlayCore {
     /// None off Wayland's layer shell, while the overlay is not shown, or while it has no surface.
     pub(super) fn activation_token(&self) -> Option<String> {

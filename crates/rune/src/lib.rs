@@ -36,6 +36,9 @@ pub mod file_dialog;
 pub mod hot;
 pub mod jump_list;
 pub mod labels;
+#[cfg(all(target_os = "macos", feature = "test-main-thread"))]
+#[doc(hidden)]
+pub mod main_thread_checks;
 pub mod memo;
 pub mod motion_gate;
 pub mod playground;

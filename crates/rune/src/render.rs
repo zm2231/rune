@@ -107,7 +107,7 @@ pub(crate) use instance::shader_consts;
 pub(crate) use instance::turned_bounds;
 pub(crate) use instance::unpack_u64_f32;
 pub(crate) use instance::word;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub(crate) use warmup::park_gpu;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use warmup::surface_gpu;

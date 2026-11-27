@@ -106,16 +106,18 @@ pub(crate) use keys::web_key_base_str;
 pub(crate) use state::frame;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use state::rest;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub(crate) use state::{Rest, RestEffect, RestEvent};
 pub(crate) use state::{Life, Minimize, MinimizeEvent, Sight};
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) use surface::{Backoff, BackoffEvent, ConfigureError, acquire_checked, configure, frame_latency, reblend_core, surface_config};
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub(crate) use surface::{
-    Backoff, BackoffEffect, BackoffEvent, ConfigureError, HiddenPace, acquire_checked, configure,
-    configure_checked, frame_latency, reblend_core, poll_timer_deadline_core, surface_config,
-    timer_deadline_core, timer_wants_frame_core,
+    BackoffEffect, HiddenPace, configure_checked, poll_timer_deadline_core, timer_deadline_core, timer_wants_frame_core,
 };
-pub(crate) use surface::{Missed, Presented, TIMER_FRAME, rebuild_renderer_core};
+#[cfg(not(target_os = "ios"))]
+pub(crate) use surface::Presented;
+pub(crate) use surface::{Missed, TIMER_FRAME, rebuild_renderer_core};
 #[cfg(target_arch = "wasm32")]
 pub(crate) use surface::configure_then;
 #[cfg(target_os = "macos")]
@@ -164,7 +166,7 @@ mod tests;
 
 // Slot indices on shared headless/desktop variants are only read by the native event loop;
 // wasm32's virtual_desktop matches by variant.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg_attr(any(target_arch = "wasm32", target_os = "ios"), allow(dead_code))]
 pub(crate) enum WakeEvent {
     #[cfg(not(target_arch = "wasm32"))]
     DisplayTick(usize),
@@ -400,17 +402,20 @@ impl Windows {
                 }
                 let mut args = self.args.clone();
                 (args.scene, args.size) = (None, None);
+                #[cfg(not(target_os = "ios"))]
                 let mut overlays = Vec::new();
                 let slot = self.hosts.len();
-                let host = spec.start(args, Start { proxy: self.proxy.clone(), slot, gpu: self.gpu.clone(), wayland, traced: false, overlays: &mut overlays, on_display_close: &mut self.on_display_close });
+                let host = spec.start(args, Start { proxy: self.proxy.clone(), slot, gpu: self.gpu.clone(), wayland, traced: false, #[cfg(not(target_os = "ios"))] overlays: &mut overlays, on_display_close: &mut self.on_display_close });
                 self.hosts.push(host);
                 if let Some(Some(host)) = self.hosts.get_mut(slot) { host.resumed(event_loop); }
+                #[cfg(not(target_os = "ios"))]
                 self.connect_overlays(overlays, event_loop);
             }
             app_events::sync_quit_request_hooks(&self.hosts);
         }
     }
 
+    #[cfg(not(target_os = "ios"))]
     fn connect_overlays(&mut self, overlays: Vec<Box<dyn crate::overlay::PendingOverlay>>, event_loop: &ActiveEventLoop) {
         for mut overlay in overlays {
             let (slot, proxy) = (self.hosts.len(), self.proxy.clone());
@@ -477,6 +482,7 @@ pub(crate) struct Start<'a> {
     wayland: bool,
     /// Whether this window records `--native` traces.
     traced: bool,
+    #[cfg(not(target_os = "ios"))]
     overlays: &'a mut Vec<Box<dyn crate::overlay::PendingOverlay>>,
     on_display_close: &'a mut Vec<crate::app::OnDisplayClose>,
 }
@@ -528,13 +534,15 @@ impl ApplicationHandler<WakeEvent> for Windows {
             let specs = crate::windows::flatten(factory(&displays));
             crate::windows::validate(&specs).expect("window keys");
             let trace_window = this.args.window.clone().or_else(|| specs.first().map(|s| s.key().to_owned()));
+            #[cfg(not(target_os = "ios"))]
             let mut overlays = Vec::new();
             let mut on_display_close = Vec::new();
             this.hosts = start_all(specs, |slot, spec| {
                 let traced = trace_window.as_deref() == Some(spec.key());
-                spec.start(this.args.clone(), Start { proxy: this.proxy.clone(), slot, gpu: this.gpu.clone(), wayland, traced, overlays: &mut overlays, on_display_close: &mut on_display_close })
+                spec.start(this.args.clone(), Start { proxy: this.proxy.clone(), slot, gpu: this.gpu.clone(), wayland, traced, #[cfg(not(target_os = "ios"))] overlays: &mut overlays, on_display_close: &mut on_display_close })
             }, |host| host.resumed(event_loop));
             this.on_display_close.extend(on_display_close);
+            #[cfg(not(target_os = "ios"))]
             this.connect_overlays(overlays, event_loop);
             // A launch with no window makes its menu bar now; a window's first frame made it.
             #[cfg(target_os = "macos")]
@@ -761,8 +769,8 @@ impl ApplicationHandler<WakeEvent> for Windows {
 /// covered (an occlusion event, or a drawable refused as occluded), minimised, or waiting out
 /// a missed frame. `poll`, due timers and queued input run now, as for a hidden window
 /// (`Runtime::hidden_wake`); the view and layout wait, dirty, for the frame that uncovers it,
-/// even with an assistive client attached, except on an assistive action, stale first activation,
-/// or a programmatic focus request (`Runtime::covered_wake`).
+/// unless an assistive client reads the window, which gets what changed built without drawing,
+/// at most once per `COVERED_BUILD_INTERVAL` (`Runtime::covered_wake`).
 /// Uncovering settles first, so that frame builds once and paints motion where it would have
 /// ended, as Core Animation's time-based motion has by the time a covered window shows again.
 #[cfg(test)]
@@ -809,7 +817,7 @@ pub(crate) fn sync_screen_origin_core(rt: &mut RuntimeCore, window: &Window) -> 
 
 /// The scale an overlay draws at. On macOS, read from the panel AppKit shows, and before it's
 /// ordered in from the display holding most of its frame, where it will appear.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub(crate) fn backing_scale(window: &Window) -> f32 {
     #[cfg(target_os = "macos")]
     if let Some(scale) = crate::platform::macos::backing_scale(window) { return scale; }

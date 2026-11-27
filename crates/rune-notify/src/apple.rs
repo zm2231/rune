@@ -1,6 +1,7 @@
 //! `UNUserNotificationCenter`, on macOS and iOS. The system only shows notifications for a
 //! bundled, signed app, so outside one (`cargo run`, tests) nothing posts. The first post asks the person for
-//! permission; until they allow it, posts are dropped. A notification's buttons and text box are a
+//! permission; until they allow it, posts are dropped and each one is reported to
+//! `on_post_error`. A `remove` while a post waits for that answer calls the post off. A notification's buttons and text box are a
 //! category of its own (one per set of actions, registered with the center before the post); a
 //! press comes back as the click, with the action and the words typed, without the app coming
 //! forward (the actions don't ask for the foreground). Attachments are copied into the app's
@@ -8,11 +9,21 @@
 
 #![allow(unsafe_code)]
 
+use super::inflight::{Inflight, Settled};
+use super::status::{Authorization, Failure, PostError, report};
 use super::{Action, Click, Notification, attachment};
 use block2::{Block, RcBlock};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, AnyProtocol, Bool, ClassBuilder, Sel};
 use objc2::{class, msg_send, sel};
+use std::path::PathBuf;
+use std::sync::{LazyLock, Mutex, MutexGuard};
+
+static INFLIGHT: LazyLock<Mutex<Inflight>> = LazyLock::new(Mutex::default);
+
+fn inflight() -> MutexGuard<'static, Inflight> {
+    INFLIGHT.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 #[link(name = "UserNotifications", kind = "framework")]
 unsafe extern "C" {
@@ -36,8 +47,18 @@ unsafe fn described(error: *mut AnyObject) -> String {
     if error.is_null() {
         return "no error given".into();
     }
-    // SAFETY: caller passes a live `NSError`.
-    unsafe { string(msg_send![error, localizedDescription]) }.unwrap_or_default()
+    // SAFETY: caller passes a live `NSError` inside an autorelease pool.
+    unsafe {
+        let text = string(msg_send![error, localizedDescription]).unwrap_or_default();
+        let domain = string(msg_send![error, domain]).unwrap_or_default();
+        let code: isize = msg_send![error, code];
+        format!("{text} ({domain} {code})")
+    }
+}
+
+fn refused(id: &str, failure: Failure) {
+    debug_log(&PostError { id: id.to_owned(), failure: failure.clone() }.to_string());
+    report(id, failure);
 }
 
 fn staging_dir() -> std::path::PathBuf {
@@ -97,40 +118,106 @@ pub(super) unsafe fn request_authorization(center: *mut AnyObject, done: &Block<
 }
 
 pub(super) fn post(n: Notification) {
-    let done = RcBlock::new(move |granted: Bool, _error: *mut AnyObject| {
-        if granted.as_bool() {
-            // SAFETY: `post` is gated on `bundled()`, and `add` runs inside its own autorelease pool.
-            unsafe { add(&n) };
-        }
-    });
-    // SAFETY: `post` is gated on `bundled()`; `&*done` is a valid ObjC block copied by the center.
-    unsafe {
-        request_authorization(center(), &*done);
-    }
+    // SAFETY: `post` is gated on `bundled()`, so `center()` is the app's notification center.
+    unsafe { post_to(center(), n) }
 }
 
-unsafe fn add(n: &Notification) {
-    // SAFETY: invoked inside an autorelease pool for a bundled app; every Foundation and
+pub(super) unsafe fn post_to(center: *mut AnyObject, n: Notification) {
+    let ticket = inflight().start(&n.id);
+    let done = RcBlock::new(move |granted: Bool, error: *mut AnyObject| {
+        if granted.as_bool() {
+            // SAFETY: `center` is the live center that asked; `add` holds its own autorelease pool.
+            unsafe { add(center, &n, ticket) };
+            return;
+        }
+        if inflight().settle(&n.id, ticket) != Settled::Wanted {
+            return;
+        }
+        let failure = if error.is_null() {
+            Failure::Denied
+        } else {
+            // SAFETY: a non-nil `error` is the request's live `NSError`, read inside this pool.
+            Failure::System(objc2::rc::autoreleasepool(|_| unsafe { described(error) }))
+        };
+        refused(&n.id, failure);
+    });
+    // SAFETY: `center` is live; `done` is a valid ObjC block the center copies.
+    unsafe { request_authorization(center, &done) }
+}
+
+unsafe fn add(center: *mut AnyObject, n: &Notification, ticket: u64) {
+    if !inflight().wanted(&n.id, ticket) {
+        inflight().settle(&n.id, ticket);
+        return;
+    }
+    let id = n.id.clone();
+    let done = RcBlock::new(move |error: *mut AnyObject| {
+        let settled = inflight().settle(&id, ticket);
+        if settled == Settled::Withdrawn {
+            // SAFETY: `center` outlives its own completion handler.
+            unsafe { withdraw(center, &[&id]) };
+        } else if settled == Settled::Wanted && !error.is_null() {
+            // SAFETY: a non-nil `error` is the add's live `NSError`, read inside this pool.
+            refused(&id, Failure::System(objc2::rc::autoreleasepool(|_| unsafe { described(error) })));
+        }
+    });
+    // SAFETY: invoked inside an autorelease pool for a live center; every Foundation and
     // `UNUserNotificationCenter` message matches its selector and signature.
     objc2::rc::autoreleasepool(|_| unsafe {
-        let content = content(n);
+        let (content, staged) = content(n);
         let request: *mut AnyObject = msg_send![
             class!(UNNotificationRequest),
             requestWithIdentifier: ns(&n.id),
             content: &*content,
             trigger: std::ptr::null::<AnyObject>()
         ];
-        let id = n.id.clone();
-        let done = RcBlock::new(move |error: *mut AnyObject| {
-            if !error.is_null() {
-                debug_log(&format!("{id} was not posted: {}", described(error)));
+        let wanted = inflight().wanted(&n.id, ticket);
+        if wanted {
+            let _: () = msg_send![center, addNotificationRequest: request, withCompletionHandler: &*done];
+        } else {
+            inflight().settle(&n.id, ticket);
+            for copy in staged {
+                std::fs::remove_file(copy).ok();
             }
-        });
-        let _: () = msg_send![center(), addNotificationRequest: request, withCompletionHandler: &*done];
+        }
     });
 }
 
-pub(super) unsafe fn content(n: &Notification) -> Retained<AnyObject> {
+pub(super) fn authorization(f: impl FnOnce(Authorization) + Send + 'static) {
+    // SAFETY: `authorization` is gated on `bundled()`, so `center()` is the app's notification center.
+    unsafe { authorization_from(center(), f) }
+}
+
+pub(super) unsafe fn authorization_from(center: *mut AnyObject, f: impl FnOnce(Authorization) + Send + 'static) {
+    let f = std::cell::Cell::new(Some(f));
+    let done = RcBlock::new(move |settings: *mut AnyObject| {
+        let status: isize = if settings.is_null() {
+            0
+        } else {
+            // SAFETY: a non-nil `settings` is the center's live `UNNotificationSettings`.
+            unsafe { msg_send![settings, authorizationStatus] }
+        };
+        if let Some(f) = f.take() {
+            f(status_authorization(status));
+        }
+    });
+    // SAFETY: `center` is live; `&*done` matches `getNotificationSettingsWithCompletionHandler:`.
+    unsafe {
+        let _: () = msg_send![center, getNotificationSettingsWithCompletionHandler: &*done];
+    }
+}
+
+fn status_authorization(status: isize) -> Authorization {
+    match status {
+        1 => Authorization::Denied,
+        2 => Authorization::Authorized,
+        3 => Authorization::Provisional,
+        4 => Authorization::Ephemeral,
+        _ => Authorization::NotDetermined,
+    }
+}
+
+pub(super) unsafe fn content(n: &Notification) -> (Retained<AnyObject>, Vec<PathBuf>) {
     // SAFETY: caller holds an autorelease pool; each setter matches `UNMutableNotificationContent`.
     unsafe {
         let content: Retained<AnyObject> = msg_send![class!(UNMutableNotificationContent), new];
@@ -148,16 +235,16 @@ pub(super) unsafe fn content(n: &Notification) -> Retained<AnyObject> {
             let sound: *mut AnyObject = msg_send![class!(UNNotificationSound), defaultSound];
             let _: () = msg_send![c, setSound: sound];
         }
-        let made: Vec<*mut AnyObject> = n.attachments.iter().enumerate().filter_map(|(i, a)| attach(&n.id, i, a)).collect();
+        let (made, staged): (Vec<*mut AnyObject>, Vec<PathBuf>) = n.attachments.iter().enumerate().filter_map(|(i, a)| attach(&n.id, i, a)).unzip();
         if !made.is_empty() {
             let array: *mut AnyObject = msg_send![class!(NSArray), arrayWithObjects: made.as_ptr(), count: made.len()];
             let _: () = msg_send![c, setAttachments: array];
         }
-        content
+        (content, staged)
     }
 }
 
-unsafe fn attach(id: &str, i: usize, a: &attachment::Attachment) -> Option<*mut AnyObject> {
+unsafe fn attach(id: &str, i: usize, a: &attachment::Attachment) -> Option<(*mut AnyObject, PathBuf)> {
     let copy = match attachment::stage(a, &staging_dir()) {
         Ok(copy) => copy,
         Err(e) => {
@@ -193,7 +280,7 @@ unsafe fn attach(id: &str, i: usize, a: &attachment::Attachment) -> Option<*mut 
         let size = std::fs::metadata(&copy).map_or(0, |m| m.len());
         debug_log(&format!("{id} attachment rune.{i}: {} ({size} bytes, {}) staged at {}", a.path().display(), a.uniform_type(), copy.display()));
     }
-    Some(made)
+    Some((made, copy))
 }
 
 thread_local! {
@@ -244,12 +331,25 @@ pub(super) unsafe fn dictionary(info: &[(String, String)]) -> *mut AnyObject {
 }
 
 pub(super) fn remove(ids: &[&str]) {
-    // SAFETY: gated on `bundled()` and wrapped in an autorelease pool; `items` holds `ids.len()`
-    // live `NSString` pointers for `arrayWithObjects:count:`.
+    // SAFETY: `remove` is gated on `bundled()`, so `center()` is the app's notification center.
+    unsafe { remove_from(center(), ids) }
+}
+
+pub(super) unsafe fn remove_from(center: *mut AnyObject, ids: &[&str]) {
+    let mut posts = inflight();
+    for id in ids {
+        posts.withdraw(id);
+    }
+    // SAFETY: `center` is live.
+    unsafe { withdraw(center, ids) };
+}
+
+unsafe fn withdraw(center: *mut AnyObject, ids: &[&str]) {
+    // SAFETY: wrapped in an autorelease pool; `items` holds `ids.len()` live `NSString` pointers
+    // for `arrayWithObjects:count:`, and `center` is live.
     objc2::rc::autoreleasepool(|_| unsafe {
         let items: Vec<*mut AnyObject> = ids.iter().map(|id| ns(id)).collect();
         let array: *mut AnyObject = msg_send![class!(NSArray), arrayWithObjects: items.as_ptr(), count: items.len()];
-        let center = center();
         let _: () = msg_send![center, removeDeliveredNotificationsWithIdentifiers: array];
         let _: () = msg_send![center, removePendingNotificationRequestsWithIdentifiers: array];
     });
@@ -391,3 +491,7 @@ pub(super) fn bring_to_front() {
         let _: () = msg_send![app, activateIgnoringOtherApps: true];
     }
 }
+
+#[cfg(test)]
+#[path = "apple_tests.rs"]
+mod tests;

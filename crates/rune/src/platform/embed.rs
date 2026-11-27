@@ -79,7 +79,8 @@ struct LayerHostCore {
     gpu: Arc<Gpu>,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
-    renderer: Renderer,
+    renderer: Option<Renderer>,
+    points: ((f32, f32), f32),
     clock: FrameClock,
     suspended: bool,
     /// Whether the surface took its last configuration. One that didn't has no drawable to give.
@@ -95,13 +96,15 @@ struct LayerHostCore {
     file_dialogs: bool,
     /// The host shows share sheets itself.
     shares: bool,
+    /// The host closes its own window.
+    shell: bool,
     surface_health: EmbedSurfaceHealth,
     #[cfg(target_os = "ios")]
     hosts: crate::native_view::ios::Hosts,
 }
 
 impl LayerHostCore {
-    unsafe fn new(layer: *mut c_void, title: &str, viewport: (f32, f32), scale: f32) -> Result<(Self, (f32, f32), f32, Instant), String> {
+    unsafe fn new(layer: *mut c_void, title: &str, viewport: (f32, f32), scale: f32, transparent: bool) -> Result<(Self, (f32, f32), f32, Instant), String> {
         if layer.is_null() {
             return Err("null CAMetalLayer pointer".into());
         }
@@ -117,8 +120,9 @@ impl LayerHostCore {
         let px_w = ((viewport.0.max(1.0) * scale).round() as u32).clamp(1, max_dim);
         let px_h = ((viewport.1.max(1.0) * scale).round() as u32).clamp(1, max_dim);
         let srgb_blend = true;
-        let (config, _) = crate::window::surface_config(&surface, &gpu.adapter, (px_w, px_h), srgb_blend)
+        let (mut config, alpha) = crate::window::surface_config(&surface, &gpu.adapter, (px_w, px_h), srgb_blend)
             .ok_or_else(|| "CAMetalLayer has no supported wgpu surface configuration".to_owned())?;
+        if transparent && let Some(alpha) = alpha { config.alpha_mode = alpha; }
         crate::window::configure(&surface, &gpu, &config)?;
         let target_format = config.format.remove_srgb_suffix();
         let mut renderer = Renderer::try_new(&gpu.device, target_format)?;
@@ -130,7 +134,8 @@ impl LayerHostCore {
             gpu,
             surface,
             config,
-            renderer,
+            renderer: Some(renderer),
+            points: (viewport, scale),
             clock: FrameClock::new(now),
             suspended: viewport.0 <= 0.0 || viewport.1 <= 0.0,
             configured: true,
@@ -140,6 +145,7 @@ impl LayerHostCore {
             popup_menus: false,
             file_dialogs: false,
             shares: false,
+            shell: false,
             surface_health: EmbedSurfaceHealth::default(),
             // SAFETY: `layer` is the live CAMetalLayer the surface above was made on.
             #[cfg(target_os = "ios")]
@@ -156,7 +162,28 @@ impl LayerHostCore {
         rt.frame.set_record_events(false);
         rt.host.surface_stats = Some(self.meter.shared());
         let target_format = if rt.srgb_blend() { self.config.format.remove_srgb_suffix() } else { self.config.format };
-        crate::window::rebuild_renderer_core(&self.gpu.device, &mut self.renderer, target_format, rt);
+        if let Some(renderer) = &mut self.renderer { crate::window::rebuild_renderer_core(&self.gpu.device, renderer, target_format, rt); }
+    }
+
+    fn release(&mut self, rt: &mut RuntimeCore) {
+        if self.renderer.take().is_none() { return; }
+        self.config.width = 1;
+        self.config.height = 1;
+        self.configure();
+        rt.text.atlas.invalidate();
+        rt.images.invalidate();
+    }
+
+    fn remake(&mut self, rt: &mut RuntimeCore) -> Result<(), String> {
+        if self.renderer.is_some() { return Ok(()); }
+        let target_format = if rt.srgb_blend() { self.config.format.remove_srgb_suffix() } else { self.config.format };
+        let mut renderer = Renderer::try_new(&self.gpu.device, target_format)?;
+        renderer.attach_gpu(&self.gpu);
+        crate::window::rebuild_renderer_core(&self.gpu.device, &mut renderer, target_format, rt);
+        self.renderer = Some(renderer);
+        let (viewport, scale) = self.points;
+        self.resize(rt, viewport, scale);
+        Ok(())
     }
 
     fn resize(&mut self, rt: &mut RuntimeCore, viewport: (f32, f32), scale: f32) {
@@ -165,6 +192,7 @@ impl LayerHostCore {
             return;
         }
         self.suspended = false;
+        self.points = (viewport, scale);
         self.surface_health.step(EmbedSurfaceEvent::Resized);
         let scale = scale.max(1.0);
         let max_dim = self.gpu.device.limits().max_texture_dimension_2d.max(1);
@@ -235,7 +263,8 @@ impl LayerHostCore {
 
     fn reblend(&mut self, rt: &mut RuntimeCore) -> bool {
         let mut alpha = None;
-        crate::window::reblend_core(&self.surface, &self.gpu, &mut self.config, &mut self.renderer, &mut alpha, rt)
+        let Some(renderer) = &mut self.renderer else { return false };
+        crate::window::reblend_core(&self.surface, &self.gpu, &mut self.config, renderer, &mut alpha, rt)
     }
 
     fn prepare_draw(&mut self, rt: &mut RuntimeCore, frame: wgpu::SurfaceTexture) -> PreparedEmbedFrame {
@@ -245,22 +274,25 @@ impl LayerHostCore {
             ..Default::default()
         });
         let size = (self.config.width, self.config.height);
-        host_step::prepare_gpu_resources(&mut self.renderer, &self.gpu, rt, size, true);
+        host_step::prepare_gpu_resources(self.renderer.as_mut().expect("a frame remakes the renderer before it draws"), &self.gpu, rt, size, true);
         let encoder = self.gpu.device.create_command_encoder(&Default::default());
         PreparedEmbedFrame { frame, target, encoder, size, format: target_format }
     }
 
     fn draw_default(&mut self, rt: &mut RuntimeCore, prepared: &mut PreparedEmbedFrame) {
         let clear = rt.clear_color();
-        host_step::draw_ui(&mut self.renderer, &self.gpu, &mut prepared.encoder, &prepared.target, rt, prepared.size, clear);
+        let renderer = self.renderer.as_mut().expect("a frame remakes the renderer before it draws");
+        host_step::draw_ui(renderer, &self.gpu, &mut prepared.encoder, &prepared.target, rt, prepared.size, clear);
     }
 
     fn submit_and_present(&mut self, prepared: PreparedEmbedFrame) -> Instant {
-        self.renderer.submit(&self.gpu.queue, prepared.encoder);
-        self.gpu.queue.present(prepared.frame);
+        let gpu = Arc::clone(&self.gpu);
+        let renderer = self.renderer.as_mut().expect("a frame remakes the renderer before it draws");
+        renderer.submit(&gpu.queue, prepared.encoder);
+        gpu.queue.present(prepared.frame);
         crate::render::gpu_events::presented();
-        if !self.gpu.is_lost() {
-            self.renderer.warm_effects(&self.gpu.device);
+        if !gpu.is_lost() {
+            renderer.warm_effects(&gpu.device);
         }
         crate::time::now()
     }
@@ -301,10 +333,34 @@ impl<S: 'static> LayerHost<S> {
         wake: Waker,
     ) -> Result<Self, String> {
         // SAFETY: caller upholds `from_core_animation_layer`'s safety contract (`layer` is a valid `CAMetalLayer` outliving `LayerHost`, on the UI thread).
-        let (mut core, size, scale, now) = unsafe { LayerHostCore::new(layer, spec.title, viewport, scale) }?;
+        let (mut core, size, scale, now) = unsafe { LayerHostCore::new(layer, spec.title, viewport, scale, false) }?;
         let mut rt = runtime_for(spec, state, size, Env::new(dark, scale), wake);
         core.configure_runtime(rt.core_mut(), now);
         Ok(Self { core, compositor: None, rt })
+    }
+
+    /// # Safety
+    /// As [`Self::from_core_animation_layer`].
+    #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn transparent(
+        layer: *mut c_void,
+        title: &str,
+        mut rt: Runtime<S>,
+        compositor: Option<Box<dyn Compositor<S>>>,
+        viewport: (f32, f32),
+        scale: f32,
+        dark: bool,
+        wake: Waker,
+    ) -> Result<Self, String> {
+        // SAFETY: the caller upholds `from_core_animation_layer`'s contract for `layer`.
+        let (mut core, size, scale, now) = unsafe { LayerHostCore::new(layer, title, viewport, scale, true) }?;
+        rt.set_live_waker(wake);
+        rt.set_system_dark(dark);
+        rt.set_viewport(size, scale);
+        rt.core_mut().transparent = core.config.alpha_mode != wgpu::CompositeAlphaMode::Opaque;
+        core.configure_runtime(rt.core_mut(), now);
+        Ok(Self { core, compositor, rt })
     }
 
     /// Attaches a custom [`Compositor`] (e.g. for [`El::effect`](crate::El::effect) shader passes)
@@ -358,6 +414,14 @@ impl<S: 'static> LayerHost<S> {
         self
     }
 
+    /// The host closes its own window when a handler asks ([`Tx::close_window`](crate::Tx::close_window)),
+    /// taking the runtime's shell request after the frame. Without this the request is dropped.
+    #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+    pub(crate) fn with_shell(mut self) -> Self {
+        self.core.shell = true;
+        self
+    }
+
     /// Links a handler opens with [`Tx::open_url`](crate::Tx::open_url) open in the system, as
     /// from an app's own window, once the handler's frame is done. Without this nothing opens:
     /// the host takes the checked links with [`Runtime::take_url_requests`] and opens them
@@ -400,10 +464,10 @@ impl<S: 'static> LayerHost<S> {
     /// submission still on the GPU holds goes at a later poll or the next frame. Call it
     /// between frames.
     pub fn rest(&mut self, on_rest: Option<fn(&mut S, &mut crate::Tx) -> bool>, all: bool) {
-        self.rt.rest_with(on_rest, Some(&mut self.core.renderer), all);
+        self.rt.rest_with(on_rest, self.core.renderer.as_mut(), all);
         if all {
             self.core.gpu.device.poll(wgpu::PollType::Poll).ok();
-            self.core.renderer.trim_uploads();
+            if let Some(renderer) = &mut self.core.renderer { renderer.trim_uploads(); }
         }
     }
 
@@ -421,7 +485,23 @@ impl<S: 'static> LayerHost<S> {
     /// the renderer gives back and what a trim frees on top. True when the hook left a frame
     /// work to do, for the host to ask for one if its view is on screen.
     pub(crate) fn trim_memory_with(&mut self, on_rest: Option<fn(&mut S, &mut crate::Tx) -> bool>) -> bool {
-        self.rt.trim_memory_with(on_rest, &mut self.core.renderer)
+        match &mut self.core.renderer {
+            Some(renderer) => self.rt.trim_memory_with(on_rest, renderer),
+            None => {
+                self.rt.trim_memory();
+                false
+            }
+        }
+    }
+
+    pub(crate) fn release_gpu(&mut self) {
+        self.rest(None, true);
+        if let Some(compositor) = &mut self.compositor { compositor.release_gpu(); }
+        self.core.release(self.rt.core_mut());
+    }
+
+    pub(crate) fn remake_gpu(&mut self) -> Result<(), String> {
+        self.core.remake(self.rt.core_mut())
     }
 
     /// What this surface asked for, drew and missed, as totals and per-second rates
@@ -470,6 +550,10 @@ impl<S: 'static> LayerHost<S> {
             return EmbedFrame { wake_after_secs: self.core.wake_after(self.rt.core(), now), ..EmbedFrame::default() };
         }
         let _ = self.core.backoff.step(BackoffEvent::Lapsed);
+        if let Err(error) = self.remake_gpu() {
+            eprintln!("rune: an embedded surface could not make its renderer again: {error}");
+            return EmbedFrame::default();
+        }
         embed_frame::run_embed_frame_at(self, target).into()
     }
 }
@@ -480,7 +564,7 @@ impl<S: 'static> EmbedSurface for LayerHost<S> {
 
     fn suspended(&self) -> bool { self.core.suspended }
     fn surface_health_mut(&mut self) -> &mut EmbedSurfaceHealth { &mut self.core.surface_health }
-    fn renderer_srgb_blend(&self) -> bool { self.core.renderer.srgb_blend() }
+    fn renderer_srgb_blend(&self) -> bool { self.core.renderer.as_ref().is_some_and(Renderer::srgb_blend) }
     fn rt_srgb_blend(&self) -> bool { self.rt.core().srgb_blend() }
     fn reblend(&mut self) -> bool { self.core.reblend(self.rt.core_mut()) }
     fn acquire(&mut self) -> Acquire<wgpu::SurfaceTexture> { self.core.acquire() }
@@ -489,7 +573,7 @@ impl<S: 'static> EmbedSurface for LayerHost<S> {
     fn presented(&mut self, ticking: bool) { self.core.presented(ticking) }
     #[cfg(target_os = "ios")]
     fn sync_hosts(&mut self) -> bool { self.core.hosts.sync_transactions(!self.rt.core().paint.native_views().is_empty()) }
-    fn serves(&self) -> Serves { Serves { clipboard: self.core.clipboard.is_some(), popup_menus: self.core.popup_menus, file_dialogs: self.core.file_dialogs, shares: self.core.shares } }
+    fn serves(&self) -> Serves { Serves { clipboard: self.core.clipboard.is_some(), popup_menus: self.core.popup_menus, file_dialogs: self.core.file_dialogs, shares: self.core.shares, shell: self.core.shell } }
     fn receive_clipboard(&mut self) {
         if let Some(clipboard) = &self.core.clipboard { clipboard.receive_core(self.rt.core_mut()); }
     }
@@ -513,7 +597,7 @@ impl<S: 'static> EmbedSurface for LayerHost<S> {
                 dt,
                 update_ms,
                 rt: &mut self.rt,
-                ui: &mut self.core.renderer,
+                ui: self.core.renderer.as_mut().expect("a frame remakes the renderer before it draws"),
             };
             comp.render(&mut f);
             comp.animating()

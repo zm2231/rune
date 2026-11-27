@@ -234,6 +234,14 @@ impl SharedCore {
         batch
     }
 
+    #[cfg(target_os = "ios")]
+    pub(crate) fn take_window_asks(&self) -> (Option<WindowRequest>, bool) {
+        let mut requests = self.requests.lock().unwrap();
+        let focus = requests.activation == Some(Activation::Focus);
+        if focus { requests.activation = None; }
+        (requests.window.take(), focus)
+    }
+
     pub(crate) fn asks_window(&self) -> bool {
         self.requests.lock().unwrap().asks_window()
     }

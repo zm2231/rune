@@ -58,6 +58,7 @@ impl ColorScheme {
 
     /// Resolves whether a window with this per-window scheme and `app`-wide scheme should draw
     /// dark chrome/backdrop given the OS's `system_dark` preference.
+    #[cfg(not(target_os = "ios"))]
     pub(crate) const fn effective_dark(self, app: ColorScheme, system_dark: bool) -> bool {
         match self.effective_for_window(app) {
             ColorScheme::Dark => true,

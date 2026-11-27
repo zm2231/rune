@@ -22,7 +22,7 @@ type Pixmaps = Vec<(i32, i32, Vec<u8>)>;
 /// One dbusmenu node, `(ia{sv}av)`; children are variants holding the same shape.
 type Layout = (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>);
 
-struct Model { id: String, title: String, tooltip: String, icon_name: String, pixmaps: Pixmaps, menu: DbusMenu, token: Option<String> }
+struct Model { id: String, title: String, tooltip: String, icon_name: String, pixmaps: Pixmaps, menu: DbusMenu, token: Option<String>, menu_on_primary_click: bool }
 type Shared = Arc<Mutex<Model>>;
 
 enum Command {
@@ -110,7 +110,10 @@ impl Item {
         (String::new(), Vec::new(), self.model.lock().unwrap().tooltip.clone(), String::new())
     }
     #[zbus(property)]
-    fn item_is_menu(&self) -> bool { false }
+    fn item_is_menu(&self) -> bool {
+        let model = self.model.lock().unwrap();
+        model.menu_on_primary_click && model.menu.ids().next().is_some()
+    }
     #[zbus(property)]
     fn menu(&self) -> OwnedObjectPath { OwnedObjectPath::try_from(MENU_PATH).expect("MENU_PATH is an object path") }
     #[zbus(signal)]
@@ -180,7 +183,8 @@ impl Native {
     pub(super) fn new(spec: TraySpec, on_event: Handler) -> Result<Self, TrayError> {
         let pixmaps = pixmaps_from_icon(&spec.icon)?;
         let model = Arc::new(Mutex::new(Model { pixmaps, id: spec.id, title: spec.title, tooltip: spec.tooltip,
-            icon_name: spec.icon_name, menu: DbusMenu::new(spec.menu), token: None }));
+            icon_name: spec.icon_name, menu: DbusMenu::new(spec.menu), token: None,
+            menu_on_primary_click: spec.menu_on_primary_click }));
         let (commands, receiver) = unbounded();
         let (ready, result) = mpsc::sync_channel(1);
         let worker = std::thread::Builder::new().name("rune-tray".into()).spawn(move || {
@@ -210,8 +214,16 @@ impl Native {
                         .await;
                     match next {
                         Wake::Command(Some(Command::Menu(menu))) => {
-                            let revision = model.lock().unwrap().menu.update(menu);
+                            let (was_menu, revision, is_menu) = {
+                                let mut m = model.lock().unwrap();
+                                let was_menu = m.menu.ids().next().is_some();
+                                let revision = m.menu.update(menu);
+                                (was_menu, revision, m.menu.ids().next().is_some())
+                            };
                             if let Ok(emitter) = SignalEmitter::new(&conn, MENU_PATH) { Menu::layout_updated(&emitter, revision, ROOT).await.ok(); }
+                            if was_menu != is_menu && let Ok(item) = conn.object_server().interface::<_, Item>(ITEM_PATH).await {
+                                item.get().await.item_is_menu_changed(item.signal_emitter()).await.ok();
+                            }
                         }
                         Wake::Command(Some(Command::Tooltip(tooltip))) => {
                             model.lock().unwrap().tooltip = tooltip;
@@ -267,6 +279,7 @@ impl Native {
     pub(super) fn set_title(&self, title: String) {
         if let Some(c) = &self.commands { c.try_send(Command::Title(title)).ok(); }
     }
+    pub(super) fn set_accessibility_label(&self, label: String) { self.set_title(label); }
     pub(super) fn rect(&self) -> Option<[i32; 4]> { None }
 }
 
@@ -322,7 +335,7 @@ mod tests {
         let pixmaps = pixmaps_from_icon(&spec.icon).unwrap();
         let model = Arc::new(Mutex::new(Model {
             id: spec.id, title: spec.title, tooltip: spec.tooltip, icon_name: spec.icon_name,
-            pixmaps, menu: DbusMenu::new(spec.menu), token: None,
+            pixmaps, menu: DbusMenu::new(spec.menu), token: None, menu_on_primary_click: spec.menu_on_primary_click,
         }));
         let events = Arc::new(Mutex::new(Vec::new()));
         let seen = events.clone();
@@ -363,11 +376,24 @@ mod tests {
     }
 
     fn item(icon_name: &str) -> Item {
-        let spec = TraySpec::new("t", "T", TrayIcon::rgba(1, 1, vec![1, 2, 3, 4])).icon_name(icon_name);
+        item_from(TraySpec::new("t", "T", TrayIcon::rgba(1, 1, vec![1, 2, 3, 4])).icon_name(icon_name))
+    }
+
+    fn item_from(spec: TraySpec) -> Item {
         let pixmaps = pixmaps_from_icon(&spec.icon).unwrap();
         let model = Model { id: spec.id, title: spec.title, tooltip: spec.tooltip, icon_name: spec.icon_name,
-            pixmaps, menu: DbusMenu::new(spec.menu), token: None };
+            pixmaps, menu: DbusMenu::new(spec.menu), token: None, menu_on_primary_click: spec.menu_on_primary_click };
         Item { model: Arc::new(Mutex::new(model)), on_event: Arc::new(|_| {}) }
+    }
+
+    #[test]
+    fn item_is_menu_follows_the_option_while_there_is_a_menu() {
+        let icon = || TrayIcon::rgba(1, 1, vec![1, 2, 3, 4]);
+        assert!(!item_from(TraySpec::new("t", "T", icon()).menu(vec![TrayItem::action("a", "A")])).item_is_menu());
+        let extra = item_from(TraySpec::new("t", "T", icon()).menu(vec![TrayItem::action("a", "A")]).menu_on_primary_click(true));
+        assert!(extra.item_is_menu());
+        extra.model.lock().unwrap().menu.update(Vec::new());
+        assert!(!extra.item_is_menu());
     }
 
     #[test]
@@ -412,7 +438,7 @@ mod tests {
         let pixmaps = pixmaps_from_icon(&spec.icon).unwrap();
         let model = Arc::new(Mutex::new(Model {
             id: spec.id, title: spec.title, tooltip: spec.tooltip, icon_name: spec.icon_name,
-            pixmaps, menu: DbusMenu::new(spec.menu), token: None,
+            pixmaps, menu: DbusMenu::new(spec.menu), token: None, menu_on_primary_click: spec.menu_on_primary_click,
         }));
         let events = Arc::new(Mutex::new(Vec::new()));
         let seen = events.clone();

@@ -17,6 +17,8 @@ pub(super) struct NativeWindow {
     /// What the host's meter last published.
     pub(super) stats: Arc<Mutex<SurfaceStats>>,
     pub(super) route: Mutex<Route>,
+    #[cfg(target_os = "ios")]
+    pub(super) wake: Mutex<Option<crate::runtime::Waker>>,
 }
 
 /// Where a window's requests go.
@@ -73,6 +75,20 @@ impl WindowHandle {
             Route::Bound { proxy, slot } => { proxy.send_event(request(*slot)).ok(); }
             Route::Unbound { queued } => queued.push(Box::new(request)),
         }
+        #[cfg(target_os = "ios")]
+        self.wake_ios();
+    }
+
+    #[cfg(target_os = "ios")]
+    pub(crate) fn connect_ios(&self, wake: crate::runtime::Waker) {
+        *self.native.wake.lock().unwrap() = Some(wake);
+        self.wake_ios();
+    }
+
+    #[cfg(target_os = "ios")]
+    fn wake_ios(&self) {
+        let wake = self.native.wake.lock().unwrap().clone();
+        if let Some(wake) = wake { wake(); }
     }
 
     /// The first frame has completed for the current native lifetime. For a launcher

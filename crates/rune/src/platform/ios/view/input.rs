@@ -64,7 +64,8 @@ impl RuneView {
     /// The pointer moved over the view, or left it.
     pub(super) fn hovered(&self, recognizer: &AnyObject) {
         let Some((phase, x, y)) = self.gesture(recognizer) else { return };
-        self.with_surface(|surface| surface.hover((phase != GesturePhase::Ended).then_some((x, y))));
+        let inside = phase != GesturePhase::Ended && !self.over_overlay(x, y);
+        self.with_surface(|surface| surface.hover(inside.then_some((x, y))));
         self.pace(Event::Wake);
     }
 
@@ -72,6 +73,7 @@ impl RuneView {
     /// by as much, and two fingers that lift while moving leave it gliding.
     pub(super) fn scrolled(&self, recognizer: &AnyObject) {
         let Some((phase, x, y)) = self.gesture(recognizer) else { return };
+        if phase == GesturePhase::Began && self.over_overlay(x, y) { return; }
         // SAFETY: a pan recognizer's translation and velocity in a view are `CGPoint`s.
         // Setting the translation back to zero makes the next one the move since this one.
         let (moved, velocity): (CGPoint, CGPoint) = unsafe {
@@ -290,7 +292,7 @@ impl RuneView {
             }).collect()
         };
         if read.is_empty() { return; }
-        if phase == TouchPhase::Started { self.take_keys(); }
+        if phase == TouchPhase::Started && self.takes_keys_on_touch() { self.take_keys(); }
         let count = read.len();
         let input = self.ivars().text.borrow().clone();
         let left: Vec<_> = read.into_iter()

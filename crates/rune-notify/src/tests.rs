@@ -10,6 +10,9 @@ fn a_bare_test_binary_cannot_post() {
     assert!(!available());
     assert!(!post(&Notification::new("n-1", "Response ready").body("Fix the build")));
     remove(&["n-1"]);
+    let (to, from) = std::sync::mpsc::channel();
+    authorization(move |a| to.send(a).unwrap());
+    assert_eq!(from.try_recv(), Ok(Authorization::Unavailable), "answered before it returns");
 }
 
 #[test]
@@ -135,7 +138,7 @@ fn authorization_requests_alert_badge_and_sound() {
     // valid ObjC completion block invoked synchronously inside this autorelease pool.
     objc2::rc::autoreleasepool(|_| unsafe {
         let center: *mut AnyObject = msg_send![fake, new];
-        apple::request_authorization(center, &*done);
+        apple::request_authorization(center, &done);
     });
 
     const UN_AUTH_BADGE: usize = 1 << 0;
@@ -168,7 +171,7 @@ fn content_carries_the_thread_the_sound_and_a_copy_of_the_image() {
     let n = Notification::new("n-1", "Done").thread("ses_1", "Fix the build").sound(true).attachment(vanished).attachment(image);
     // SAFETY: inside an autorelease pool; each getter matches `UNNotificationContent`.
     let (thread, sound, attached) = objc2::rc::autoreleasepool(|_| unsafe {
-        let content = apple::content(&n);
+        let (content, _) = apple::content(&n);
         let thread = apple::string(msg_send![&*content, threadIdentifier]);
         let sound: *mut AnyObject = msg_send![&*content, sound];
         let attachments: *mut AnyObject = msg_send![&*content, attachments];
@@ -177,7 +180,7 @@ fn content_carries_the_thread_the_sound_and_a_copy_of_the_image() {
     });
     // SAFETY: as above.
     let silent = objc2::rc::autoreleasepool(|_| unsafe {
-        let content = apple::content(&Notification::new("n-2", "Done"));
+        let (content, _) = apple::content(&Notification::new("n-2", "Done"));
         let sound: *mut AnyObject = msg_send![&*content, sound];
         sound.is_null()
     });

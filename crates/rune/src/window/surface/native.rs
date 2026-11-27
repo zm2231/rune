@@ -36,6 +36,7 @@ pub(in crate::window) struct Native {
     pub(in crate::window) _spot: crate::platform::macos::traffic_lights::Spot,
     /// Forgets the window's drag-destination state.
     pub(in crate::window) _drop: Option<crate::platform::macos::drop::DropTarget>,
+    pub(in crate::window) _dock: crate::taskbar::dock::DockCount,
 }
 
 /// Whether a frame may presume the window on screen before AppKit says so: `Host::try_create`'s

@@ -22,69 +22,69 @@
 //!   one is made without `WS_EX_NOACTIVATE`, so a click or `request_keys` activates it.
 //! - With `release_gpu_when_hidden`, hidden means destroyed on Windows and macOS too.
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 use std::cell::RefCell;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU8, Ordering};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 use std::sync::Weak;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 use crate::time::Instant;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 use winit::dpi::LogicalSize;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 use winit::event::{StartCause, WindowEvent};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 use winit::event_loop::ActiveEventLoop;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 use winit::window::{Window, WindowId, WindowLevel};
 
 use crate::el::{Align, El, Tx};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 use crate::frame::clock::FrameClock;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 use crate::render::{Gpu, Renderer};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 use crate::runtime::RuntimeCore;
 use crate::runtime::{Cx, Waker};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 use crate::window::{AnyHost, WakeEvent};
 #[cfg(target_os = "windows")]
 use crate::window::slot::{Slot, Take};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 use crate::{KeyPolicy, OverlayOptions};
 use crate::{DisplayTarget, OverlayInput, OverlayPlacement, OverlaySupport};
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 #[path = "overlay/any_host.rs"]
 mod any_host;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 #[path = "overlay/app.rs"]
 mod app;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 #[path = "overlay/cpu.rs"]
 mod cpu;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 #[path = "overlay/draw.rs"]
 mod draw;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 #[path = "overlay/frame.rs"]
 mod frame;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 #[path = "overlay/gpu_loss.rs"]
 mod gpu_loss;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 use frame::{OverlayRenderArgs, idle_after, render_frame, step};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 #[path = "overlay/input.rs"]
 mod input;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub(crate) mod keys;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 #[path = "overlay/lifetime.rs"]
 mod lifetime;
 pub(crate) mod options;
@@ -92,39 +92,41 @@ pub(crate) mod sizing;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "overlay/placement.rs"]
 mod placement;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 #[path = "overlay/pointer_inject.rs"]
 mod pointer_inject;
 #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
 pub(crate) use placement::monitor_at;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 use placement::{monitor, position};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 mod presence;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 use presence::{Presence, Release};
+#[cfg(target_os = "ios")]
+pub(crate) mod ios;
 mod requests;
 use requests::{KeyRequest, Requests, Update, Visibility};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 mod retire;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 use retire::Retire;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 #[path = "overlay/scheme.rs"]
 mod scheme;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 #[path = "overlay/surface.rs"]
 mod surface;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 #[path = "overlay/toplevel.rs"]
 mod toplevel;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 #[path = "overlay/xwayland.rs"]
 pub(crate) mod xwayland;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub(crate) use app::OverlayHost;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 use app::OverlayApp;
 #[cfg(test)]
 use crate::compose::{Compositor, Frame};
@@ -197,10 +199,10 @@ pub(in crate::overlay) struct SharedCore {
     /// What the overlay's meter last published.
     pub(in crate::overlay) stats: Arc<Mutex<crate::SurfaceStats>>,
     /// Bounded zero-allocation ring buffer of app-injected `PointerInput` events.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
     pub(in crate::overlay) pointers: Mutex<pointer_inject::PointerQueue>,
     /// Latest physical top-left origin and backing scale for `OverlayHandle::screen_to_local`.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
     pub(in crate::overlay) screen_transform: Mutex<Option<((i32, i32), f32)>>,
 }
 
@@ -263,12 +265,12 @@ impl SharedCore {
     }
     fn failure(&self) -> Option<String> { self.failure.lock().unwrap().clone() }
     fn surface_description(&self) -> Option<String> { self.surface.lock().unwrap().clone() }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
     fn send_pointer(&self, event: crate::PointerInput) {
         let should_wake = self.pointers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event);
         if should_wake { self.wake(); }
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
     fn screen_to_local(&self, screen_px: (i32, i32)) -> Option<(f32, f32)> {
         let transform = *self.screen_transform.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         pointer_inject::screen_to_local(transform, screen_px)
@@ -368,6 +370,7 @@ impl<T: 'static> OverlayHandle<T> {
     /// `OverlayInput::Regions` OS click-through gating, are dropped while the overlay is hidden,
     /// fading out, or not yet created, never move or change the OS cursor, never activate or
     /// focus the overlay, and never start native `window_drag` or OS `drag_out` sessions.
+    /// Does nothing on iOS and the web, where an overlay only takes its own touches.
     ///
     /// ```no_run
     /// # fn forward(overlay: &rune::OverlayHandle<()>, hook_x: i32, hook_y: i32) {
@@ -382,16 +385,16 @@ impl<T: 'static> OverlayHandle<T> {
     /// ```
     #[inline(always)]
     pub fn send_pointer(&self, event: crate::PointerInput) {
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
         let _ = event;
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
         self.shared.core.send_pointer(event);
     }
 
     /// Converts desktop physical screen pixels into overlay-local logical points suitable for
     /// [`Self::send_pointer`], using the overlay's last published position and backing scale
     /// with zero OS calls. Returns `None` while the overlay is hidden, fading out, not yet
-    /// created, or on hosts without global window positions (Wayland).
+    /// created, or on hosts without global window positions (Wayland, iOS and the web).
     ///
     /// ```no_run
     /// # fn convert(overlay: &rune::OverlayHandle<()>) {
@@ -402,9 +405,9 @@ impl<T: 'static> OverlayHandle<T> {
     /// ```
     #[inline(always)]
     pub fn screen_to_local(&self, screen_px: (i32, i32)) -> Option<(f32, f32)> {
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
         { let _ = screen_px; None }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
         self.shared.core.screen_to_local(screen_px)
     }
 
@@ -541,7 +544,7 @@ impl<T: 'static> OverlayHandle<T> {
 }
 
 /// An overlay before the event loop runs: the shell gives it a wake-up and the GPU pool.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub(crate) trait PendingOverlay: AnyHost {
     fn connect(&mut self, wake: Waker, frame_wake: Waker, slot_wake: Waker, gpu: Rc<RefCell<Weak<Gpu>>>);
     fn inherit_font_smoothing(&mut self, mode: crate::FontSmoothing);
@@ -553,7 +556,7 @@ pub(crate) trait PendingOverlay: AnyHost {
     fn gpu_loss_latch(&self) -> Option<Arc<crate::render::loss_latch::GpuLossLatch>>;
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 enum Backing {
     Window(Arc<Window>),
     #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
@@ -565,7 +568,7 @@ enum Backing {
     Xwayland(crate::platform::x11::xwayland::XwaylandSurface),
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 impl Backing {
     fn window(&self) -> Option<&Arc<Window>> {
         match self {
@@ -577,7 +580,7 @@ impl Backing {
 }
 
 /// A shown overlay. The wgpu surface drops before what it draws into.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 struct Live {
     /// The OS accessibility adapter for this surface.
     a11y: Option<crate::a11y::Adapter>,
@@ -620,7 +623,7 @@ struct Live {
 }
 
 /// All non-generic state of an overlay host, compiled once.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub(in crate::overlay) struct OverlayCore {
     on_created: Option<Box<dyn FnMut(crate::OverlayCreated)>>,
     pending_input: Option<OverlayInput>,
@@ -739,7 +742,7 @@ pub(in crate::overlay) struct OverlayCore {
     test_window_drags: u32,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 impl OverlayCore {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(

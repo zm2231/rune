@@ -5,13 +5,20 @@
 //! and focus change it sees, to check Tab handoff against; elsewhere the card lays out as an
 //! empty box. `-- --snap target/native-view.png` renders it headless.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
+
+#[cfg(target_os = "macos")]
+mod ax_check;
+mod call;
+
+use std::cell::{Cell, OnceCell};
+use std::time::Duration;
 
 use rune::tok::{self, motion, type_};
-use rune::{AppSpec, Cx, El, NativeView, ScrollSpec, TextEdit, Tx, col, el, row, text, text_input};
+use rune::{App, AppSpec, Cx, El, NativeView, ScrollSpec, SizeClass, TextEdit, Tx, WindowHandle, col, el, row, text, text_input};
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-const URL: &str = "https://en.wikipedia.org/wiki/Special:Random";
+pub(crate) const URL: &str = "https://en.wikipedia.org/wiki/Special:Random";
 
 #[cfg(target_os = "ios")]
 const TAB_STEP: &str = r#"window.__runeTab = back => {
@@ -61,6 +68,14 @@ struct State {
     open: bool,
     tall: bool,
     note: TextEdit,
+    page_at: Option<f64>,
+    seconds: u64,
+    views: Cell<u64>,
+    background: bool,
+}
+
+thread_local! {
+    static WINDOW: OnceCell<WindowHandle> = const { OnceCell::new() };
 }
 
 impl Default for State {
@@ -72,6 +87,10 @@ impl Default for State {
             open: true,
             tall: false,
             note: TextEdit::default(),
+            page_at: None,
+            seconds: 0,
+            views: Cell::new(0),
+            background: background(),
         }
     }
 }
@@ -88,31 +107,50 @@ fn paragraph(n: usize, t: &tok::Theme) -> El {
 }
 
 fn view(s: &State, cx: &mut Cx<State>) -> El {
+    s.views.set(s.views.get() + 1);
     let t = tok::theme(cx.system_dark());
-    let sidebar = col().key("sidebar").w(200.0).h_full().gap(10.0).padding(16.0).fill(t.card)
-        .child(text("Native view").font(type_::TITLE).color(t.text))
-        .child(button("collapse", if s.open { "Collapse" } else { "Expand" }, &t, |s| s.open = !s.open))
-        .child(button("height", if s.tall { "Shorter" } else { "Taller" }, &t, |s| s.tall = !s.tall))
-        .child(text_input(&s.note, type_::BODY).key("note").label("Note").single_line()
-            .placeholder("Type here, then in the page", t.text_secondary).color(t.text)
-            .w_full().padding(10.0).radius(8.0).fill(t.bg).on_edit(|s: &mut State| &mut s.note));
+    let seconds = match (s.page_at, s.background) {
+        (Some(_), true) => format!("Up for {} s", s.seconds),
+        (Some(_), false) => format!("Page up for {} s", s.seconds),
+        (None, _) => "No page yet".into(),
+    };
+    let [top, right, bottom, left] = cx.safe_area();
+    let compact = cx.horizontal_size_class() == Some(SizeClass::Compact);
+    let collapse = button("collapse", if s.open { "Collapse" } else { "Expand" }, &t, |s| s.open = !s.open);
+    let height = button("height", if s.tall { "Shorter" } else { "Taller" }, &t, |s| s.tall = !s.tall);
+    let note = text_input(&s.note, type_::BODY).key("note").label("Note").single_line()
+        .placeholder("Type here, then in the page", t.text_secondary).color(t.text)
+        .w_full().padding(10.0).radius(8.0).fill(t.bg).on_edit(|s: &mut State| &mut s.note);
+    let title = text("Native view").font(type_::TITLE).color(t.text);
+    let seconds = text(seconds).key("seconds").font(type_::BODY).color(t.text_secondary);
+    let controls = if compact {
+        col().key("controls").w_full().gap(10.0).padding(16.0).fill(t.card)
+            .child(title)
+            .child(seconds)
+            .child(row().gap(10.0).child(collapse).child(height))
+            .child(note)
+    } else {
+        col().key("sidebar").w(200.0).h_full().gap(10.0).padding(16.0).fill(t.card)
+            .child(title).child(seconds).child(collapse).child(height).child(note)
+    };
     let page_h = if s.tall { 560.0 } else { 380.0 };
     let card = col().key("card").w_full().h(if s.open { page_h } else { 0.0 }).clip_soft(0.0).radius(14.0)
         .motion(motion::SNAPPY)
         .child(el().key("page").w_full().h(page_h).radius(14.0).native_view(&s.slot));
+    let inset = if compact { 16.0 } else { 24.0 };
     let content = (1..=12).fold(
-        col().w_full().gap(16.0).padding(24.0)
+        col().w_full().gap(16.0).padding(inset).pb(inset + bottom)
             .child(text("A page in a pane").font(type_::TITLE).color(t.text))
             .child(paragraph(0, &t))
             .child(card),
         |list, n| list.child(paragraph(n, &t)),
     );
-    row().w_full().h_full().fill(t.bg)
-        .child(sidebar)
-        .child(col().key("pane").grow(1.0).shrink().h_full().scroll(ScrollSpec { stick_bottom: false }).child(content))
+    let pane = col().key("pane").grow(1.0).shrink().scroll(ScrollSpec { stick_bottom: false }).child(content);
+    let root = if compact { col().child(controls).child(pane.w_full()) } else { row().child(controls).child(pane.h_full()) };
+    root.w_full().h_full().fill(t.bg).pt(top).pr(right).pl(left)
 }
 
-fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
+fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     if s.web.is_none() && s.slot.in_window() {
         let builder = wry::WebViewBuilder::new();
@@ -143,22 +181,54 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
             Err(e) => eprintln!("native-view: no web view: {e}"),
         }
     }
-    let _ = s;
-    false
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    if s.web.is_some() && s.page_at.is_none() { s.page_at = Some(now); }
+    if s.background && s.page_at.is_none() {
+        s.page_at = Some(now);
+        tx.minimize();
+    }
+    let Some(page_at) = s.page_at else { return false };
+    let seconds = ((now - page_at).max(0.0)) as u64;
+    tx.wake_after(Duration::from_secs_f64((page_at + (seconds + 1) as f64 - now).max(0.0)));
+    if seconds == s.seconds { return false; }
+    s.seconds = seconds;
+    print_counts(s);
+    true
 }
 
+fn print_counts(s: &State) {
+    let Some(stats) = WINDOW.with(|w| w.get().map(WindowHandle::surface_stats)) else { return };
+    let c = stats.totals;
+    println!(
+        "native-view: {}s views {} redraws {} presents {} skipped {} occluded {} timeouts {} outdated {} pacing {:?}",
+        s.seconds, s.views.get(), c.redraws, c.presents, c.skipped, c.occluded, c.timeouts, c.outdated, stats.pacing,
+    );
+}
+
+fn background() -> bool { std::env::var_os("NATIVE_VIEW_BACKGROUND").is_some() }
+
 fn main() {
-    rune::run(AppSpec::<State> {
+    #[cfg(target_os = "macos")]
+    if let Some(pid) = ax_check::reader_pid() { return ax_check::run(pid); }
+    let app = App::new(AppSpec::<State> {
         poll: Some(poll),
         scenes: &[("collapsed", |s| s.open = false), ("tall", |s| s.tall = true)],
         ..AppSpec::new("Native view", (900.0, 640.0), State::default, view)
     });
+    let app = if background() { app.open_inactive() } else { app };
+    app.on_ready(|window| {
+        WINDOW.with(|w| { let _ = w.set(window.clone()); });
+        if std::env::var_os("NATIVE_VIEW_CALL").is_some() { call::open(window); }
+        #[cfg(target_os = "macos")]
+        if background() { ax_check::spawn(); }
+    })
+    .run();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rune::{Env, Runtime};
+    use rune::{Env, Runtime, SizeClasses};
 
     fn settle(rt: &mut Runtime<State>) {
         for k in 1..=90 { rt.frame(f64::from(k) / 60.0); }
@@ -185,5 +255,18 @@ mod tests {
         rt.pointer_up(x, y);
         settle(&mut rt);
         assert_eq!(rt.native_views()[0].clip, shown.clip);
+    }
+
+    #[test]
+    fn on_a_phone_the_controls_sit_below_the_status_bar_above_a_full_width_page() {
+        let mut rt = Runtime::new(State::default(), view, (393.0, 852.0), Env { system_dark: false, scale: 3.0 });
+        rt.set_safe_area([59.0, 0.0, 34.0, 0.0]);
+        rt.set_size_classes(SizeClasses { horizontal: Some(SizeClass::Compact), vertical: Some(SizeClass::Regular) });
+        rt.frame(0.0);
+        let (_, title_y) = rt.find("collapse").unwrap();
+        assert!(title_y > 59.0, "controls start below the status bar");
+        let [x, y, w, _] = rt.native_views()[0].rect.map(|px| px / 3.0);
+        assert!(y > title_y, "the page sits below the controls");
+        assert!(w > 340.0 && x + w <= 393.0, "the page spans the phone's width");
     }
 }

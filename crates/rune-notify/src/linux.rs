@@ -4,6 +4,7 @@
 //! so posting an id again replaces its notification, and a click (`ActionInvoked`) comes back
 //! with the id and user info it was posted with.
 use super::attachment::file_uri;
+use super::status::{Failure, report};
 use super::{ACTION, Action, Click, Notification, TOKEN, deliver};
 use async_channel::{Receiver, Sender, unbounded};
 use futures_lite::{FutureExt, StreamExt};
@@ -152,8 +153,12 @@ async fn run(commands: Receiver<Command>, ready: mpsc::SyncSender<bool>) {
                 let body = body_for(&post.n.body, caps);
                 let hints = hints_for(&post.n, post.desktop_entry.as_deref());
                 let args = (post.app_name.as_str(), replaces, "", post.n.title.as_str(), body.as_str(), actions, hints, -1i32);
-                if let Some(Ok(server)) = timeout(RPC_TIMEOUT, proxy.call::<_, _, u32>("Notify", &args)).await {
-                    shown.insert(post.n.id, Shown { server, info: post.n.info, token: None });
+                match timeout(RPC_TIMEOUT, proxy.call::<_, _, u32>("Notify", &args)).await {
+                    Some(Ok(server)) => {
+                        shown.insert(post.n.id, Shown { server, info: post.n.info, token: None });
+                    }
+                    Some(Err(e)) => report(&post.n.id, Failure::System(e.to_string())),
+                    None => report(&post.n.id, Failure::System("the notification server did not answer".into())),
                 }
             }
             Event::Command(Some(Command::Remove(ids))) => {

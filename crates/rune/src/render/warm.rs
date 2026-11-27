@@ -22,6 +22,7 @@ use std::time::Duration;
 pub(super) const LINGER: Duration = Duration::from_secs(30);
 
 /// How long a parked device waits for the next surface.
+#[cfg(not(target_os = "ios"))]
 pub(crate) const PARKED: Duration = Duration::from_secs(5 * 60);
 
 /// The format overlays and windows draw in on Windows and Linux (`surface_config`, after
@@ -286,6 +287,7 @@ pub(super) fn made() -> bool {
 /// take within `linger`. The device first finishes its work, so what the dropped surface and
 /// its swapchain left is freed now rather than whenever the device next runs. When something
 /// already waits in the slot, this one goes; so does a device that died while it was hidden.
+#[cfg(not(target_os = "ios"))]
 pub(crate) fn park(gpu: Gpu, mut renderer: Renderer, linger: Duration) {
     if gpu.is_lost() || SLOT.is_stopped() { return; }
     renderer.clear_for_park();

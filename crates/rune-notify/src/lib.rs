@@ -4,6 +4,7 @@
 //!
 //! - **macOS and iOS:** `UNUserNotificationCenter`. Only a bundled app can post (`available`);
 //!   the first post asks the person for permission, and posts are dropped until they allow it.
+//!   `authorization` reads the answer, and `on_post_error` hears each post the system dropped.
 //! - **Windows:** toast notifications (`Windows.UI.Notifications`) under the app's
 //!   `AppUserModelID`. `register` gives the process that identity, with a name and icon for its
 //!   toasts, or `adopt` takes one an installer registered without writing anything; nothing
@@ -28,8 +29,11 @@ use std::sync::{Mutex, OnceLock};
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple;
 mod attachment;
+#[cfg(any(test, target_os = "macos", target_os = "ios"))]
+mod inflight;
 #[cfg(target_os = "linux")]
 mod linux;
+mod status;
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -37,6 +41,9 @@ pub use attachment::Attachment;
 pub use attachment::AttachmentError;
 pub use attachment::AttachmentKind;
 pub use attachment::attachment_limit;
+pub use status::Authorization;
+pub use status::Failure;
+pub use status::PostError;
 
 /// One notification to post, built with `Notification::new(id, title)`.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -296,7 +303,9 @@ pub fn available() -> bool {
 }
 
 /// Posts `n` now (on macOS and iOS, asking for permission first if the person hasn't been asked).
-/// Returns false when the app can't post at all (not `available`), or Windows refused the toast.
+/// Returns false when the app can't post at all (not `available`), or when the system refused it
+/// on the spot (Windows). Every refusal, on the spot or later (a denied or failed permission
+/// request on macOS and iOS, a failed call to the Linux server), also comes to `on_post_error`.
 #[cfg_attr(not(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "windows")), allow(unused_variables))]
 pub fn post(n: &Notification) -> bool {
     if !available() {
@@ -322,7 +331,9 @@ pub fn post(n: &Notification) -> bool {
 }
 
 /// Takes the app's delivered notifications with these ids out of Notification Center (on
-/// Windows, the notification center; on Linux, the notification server).
+/// Windows, the notification center; on Linux, the notification server). A post of one of them
+/// still on its way (on macOS and iOS, waiting for the person to answer the permission request)
+/// is called off and never shows.
 pub fn remove(ids: &[&str]) {
     if ids.is_empty() || !available() {
         return;
@@ -333,6 +344,41 @@ pub fn remove(ids: &[&str]) {
     apple::remove(ids);
     #[cfg(target_os = "windows")]
     windows::remove(ids);
+}
+
+/// Asks whether the person lets the app's notifications show, and calls `f` with the answer, once,
+/// from any thread: on macOS and iOS from the notification center's queue when the system
+/// answers (`getNotificationSettings`), elsewhere before this returns. It never blocks, so call
+/// it from the UI thread and wake the app's loop from `f`; ask again when the app comes forward,
+/// since the person can change it in Settings at any time.
+///
+/// macOS and iOS give every status (`Provisional` where the app asked for it, `Ephemeral` for
+/// an iOS App Clip). Windows: `Denied` when the person or a policy turned the app's
+/// toasts off, `NotDetermined` before Windows has a record of them. Linux has no per-app
+/// permission: `Authorized` when a notification server answers. `Unavailable` wherever
+/// `available` is false.
+pub fn authorization(f: impl FnOnce(Authorization) + Send + 'static) {
+    if !available() {
+        f(Authorization::Unavailable);
+        return;
+    }
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    apple::authorization(f);
+    #[cfg(target_os = "windows")]
+    f(windows::authorization());
+    #[cfg(target_os = "linux")]
+    f(Authorization::Authorized);
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "windows")))]
+    f(Authorization::Unavailable);
+}
+
+/// Calls `f` for every notification `post` took that the system didn't show, from any thread
+/// (wake the app's loop from it): the app's notifications are off, the person turned them down
+/// when asked, or the system refused the post. A post called off by `remove`, or replaced by a
+/// later post of the same id before the system answered, is not reported.
+/// Install it at launch, before the first post.
+pub fn on_post_error(f: impl Fn(PostError) + Send + Sync + 'static) {
+    *status::error_handler().lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(f));
 }
 
 /// The click a notification link stands for, when `url` is one of this app's

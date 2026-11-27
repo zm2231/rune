@@ -96,6 +96,7 @@ pub(crate) enum Event {
     /// warm-up is cancelled or done.
     AttachWorker,
     /// Park a finished overlay device until `until` with a linger watcher thread.
+    #[cfg_attr(target_os = "ios", allow(dead_code))]
     Park { until: Instant },
     /// The warm-up build finished (`ok` = device/renderer produced).
     BuildFinished { ok: bool, now: Instant },
@@ -440,6 +441,16 @@ impl<T: Send + 'static, C: Clock + 'static> WarmSlot<T, C> {
     }
 
     #[cfg(test)]
+    pub(crate) fn wake_and_wait_for(&self, settled: impl Fn(State) -> bool) -> State {
+        let mut inner = self.lock();
+        self.changed.notify_all();
+        while !settled(inner.state) {
+            inner = self.changed.wait(inner).unwrap_or_else(|e| e.into_inner());
+        }
+        inner.state
+    }
+
+    #[cfg(test)]
     pub(crate) fn wait_until_zero_workers(&self, timeout: Duration) -> usize {
         let deadline = self.clock.now() + timeout;
         let mut inner = self.lock();
@@ -676,6 +687,7 @@ impl<T: Send + 'static, C: Clock + 'static> WarmSlot<T, C> {
 
     /// Parks `payload` until `linger` elapses and spawns a tracked linger watcher thread.
     /// Drops `payload` immediately if the slot is busy, parked, cancelled, or done.
+    #[cfg(not(target_os = "ios"))]
     pub(crate) fn park<H: SlotHandle<T, C>>(&self, handle: H, payload: T, linger: Duration) {
         let mut payload = Some(payload);
         let until = self.clock.now() + linger;

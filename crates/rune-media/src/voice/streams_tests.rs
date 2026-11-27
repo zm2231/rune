@@ -3,21 +3,57 @@ use super::streams::{self, MicLink, Opened, Opener, SpeakerLink};
 use super::machine::Fault;
 use super::{Voice, VoiceEvent, VoiceMic, VoiceSpeaker, VoiceSpec, VoiceState};
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 pub(super) const RATE: u32 = 16_000;
 
+const ECHO_DELAY: usize = 4 * RATE as usize / 100;
+
 #[derive(Default)]
 struct Air {
-    echo: VecDeque<f32>,
     heard_energy: Vec<f64>,
     seed: u32,
     fail_after: Option<usize>,
 }
 
+struct Line {
+    sound: Mutex<Sound>,
+    moved: Condvar,
+}
+
+struct Sound {
+    echo: VecDeque<f32>,
+    written: usize,
+    read: usize,
+    closed: bool,
+}
+
+impl Line {
+    fn new() -> Arc<Self> {
+        let echo = std::iter::repeat_n(0.0, ECHO_DELAY).collect();
+        Arc::new(Self { sound: Mutex::new(Sound { echo, written: 0, read: 0, closed: false }), moved: Condvar::new() })
+    }
+
+    fn wait_until(&self, ready: impl Fn(&Sound) -> bool) -> std::sync::MutexGuard<'_, Sound> {
+        let mut sound = self.sound.lock().unwrap();
+        while !ready(&sound) && !sound.closed {
+            sound = self.moved.wait(sound).unwrap();
+        }
+        sound
+    }
+}
+
 struct Room {
     air: Arc<Mutex<Air>>,
+    line: Arc<Line>,
+}
+
+impl Drop for Room {
+    fn drop(&mut self) {
+        self.line.sound.lock().unwrap().closed = true;
+        self.line.moved.notify_all();
+    }
 }
 
 impl MicLink for Room {
@@ -31,13 +67,17 @@ impl MicLink for Room {
             }
             *left -= 1;
         }
+        let mut sound = self.line.wait_until(|sound| sound.echo.len() >= out.len());
         let mut energy = 0.0;
         for slot in out.iter_mut() {
             air.seed = air.seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             let hiss = ((air.seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5) * 0.001;
-            *slot = 0.5 * air.echo.pop_front().unwrap_or(0.0) + hiss;
+            *slot = 0.5 * sound.echo.pop_front().unwrap_or(0.0) + hiss;
             energy += f64::from(*slot * *slot);
         }
+        sound.read += out.len();
+        drop(sound);
+        self.line.moved.notify_all();
         air.heard_energy.push(energy);
         Ok(())
     }
@@ -45,13 +85,19 @@ impl MicLink for Room {
 
 impl SpeakerLink for Room {
     fn write(&mut self, frames: &[f32]) -> Result<(), Fault> {
-        let deadline = rune_core::time::now() + Duration::from_millis(20);
-        while self.air.lock().unwrap().echo.len() > 4 * frames.len() && rune_core::time::now() < deadline {
-            std::thread::sleep(Duration::from_micros(100));
-        }
-        self.air.lock().unwrap().echo.extend(frames);
+        let mut sound = self.line.wait_until(|sound| sound.written <= sound.read);
+        sound.echo.extend(frames);
+        sound.written += frames.len();
+        drop(sound);
+        self.line.moved.notify_all();
         Ok(())
     }
+}
+
+fn room(air: &Arc<Mutex<Air>>) -> Opened {
+    let line = Line::new();
+    let (mic, speaker) = (Room { air: air.clone(), line: line.clone() }, Room { air: air.clone(), line });
+    Opened { mic: Box::new(mic), speaker: Box::new(speaker), echo: EchoPath::InProcess }
 }
 
 fn opener(air: &Arc<Mutex<Air>>, mut failures: u32) -> Opener {
@@ -61,7 +107,7 @@ fn opener(air: &Arc<Mutex<Air>>, mut failures: u32) -> Opener {
             failures -= 1;
             return Err(Fault::passing("connection refused"));
         }
-        Ok(Opened { mic: Box::new(Room { air: air.clone() }), speaker: Box::new(Room { air: air.clone() }), echo: EchoPath::InProcess })
+        Ok(room(&air))
     })
 }
 
@@ -141,7 +187,7 @@ fn a_stream_that_dies_mid_call_comes_back() {
 #[derive(Default)]
 struct Gate {
     open: Mutex<bool>,
-    changed: std::sync::Condvar,
+    changed: Condvar,
 }
 
 impl Gate {
@@ -188,7 +234,7 @@ fn stuck_then(air: &Arc<Mutex<Air>>, gate: &Arc<Gate>, mic_fails: bool) -> Opene
             let mic = Stuck { gate: gate.clone(), fail: mic_fails };
             return Ok(Opened { mic: Box::new(mic), speaker: Box::new(Stuck { gate: gate.clone(), fail: false }), echo: EchoPath::InProcess });
         }
-        Ok(Opened { mic: Box::new(Room { air: air.clone() }), speaker: Box::new(Room { air: air.clone() }), echo: EchoPath::InProcess })
+        Ok(room(&air))
     })
 }
 

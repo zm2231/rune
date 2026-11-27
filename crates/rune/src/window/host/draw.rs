@@ -10,6 +10,7 @@ use super::render::{
 };
 use super::stepping::FrameMove;
 use crate::frame::clock::FrameClock;
+use crate::frame::loop_frame;
 use crate::frame::host_step::{
     self, Acquire, FrameHost, Gate, PostStepCheck, ReacquireReason, RenderPrep, StepInfo,
 };
@@ -317,7 +318,7 @@ impl FrameHost for WindowFrame<'_> {
         // decides that before starting the display link, which would draw it at once anyway.
         #[cfg(target_os = "macos")]
         let deferred = l.timer_frame.quiet() && !hidden && !self.resizing && !l.native.prime.presumes()
-            && l.native.pacing.as_ref().is_some_and(|p| p.defers_start(crate::time::now()));
+            && l.native.pacing.as_ref().is_some_and(|p| p.defers_start(crate::time::now()) || (l.loop_frame.untouched() && !p.paced()));
         #[cfg(not(target_os = "macos"))]
         let deferred = false;
         #[cfg(target_os = "macos")]
@@ -368,19 +369,18 @@ impl FrameHost for WindowFrame<'_> {
         self.state.profile.mark_entry();
         let (Some(l), Some((_, renderer))) = (self.host.win.as_mut(), self.host.gpu.as_ref()) else { return Gate::Skip };
         // Only the window's loops asked for this frame (`LoopFrame`): a step of them may stand
-        // for the whole of it (`Runtime::loop_step`), drawn only where they draw (`arm_loop`).
+        // for the whole of it (`Runtime::loop_step`), drawn on Windows only where they draw (`arm_loop`).
         let only_loops = l.loop_frame.only_loops();
         if !only_loops { self.state.profile.set_loop_why("something reached the window"); }
         // The app's waker ran and its event is still on its way: what it brought may be readable now.
         let only_loops = only_loops && !self.host.app_woken.load(Ordering::Acquire);
         if !only_loops { self.state.profile.set_loop_why_if_none("an app wake on its way"); }
-        #[cfg(target_os = "windows")]
         let only_loops = only_loops && !hidden && !live_resize && self.host.trace.is_none() && self.host.args.trace.is_none()
             && self.host.app.rt().host.window_frame.is_none() && !FrameMove::moving(&self.host.frame_move) && !self.host.app.compositor_animating();
         #[cfg(all(target_os = "windows", feature = "windows-system-material"))]
         let only_loops = only_loops && !l.native.materials.native();
-        #[cfg(not(target_os = "windows"))]
-        let only_loops = only_loops && false;
+        #[cfg(target_os = "macos")]
+        let only_loops = only_loops && self.state.shown.is_none();
         self.state.only_loops = only_loops;
         // Only a timer woke the resting window: build the frame first, and take no drawable
         // when it draws what's on screen.
@@ -442,7 +442,7 @@ impl FrameHost for WindowFrame<'_> {
         let at = self.state.target.unwrap_or(now);
         #[cfg(target_os = "macos")]
         { self.state.frame_time = Some(at); }
-        let step = if self.state.only_loops { loop_step(&mut self.host.clock, self.host.app.rt_mut(), at) } else { Err("") };
+        let step = if self.state.only_loops { loop_frame::step(&mut self.host.clock, self.host.app.rt_mut(), at) } else { Err("") };
         let (animating, dt) = match step {
             Ok((patched, dt)) => {
                 if !patched.is_empty() {
@@ -494,9 +494,10 @@ impl FrameHost for WindowFrame<'_> {
     }
 
     fn on_quiet_will_draw(&mut self) {
-        // It draws: the link starts, and still says draw at once.
+        // It draws: the link starts, and still says draw at once. A frame only its loops stepped
+        // leaves it stopped: their next wake paces the one after.
         #[cfg(target_os = "macos")]
-        if self.state.deferred && let Some(l) = self.host.win.as_mut() && let Some(pacing) = &mut l.native.pacing {
+        if self.state.deferred && self.state.looped.is_none() && let Some(l) = self.host.win.as_mut() && let Some(pacing) = &mut l.native.pacing {
             let _ = pacing.next_frame();
         }
         crate::marks::mark_once(&FIRST_BUILD, "frame.first.build");
@@ -555,7 +556,7 @@ impl FrameHost for WindowFrame<'_> {
         if self.state.hidden && self.host.win.as_ref().is_some_and(|l| l.first_frame.settles()) {
             self.host.app.rt_mut().settle_all();
         }
-        let stepped = if self.state.only_loops { loop_step(&mut self.host.clock, self.host.app.rt_mut(), frame_time) } else { Err("") };
+        let stepped = if self.state.only_loops { loop_frame::step(&mut self.host.clock, self.host.app.rt_mut(), frame_time) } else { Err("") };
         if let Err(why) = stepped && !why.is_empty() { self.state.profile.set_loop_why(why); }
         let (animating, dt) = if self.state.hidden {
             self.host.clock.hold(frame_time);
@@ -584,7 +585,7 @@ impl FrameHost for WindowFrame<'_> {
         #[cfg(feature = "frame-profile")]
         if !self.state.profile.forced_miss_checked {
             self.state.profile.forced_miss_checked = true;
-            if self.state.looped.is_some() && crate::window::surface::loop_frame::forced_miss() {
+            if self.state.looped.is_some() && crate::frame::loop_frame::forced_miss() {
                 return PostStepCheck::Missed(Missed::Timeout);
             }
         }
@@ -832,7 +833,11 @@ impl FrameHost for WindowFrame<'_> {
             l.stop_pacing();
             self.host.meter.set_pacing(l.pacing_state(false));
         } else {
-            l.coast_pacing();
+            #[cfg(target_os = "macos")]
+            let coast = self.state.looped.is_none() || l.native.pacing.as_ref().is_some_and(|p| p.paced());
+            #[cfg(not(target_os = "macos"))]
+            let coast = true;
+            if coast { l.coast_pacing(); }
             self.host.meter.set_pacing(l.pacing_state(false));
         }
         self.state.profile.flush(self.host, info.animating, next_tick);
@@ -847,17 +852,6 @@ impl FrameHost for WindowFrame<'_> {
             self.host.take_frame_request(start, true);
         }
     }
-}
-
-/// A loop-only step for the frame presented at `at` (`Runtime::loop_step`): the instances it
-/// wrote and the seconds it stepped, or why it takes an ordinary frame. The frame clock takes
-/// the step only when the runtime does.
-fn loop_step(clock: &mut FrameClock, rt: &mut RuntimeCore, at: Instant) -> Result<(Vec<u32>, f64), &'static str> {
-    let dt = at.saturating_duration_since(clock.last()).as_secs_f64();
-    let patched = rt.loop_step(dt)?;
-    clock.frame_step(at, true);
-    rt.frame.set_frame_target(at);
-    Ok((patched, dt))
 }
 
 /// The window's display refresh: its display link's on macOS, else the monitor's.

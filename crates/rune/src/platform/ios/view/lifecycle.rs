@@ -320,6 +320,7 @@ impl RuneView {
         // SAFETY: `UIView.window` is a nullable object.
         let window: Option<Retained<AnyObject>> = unsafe { msg_send![self, window] };
         let stale = self.with_surface(|surface| surface.memory_warning(window.is_some())).unwrap_or(false);
+        self.touched();
         if stale { self.pace(Event::Wake); }
     }
 

@@ -68,7 +68,14 @@ struct Queue<T: 'static> {
 
 impl<T: 'static> HiddenQueue for Queue<T> {
     fn take(&mut self) -> bool {
-        let newly = self.shared.after_hidden.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        let mut queue = self.shared.after_hidden.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if matches!(*queue, super::requests::AfterHiddenQueue::Closed) {
+            drop(queue);
+            drop(std::mem::take(&mut self.pending));
+            return false;
+        }
+        let newly = queue.take();
+        drop(queue);
         let any = !newly.is_empty();
         self.pending.extend(newly);
         any

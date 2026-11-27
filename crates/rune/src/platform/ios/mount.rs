@@ -61,7 +61,13 @@ pub(crate) fn overlay_slot<T: 'static>(built: Built<T>) -> OverlaySlot {
         let rt = rt.borrow_mut().take().ok_or_else(|| format!("overlay {name} mounted twice"))?;
         // SAFETY: as in `mount`: the overlay's own view owns `layer` and calls this on the
         // main thread.
-        let mut host = unsafe { LayerHost::transparent(layer, name, rt, compositor, size, scale, dark, wake.clone())? };
+        let mut host = match unsafe { LayerHost::transparent(layer, name, rt, compositor, size, scale, dark, wake.clone()) } {
+            Ok(host) => host,
+            Err(error) => {
+                feed.close_after_hidden();
+                return Err(error);
+            }
+        };
         host = host.with_system_clipboard(wake.clone()).with_system_links();
         if let Some(setup) = setup { setup(&mut host.runtime_mut().state, wake.clone()); }
         host.runtime_mut().set_live_visible(false);

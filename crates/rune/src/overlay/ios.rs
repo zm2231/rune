@@ -55,6 +55,12 @@ impl<T: 'static> Feed<T> {
         for f in updates { rt.update_if(f); }
     }
 
+    pub(crate) fn close_after_hidden(&self) {
+        let pending = self.shared.after_hidden.lock().unwrap_or_else(std::sync::PoisonError::into_inner).close();
+        drop(pending);
+        self.shared.core.wake();
+    }
+
     pub(crate) fn available(&self, rt: &mut Runtime<T>, on_availability: Option<fn(&mut T, Availability, &mut Tx)>) {
         let core = &self.shared.core;
         let s = OverlaySupport::Supported;

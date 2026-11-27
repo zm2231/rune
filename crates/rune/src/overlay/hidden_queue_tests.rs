@@ -103,3 +103,21 @@ fn closing_the_overlay_drops_its_callbacks_unrun_and_refuses_later_ones() {
     assert!(late.load(Ordering::Relaxed), "a callback asked after the close is dropped at once");
     assert!(runs(&unmounted).is_empty());
 }
+
+#[test]
+fn an_overlay_that_cannot_mount_drops_its_waiting_callbacks_and_refuses_later_ones() {
+    let (mut after_hidden, handle, unmounted) = overlay();
+    after_hidden.shown();
+    let (pending, late) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+    let flag = DropFlag(pending.clone());
+    handle.after_hidden(move |s, _| { let _flag = &flag; s.runs.push("pending"); });
+    turn(&mut after_hidden, false, None);
+    unmounted.borrow_mut().take();
+    drop(handle.shared.after_hidden.lock().unwrap().close());
+    assert!(!pending.load(Ordering::Relaxed), "the callback waits in the overlay's queue");
+    turn(&mut after_hidden, false, None);
+    assert!(pending.load(Ordering::Relaxed), "the next turn drops what the closed overlay held");
+    let flag = DropFlag(late.clone());
+    handle.after_hidden(move |s, _| { let _flag = &flag; s.runs.push("late"); });
+    assert!(late.load(Ordering::Relaxed));
+}

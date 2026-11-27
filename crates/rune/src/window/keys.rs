@@ -285,7 +285,7 @@ pub(super) fn map_web_winit_key(
     (ev, web_key_base(logical, mods))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "ios")))]
 #[path = "keys_tests.rs"]
 mod layout_tests;
 

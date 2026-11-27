@@ -108,6 +108,8 @@ pub use markdown::MarkdownStyle;
 #[cfg(feature = "markdown")]
 pub use markdown::QuoteFrame;
 #[cfg(feature = "markdown")]
+pub use markdown::TableShrink;
+#[cfg(feature = "markdown")]
 pub use notes::Note;
 pub use overlays::combobox::Combobox;
 pub use overlays::combobox::ComboboxEffect;
@@ -177,6 +179,7 @@ pub use tokens::metrics::BySize;
 pub use tokens::metrics::CheckboxColors;
 pub use tokens::metrics::DialogMetrics;
 pub use tokens::metrics::FieldMetrics;
+pub use tokens::metrics::IconButtonMetrics;
 pub use tokens::metrics::KeybindMetrics;
 pub use tokens::metrics::MenuMetrics;
 pub use tokens::metrics::Metrics;

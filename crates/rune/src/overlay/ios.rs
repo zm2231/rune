@@ -124,7 +124,7 @@ pub(crate) fn build<S, T: 'static>(configured: ConfiguredOverlay<T>, state: T, a
     let ConfiguredOverlay { spec, options, on_key, on_availability, poll, compositor, setup, mut runtime, font_smoothing, sizing, min_size, max_size, .. } = configured;
     let inherits_font_smoothing = font_smoothing.is_none();
     runtime.font_smoothing = font_smoothing.unwrap_or(app_font_smoothing);
-    let shared = Arc::new(Shared { core: Arc::new(SharedCore::default()), updates: Default::default() });
+    let shared = Arc::new(Shared { core: Arc::new(SharedCore::default()), updates: Default::default(), after_hidden: Default::default() });
     let text = TextSystem::for_window(app.fonts, app.families);
     let mut rt = Runtime::with_text(state, spec.view, spec.size, Env::default(), text);
     rt.configure(runtime);

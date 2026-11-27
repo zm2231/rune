@@ -339,7 +339,7 @@ impl RuntimeCore {
         // A backdrop blur samples what is drawn before it, so it goes ahead of any layer this
         // element opens (a fade still blurs the window) and of its shadows, which skip it.
         let sigma = match n.material {
-            Some(material) if n.vis.backdrop_blur <= 0.0 && self.paint.backdrop_materials && !self.paint.native_materials
+            Some((material, _)) if n.vis.backdrop_blur <= 0.0 && self.paint.backdrop_materials && !self.paint.native_materials
                 && crate::system_material::backdrop::blurs(n.vis.fill) => crate::system_material::backdrop::sigma(material),
             _ => n.vis.backdrop_blur,
         };

@@ -770,8 +770,8 @@ top-left, which is what popups and context menus anchor to.
 | --- | --- | --- |
 | `on_drag` | `Drag::x`, `y`; `start_x`, `start_y`, `w`, `h` captured at press | local |
 | `on_drag` | `Drag::dx`, `dy` (travel since the press) | window |
-| `on_wheel` | `WheelEvent::x`, `y` (`dx`, `dy` are the scroll in points) | local |
-| `on_magnify`, `on_rotate` | `MagnifyEvent::x`, `y`, `RotateEvent::x`, `y` | local |
+| `on_wheel`, `on_wheel_any` | `WheelEvent::x`, `y` (`dx`, `dy` are the scroll in points) | local |
+| `on_magnify`, `on_magnify_any`, `on_rotate` | `MagnifyEvent::x`, `y`, `RotateEvent::x`, `y` | local |
 | `on_smart_magnify` | `x`, `y` | local |
 | `on_pointer_move_local`, `on_secondary_press_local`, `on_any_press` | `PointerEvent::x`, `y` | local |
 | | `PointerEvent::window_x`, `window_y`, `window()` | window |
@@ -787,7 +787,7 @@ top-left, which is what popups and context menus anchor to.
 | `on_link_hover` | `Option<[left, top, width, height]>` of the hovered link's hit line box on enter/switch, `None` on leave | window |
 | `context_menu`, `PopupAnchor::from(PointerPress)` | the anchor they take | window |
 
-`on_press_tx`, `on_background_press_tx`, `on_double_press_tx`, and `on_middle_press` expose
+`on_press_tx`, `on_press_tx_any`, `on_background_press_tx`, `on_double_press_tx`, and `on_middle_press` expose
 the pointer activation position through `tx.press_point() -> Option<PointerEvent>` (element-local
 `x`/`y` and window `window_x`/`window_y` on mouse or touch activation, `None` on keyboard or
 assistive-technology activation and outside press handlers). Inside `El::on_link` (and
@@ -811,9 +811,10 @@ remounting fires it again; call `Tx::live_only` to skip the follow-up commit whe
 `on_drawn_layout_tx` also re-fire once when the display scale changes (even when the logical
 point rect is unchanged), and `Tx::scale()` reports the current display scale (device pixels per
 view point, including `Cx::zoom`) in any handler or `poll`. State-independent `_any` builders
-(`on_drag_any`, `on_pointer_move_any`, `on_hover_change_any`, `on_focus_change_any`,
-`on_focus_within_change_any`, `on_layout_any`, `on_visible_any`, and `on_key_any`) omit the
-app state type parameter so reusable components can mount under any host state.
+(`on_press_tx_any`, `on_drag_any`, `on_pointer_move_any`, `on_hover_change_any`,
+`on_focus_change_any`, `on_focus_within_change_any`, `on_layout_any`, `on_visible_any`,
+`on_key_any`, `on_wheel_any`, and `on_magnify_any`) omit the app state type parameter so reusable
+components can mount under any host state.
 
 ### App lifetime (`app.rs`, for apps that outlive their window)
 
@@ -877,9 +878,10 @@ app.run();
 - Closing hides the window on macOS, Windows and X11, and destroys it on Wayland (no hidden
   toplevel exists there); `open` recreates it with the same app id (`set_app_id`).
 - Activation: the first window takes the launcher's `XDG_ACTIVATION_TOKEN`/`DESKTOP_STARTUP_ID`
-  and clears them from the environment. A new window gets a forwarded token through winit's
-  `with_activation_token`. An open Wayland window is activated with `xdg_activation_v1` bound on
-  winit's own display (`platform/activation.rs`), since winit 0.30 can't. Without a token Wayland can only
+  and clears them from the environment. A new window gets a forwarded token (via
+  `AppHandle::activate` or `WindowHandle::activate`) through winit's `with_activation_token`. An
+  open Wayland window is activated with `xdg_activation_v1` bound on winit's own display
+  (`platform/activation.rs`), since winit 0.30 can't. Without a token Wayland can only
   request attention (most compositors mark it urgent); X11, macOS and Windows use `focus_window`.
 - Headless tooling runs ignore window requests and apply updates before each frame.
 - `AppHandle::is_visible()` reports whether the window is on screen; `AppHandle::window_error()`
@@ -1246,6 +1248,23 @@ Staying fast afterwards is "Fast apps" (`site/src/FastApps.tsx`) and "Smooth scr
   ignored by Rune's native Metal backend, wgpu's Metal backend, and browser backends (WebGPU/WebGL2).
   In `Manual`, `block_size` bounds suballocator block sizes rather than texture or buffer sizes:
   larger resources still succeed via dedicated allocations.
+- **Memory at rest and Linux/glibc heap trimming (`App::trim_heap_at_rest`).** When a window or
+  overlay goes to rest (after 10 s without drawing, 1 s under low memory, or immediately when
+  hidden, minimised, or fully covered), Rune releases off-screen text layouts and glyph runs,
+  unused images, dormant scene slots, oversized node/paint/memo buffers, and spare GPU targets,
+  then runs `App::on_rest`. On Linux with glibc, freed arena chunks stay resident in `VmRSS`
+  until trimmed, so after rest finishes its releases Rune calls `malloc_trim(0)` once off the UI
+  thread on its shared task pool—coalesced across resting windows and overlays with a 30 s
+  cooldown and never on a periodic idle timer. Because glibc holds each arena's lock while
+  trimming it, a thread allocating in the same arena during a large trim can pause for ~7 ms on a
+  ~206 MiB freed heap and ~14 ms on a ~387 MiB freed heap (more than one 120 Hz frame at 8.3 ms);
+  apps with allocating latency-sensitive threads can turn it off with
+  `App::trim_heap_at_rest(false)` or `RUNE_MALLOC_TRIM=0` (Rune's own `AudioOutput` worker
+  allocates nothing while playing). Apps using a custom `#[global_allocator]` (such as mimalloc
+  or jemalloc) or an `LD_PRELOAD` allocator see a no-op: a once-per-process runtime probe checks
+  whether Rust allocations move glibc's `mallinfo2`/`mallinfo` counters and skips trimming
+  otherwise, and non-glibc targets (macOS, Windows, musl, Android, iOS, and `wasm32`) compile it
+  out completely.
 - **Opt-in effect pipeline warming, per effect (`App::prewarm_effects(PrewarmEffects::BACKDROP_BLUR)`,
   `WindowSpec::prewarm_effects`, `Renderer::set_prewarm_effects`).** Off by default, so apps pay
   no background compilation CPU, driver memory, or worker thread for effects they never draw, and
@@ -1667,7 +1686,11 @@ rune::App::new(spec).fit_content_height().run();
   as shorthand for `ContentSizing::FitHeight` — for an overlay whose size follows its content
   (a candidate list, a horizontal IME bar, a HUD). Fitted axes are measured before each show
   and prewarm (at the target monitor's scale and active `RendererKind`, clamped to `min_size`,
-  `max_size`, and the display's work area, with text wrapping at `max_size.0`), so its first
+  `max_size`, and the display's sizing bounds — on Windows, `Display::work_area()` for edge
+  placements and full display bounds for `OverlayPlacement::Rect`, matching placement
+  coordinates; full display bounds elsewhere; pass `max_size` from `Display::work_area()` if
+  a content-sized `Rect` overlay should stay within the work area — with text wrapping at
+  `max_size.0`), so its first
   frame draws at the exact content size with no flash. While shown, a content size change
   resizes and re-places the overlay before painting in the same frame (no spring; on Wayland
   layer-shell, holds the previous frame until the compositor confirms the new size).
@@ -2688,12 +2711,17 @@ deterministic `dyn.*` UTI for unregistered MIME types) and written onto the firs
 `NSPasteboardItem`. On Windows each MIME type is registered with `RegisterClipboardFormatW` and
 attached to the OLE `IDataObject` via `TYMED_HGLOBAL`, backed by a process-wide cache capped at
 256 distinct custom format names so callers cannot exhaust Windows' unreleasable 16k USER atom
-table.
+table. On Wayland each MIME type is offered on `wl_data_source` in insertion order (overriding
+any colliding built-in MIME type), payloads stream off the UI thread over non-blocking pipes
+(bounded to 8 concurrent writers and 5 s per write), the drag icon renders to a `wl_shm`
+`wl_surface` with `DragImage::hotspot` placement, and Copy/Move actions map to
+`wl_data_device_manager::dnd_action` (Wayland has no Link action).
 
-macOS and Windows run native OS drag sessions; on Linux `drag_out` is ignored for now and the
-element keeps its press and `on_drag` behaviour. Headless runs record `drag-out <path>` in
-`--trace` and mark the node `dragOut` in `--tree`. `examples/drag-out` drags a file, an app
-and some text.
+macOS, Windows, and Linux Wayland run native OS drag sessions; on Linux X11 `drag_out` is ignored
+and the element keeps its press and `on_drag` behaviour. Headless runs record `drag-out <path>` in
+`--trace` and mark the node `dragOut` in `--tree`. `examples/drag-out` drags a file, an app,
+text, and (under `--scene custom-mime`) a Copy/Move item with custom MIME payloads and a custom
+hotspot icon.
 
 ### Dropping files in from other apps (`on_drop_files`)
 
@@ -3549,9 +3577,11 @@ is one more host on the event loop
   unless interactive. Clicks still reach Rune through winit's view (`platform/macos.rs`).
 - Windows: a topmost tool window with `WS_EX_NOACTIVATE` (plus `WS_EX_TRANSPARENT|WS_EX_LAYERED`
   unless interactive), shown with `SW_SHOWNOACTIVATE`; edge-placed overlays (both `OverlaySpec`
-  defaults and `OverlayPlacement::Edge`) anchor inside all four sides of `Display::work_area()`
-  (`GetMonitorInfoW`'s `rcWork` in `platform/win32.rs`), while `OverlayPlacement::Rect` and
-  `OverlayPlacement::FullScreen` stay in full display coordinates.
+  defaults and `OverlayPlacement::Edge`) anchor and clamp `ContentSizing` inside all four sides
+  of `Display::work_area()` (`GetMonitorInfoW`'s `rcWork` in `platform/win32.rs`), while
+  `OverlayPlacement::Rect` and `OverlayPlacement::FullScreen` stay in full display coordinates
+  for both placement and `ContentSizing` (pass `max_size` from `Display::work_area()` if a
+  content-sized `Rect` overlay should stay within the work area).
 - Opt-in CPU rendering on Windows (`ConfiguredOverlay::renderer(RendererKind::Cpu)`, default
   `RendererKind::Gpu`): keeps a transparent Windows overlay on `CpuPainter` for its whole
   lifetime and presents premultiplied BGRA frames (`clear = [0.0; 4]`, `lcd = false`) through
@@ -3890,9 +3920,12 @@ On Windows 11 Build 22000+, an off-by-default `windows-system-material` Cargo fe
 documented `DWMWA_USE_HOSTBACKDROPBRUSH` and a Windows 11 Acrylic Luminosity + Color
 `CompositionEffectBrush` (built with `IGraphicsEffect` / `IGraphicsEffectD2D1Interop` over
 `Compositor::CreateHostBackdropBrush`, zero Win2D) clipped per frame under Rune's swap-chain
-visual. Each `(SystemMaterial, dark)` pair caches a single brush (`Popover` = Default Acrylic,
-`Sidebar` = Base Acrylic, `Glass` = clearer chromatic Acrylic; at most 6 cached brushes per
-window) and degrades gracefully to a WCAG >=4.5:1 flat tint if effect compilation fails.
+visual. Each resolved Acrylic recipe is cached per target (`Popover` = Default Acrylic,
+`Sidebar` = Base Acrylic, `Glass` = clearer chromatic Acrylic; plain `El::system_material` caches
+at most 6 brushes per window, and `El::system_material_with(material, MaterialParams)` overrides
+optional tint RGB, tint opacity, luminosity opacity, and `0.0..=4.0` backdrop saturation via
+`CLSID_D2D1ColorMatrix` in a bounded LRU cache) and degrades gracefully to a WCAG >=4.5:1 flat
+tint if effect compilation fails.
 Light-theme Acrylic uses Microsoft's WinUI 3 light recipes (`#FCFCFC` / `#F3F3F3`), which are
 designed for dark text chosen from the active theme (`cx.system_dark()`). Windows
 follows the same fill rules as Wayland: opaque fills (`alpha >= 1.0`, such as `rune-kit::Toolbar`)
@@ -4162,10 +4195,78 @@ accesskit_atspi_common = { git = "https://github.com/anomalyco/rune", rev = "<re
 Patch both `winit` and `sctk-adwaita`, and from the same revision: Rune's winit calls
 `AdwaitaFrame::content_corner_radius`, which only the vendored frame has, so a workspace that
 patches winit without sctk-adwaita doesn't compile. With both, a decorated Wayland window's
-buttons, titlebar and rounded bottom corners are drawn by the vendored frame.
+buttons, titlebar, window title (enabled by the default `wayland-csd-title` feature; disable with
+`default-features = false` for custom-titlebar or minimal Linux builds to omit `ab_glyph` and its
+fallback font while keeping CSD frames and buttons) and rounded bottom corners are drawn by the
+vendored frame.
 
 When you update Rune, check its [root `Cargo.toml`](../../Cargo.toml) at the new revision and
 use that same `rev` for Rune and every patch.
+
+#### From a mirror or without network
+
+Cargo treats each git URL and `rev` as a separate source, so every Rune line (`rune`, any other
+Rune crate and every patch) must name the same URL and the same `rev`. Moving `rune` to a mirror
+and leaving a patch on github.com, or the other way round, makes two sources: a second Rune crate
+from the other one is a second copy of Rune whose types don't match the first, and a patch from it
+can be a different version than Rune asks for, which Cargo skips with a ``Patch `naga` was not used
+in the crate graph`` warning. Pick one of these, in this order:
+
+- **Rewrite the URL in git (recommended).** Keep the public URL in your manifests and have git
+  fetch from the mirror. In `.cargo/config.toml`:
+
+  ```toml
+  [net]
+  git-fetch-with-cli = true
+  ```
+
+  and on the CI runner (or in its image), with your mirror's URL:
+
+  ```sh
+  git config --global url."https://ghe.example.com/mirrors/rune".insteadOf "https://github.com/anomalyco/rune"
+  ```
+
+  `git-fetch-with-cli` has Cargo run `git` for fetches, and `git` reads `insteadOf`. `Cargo.lock`
+  keeps `git+https://github.com/anomalyco/rune?rev=<rev>#<commit>`, so it is the same with and
+  without the mirror, and machines that can reach github.com need no setup. The mirror must have
+  the commit before you bump to it.
+- **Name the mirror in the manifest.** Put the mirror's URL on all of the lines at once.
+  `Cargo.lock` records the mirror's URL in each Rune package's `source`, so everyone who builds the
+  app needs access to the mirror, and moving back is a change to every line and the lock.
+- **Vendor.** `cargo vendor` copies every dependency, Rune's git crates included, into `vendor/`
+  and prints a `[source]` table for `.cargo/config.toml` that replaces crates.io and the Rune git
+  source with that folder. `Cargo.lock` doesn't change. Builds need no network; each bump re-runs
+  `cargo vendor` where the network (or the mirror) is reachable and commits the result.
+
+For CI without network access: with the first two, fetch once where the mirror is reachable
+(`cargo fetch` with the committed lock) and build with `--offline` (or `--frozen`, or
+`CARGO_NET_OFFLINE=true`) from that warm `CARGO_HOME`; vendoring needs no fetch at all. Keep one
+stable `CARGO_HOME` path across jobs. Cargo compiles a git dependency from its checkout under
+`$CARGO_HOME/git/checkouts` and fingerprints it by that path, so a `CARGO_HOME` per checkout
+fetches Rune again and rebuilds every dependency even with a cached `target/`.
+
+#### Bumping Rune
+
+1. Pick a `dev` rev (with a mirror, check that it has the commit).
+2. Read Rune's root `Cargo.toml` at that rev (`git show <rev>:Cargo.toml` in a clone of Rune or of
+   the mirror). Set the `rev` on `rune` and on every patch, and add or remove patch entries to
+   match its `[patch.crates-io]` list.
+3. Run `cargo check`, which moves `Cargo.lock` to the new rev, and look for ``Patch `…` was not
+   used in the crate graph`` warnings: each one is a patch on the wrong URL, the wrong rev, or one
+   Rune no longer needs.
+4. For a web build, match the `wasm-bindgen-cli` your CI images and Dockerfiles install to the
+   `wasm-bindgen` version in your `Cargo.lock`; `scripts/web-build.sh` refuses any other CLI.
+   [`WEB.md`](../../WEB.md) names the version Rune uses at that rev.
+
+[`scripts/check_rune_pins.py`](../../scripts/check_rune_pins.py) checks steps 2 to 4 with no
+network: one URL and `rev` on every Rune line, the patch list against Rune's at that rev, one Rune
+commit in `Cargo.lock`, and (with `--wasm-bindgen-cli`) the CLI pin. Copy it into your app and run
+it in CI:
+
+```sh
+git -C path/to/rune show <rev>:Cargo.toml > rune-Cargo.toml
+python3 check_rune_pins.py --rune-manifest rune-Cargo.toml --wasm-bindgen-cli 0.2.129
+```
 
 ### Linux
 
@@ -4220,6 +4321,18 @@ $L --desktop examples/launcher/backdrop.png --script examples/launcher/scripts/d
    --video desktop.mp4 --keys --pointer
 ```
 
+- **Fonts across operating systems**: text uses system fonts for what the registered fonts
+  lack, and the system's lookup (CoreText, DirectWrite, fontconfig) differs per host, so
+  `--tree` metrics and `--snap` text can differ between macOS, Windows and Linux. Set
+  `RUNE_SYSTEM_FONTS=off` (or call `rune::text::set_system_fonts(false)` before the first text
+  lays out; it covers `--snap`, `--tree`, scripts and `App::headless_runtime`) to load no
+  system font at all: text shapes with only the bundled faces, `AppSpec::fonts` and `add_font`,
+  `ui-monospace` and `Family::SystemMono` fall back to the sans slot, a `families` slot or
+  `Family::Named` that names an installed font falls back to sans, and a character none of the
+  registered fonts has draws as the font's missing glyph. Bundle every face the app shows
+  (both `families` slots, plus any script, symbol or emoji font) for its text to look the same.
+  Text metrics then match across hosts; glyph pixels still rasterize with each platform's own
+  smoothing.
 - **Settling layout callbacks** (`--settle`, valid with `--snap` or `--tree`): runs up to 3
   zero-dt passes at the capture frame while layout callbacks (`on_layout`, `on_layout_tx`,
   `on_screen_layout`, `on_drawn_layout`, `drawn_rect_into`, `on_visible`, `on_visible_rows`,
@@ -4629,6 +4742,8 @@ grouped list, and a knobs column) maps onto `App::playground` like this:
 
 ## Live Rust editing (desktop development)
 
+For a cross-platform CLI without Bash or Python (`rune new`, `rune dev`, `rune check`, `rune doctor`), see [`crates/rune-cli`](../rune-cli/README.md). `scripts/rune-dev` below remains available for the maintainers' remote build-worker and desk-Mac relay workflow.
+
 ```sh
 scripts/rune-dev settings -- --snap-on-patch perf/live-edit/settings.png --hot-control perf/live-edit/control.json
 ```
@@ -4651,7 +4766,10 @@ each PNG and matching `.json` tree into this checkout. Install **Dioxus CLI 0.7.
 as `dx` in Cargo's bin directory first (`RUNE_DX` overrides the path); the
 Homebrew/Deno command with the same name is unrelated. The first build is a full
 development build; subsequent runs reuse `target/rune-dev/<example>`.
-Compiler artifacts live in `target/live-edit-build`.
+Compiler artifacts live in `target/live-edit-build` for an example, and under
+`$XDG_CACHE_HOME/rune-dev` (or `~/.cache/rune-dev`) for an app's crate, so a read-only Rune
+checkout such as a Cargo git dependency is never written; `RUNE_DEV_TARGET_DIR` picks another
+directory. Builds run with `RUNE_DEV_JOBS`, else an exported `CARGO_BUILD_JOBS`, else 2 jobs.
 
 `--local` (or `RUNE_DEV_LOCAL=1`) skips the worker setup: the compiler, the edit guard and
 the app all run on this machine, and an edit that needs a restart rebuilds and relaunches the
@@ -4712,15 +4830,16 @@ Source edits here are relayed to the build Mac as before.
 ### Compatible edits and restart boundaries
 
 The launcher validates Rust syntax, then copies compatible edits into a private compiler
-mirror. It accepts function-body changes in Settings' `main.rs`. Use stable keys to preserve node identity.
+mirror. It accepts function-body changes in Settings' `main.rs`, in free functions and in
+methods of inherent impls (`impl S { ... }`). Use stable keys to preserve node identity.
 
 **Restart needed** is printed before publishing changes to state/type declarations,
-function signatures, imports, constants, const-fn bodies, impl methods, startup code, dependencies,
+function signatures, imports, constants, const-fn bodies, impl headers, trait impl methods, startup code, dependencies,
 assets or framework code. This catches same-size field/type changes too; `size_of`
 alone cannot. Syntax errors stay outside the mirror until fixed. Stop and rerun the
 command after an incompatible change (`--local` and `scripts/rune-hot` rebuild and relaunch
 on their own). State is not migrated across restarts.
-Function attributes other than `doc`, `inline`, `cold` and `allow` also keep the whole
+Function and impl attributes other than `doc`, `inline`, `cold` and `allow` also keep the whole
 body in the restart contract, since attribute macros can generate persistent types.
 
 Keep persistent state in `AppSpec::init`'s returned value. Tip-crate statics and thread

@@ -5,7 +5,7 @@
 //! Where it shows as a window of its own, that window going off screen without a choice answers
 //! none too, however it went: a timer checks the picker's windows while it shows. A window is the
 //! picker's when it opens on screen after the picker shows, as a child window of the window it
-//! shows over (each window shows one share at a time).
+//! shows over and not a sheet (each window shows one share at a time).
 
 #![allow(unsafe_code)]
 
@@ -155,6 +155,7 @@ fn check(mtm: MainThreadMarker, delegate: &Retained<Delegate>) {
             let object: &AnyObject = window;
             window.isVisible()
                 && window.parentWindow().is_some_and(|parent| std::ptr::eq(&*parent, &*entry.host))
+                && window.sheetParent().is_none()
                 && !has(&entry.before, window)
                 && !has(&entry.watched, window)
                 && !crate::platform::macos::has_subclass(object, b"Winit")

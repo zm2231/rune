@@ -698,3 +698,27 @@ fn a_hold_arms_only_where_a_secondary_press_opens_something() {
     rt.frame(1.0 / 60.0);
     assert_eq!(rt.state.taps, [0], "a long press on a plain row still clicks it, as a native button does");
 }
+
+#[test]
+fn a_pointers_click_delivered_as_a_touch_taps_scrolls_and_drags_as_a_finger_does() {
+    let play = |source: crate::runtime::TouchSource| {
+        let mut rt = rig();
+        let mut offsets = Vec::new();
+        rt.touch_from(1, TouchPhase::Started, 100.0, 70.0, 0.0, source);
+        rt.touch_from(1, TouchPhase::Ended, 101.0, 71.0, 0.05, source);
+        rt.frame(1.0 / 60.0);
+        rt.touch_from(2, TouchPhase::Started, 100.0, 200.0, 1.0, source);
+        for i in 1..=5 { rt.touch_from(2, TouchPhase::Moved, 100.0, 200.0 - 20.0 * i as f32, 1.0 + i as f64 * 0.01, source); }
+        rt.touch_from(2, TouchPhase::Ended, 100.0, 100.0, 1.055, source);
+        for _ in 0..10 { rt.frame(1.0 / 60.0); offsets.push(offset(&rt)); }
+        rt.touch_from(3, TouchPhase::Started, 20.0, 20.0, 3.0, source);
+        rt.touch_from(3, TouchPhase::Moved, 60.0, 30.0, 3.01, source);
+        rt.touch_from(3, TouchPhase::Ended, 60.0, 30.0, 3.02, source);
+        rt.frame(1.0 / 60.0);
+        (rt.state.taps.clone(), rt.state.drags.clone(), offsets, rt.pointer(), rt.touching())
+    };
+    let finger = play(crate::runtime::TouchSource::Finger);
+    assert_eq!(finger.0, [0]);
+    assert!(finger.2.iter().all(|&o| o > 0.0));
+    assert_eq!(play(crate::runtime::TouchSource::Pointer), finger);
+}

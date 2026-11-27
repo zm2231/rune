@@ -220,6 +220,7 @@ impl ZoomPan {
     }
 
     fn magnify(&mut self, e: rune::MagnifyEvent, tx: &mut Tx) -> bool {
+        if e.wheel { return self.wheel(crate::image_zoom::math::pinch_wheel(e), tx); }
         self.zoom_at(self.scale() * (1.0 + e.delta).max(0.01), [e.x, e.y], tx);
         true
     }

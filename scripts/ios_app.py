@@ -42,6 +42,9 @@ def info(args):
         UILaunchScreen={},
         # Without it an iPhone holds a display link at 60 Hz on a 120 Hz display.
         CADisableMinimumFrameDurationOnPhone=True,
+        # A mouse's or trackpad's clicks reach the app as pointer touches, not as fingers, so a
+        # click can take pointer lock (`El::pointer_lock`).
+        UIApplicationSupportsIndirectInputEvents=True,
         UIApplicationSceneManifest=dict(UIApplicationSupportsMultipleScenes=args.multiple_scenes),
         UISupportedInterfaceOrientations=[
             "UIInterfaceOrientationPortrait", "UIInterfaceOrientationLandscapeLeft",

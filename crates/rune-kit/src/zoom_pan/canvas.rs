@@ -146,15 +146,12 @@ impl<S: 'static> Canvas<S> {
 
 fn bind<S: 'static>(pane: El, lens: Lens<S>, key: String) -> El {
     let (drag_lens, wheel_lens, key_lens, magnify_lens) = (lens.clone(), lens.clone(), lens.clone(), lens);
-    let mut pane = pane
+    pane
         .on_drag(move |s: &mut S, d: &mut Drag, tx: &mut Tx| {
             if d.phase == rune::Phase::Down { tx.focus(key.clone(), false); }
             drag_lens(s).drag(d, tx)
         })
         .on_wheel(move |s: &mut S, ev, tx| wheel_lens(s).wheel(ev, tx))
-        .on_key(move |s: &mut S, ev: &KeyEvent, tx: &mut Tx| key_lens(s).key(ev, tx));
-    if cfg!(target_os = "macos") {
-        pane = pane.on_magnify(move |s: &mut S, ev, tx| magnify_lens(s).magnify(ev, tx));
-    }
-    pane
+        .on_key(move |s: &mut S, ev: &KeyEvent, tx: &mut Tx| key_lens(s).key(ev, tx))
+        .on_magnify(move |s: &mut S, ev, tx| magnify_lens(s).magnify(ev, tx))
 }

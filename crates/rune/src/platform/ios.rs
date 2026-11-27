@@ -22,6 +22,7 @@ mod mount;
 pub(crate) mod overlay;
 pub(crate) mod pacing;
 pub(crate) mod park;
+pub(crate) mod pointer_lock;
 #[cfg(target_os = "ios")]
 mod scenes;
 pub(crate) mod size_class;

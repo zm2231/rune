@@ -17,7 +17,7 @@ use super::super::text::geometry::Geometry;
 use super::{MainOnly, RuneView, Stage};
 use crate::machine::Effects;
 use crate::platform::main_queue::after_main;
-use crate::runtime::TouchPhase;
+use crate::runtime::{TouchPhase, TouchSource};
 use crate::{GesturePhase, Ime, Key, KeyEvent, Mods};
 
 /// `UIGestureRecognizerState`'s `Began`, `Changed`, `Ended` and `Cancelled`.
@@ -29,6 +29,9 @@ const GESTURE_CANCELLED: isize = 4;
 const BUTTON_SECONDARY: isize = 1 << 1;
 /// `UIScrollTypeMaskAll`: a mouse's wheel and a trackpad's two fingers.
 const SCROLL_ALL: isize = 3;
+/// `UITouchTypeIndirectPointer`: a mouse's or trackpad's click, in an app whose Info.plist sets
+/// `UIApplicationSupportsIndirectInputEvents`.
+const TOUCH_INDIRECT_POINTER: isize = 3;
 
 impl RuneView {
     /// Adds a recognizer of `class` that calls `action` on the view. When it begins, UIKit
@@ -277,31 +280,36 @@ impl RuneView {
     }
 
     pub(super) fn touches(&self, touches: &AnyObject, phase: TouchPhase) {
-        // SAFETY: `touches` is the `NSSet<UITouch *>` UIKit passes; a touch's view, location
-        // and timestamp are a `UIView` or nil, a `CGPoint` and an `NSTimeInterval`.
-        let read: Vec<(u64, CGPoint, f64)> = unsafe {
+        // SAFETY: `touches` is the `NSSet<UITouch *>` UIKit passes; a touch's view, location,
+        // timestamp and type are a `UIView` or nil, a `CGPoint`, an `NSTimeInterval` and an
+        // `NSInteger` enum.
+        let read: Vec<(u64, CGPoint, f64, TouchSource)> = unsafe {
             let all: Retained<AnyObject> = msg_send![touches, allObjects];
             let count: usize = msg_send![&*all, count];
             (0..count).filter_map(|index| {
                 let touch: Retained<AnyObject> = msg_send![&*all, objectAtIndex: index];
                 let view: *mut AnyObject = msg_send![&*touch, view];
                 if view.as_ref().is_some_and(crate::native_view::ios::hosted) { return None; }
+                let kind: isize = msg_send![&*touch, type];
+                let source = if kind == TOUCH_INDIRECT_POINTER { TouchSource::Pointer } else { TouchSource::Finger };
                 // UIKit keeps one `UITouch` for a finger from down to up, so its address
                 // tells fingers apart.
-                Some((Retained::as_ptr(&touch) as usize as u64, msg_send![&*touch, locationInView: self], msg_send![&*touch, timestamp]))
+                Some((Retained::as_ptr(&touch) as usize as u64, msg_send![&*touch, locationInView: self], msg_send![&*touch, timestamp], source))
             }).collect()
         };
         if read.is_empty() { return; }
+        if phase == TouchPhase::Started && read.iter().any(|touch| touch.3 == TouchSource::Finger) { self.finger_pressed(); }
         if phase == TouchPhase::Started && self.takes_keys_on_touch() { self.take_keys(); }
         let count = read.len();
         let input = self.ivars().text.borrow().clone();
         let left: Vec<_> = read.into_iter()
-            .filter(|(id, at, _)| !input.as_ref().is_some_and(|input| input.touch(*id, phase, (at.x as f32, at.y as f32))))
+            .filter(|(id, at, _, _)| !input.as_ref().is_some_and(|input| input.touch(*id, phase, (at.x as f32, at.y as f32))))
             .collect();
         if phase == TouchPhase::Moved && !left.is_empty() { self.hide_menu(); }
         self.with_surface(|surface| {
-            for (id, at, time) in left { surface.touch(id, phase, at.x as f32, at.y as f32, time); }
+            for (id, at, time, source) in left { surface.touch(id, phase, at.x as f32, at.y as f32, time, source); }
         });
+        self.sync_pointer_lock();
         // Each finger holds the display link from when it lands until it lifts.
         for _ in 0..count {
             match phase {

@@ -2572,6 +2572,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ios-pointer"
+version = "0.0.1"
+dependencies = [
+ "rune",
+]
+
+[[package]]
 name = "ios-system"
 version = "0.0.1"
 dependencies = [
@@ -2583,6 +2590,14 @@ name = "ios-windows"
 version = "0.0.1"
 dependencies = [
  "rune",
+]
+
+[[package]]
+name = "ios-zoom"
+version = "0.0.1"
+dependencies = [
+ "rune",
+ "rune-kit",
 ]
 
 [[package]]

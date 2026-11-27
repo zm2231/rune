@@ -3,14 +3,35 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use super::heap_trim::{
-    PROBE_SIZE, TRIM_MIN_GAP, TrimEffect, TrimEvent, TrimState, env_allows_trim,
-    probe_glibc_used, set_trim_enabled, step, trim_enabled, uses_glibc_allocator,
+    Allocator, PROBE_MISSES, PROBE_SIZE, TRIM_MIN_GAP, TrimEffect, TrimEvent, TrimState,
+    env_allows_trim, probe_glibc_used, record_probe, set_trim_enabled, step, trim_enabled,
+    uses_glibc_allocator,
 };
 use super::rest::{self, REST_AFTER, Rest, RestEffect, RestEvent};
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 use super::heap_trim::glibc::Trimmer;
 
 static OPT_OUT_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn in_own_process(test: &str, body: impl FnOnce()) {
+    const CHILD: &str = "RUNE_HEAP_TRIM_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        body();
+        return;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([&format!("window::state::heap_trim_tests::{test}"), "--exact", "--nocapture", "--test-threads=1"])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{test} failed in its own process:\n{stdout}\n{stderr}"
+    );
+}
 
 #[test]
 fn trim_state_first_rest_trims_concurrent_coalesces_and_respects_30s_cooldown() {
@@ -190,9 +211,9 @@ fn platform_guard_matches_target_abi_and_coalesces_live_trim() {
     }
 
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    {
+    in_own_process("platform_guard_matches_target_abi_and_coalesces_live_trim", || {
         assert!(
-            uses_glibc_allocator(),
+            (0..PROBE_MISSES).any(|_| uses_glibc_allocator()),
             "default Linux/glibc unit test binary should detect glibc allocator"
         );
         let trimmer: &'static Trimmer = Box::leak(Box::new(Trimmer::new()));
@@ -215,5 +236,96 @@ fn platform_guard_matches_target_abi_and_coalesces_live_trim() {
         trimmer.wait_idle();
         assert_eq!(trimmer.calls(), 1);
         set_trim_enabled(true);
+    });
+}
+
+#[test]
+fn one_hit_settles_glibc_and_only_consecutive_missed_rests_settle_foreign() {
+    let mut state = Allocator::Unknown { misses: 0 };
+    for n in 1..PROBE_MISSES {
+        record_probe(&mut state, false);
+        assert_eq!(state, Allocator::Unknown { misses: n });
     }
+    record_probe(&mut state, true);
+    assert_eq!(state, Allocator::Glibc, "a hit after misses still settles glibc");
+    record_probe(&mut state, false);
+    assert_eq!(state, Allocator::Glibc);
+
+    let mut state = Allocator::Unknown { misses: 0 };
+    for _ in 0..PROBE_MISSES {
+        record_probe(&mut state, false);
+    }
+    assert_eq!(state, Allocator::Foreign);
+    record_probe(&mut state, true);
+    assert_eq!(state, Allocator::Foreign);
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[test]
+fn another_threads_free_inside_every_attempt_misses_a_rest_and_the_next_rest_hits() {
+    in_own_process("another_threads_free_inside_every_attempt_misses_a_rest_and_the_next_rest_hits", another_threads_free_body);
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[allow(unsafe_code)]
+fn another_threads_free_body() {
+    use std::alloc::Layout;
+    use std::sync::mpsc;
+
+    let symbols = super::heap_trim::glibc::symbols().expect("glibc exports malloc_trim and mallinfo");
+    let big = 2 * PROBE_SIZE;
+    let (cue, cued) = mpsc::channel::<()>();
+    let (freed, wait_freed) = mpsc::channel::<()>();
+    let attempts = super::heap_trim::PROBE_ATTEMPTS;
+    let other = std::thread::spawn(move || {
+        let held: Vec<Vec<u8>> = (0..attempts).map(|_| vec![1u8; big]).collect();
+        freed.send(()).unwrap();
+        for block in held {
+            if cued.recv().is_err() {
+                return;
+            }
+            drop(block);
+            freed.send(()).unwrap();
+        }
+    });
+    wait_freed.recv().unwrap();
+
+    let alloc = |l: Layout| {
+        // SAFETY: the probe layout has non-zero size and valid alignment.
+        unsafe { std::alloc::alloc(l) }
+    };
+    let dealloc = |p: *mut u8, l: Layout| {
+        // SAFETY: `p` came from `alloc(l)`.
+        unsafe { std::alloc::dealloc(p, l) }
+    };
+    let samples = Cell::new(0usize);
+    let spoiled = probe_glibc_used(
+        symbols.mask(),
+        || {
+            let n = samples.get();
+            samples.set(n + 1);
+            if n % 3 == 1 {
+                cue.send(()).unwrap();
+                wait_freed.recv().unwrap();
+            }
+            symbols.used()
+        },
+        alloc,
+        dealloc,
+    );
+    drop(cue);
+    other.join().unwrap();
+    assert!(!spoiled, "a {} KiB free on another thread hides the probe's growth", big / 1024);
+    assert_eq!(samples.get(), 3 * attempts);
+
+    let mut state = Allocator::Unknown { misses: 0 };
+    record_probe(&mut state, spoiled);
+    assert_eq!(state, Allocator::Unknown { misses: 1 }, "a missed rest settles nothing");
+    for _ in 1..PROBE_MISSES {
+        if state == Allocator::Glibc {
+            break;
+        }
+        record_probe(&mut state, probe_glibc_used(symbols.mask(), || symbols.used(), alloc, dealloc));
+    }
+    assert_eq!(state, Allocator::Glibc, "a later rest without the other thread's free settles glibc");
 }

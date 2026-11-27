@@ -197,6 +197,12 @@ impl<S: 'static> Runtime<S> {
         let (core, mut app) = self.split_mut();
         core.touch(&mut app, id, phase, x, y, time);
     }
+    #[cfg(any(target_os = "ios", test))]
+    #[inline(always)]
+    pub(crate) fn touch_from(&mut self, id: u64, phase: TouchPhase, x: f32, y: f32, time: f64, source: crate::runtime::TouchSource) {
+        let (core, mut app) = self.split_mut();
+        core.touch_from(&mut app, id, phase, (x, y), time, source);
+    }
     #[inline(always)]
     pub fn touching(&self) -> bool { self.core().touching() }
 

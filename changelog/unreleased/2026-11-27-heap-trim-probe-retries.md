@@ -1,0 +1,1 @@
+- Linux (glibc): heap trimming at rest no longer turns off for the whole run when other threads allocate while Rune checks which allocator the app uses. A rest whose check misses leaves the question open for the next rest, a custom allocator (mimalloc, jemalloc) is settled after four missed rests, and the check runs on the background trim task instead of the UI thread.

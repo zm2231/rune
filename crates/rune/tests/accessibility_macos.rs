@@ -133,7 +133,6 @@ mod mac {
                 let save = find(&tree, "save").expect("the button");
                 assert_eq!((save.role.as_str(), save.label.as_str()), ("AXButton", "Save"), "{dump}");
                 let title = find(&tree, "title").expect("the heading");
-                // AppKit's role for a heading, which VoiceOver reads as "heading".
                 assert_eq!((title.role.as_str(), title.label.as_str()), ("AXHeading", "Account"), "{dump}");
                 let name = find(&tree, "name").expect("the field");
                 assert_eq!((name.role.as_str(), name.label.as_str()), ("AXTextField", "Name"), "{dump}");

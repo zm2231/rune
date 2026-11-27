@@ -1,0 +1,1 @@
+- macOS: a transparent window with `MacWindowOptions::corner_radius` re-samples its shadow after a show or resize on systems that report a presented time of 0 for frames they show, such as the first after a second without one. Before, the re-sample waited for a nonzero time and never came, so the shadow kept the outline of the empty or older frame.

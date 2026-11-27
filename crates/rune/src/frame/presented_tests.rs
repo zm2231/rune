@@ -409,10 +409,11 @@ fn metal_log_separates_trace_callbacks_and_shadow_watches_and_bounds_buffer() {
     log.poll_and_watch(&mut out_cb, true);
     assert!(log.callback_watching());
 
-    // Skipped drawable (presentedTime == 0.0) MUST wake callback watch, and lands in both
-    // trace and callback buffers without advancing shadow's on_screen.
-    assert!(log.record_presented(1, 0.0), "skipped drawable must wake watched callback consumer");
-    assert_eq!(log.on_screen(), 0, "skipped drawable is not on screen");
+    // A drawable with presentedTime 0.0 wakes the callback watch and lands in both the trace
+    // and callback buffers. macOS reports 0.0 for frames it does show (the first after about a
+    // second idle), so it still advances shadow's on_screen.
+    assert!(log.record_presented(1, 0.0), "a zero-time drawable must wake watched callback consumer");
+    assert_eq!(log.on_screen(), 1, "a zero-time drawable's handler ran, so shadow counts it");
 
     // Shadow turning its watch off does not disturb callback_watching; clearing callback watch
     // does not disturb shadow watch.
@@ -421,8 +422,9 @@ fn metal_log_separates_trace_callbacks_and_shadow_watches_and_bounds_buffer() {
     log.set_watch(false);
     assert!(!log.callback_watching());
     log.watch(true);
-    assert!(!log.record_presented(2, 0.0), "shadow watch ignores skipped drawables");
-    assert!(log.record_presented(3, 123.456), "shadow watch wakes on real present (at > 0.0)");
+    assert!(log.record_presented(2, 0.0), "shadow watch wakes on a zero-time present");
+    log.watch(false);
+    assert!(!log.record_presented(3, 123.456), "no watch, no wake");
     assert_eq!(log.on_screen(), 3);
 
     // Draining callbacks leaves trace intact, and draining trace leaves callbacks intact.

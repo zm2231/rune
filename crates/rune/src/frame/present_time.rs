@@ -339,7 +339,7 @@ pub(crate) mod metal {
         /// `(seq, presentedTime)` for `App::on_frame_presented`, independent of tracing and shadow.
         callback_presented: Mutex<CallbackBuffer>,
         callbacks: bool,
-        /// The newest drawable that reached the screen.
+        /// The newest drawable whose presented handler ran.
         on_screen: AtomicU64,
         /// Wake the main run loop when a drawable reaches the screen (`Shadow`).
         watch: AtomicBool,
@@ -398,11 +398,8 @@ pub(crate) mod metal {
                 buf.entries.push_back((seq, at));
                 wake |= buf.watch;
             }
-            if at > 0.0 {
-                self.on_screen.fetch_max(seq, Ordering::AcqRel);
-                wake |= self.watch.load(Ordering::Acquire);
-            }
-            wake
+            self.on_screen.fetch_max(seq, Ordering::AcqRel);
+            wake | self.watch.load(Ordering::Acquire)
         }
 
         /// The drawable the last `nextDrawable` returned, once.
@@ -414,7 +411,7 @@ pub(crate) mod metal {
         #[cfg_attr(target_os = "ios", allow(dead_code))]
         pub(crate) fn last_acquired(&self) -> u64 { self.next.load(Ordering::Acquire) }
 
-        /// The newest drawable Metal reported on screen (0 before the first).
+        /// The newest drawable whose presented handler ran (0 before the first).
         #[cfg_attr(target_os = "ios", allow(dead_code))]
         pub(crate) fn on_screen(&self) -> u64 { self.on_screen.load(Ordering::Acquire) }
 

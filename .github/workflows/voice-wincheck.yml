@@ -1,0 +1,35 @@
+name: voice-wincheck
+
+on:
+  push:
+    branches: [rune-voiceio-x-wincheck]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - name: Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: voice-wincheck
+          cache-on-failure: true
+      - name: rune-media tests
+        run: cargo test -p rune-media
+      - name: Voice tests by name
+        run: cargo test -p rune-media --lib voice -- --nocapture
+      - name: voice-loopback on a runner without audio devices
+        shell: bash
+        run: |
+          cargo build -p voice-loopback
+          timeout 30 target/debug/voice-loopback --burst-only --seconds 12 | tee loopback.txt || true
+          grep -E "state (Running|Failed|Reconnecting)" loopback.txt

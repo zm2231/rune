@@ -73,15 +73,38 @@ fn in_process_cancelling_removes_a_delayed_speaker_echo() {
 }
 
 #[test]
-fn a_speaker_underrun_the_device_reports_keeps_the_echo_cancelled() {
+fn a_speaker_thread_stall_that_starves_the_canceller_leaves_the_echo_cancelled() {
     let mut room = Room::new(EchoPath::InProcess, 80);
-    room.run(RATE as usize * 4, 160, true, false);
-    let silence = RATE as usize / 50;
-    room.air.extend(std::iter::repeat_n(0.0, silence));
-    room.render.silence(silence as u64);
-    let (heard, kept) = room.run(RATE as usize / 4, 160, true, false);
-    let reduction = db(heard / kept);
-    assert!(reduction >= 38.0, "echo reduced by only {reduction:.1} dB just after the underrun");
+    let (block, period, burst) = (160, RATE as usize * 2, RATE as usize / 5);
+    let talk: Vec<f32> = (0..period * 6).map(|i| if i % period < burst { room.speech(i) } else { 0.0 }).collect();
+    room.speaker.write(&talk);
+    let mut device: VecDeque<Vec<f32>> = VecDeque::new();
+    let mut out = vec![0.0; block];
+    let mut cleaned = Vec::new();
+    let mut read = vec![0.0; RATE as usize];
+    for tick in 0..talk.len() / block {
+        if !(650..658).contains(&tick) {
+            while device.len() < 4 {
+                room.render.render(&mut out);
+                device.push_back(out.clone());
+            }
+        }
+        let played = device.pop_front().unwrap_or_else(|| vec![0.0; block]);
+        let input: Vec<f32> = played
+            .iter()
+            .map(|&sample| {
+                room.air.push_back(sample);
+                0.5 * room.air.pop_front().unwrap_or(0.0) + 0.0005 * room.noise()
+            })
+            .collect();
+        room.heard.capture(&input);
+        let n = room.mic.read(&mut read);
+        cleaned.extend_from_slice(&read[..n]);
+    }
+    let burst_energy: f64 = talk[..burst].iter().map(|&s| f64::from(s * s)).sum();
+    let echo = |p: usize| db(cleaned[p * period..(p + 1) * period].iter().map(|&s| f64::from(s * s)).sum::<f64>() / burst_energy);
+    let (before, after) = (echo(2), echo(4));
+    assert!(after <= -40.0, "the burst after the stall came back at {after:.1} dB (before it, {before:.1} dB)");
 }
 
 #[test]

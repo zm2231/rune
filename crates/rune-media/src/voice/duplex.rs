@@ -64,13 +64,6 @@ impl Render {
     #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
     pub(crate) fn silence(&mut self, frames: u64) {
         self.playback.meters.count_speaker_gap(frames);
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
-        if let Some(reference) = &mut self.reference {
-            let room = usize::try_from(frames).unwrap_or(usize::MAX).min(reference.slots());
-            if let Ok(chunk) = reference.write_chunk_uninit(room) {
-                chunk.fill_from_iter(std::iter::repeat(0.0));
-            }
-        }
     }
 
     pub(crate) fn render(&mut self, out: &mut [f32]) {

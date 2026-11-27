@@ -46,11 +46,11 @@
 //! is off the stream fails with a message saying where to turn it on. Windows may lower other
 //! apps' sound during a call, following the Communications setting in the Sound control panel.
 //! When the speaker runs dry and plays silence, or the microphone drops frames, the stream
-//! measures the gap from the device's clock and positions. It feeds the in-app canceller that
-//! silence and fills the microphone's gap with silence, so the echo keeps its timing and stays
-//! cancelled. The gaps are counted in [`VoiceStats::speaker_gap_frames`] and
-//! [`VoiceStats::mic_gap_frames`]. Echo cancellation on real Windows hardware hasn't been verified yet; the code is checked by
-//! compiling it and by tests that run without audio devices.
+//! measures the gap from the device's clock and positions and counts it in
+//! [`VoiceStats::speaker_gap_frames`] and [`VoiceStats::mic_gap_frames`]. A microphone gap is
+//! filled with silence, so later audio keeps its timing. Echo cancellation on real Windows
+//! hardware hasn't been verified yet; the code is checked by compiling it and by tests that
+//! run without audio devices.
 //!
 //! **The web.** The stream asks the browser for the microphone with its own echo cancellation,
 //! noise suppression and gain control on, and runs both directions through one AudioWorklet in
@@ -265,8 +265,7 @@ pub struct VoiceStats {
     /// passes through the page's main thread, so a long frame or a busy script shows up here.
     pub late_frames: u64,
     /// Silence the speaker device played because the audio thread fed it late (an underrun),
-    /// as the device reports it. Echo cancellation is told about it, so the echo it expects
-    /// keeps its timing. Windows counts these.
+    /// as the device reports it. Windows counts these.
     pub speaker_gap_frames: u64,
     /// Frames the microphone device lost in a glitch, as the device reports it. They are
     /// replaced with silence, so later audio keeps its timing. Windows counts these.

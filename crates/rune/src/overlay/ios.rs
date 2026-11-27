@@ -1,10 +1,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-pub(crate) use super::hidden_queue::{AfterHidden, Turn, settle};
+pub(crate) use super::standby::{Mounted, Parked, Standby, Turn, Unmounted};
 use super::requests::{KeyRequest, Visibility};
 use super::{Availability, OverlayHandle, Placement, Shared, SharedCore};
 use crate::compose::Compositor;
@@ -22,11 +22,9 @@ pub(crate) struct Built<T: 'static> {
     pub(crate) on_availability: Option<fn(&mut T, Availability, &mut Tx)>,
     pub(crate) feed: Feed<T>,
     pub(crate) control: Control,
-    pub(crate) after_hidden: AfterHidden,
+    pub(crate) standby: Standby,
     pub(crate) inherits_font_smoothing: bool,
 }
-
-use super::hidden_queue::Unmounted;
 
 pub(crate) trait Pending {
     fn inherit_font_smoothing(&mut self, mode: crate::FontSmoothing);
@@ -36,7 +34,7 @@ pub(crate) trait Pending {
 impl<T: 'static> Pending for Built<T> {
     fn inherit_font_smoothing(&mut self, mode: crate::FontSmoothing) {
         if !self.inherits_font_smoothing { return; }
-        if let Some(rt) = self.rt.borrow_mut().as_mut() { rt.set_font_smoothing(mode); }
+        if let Some(parked) = self.rt.borrow_mut().as_mut() { parked.rt.set_font_smoothing(mode); }
     }
 
     fn into_slot(self: Box<Self>) -> crate::platform::ios::OverlaySlot { crate::platform::ios::overlay_slot(*self) }
@@ -94,6 +92,7 @@ pub(crate) struct Control {
     interactive: bool,
     keys: KeyPolicy,
     level: OverlayLevel,
+    woken: Arc<AtomicBool>,
 }
 
 impl Control {
@@ -103,6 +102,21 @@ impl Control {
     }
 
     pub(crate) fn wake(&self) { self.core.wake(); }
+
+    pub(crate) fn woke(&self) {
+        self.woken.store(true, Ordering::Release);
+        self.core.wake();
+    }
+
+    pub(crate) fn waker(&self) -> Waker {
+        let (core, woken) = (self.core.clone(), self.woken.clone());
+        Arc::new(move || {
+            woken.store(true, Ordering::Release);
+            core.wake();
+        })
+    }
+
+    pub(crate) fn take_woken(&self) -> bool { self.woken.swap(false, Ordering::AcqRel) }
 
     pub(crate) fn take(&mut self) -> Changes {
         let mut q = std::mem::take(&mut *self.core.requests.lock().unwrap());
@@ -160,10 +174,12 @@ pub(crate) fn build<S, T: 'static>(configured: ConfiguredOverlay<T>, state: T, a
         interactive: spec.interactive,
         keys: options.keys,
         level: options.level,
+        woken: Arc::default(),
     };
     let feed = Feed { shared: shared.clone(), sizing: super::sizing::SizingConfig { mode: sizing, min_size, max_size }, placement: options.placement, size: spec.size };
-    let rt = Rc::new(RefCell::new(Some(rt)));
-    let after_hidden = AfterHidden::new(shared.clone(), rt.clone());
-    let built = Built { name: spec.name, rt, compositor, setup, on_availability, feed, control, after_hidden, inherits_font_smoothing };
+    rt.wall_start = Some(crate::time::now());
+    let rt = Rc::new(RefCell::new(Some(Parked { rt, clipboard: crate::clipboard::Client::default() })));
+    let standby = Standby::new(shared.clone(), rt.clone());
+    let built = Built { name: spec.name, rt, compositor, setup, on_availability, feed, control, standby, inherits_font_smoothing };
     (built, OverlayHandle { shared })
 }

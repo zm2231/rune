@@ -527,6 +527,9 @@ impl RuneView {
 
     fn pace(&self, event: Event) {
         let ivars = self.ivars();
+        if event == Event::Wake && ivars.pacing.get() == pacing::State::Detached && let Some(control) = ivars.control.borrow().as_ref() {
+            control.borrow().woke();
+        }
         let (mut seq, mut state) = (ivars.seq.get(), ivars.pacing.get());
         let effects = pacing::step(&mut seq, &mut state, event);
         ivars.seq.set(seq);

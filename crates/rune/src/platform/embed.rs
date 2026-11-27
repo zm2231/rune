@@ -158,7 +158,7 @@ impl LayerHostCore {
         rt.set_srgb_blend(true);
         rt.set_os_drag(false);
         rt.set_pointer_lock_supported(false);
-        rt.wall_start = Some(now);
+        rt.wall_start.get_or_insert(now);
         rt.frame.set_record_events(false);
         rt.host.surface_stats = Some(self.meter.shared());
         let target_format = if rt.srgb_blend() { self.config.format.remove_srgb_suffix() } else { self.config.format };
@@ -384,15 +384,16 @@ impl<S: 'static> LayerHost<S> {
     /// which calls `wake` for the frame that delivers it. Without this a host reads
     /// [`Runtime::copy_request`] itself and pastes arrive only from a clipboard a test supplies.
     #[cfg(target_os = "ios")]
-    pub(crate) fn settle_hidden(&mut self) {
+    pub(crate) fn hidden_parts(&mut self) -> crate::overlay::ios::Mounted<'_> {
         let serves = EmbedSurface::serves(self);
-        let (core, mut app) = self.rt.split_mut();
-        crate::overlay::ios::settle(core, &mut app, serves);
-        EmbedSurface::flush_clipboard(self);
+        crate::overlay::ios::Mounted { rt: &mut self.rt, clipboard: self.core.clipboard.as_ref(), serves }
     }
 
-    pub fn with_system_clipboard(mut self, wake: Waker) -> Self {
-        let mut clipboard = crate::clipboard::Client::default();
+    pub fn with_system_clipboard(self, wake: Waker) -> Self {
+        self.with_clipboard(crate::clipboard::Client::default(), wake)
+    }
+
+    pub(crate) fn with_clipboard(mut self, mut clipboard: crate::clipboard::Client, wake: Waker) -> Self {
         clipboard.connect(wake);
         self.core.clipboard = Some(clipboard);
         self

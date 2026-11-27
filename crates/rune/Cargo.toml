@@ -403,6 +403,10 @@ name = "popup_menu_macos"
 harness = false
 
 [[test]]
+name = "share_macos"
+harness = false
+
+[[test]]
 name = "video_gui"
 harness = false
 

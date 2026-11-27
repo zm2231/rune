@@ -129,6 +129,10 @@ impl dyn WindowApp + '_ {
         self.driver(|rt, app| file_dialog.cancel_core(rt, app));
     }
 
+    pub(in crate::window) fn share_cancel(&mut self) {
+        self.driver(|rt, app| rt.cancel_shares(app));
+    }
+
     pub(in crate::window) fn pointer_move(&mut self, x: f32, y: f32) {
         self.driver(|rt, app| rt.pointer_move(app, x, y));
     }

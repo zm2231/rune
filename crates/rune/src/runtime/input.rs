@@ -33,6 +33,7 @@ pub(super) mod press_run;
 #[cfg(any(target_os = "linux", test))]
 pub(super) mod primary_selection;
 pub(super) mod secondary;
+pub(super) mod share;
 pub(super) mod tab;
 pub(super) mod titlebar;
 pub(super) mod touch;

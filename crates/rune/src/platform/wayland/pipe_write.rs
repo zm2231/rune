@@ -133,9 +133,10 @@ pub(crate) mod unix {
                 if fd < 0 {
                     return None;
                 }
-                // SAFETY: `fd` is owned exclusively by this `WriteCancel`.
                 Some(Self {
                     cancelled: AtomicBool::new(false),
+                    // SAFETY: `eventfd` just returned `fd` open, and nothing else owns or closes
+                    // it; `WriteCancel` takes sole ownership.
                     fd: unsafe { OwnedFd::from_raw_fd(fd) },
                 })
             }

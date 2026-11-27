@@ -672,9 +672,9 @@ pub(crate) mod wire {
             }
             // One roundtrip at lazy bind so initial seat capabilities arrive and pointer /
             // touch / keyboard listeners are bound before the first user press.
-            let _ = queue.roundtrip(&mut state);
+            queue.roundtrip(&mut state).ok();
             state.needs_flush = false;
-            let _ = queue.flush();
+            queue.flush().ok();
             Some(Self { conn, globals: Some(globals), queue, state, refs: 0 })
         }
 
@@ -682,7 +682,7 @@ pub(crate) mod wire {
             drain_queue(&mut self.queue, &mut self.state);
             if self.state.needs_flush {
                 self.state.needs_flush = false;
-                let _ = self.queue.flush();
+                self.queue.flush().ok();
             }
         }
     }
@@ -700,7 +700,7 @@ pub(crate) mod wire {
                 destroy_globals(&self.conn, globals);
             }
             drain_queue(&mut self.queue, &mut self.state);
-            let _ = self.queue.flush();
+            self.queue.flush().ok();
         }
     }
 }

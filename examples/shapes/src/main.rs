@@ -4,14 +4,16 @@
 //! `Shape::fill_svg`, `Shape::fill_svg_with`, `Shape::stroke_svg`), multi-hole circular cutouts
 //! (`El::cutout_circles`), nearest-neighbour pixel-art scaling (`El::image_filter`,
 //! `ImageFilter::Nearest`), runtime alpha-tinted symbolic icons (`El::pixels_tint`), and
-//! wrapped/tiled images (`El::pixels_wrap`, `El::pixels_tile`, `PixelsWrap::{Repeat, Mirror, Extend}`).
+//! wrapped/tiled images (`El::pixels_wrap`, `El::pixels_tile`, `PixelsWrap::{Repeat, Mirror, Extend}`),
+//! and dashes: dashed and dotted borders (`El::border_dash`, `El::border_dash_cap`) on a box
+//! whose width animates without its dashes moving, and dashed strokes (`Shape::stroke_dashed`).
 //! `cargo run -p shapes -- --snap shapes.png` renders it headless; time animates the waveform,
 //! so `--at 1.5` shows another moment.
 
 #![forbid(unsafe_code)]
 
 use rune::{
-    AppSpec, Color, Cx, El, FillRule, ImageFilter, LineCap, Path, Pixels, PixelsWrap, Shape,
+    AppSpec, Color, Cx, Dash, El, FillRule, ImageFilter, LineCap, Path, Pixels, PixelsWrap, Shape,
     SurfaceFit, Tx, canvas, col, el, memo, row, text,
 };
 
@@ -417,6 +419,51 @@ fn pixel_wrap_and_tile(motif: &Pixels, symbolic: &Pixels) -> El {
         ))
 }
 
+fn dashed_strokes() -> Shape {
+    let star: Vec<[f32; 2]> = (0..10)
+        .map(|i| {
+            let a = i as f32 * std::f32::consts::PI / 5.0 - std::f32::consts::FRAC_PI_2;
+            let r = if i % 2 == 0 { 30.0 } else { 13.0 };
+            [36.0 + a.cos() * r, 34.0 + a.sin() * r]
+        })
+        .collect();
+    let wave = Path::new().move_to([84.0, 34.0]).cubic_to([110.0, -6.0], [140.0, 74.0], [166.0, 34.0]);
+    Shape::new()
+        .stroke_dashed(star, true, 1.5, Dash::new(5.0, 3.0), WARM)
+        .stroke_path_dashed(&wave, 3.0, Dash::new(6.0, 6.0).cap(LineCap::Round), ACCENT)
+        .stroke_dashed(vec![[184.0, 20.0], [264.0, 20.0]], false, 2.0, Dash::new(0.0, 6.0).cap(LineCap::Round), INK)
+        .stroke_dashed(vec![[184.0, 48.0], [264.0, 48.0]], false, 1.0, Dash::new(8.0, 4.0).phase(4.0), INK)
+}
+
+fn dashes(t: f32) -> El {
+    let notice = el()
+        .size(150.0, 64.0)
+        .radius(10.0)
+        .padding(12.0)
+        .fill(Color { r: 0.12, g: 0.13, b: 0.16, a: 1.0 })
+        .border(1.0, INK.alpha(0.45))
+        .border_dash(4.0, 3.0)
+        .child(text("Read only").color(INK));
+    let dots = el()
+        .size(96.0, 64.0)
+        .radius(16.0)
+        .border(2.0, ACCENT)
+        .border_dash(0.0, 5.0)
+        .border_dash_cap(LineCap::Round);
+    let growing = el()
+        .size(80.0 + 60.0 * (0.5 - 0.5 * (t * 1.3).cos()), 64.0)
+        .radius(12.0)
+        .border(1.5, WARM)
+        .border_dash(6.0, 4.0)
+        .border_dash_cap(LineCap::Round);
+    row()
+        .gap(16.0)
+        .child(notice)
+        .child(dots)
+        .child(el().w(140.0).child(growing))
+        .child(memo("dashed_strokes", (), || canvas(dashed_strokes()).size(270.0, 68.0)))
+}
+
 fn view(s: &State, _: &mut Cx<State>) -> El {
     col()
         .key("root")
@@ -487,6 +534,12 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
                 .child(label("Image tiling & wrapping (El::pixels_tile, El::pixels_wrap): Repeat, Mirror, Extend, and tinted tiled motif"))
                 .child(pixel_wrap_and_tile(&s.motif, &s.symbolic)),
         )
+        .child(
+            col()
+                .gap(8.0)
+                .child(label("Dashes: a dashed notice, round-capped dots, a growing box whose dashes stay put, dashed strokes"))
+                .child(dashes(s.t)),
+        )
 }
 
 fn poll(s: &mut State, t: f64, _: &mut Tx) -> bool {
@@ -499,7 +552,7 @@ fn main() {
         poll: Some(poll),
         ..AppSpec::new(
             "Shapes",
-            (820.0, 1010.0),
+            (820.0, 1110.0),
             || State {
                 t: 0.0,
                 sprite: pixel_sprite(),

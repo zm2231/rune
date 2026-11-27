@@ -19,6 +19,7 @@ pub(crate) enum Cause {
 pub(crate) enum State {
     Idle,
     Starting { tries: u32, cause: Cause },
+    Opening { tries: u32, cause: Cause },
     Running,
     Reconnecting { attempt: Attempt, due: Instant, tries: u32, cause: Cause },
     Interrupted { resume: bool },
@@ -42,6 +43,12 @@ impl Fault {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Opened {
+    Live,
+    AwaitingAudio,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Event {
     Start,
@@ -54,7 +61,8 @@ pub(crate) enum Event {
     Lost { fault: Fault, now: Instant },
     Backgrounded,
     Foregrounded,
-    Ran { result: Result<(), Fault>, now: Instant },
+    Ran { result: Result<Opened, Fault>, now: Instant },
+    AudioArrived,
     RetryDue { attempt: Attempt, now: Instant },
     Close,
 }
@@ -73,7 +81,7 @@ impl State {
     pub(crate) fn public(&self) -> VoiceState {
         match self {
             Self::Idle | Self::Closed => VoiceState::Idle,
-            Self::Starting { .. } => VoiceState::Starting,
+            Self::Starting { .. } | Self::Opening { .. } => VoiceState::Starting,
             Self::Running => VoiceState::Running,
             Self::Reconnecting { .. } => VoiceState::Reconnecting,
             Self::Interrupted { .. } => VoiceState::Interrupted,
@@ -90,6 +98,23 @@ fn reconnect(seq: &mut Seq, state: &mut State, due: Instant, tries: u32, cause: 
     let attempt = seq.next();
     *state = State::Reconnecting { attempt, due, tries, cause };
     Effects::Two(first, Effect::WakeAt { attempt, due })
+}
+
+fn started(cause: Cause) -> VoiceEvent {
+    match cause {
+        Cause::Start => VoiceEvent::Started,
+        Cause::Device => VoiceEvent::DeviceChanged,
+        Cause::Resume => VoiceEvent::Resumed,
+    }
+}
+
+fn failed(seq: &mut Seq, state: &mut State, tries: u32, cause: Cause, fault: Fault, now: Instant) -> Effects<Effect> {
+    if fault.lasting || tries + 1 >= MAX_TRIES {
+        *state = State::Failed(fault.message.clone());
+        Effects::Two(Effect::Discard, Effect::Tell(VoiceEvent::Failed(fault.message)))
+    } else {
+        reconnect(seq, state, now + backoff(tries), tries + 1, cause, Effect::Discard)
+    }
 }
 
 pub(crate) fn step(seq: &mut Seq, state: &mut State, event: Event) -> Effects<Effect> {
@@ -127,25 +152,28 @@ pub(crate) fn step(seq: &mut Seq, state: &mut State, event: Event) -> Effects<Ef
         }
 
         (State::Starting { tries, cause }, Event::Ran { result, now }) => match result {
-            Ok(()) => {
-                let told = match cause {
-                    Cause::Start => VoiceEvent::Started,
-                    Cause::Device => VoiceEvent::DeviceChanged,
-                    Cause::Resume => VoiceEvent::Resumed,
-                };
+            Ok(Opened::Live) => {
+                let told = started(*cause);
                 *state = State::Running;
                 Effects::one(Tell(told))
             }
-            Err(fault) if fault.lasting || tries + 1 >= MAX_TRIES => {
-                *state = State::Failed(fault.message.clone());
-                Effects::Two(Discard, Tell(VoiceEvent::Failed(fault.message)))
+            Ok(Opened::AwaitingAudio) => {
+                *state = State::Opening { tries: *tries, cause: *cause };
+                Effects::none()
             }
-            Err(_) => {
-                let (tries, cause) = (*tries + 1, *cause);
-                reconnect(seq, state, now + backoff(tries - 1), tries, cause, Discard)
+            Err(fault) => {
+                let (tries, cause) = (*tries, *cause);
+                failed(seq, state, tries, cause, fault, now)
             }
         },
         (_, Event::Ran { .. }) => Effects::none(),
+
+        (State::Opening { cause, .. }, Event::AudioArrived) => {
+            let told = started(*cause);
+            *state = State::Running;
+            Effects::one(Tell(told))
+        }
+        (_, Event::AudioArrived) => Effects::none(),
 
         (State::Reconnecting { attempt, due, tries, cause }, Event::RetryDue { attempt: a, now })
             if *attempt == a && now >= *due =>
@@ -158,7 +186,10 @@ pub(crate) fn step(seq: &mut Seq, state: &mut State, event: Event) -> Effects<Ef
         (State::Running, Event::DevicesChanged { now } | Event::MediaReset { now }) => {
             reconnect(seq, state, now + SETTLE, 0, Cause::Device, Discard)
         }
-        (State::Reconnecting { cause, .. }, Event::DevicesChanged { now } | Event::MediaReset { now }) => {
+        (
+            State::Reconnecting { cause, .. } | State::Opening { cause, .. },
+            Event::DevicesChanged { now } | Event::MediaReset { now },
+        ) => {
             let cause = *cause;
             reconnect(seq, state, now + SETTLE, 0, cause, Discard)
         }
@@ -172,9 +203,13 @@ pub(crate) fn step(seq: &mut Seq, state: &mut State, event: Event) -> Effects<Ef
             Effects::Two(Discard, Tell(VoiceEvent::Failed(fault.message)))
         }
         (State::Running, Event::Lost { now, .. }) => reconnect(seq, state, now + SETTLE, 0, Cause::Device, Discard),
+        (State::Opening { tries, cause }, Event::Lost { fault, now }) => {
+            let (tries, cause) = (*tries, *cause);
+            failed(seq, state, tries, cause, fault, now)
+        }
         (_, Event::Lost { .. }) => Effects::none(),
 
-        (State::Running | State::Starting { .. } | State::Reconnecting { .. }, Event::InterruptionBegan) => {
+        (State::Running | State::Starting { .. } | State::Opening { .. } | State::Reconnecting { .. }, Event::InterruptionBegan) => {
             *state = State::Interrupted { resume: true };
             Effects::Two(Halt, Tell(VoiceEvent::Interrupted))
         }

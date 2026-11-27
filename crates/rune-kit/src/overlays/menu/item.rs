@@ -127,8 +127,11 @@ impl MenuItem {
     /// submenu and move focus into it, and Left or Escape inside it closes only the submenu and
     /// returns focus to the row (the WAI-ARIA menu pattern). Right to left ([`El::dir`]), Left
     /// opens and Right closes, as the row's chevron points. The keys don't change when the
-    /// submenu flips to the other side for lack of room. Resting the pointer on the row opens
-    /// it, and resting on another row of the same menu (disabled rows included) closes it, after
+    /// submenu flips to the other side for lack of room. A click on the row opens the submenu
+    /// at once, leaving focus on the row; assistive technology's press, expand and show-menu
+    /// (AXPress, AXShowMenu, UI Automation's Expand, AT-SPI's click) open it with focus inside,
+    /// and its collapse closes it and returns focus to the row. Resting the pointer on the row
+    /// opens it, and resting on another row of the same menu (disabled rows included) closes it, after
     /// a short delay.
     ///
     /// The menu also closes its open submenus through `f` when it is dismissed
@@ -207,6 +210,8 @@ impl MenuItem {
     }
     /// Runs `f` when the item is picked. Picking an item that isn't a checkbox or radio
     /// ([`Self::checked`]) also closes the menu's open [`Self::on_submenu`] submenus first.
+    /// On a row whose submenu the menu controls ([`Self::on_submenu`]), a press opens the
+    /// submenu and `f` never runs, as an `NSMenu` item with a submenu ignores its action.
     pub fn on_select<S: 'static>(self, f: impl Fn(&mut S) + 'static) -> Self {
         self.on_select_tx(move |s: &mut S, _: &mut Tx| f(s))
     }
@@ -338,6 +343,21 @@ impl MenuItem {
                     true
                 }),
             );
+            let (set, sub_menu, row_key) = (t.set.clone(), format!("{key}-sub-menu"), key.clone());
+            e = e.has_popup(rune::HasPopup::Menu);
+            e = (t.expand)(
+                e,
+                Rc::new(move |s: &mut AnyState, open: bool, point: Option<rune::PointerEvent>, tx: &mut Tx| {
+                    if open != sub_open {
+                        set(s, open);
+                    }
+                    match (open, point) {
+                        (true, None) => tx.focus_when_shown(sub_menu.clone(), true),
+                        (true, Some(_)) => {}
+                        (false, _) => tx.focus(row_key.clone(), true),
+                    }
+                }),
+            );
         }
         if let Some(h) = row_hover {
             // A disabled row still closes an open sibling submenu; it just opens nothing.
@@ -394,7 +414,7 @@ impl MenuItem {
         e = k.disabled_dim(e, disabled && !standard);
         // A popup opens on its checked item (NSPopUpButton).
         let mut e = e.focusable(!disabled).focus_selected(self.checked == Some(true)).disabled(disabled);
-        if !disabled {
+        if !disabled && toggle.is_none() {
             // A checkbox or radio pick may keep the menu open, so it leaves submenus alone.
             let closers: Closers = if self.checked.is_some() { Rc::new([]) } else { tree.clone() };
             for select in self.selects {

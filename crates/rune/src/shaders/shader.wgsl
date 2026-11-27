@@ -284,9 +284,9 @@ fn wrap_texel(k: i32, n: i32, mode: u32) -> i32 {
     return clamp(k, 0, n - 1);
 }
 
-// Arc length to the point nearest `p` (rect-local) on the centre line of a `bw`-wide ring inside
-// the rounded rect, and the line's full length. It runs clockwise from where the top edge leaves
-// the top-left corner; corners count along their arcs.
+// Where `p` (rect-local) falls along the centre line of a `bw`-wide ring inside the rounded rect,
+// by side: the arc length from the middle of the corner before it, clockwise, and the length of
+// that side from corner middle to corner middle. Corners count along their arcs.
 fn ring_arc(p: vec2<f32>, size: vec2<f32>, radii: vec4<f32>, bw: f32) -> vec2<f32> {
     let h = bw * 0.5;
     let half = size * 0.5;
@@ -324,19 +324,33 @@ fn ring_arc(p: vec2<f32>, size: vec2<f32>, radii: vec4<f32>, bw: f32) -> vec2<f3
         if (v.x < 0.0 && v.y < 0.0) { s = s_tl + atan2(-v.y, -v.x) * rc.x; }
         else { s = select(top, left, p.x < p.y); }
     }
-    return vec2<f32>(s, s_tl + arc.x);
+    let b0 = -arc.x * 0.5;
+    let b1 = s_tr + arc.y * 0.5;
+    let b2 = s_br + arc.z * 0.5;
+    let b3 = s_bl + arc.w * 0.5;
+    let b4 = s_tl + arc.x * 0.5;
+    var lo = b0;
+    var hi = b1;
+    if (s >= b4) { lo = b4; hi = b4 + b1 - b0; }
+    else if (s >= b3) { lo = b3; hi = b4; }
+    else if (s >= b2) { lo = b2; hi = b3; }
+    else if (s >= b1) { lo = b1; hi = b2; }
+    return vec2<f32>(s - lo, hi - lo);
 }
 
-// Coverage of a dash pattern (dash, gap, phase) at arc length `s`. The period stretches or
-// shrinks so a whole number of periods fills `total`, and the pattern meets itself at the seam.
-fn dash_cov(s: f32, total: f32, d: vec3<f32>) -> f32 {
-    let nominal = d.x + d.y;
-    let k = max(total, 0.001) / (max(floor(total / nominal + 0.5), 1.0) * nominal);
-    let period = nominal * k;
-    let dash = d.x * k;
-    let a = s + d.z * k - dash * 0.5;
-    let m = a - period * floor(a / period + 0.5);
-    return clamp(dash * 0.5 - abs(m) + 0.5, 0.0, 1.0);
+// Coverage of a dash pattern `d` (dash, gap, phase, round caps when w > 0.5) at `side` (from
+// `ring_arc`), within a ring of coverage `ring` whose centre line is `n` away and `h` half wide.
+// Each side runs the pattern out from both of its corners, `phase` into it, and the two runs meet
+// in its middle, so a side that changes length moves only that meeting point.
+fn dash_cov(side: vec2<f32>, d: vec4<f32>, ring: f32, n: f32, h: f32, soft: f32) -> f32 {
+    let a = select(side.y - side.x, side.x, side.x < side.y * 0.5) + d.z;
+    let period = max(d.x + d.y, 0.001);
+    let m = abs(a - period * floor(a / period + 0.5));
+    if (d.w > 0.5) {
+        let reach = length(vec2<f32>(max(m - d.x * 0.5, 0.0), n));
+        return min(ring, clamp(0.5 + (h - reach) / (soft * 2.0), 0.0, 1.0));
+    }
+    return ring * clamp(d.x * 0.5 - m + 0.5, 0.0, 1.0);
 }
 
 // A border over its own background, as CSS paints one: the background runs under the border to
@@ -509,13 +523,13 @@ fn fs(i: Out) -> @location(0) vec4<f32> {
             }
         } else if (kind > 9.5) {
             // Dashed border: kind 0's ring, colour running from `fill` (top) to `border`
-            // (bottom), masked by the dash pattern in `uv.xyz` along the ring's centre line.
+            // (bottom), masked by the dash pattern in `uv` along the ring's centre line.
             let soft = max(i.params.z, 0.5);
             let bw = i.params.x;
             let ring = clamp(0.5 - d / (soft * 2.0), 0.0, 1.0) - clamp(0.5 - (d + bw) / (soft * 2.0), 0.0, 1.0);
             let t = clamp((screen.y - i.rect.y) / max(i.rect.w, 1.0), 0.0, 1.0);
-            let arc = ring_arc(screen - i.rect.xy, i.rect.zw, i.radii, bw);
-            col = mix(i.fill, i.border, t) * (ring * dash_cov(arc.x, arc.y, i.uv.xyz));
+            let side = ring_arc(screen - i.rect.xy, i.rect.zw, i.radii, bw);
+            col = mix(i.fill, i.border, t) * dash_cov(side, i.uv, ring, d + bw * 0.5, bw * 0.5, soft);
         } else {
             // Image (kind 7): params.z is a bitmask: bit 0 = premultiplied, bit 1 = alpha tint in
             // fill, bit 2 = nearest-neighbour sampling. params.w selects wrap mode: <= 1.5 uses

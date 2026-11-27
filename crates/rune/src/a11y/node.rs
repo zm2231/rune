@@ -148,7 +148,7 @@ impl RuntimeCore {
         let handlers = n.handlers.get();
         (handlers.is_some_and(|h| h.on_press.is_some()), handlers.is_some_and(|h| h.on_secondary_press.is_some()),
             handlers.is_some_and(|h| h.modal.is_some()), handlers.is_some_and(|h| h.has_primary())).hash(&mut h);
-        (n.focus.selected, n.focus.step.is_some(), n.focus.set_value.is_some(), n.focus.default, n.focus.caret_browsing, self.focus_group(i).is_some()).hash(&mut h);
+        (n.focus.selected, n.focus.step.is_some(), n.focus.set_value.is_some(), n.focus.set_expanded.is_some(), n.focus.default, n.focus.caret_browsing, self.focus_group(i).is_some()).hash(&mut h);
         if n.input.is_none() && self.is_caret_browsing_node(n) {
             self.a11y_caret_selection(i)
                 .map(|s| (s.anchor.node.0, s.anchor.character_index, s.focus.node.0, s.focus.character_index))
@@ -368,8 +368,12 @@ impl RuntimeCore {
         // What a pointer or keyboard user can do to it, routed to the same handlers.
         if actionable {
             if handlers.is_some_and(|h| h.on_press.is_some()) || input.is_some() || (w.delegated_a11y && roles::composite_item(role)) { node.add_action(Ak::Click); }
-            if handlers.is_some_and(|h| h.on_secondary_press.is_some()) || self.has_image_menu(i) { node.add_action(Ak::ShowContextMenu); }
-            if n.a11y.expanded.is_some() && handlers.is_some_and(|h| h.on_press.is_some()) {
+            let pressable = handlers.is_some_and(|h| h.on_press.is_some());
+            let expandable = n.a11y.expanded.is_some() && (pressable || n.focus.set_expanded.is_some());
+            if handlers.is_some_and(|h| h.on_secondary_press.is_some()) || self.has_image_menu(i) || (n.a11y.expanded == Some(false) && expandable && self.opens_popup(i)) {
+                node.add_action(Ak::ShowContextMenu);
+            }
+            if expandable {
                 node.add_action(if n.a11y.expanded == Some(true) { Ak::Collapse } else { Ak::Expand });
             }
             if n.focus.step.is_some() {

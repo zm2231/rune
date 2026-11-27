@@ -69,6 +69,10 @@ impl MainOnly {
         if let Some(view) = self.0.load() { view.pace(event); }
     }
 
+    fn presents(&self) {
+        if let Some(view) = self.0.load() { view.with_surface(|surface| surface.presents()); }
+    }
+
     /// Tells the view a dismissed menu's grace ran out.
     pub(super) fn menu_left(&self, attempt: Attempt) {
         if let Some(view) = self.0.load() { view.menu_left(attempt); }
@@ -92,6 +96,14 @@ impl RuneView {
                 queued.store(false, Ordering::Release);
                 view.pace(Event::Wake);
             });
+        })
+    }
+
+    pub(super) fn presents_waker(&self) -> Waker {
+        let view = Arc::new(MainOnly(Weak::new(self)));
+        Arc::new(move || {
+            let view = view.clone();
+            on_main(move || view.presents());
         })
     }
 
@@ -125,6 +137,15 @@ impl RuneView {
             // SAFETY: a display link's `paused` is a `BOOL`.
             let _: () = unsafe { msg_send![&**link, setPaused: paused] };
         }
+    }
+
+    pub(super) fn frame_rate(&self) -> Option<f64> {
+        let link = self.ivars().link.borrow();
+        let link = link.as_ref()?;
+        // SAFETY: a display link's `timestamp` and `targetTimestamp` are `CFTimeInterval`s.
+        let (shown, last): (f64, f64) = unsafe { (msg_send![&**link, targetTimestamp], msg_send![&**link, timestamp]) };
+        let period = shown - last;
+        (period > 0.0).then(|| 1.0 / period)
     }
 
     /// When the frame the display link's next refresh shows will be on screen, or none without

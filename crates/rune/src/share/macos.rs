@@ -143,8 +143,8 @@ fn watch_picker_windows(mtm: MainThreadMarker, delegate: &Retained<Delegate>) {
             !has(&showing[at].before, window)
                 && showing[at].until.as_deref().is_none_or(|until| has(until, window))
                 && !showing.iter().any(|s| has(&s.watched, window))
-                && !crate::platform::macos::has_subclass(object, b"Winit")
-                && !crate::platform::macos::has_subclass(object, b"Rune")
+                && !crate::platform::objc_class::has_subclass(object, b"Winit")
+                && !crate::platform::objc_class::has_subclass(object, b"Rune")
         }).collect();
         let entry = &mut showing[at];
         for window in opened {

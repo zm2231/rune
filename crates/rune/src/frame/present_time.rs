@@ -282,7 +282,7 @@ impl std::fmt::Display for Summary {
 /// How long a finished trace waits for its last frames' present times.
 pub(crate) const SETTLE: Duration = Duration::from_millis(150);
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 #[allow(unsafe_code)]
 pub(crate) mod metal {
     //! Present times from a CAMetalLayer. wgpu acquires and presents the drawable itself and
@@ -296,7 +296,9 @@ pub(crate) mod metal {
     use objc2_metal::MTLDrawable;
     use objc2::rc::Retained;
     use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, ProtocolObject, Sel};
-    use objc2::{Message, msg_send, sel};
+    #[cfg(target_os = "macos")]
+    use objc2::Message;
+    use objc2::{msg_send, sel};
     use std::collections::VecDeque;
     use std::ptr::NonNull;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -341,6 +343,7 @@ pub(crate) mod metal {
         on_screen: AtomicU64,
         /// Wake the main run loop when a drawable reaches the screen (`Shadow`).
         watch: AtomicBool,
+        wake: Option<Box<dyn Fn() + Send + Sync>>,
     }
 
     impl Default for Log {
@@ -360,11 +363,26 @@ pub(crate) mod metal {
                 callbacks,
                 on_screen: AtomicU64::new(0),
                 watch: AtomicBool::new(false),
+                wake: None,
+            }
+        }
+
+        #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+        pub(crate) fn with_wake(mut self, wake: impl Fn() + Send + Sync + 'static) -> Self {
+            self.wake = Some(Box::new(wake));
+            self
+        }
+
+        fn wake(&self) {
+            match &self.wake {
+                Some(wake) => wake(),
+                None => wake_main(),
             }
         }
 
         /// A log that only tracks which drawable is on screen, for a window that isn't traced and
         /// has no `App::on_frame_presented` callback.
+        #[cfg_attr(target_os = "ios", allow(dead_code))]
         pub(crate) fn untraced() -> Self { Self::new(false, false) }
 
         /// Records one completed drawable `(seq, presentedTime)` and returns whether the main
@@ -393,12 +411,15 @@ pub(crate) mod metal {
         }
 
         /// The drawable the last `nextDrawable` returned (0 before the first).
+        #[cfg_attr(target_os = "ios", allow(dead_code))]
         pub(crate) fn last_acquired(&self) -> u64 { self.next.load(Ordering::Acquire) }
 
         /// The newest drawable Metal reported on screen (0 before the first).
+        #[cfg_attr(target_os = "ios", allow(dead_code))]
         pub(crate) fn on_screen(&self) -> u64 { self.on_screen.load(Ordering::Acquire) }
 
         /// While on, each drawable that reaches the screen wakes the main run loop (`Shadow`).
+        #[cfg_attr(target_os = "ios", allow(dead_code))]
         pub(crate) fn watch(&self, on: bool) { self.watch.store(on, Ordering::Release); }
 
         #[cfg(test)]
@@ -454,26 +475,56 @@ pub(crate) mod metal {
                 None => original_class(this.class()),
             };
             // SAFETY: `base` is the layer's original CAMetalLayer class; the result is +0.
-            let drawable: *mut AnyObject = unsafe { msg_send![super(this, base), nextDrawable] };
+            let drawable = objc_call("nextDrawable", || -> *mut AnyObject { unsafe { msg_send![super(this, base), nextDrawable] } });
+            let drawable = drawable.unwrap_or(std::ptr::null_mut());
             if let (Some((_, log)), Some(raw)) = (hooked, NonNull::new(drawable)) {
-                let seq = log.next.fetch_add(1, Ordering::Relaxed) + 1;
-                log.acquired.store(seq, Ordering::Release);
+                // SAFETY: `raw` is the live drawable nextDrawable returned; respondsToSelector:
+                // takes any selector.
+                let timed: bool = unsafe { msg_send![raw.as_ref(), respondsToSelector: sel!(addPresentedHandler:)] };
+                if !timed {
+                    static UNTIMED: std::sync::Once = std::sync::Once::new();
+                    UNTIMED.call_once(|| eprintln!("rune: this system's Metal drawables have no addPresentedHandler:, so frames report no present times"));
+                    return drawable;
+                }
+                let seq = log.next.load(Ordering::Acquire) + 1;
+                let presented = log.clone();
                 let handler = block2::RcBlock::new(move |d: NonNull<ProtocolObject<dyn MTLDrawable>>| {
                     crate::platform::objc_boundary::guarded("presented handler", || {
                         // SAFETY: Metal passes the presented drawable for the handler's duration.
                         let at = unsafe { d.as_ref() }.presentedTime();
-                        if log.record_presented(seq, at) { wake_main(); }
+                        if presented.record_presented(seq, at) { presented.wake(); }
                     })
                 });
                 // SAFETY: nextDrawable returns a CAMetalDrawable, which conforms to MTLDrawable;
                 // Metal copies the block.
-                unsafe {
+                let added = objc_call("addPresentedHandler:", || unsafe {
                     let drawable = raw.cast::<ProtocolObject<dyn MTLDrawable>>().as_ref();
                     drawable.addPresentedHandler(block2::RcBlock::as_ptr(&handler));
+                });
+                if added.is_some() {
+                    log.next.store(seq, Ordering::Release);
+                    log.acquired.store(seq, Ordering::Release);
                 }
             }
             drawable
         })
+    }
+
+    fn objc_call<R>(selector: &'static str, call: impl FnOnce() -> R) -> Option<R> {
+        static REPORTED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+        let exception = match objc2::exception::catch(std::panic::AssertUnwindSafe(call)) {
+            Ok(value) => return Some(value),
+            Err(exception) => exception,
+        };
+        let mut reported = REPORTED.lock().unwrap();
+        if !reported.contains(&selector) {
+            reported.push(selector);
+            match exception {
+                Some(exception) => eprintln!("rune: Metal's {selector} threw {exception:?}; Rune carries on without it"),
+                None => eprintln!("rune: Metal's {selector} threw nil; Rune carries on without it"),
+            }
+        }
+        None
     }
 
     const HOOKED_PREFIX: &str = "RunePresentTimed_";
@@ -517,6 +568,7 @@ pub(crate) mod metal {
 
     impl LayerHook {
         /// `None` when the surface isn't a plain CAMetalLayer on Metal.
+        #[cfg(target_os = "macos")]
         pub(crate) fn attach(surface: &wgpu::Surface<'_>, log: Arc<Log>) -> Option<Self> {
             // SAFETY: the layer is only retained and has its class swapped for a subclass of its
             // class without state; wgpu keeps using it as a CAMetalLayer.
@@ -524,7 +576,7 @@ pub(crate) mod metal {
             crate::gpu::with_layer(surface, |layer| Self::hook(layer.retain(), log))?
         }
 
-        fn hook(layer: Retained<AnyObject>, log: Arc<Log>) -> Option<Self> {
+        pub(crate) fn hook(layer: Retained<AnyObject>, log: Arc<Log>) -> Option<Self> {
             let metal = AnyClass::get(c"CAMetalLayer")?;
             // SAFETY: isKindOfClass: takes any class.
             let is_metal: bool = unsafe { msg_send![&*layer, isKindOfClass: metal] };
@@ -534,8 +586,8 @@ pub(crate) mod metal {
 
         pub(super) fn hook_instance(layer: Retained<AnyObject>, log: Arc<Log>) -> Option<Self> {
             // SAFETY: `layer` is a live ObjC object; never place a subclass above KVO's.
-            if unsafe { crate::platform::macos::kvo_observed(&layer) } { return None; }
-            let (base, class) = if crate::platform::macos::has_subclass(&layer, HOOKED_PREFIX.as_bytes()) {
+            if unsafe { crate::platform::objc_class::kvo_observed(&layer) } { return None; }
+            let (base, class) = if crate::platform::objc_class::has_subclass(&layer, HOOKED_PREFIX.as_bytes()) {
                 let top = layer.class();
                 (original_class(top), top)
             } else {

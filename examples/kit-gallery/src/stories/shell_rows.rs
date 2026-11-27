@@ -12,10 +12,10 @@ fn avatar(k: &Kit, initial: &str, fill: rune::Color) -> El {
         .child(text(initial.to_owned()).font(k.text(TextStyle::new(10.0, 600.0).lh(16.0))).color(k.c.text_base))
 }
 
-fn framed(k: &Kit, key: &str, width: f32, child: El) -> El {
+fn framed(k: &Kit, key: &str, [width, height]: [f32; 2], child: El) -> El {
     col()
         .key(key.to_owned())
-        .w(k.text_size(width))
+        .size(k.text_size(width), k.text_size(height) + 12.0)
         .py(6.0)
         .fill(k.c.layer_01)
         .border(1.0, k.c.border_weak)
@@ -51,7 +51,7 @@ pub(super) fn tab_status(_: &G, k: &Kit, _: &mut Vec<El>) -> El {
         .child(caption(k, "Horizontal: a busy tab beside attention, unread and failed marks"))
         .child(el().w(k.text_size(640.0)).child(horizontal))
         .child(caption(k, "Vertical, two lines with avatars"))
-        .child(framed(k, "tabs-status-vertical-frame", 240.0, vertical))
+        .child(framed(k, "tabs-status-vertical-frame", [240.0, 100.0], vertical))
 }
 
 pub(super) fn sidebar_two_line(_: &G, k: &Kit, _: &mut Vec<El>) -> El {
@@ -62,7 +62,7 @@ pub(super) fn sidebar_two_line(_: &G, k: &Kit, _: &mut Vec<El>) -> El {
         .child(SidebarRow::new("Docs pages").avatar(avatar(k, "S", k.c.layer_03)).subtitle("site \u{b7} waiting on review").status(RowStatus::Attention).build(k))
         .child(SidebarRow::new("Release notes").avatar(avatar(k, "N", k.c.layer_02)).subtitle("2 new replies").status(RowStatus::Unread).build(k))
         .child(SidebarRow::new("Inbox").icon(&ic::FOLDER).badge("12").build(k));
-    framed(k, "sidebar-two-line", 260.0, rows.build(k))
+    framed(k, "sidebar-two-line", [260.0, 160.0], rows.build(k))
 }
 
 pub(super) fn avatar_rows(s: &G, k: &Kit, layer: &mut Vec<El>) -> El {
@@ -91,7 +91,7 @@ pub(super) fn avatar_rows(s: &G, k: &Kit, layer: &mut Vec<El>) -> El {
     col()
         .gap(16.0)
         .items_start()
-        .child(framed(k, "avatar-sidebar", 220.0, rows.build(k)))
+        .child(framed(k, "avatar-sidebar", [220.0, 96.0], rows.build(k)))
         .child(el().w(k.text_size(360.0)).child(tabs))
         .child(row().child(menu))
 }

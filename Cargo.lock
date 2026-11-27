@@ -2561,6 +2561,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ios-perf"
+version = "0.0.1"
+dependencies = [
+ "libc",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "rune",
+]
+
+[[package]]
 name = "ios-system"
 version = "0.0.1"
 dependencies = [

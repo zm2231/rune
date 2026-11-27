@@ -12,6 +12,7 @@ use accesskit::{ActionRequest, TreeUpdate};
 
 use super::appearance::Appearance;
 use super::dropped::{self, Kind, Reported};
+use super::feedback::Feedback;
 use super::field_touch;
 use super::keys::Stroke;
 use super::lifecycle;
@@ -57,7 +58,8 @@ pub(crate) trait Surface {
     fn resize(&mut self, size: (f32, f32), scale: f32);
     /// Steps the app to `target`, when the frame will be on screen, and presents it: with
     /// `only_loops`, when nothing but its loops asked for the frame, a loop-only step may do.
-    fn frame(&mut self, target: Instant, only_loops: bool) -> EmbedFrame;
+    fn frame(&mut self, target: Instant, refresh_hz: Option<f64>, only_loops: bool) -> EmbedFrame;
+    fn presents(&mut self);
 
     // Touch and pointer.
     /// One finger's event at (x, y) in the view's points, `time` in seconds since boot.
@@ -178,6 +180,7 @@ pub(super) struct Hosted<S: 'static> {
     pub(super) wake: Waker,
     pub(super) appearance: Appearance,
     pub(super) park: park::State,
+    pub(super) feedback: Feedback,
     pub(super) member: Option<crate::shared_state::Member<S>>,
 }
 
@@ -241,7 +244,10 @@ impl<S: 'static> Hosted<S> {
         for effect in park::step(&mut self.park, event) {
             match effect {
                 park::Effect::Trim => work |= self.host.trim_memory_with(self.role.on_rest()),
-                park::Effect::Release => self.host.release_gpu(),
+                park::Effect::Release => {
+                    self.feedback.reset();
+                    self.host.release_gpu();
+                }
                 park::Effect::Remake => if let Err(error) = self.host.remake_gpu() { eprintln!("rune: a view could not make its renderer again: {error}") },
             }
         }
@@ -289,13 +295,16 @@ impl<S: 'static> Surface for Hosted<S> {
     // Size and frames.
     fn resize(&mut self, size: (f32, f32), scale: f32) { self.host.resize(size, scale); }
 
-    fn frame(&mut self, target: Instant, only_loops: bool) -> EmbedFrame {
+    fn frame(&mut self, target: Instant, refresh_hz: Option<f64>, only_loops: bool) -> EmbedFrame {
         self.accessibility.receive(self.host.runtime_mut().core_mut(), self.title);
         self.park_step(park::Event::Drawing);
         self.app_requests();
         if let Role::Overlay(overlay) = &self.role { overlay.feed.drain(self.host.runtime_mut()); }
         self.host.runtime_mut().core_mut().take_late_link_answers();
-        let frame = self.host.frame_at_loops(target, only_loops);
+        let summary = self.host.frame_summary(Some(target), only_loops);
+        if summary.drawn.is_some() { crate::marks::presented(); }
+        self.feedback.frame(&summary, target, refresh_hz);
+        let frame = EmbedFrame::from(summary);
         match &mut self.role {
             Role::App(_) => self.app_frame_done(frame),
             Role::Overlay(overlay) => overlay.feed.fit(self.host.runtime_mut()),
@@ -307,6 +316,8 @@ impl<S: 'static> Surface for Hosted<S> {
         }
         frame
     }
+
+    fn presents(&mut self) { self.feedback.drain(); }
 
     // Touch and pointer.
     fn touch(&mut self, id: u64, phase: TouchPhase, x: f32, y: f32, time: f64) {
@@ -578,8 +589,9 @@ impl<S: 'static> Surface for Hosted<S> {
 }
 
 /// Starts an app on a `CAMetalLayer`, once its view has a size: the layer, the view's size in
-/// points, its scale, whether the system is dark, and the waker other threads call.
-pub(crate) type Mount = Box<dyn FnOnce(*mut std::ffi::c_void, (f32, f32), f32, bool, Waker) -> Result<Box<dyn Surface>, String>>;
+/// points, its scale, whether the system is dark, the waker other threads call, and the one a
+/// frame's present time calls when it lands.
+pub(crate) type Mount = Box<dyn FnOnce(*mut std::ffi::c_void, (f32, f32), f32, bool, Waker, Waker) -> Result<Box<dyn Surface>, String>>;
 
 impl<S: 'static> Hosted<S> {
     /// A point of the `UIView` in the app's own points (`zoom`).

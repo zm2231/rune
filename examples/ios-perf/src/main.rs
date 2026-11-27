@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use rune::time::{Instant, SystemTime};
 
-use rune::{App, AppSpec, Color, Cx, El, FrameEncoded, FrameOutcome, FramePresented, ScrollSpec, Spring, TextStyle, Tx, col, el, row, text};
+use rune::{App, AppSpec, Color, Cx, El, GrowthSpec, FrameEncoded, FrameOutcome, FramePresented, ScrollSpec, Spring, TextStyle, Tx, col, el, row, text};
 use stats::say;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -52,7 +52,7 @@ impl Args {
                 "--idle" => args.idle = value()?.parse().map_err(|e| format!("--idle: {e}"))?,
                 "--auto-scroll" => args.auto_scroll = true,
                 "--exit" => args.exit = true,
-                other => return Err(format!("unknown argument {other}")),
+                _ => {}
             }
         }
         Ok(args)
@@ -119,7 +119,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     let background = rgb(rows::BACKGROUND_RGB);
     if args().mode == Mode::Uikit { return el().w_full().h_full().fill(background); }
     let [top, _, bottom, _] = cx.safe_area();
-    let list = col().key("rows").w_full().pt(top).pb(bottom)
+    let list = col().key("rows").w_full().pt(top).pb(bottom).growth(GrowthSpec::default())
         .virtual_rows(s.keys.len(), drive::ROW_HEIGHT, |s: &State, i| Cow::Borrowed(s.keys[i].as_str()), list_row);
     col().key("list").w_full().h_full().fill(background).scroll(ScrollSpec { stick_bottom: false }).child(list)
 }

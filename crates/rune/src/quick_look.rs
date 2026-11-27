@@ -109,6 +109,12 @@ impl crate::runtime::RuntimeCore {
 
     pub(crate) fn quick_look(&self) -> Option<&QuickLook> { self.host.quick_look.state.look() }
 
+    #[cfg_attr(not(any(test, target_os = "macos")), allow(dead_code))]
+    pub(crate) fn quick_look_closer(&self, wake: Waker) -> Box<dyn Fn()> {
+        let closed = self.host.quick_look.closed.clone();
+        Box::new(move || { closed.set(true); wake(); })
+    }
+
     pub(crate) fn take_quick_look_closed(&mut self) {
         if self.host.quick_look.closed.take() { self.quick_look_step(Event::UserClosed); }
     }
@@ -140,9 +146,8 @@ impl crate::runtime::RuntimeCore {
 pub(crate) fn show_in_window(rt: &mut crate::runtime::RuntimeCore, window: Option<&winit::window::Window>, wake: impl FnOnce() -> Waker) {
     #[cfg(target_os = "macos")]
     if let Some(window) = window && let Some(look) = rt.take_quick_look() {
-        let closed = rt.host.quick_look.closed.clone();
-        let wake = wake();
-        macos::show(look, window, Box::new(move || { closed.set(true); wake(); }));
+        let on_closed = rt.quick_look_closer(wake());
+        macos::show(look, window, on_closed);
     }
     #[cfg(not(target_os = "macos"))]
     {

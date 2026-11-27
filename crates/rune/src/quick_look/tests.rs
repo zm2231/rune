@@ -72,3 +72,22 @@ fn a_runtime_that_never_asked_has_nothing_for_its_host() {
     assert!(rt.core_mut().take_quick_look().is_some_and(|look| look.is_some()));
     assert_eq!(rt.core_mut().take_quick_look(), None, "taken once");
 }
+
+#[test]
+fn the_panel_closing_itself_wakes_the_runtime_and_the_view_reads_closed() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let mut rt = app(&["a.pdf"]);
+    press(&mut rt, 1.0 / 60.0);
+    assert!(rt.core_mut().take_quick_look().is_some_and(|look| look.is_some()), "the host shows it");
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let counted = wakes.clone();
+    let on_closed = rt.core().quick_look_closer(Arc::new(move || { counted.fetch_add(1, Ordering::Relaxed); }));
+    assert!(shows(&rt, "open"));
+    on_closed();
+    assert_eq!(wakes.load(Ordering::Relaxed), 1, "a closing panel asks for a frame");
+    rt.frame(2.0 / 60.0);
+    assert!(shows(&rt, "closed"));
+    assert!(rt.quick_look().is_none());
+    assert_eq!(rt.core_mut().take_quick_look(), None, "nothing left for the host to close");
+}

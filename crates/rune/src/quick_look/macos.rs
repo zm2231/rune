@@ -45,9 +45,16 @@ define_class!(
             Bool::YES
         }
 
-        #[unsafe(method(windowWillClose:))]
-        fn will_close(&self, _notification: &AnyObject) {
+        #[unsafe(method(panelWillClose:))]
+        fn panel_will_close(&self, _notification: &AnyObject) {
             closed();
+        }
+
+        #[unsafe(method(checkClosed:))]
+        fn check_closed(&self, panel: &AnyObject) {
+            // SAFETY: `isVisible` is a `BOOL` of the panel.
+            let visible: Bool = unsafe { msg_send![panel, isVisible] };
+            if !visible.as_bool() { closed(); }
         }
     }
 );
@@ -57,6 +64,7 @@ struct Panel {
     items: Vec<Retained<NSURL>>,
     index: usize,
     source: Option<Retained<Source>>,
+    observing: bool,
     on_closed: Option<Box<dyn Fn()>>,
 }
 
@@ -94,21 +102,39 @@ extern "C" fn accepts(_: *mut AnyObject, _: Sel, _: *mut AnyObject) -> Bool {
     Bool::new(PANEL.with(|p| p.try_borrow().is_ok_and(|p| !p.items.is_empty())))
 }
 
+fn source(mtm: MainThreadMarker) -> Option<Retained<Source>> {
+    PANEL.with(|p| {
+        let mut p = p.try_borrow_mut().ok()?;
+        Some(p.source.get_or_insert_with(|| {
+            // SAFETY: `init` is `NSObject`'s designated initializer.
+            unsafe { msg_send![mtm.alloc::<Source>(), init] }
+        }).clone())
+    })
+}
+
+fn observe_close(mtm: MainThreadMarker, panel: &AnyObject) {
+    if PANEL.with(|p| p.borrow().observing) { return; }
+    let Some(source) = source(mtm) else { return };
+    let name = NSString::from_str("NSWindowWillCloseNotification");
+    // SAFETY: the default notification center calls `panelWillClose:`, which `Source` answers,
+    // on the main thread when the shared panel closes, however it was closed. `PANEL` keeps the
+    // observer alive for the process, as long as the shared panel.
+    unsafe {
+        let center: Retained<AnyObject> = msg_send![objc2::class!(NSNotificationCenter), defaultCenter];
+        let _: () = msg_send![&*center, addObserver: &*source, selector: sel!(panelWillClose:), name: &*name, object: panel];
+    }
+    PANEL.with(|p| p.borrow_mut().observing = true);
+}
+
 extern "C" fn begin(_: *mut AnyObject, _: Sel, panel: *mut AnyObject) {
     // SAFETY: AppKit hands the controller the `QLPreviewPanel` it is about to control.
     let Some(panel) = (unsafe { panel.as_ref() }) else { return };
     let Some(mtm) = MainThreadMarker::new() else { return };
-    let Some((source, index)) = PANEL.with(|p| {
-        let mut p = p.try_borrow_mut().ok()?;
-        let source = p.source.get_or_insert_with(|| {
-            // SAFETY: `init` is `NSObject`'s designated initializer.
-            unsafe { msg_send![mtm.alloc::<Source>(), init] }
-        }).clone();
-        Some((source, p.index))
-    }) else { return };
+    let Some(source) = source(mtm) else { return };
+    let index = PANEL.with(|p| p.borrow().index);
     // SAFETY: the panel's data source answers the two data source methods and its delegate
-    // `previewPanel:handleEvent:` and `windowWillClose:`; the panel holds both weakly, and
-    // `PANEL` keeps the source alive. `currentPreviewItemIndex` is an `NSInteger`.
+    // `previewPanel:handleEvent:`; the panel holds both weakly, and `PANEL` keeps the source
+    // alive. `currentPreviewItemIndex` is an `NSInteger`.
     unsafe {
         let _: () = msg_send![panel, setDataSource: &*source];
         let _: () = msg_send![panel, setDelegate: &*source];
@@ -120,14 +146,15 @@ extern "C" fn begin(_: *mut AnyObject, _: Sel, panel: *mut AnyObject) {
 extern "C" fn end(_: *mut AnyObject, _: Sel, panel: *mut AnyObject) {
     // SAFETY: AppKit hands the controller the `QLPreviewPanel` it controlled.
     let Some(panel) = (unsafe { panel.as_ref() }) else { return };
-    // SAFETY: clearing the panel's data source and delegate; `isVisible` is a `BOOL`.
-    let visible = unsafe {
+    let Some(source) = MainThreadMarker::new().and_then(source) else { return };
+    // SAFETY: clearing the panel's data source and delegate, then asking `Source` to look at the
+    // panel once this turn of the run loop is over, when a panel that is going away no longer
+    // shows; `performSelector:withObject:afterDelay:` retains both until then.
+    unsafe {
         let _: () = msg_send![panel, setDataSource: None::<&AnyObject>];
         let _: () = msg_send![panel, setDelegate: None::<&AnyObject>];
-        let visible: Bool = msg_send![panel, isVisible];
-        visible.as_bool()
-    };
-    if !visible { closed(); }
+        let _: () = msg_send![&*source, performSelector: sel!(checkClosed:), withObject: panel, afterDelay: 0.0f64];
+    }
 }
 
 fn hook(view: &AnyObject) {
@@ -151,12 +178,13 @@ fn hook(view: &AnyObject) {
 }
 
 pub(super) fn show(look: Option<QuickLook>, window: &winit::window::Window, on_closed: Box<dyn Fn()>) {
-    let (Some(_), Some(view), Some(class)) = (MainThreadMarker::new(), crate::platform::macos::content_view(window), panel_class()) else {
+    let (Some(mtm), Some(view), Some(class)) = (MainThreadMarker::new(), crate::platform::macos::content_view(window), panel_class()) else {
         on_closed();
         return;
     };
     hook(&view);
     let panel = shared_panel(class);
+    observe_close(mtm, &panel);
     // SAFETY: `isVisible` is a `BOOL` of the panel.
     let visible: Bool = unsafe { msg_send![&*panel, isVisible] };
     let visible = visible.as_bool();

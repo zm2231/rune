@@ -5,7 +5,7 @@ use super::*;
 
 /// Frame loop, timer wake deadlines, action queue, pending transaction, live value latch,
 /// tracing and hot-reload session state owned by [`RuntimeCore`]. Under `#[repr(C)]`, the
-/// cold `pending: Tx` buffer precedes the hot per-frame fields (`wake_deadlines`, `timer_wake`,
+/// cold `pending: Tx` buffer precedes the hot per-frame fields (`deadlines`, `timer_wake`,
 /// `queue`, `live`) so they sit directly adjacent to [`CommitState`]'s `dirty`/`relayout` flags.
 #[repr(C)]
 pub(crate) struct FrameState {
@@ -42,7 +42,7 @@ pub(crate) struct FrameState {
     /// Debug builds check `Tx::live_only` events (`skip_view`).
     #[cfg(debug_assertions)]
     pub(super) live_only_check: bool,
-    wake_deadlines: Vec<f64>,
+    deadlines: super::deadlines::Deadlines,
     timer_wake: TimerWake,
     /// Whether the latest `frame_step` hit `frame::drain::MAX_POLL_ROUNDS`.
     poll_capped: bool,
@@ -58,7 +58,7 @@ impl FrameState {
         Self {
             queue: ActionQueue::default(),
             pending: Tx::default(),
-            wake_deadlines: Vec::new(),
+            deadlines: Default::default(),
             timer_wake: Default::default(),
             poll_capped: false,
             idle_meter: Default::default(),
@@ -233,27 +233,30 @@ impl FrameState {
     #[inline]
     pub(in crate::runtime) fn schedule_wakes_from(&mut self, now: f64, wakes: impl IntoIterator<Item = std::time::Duration>) {
         for delay in wakes {
-            let deadline = now + delay.as_secs_f64();
-            if let Err(index) = self.wake_deadlines.binary_search_by(|t| t.total_cmp(&deadline)) {
-                self.wake_deadlines.insert(index, deadline);
-            }
+            self.deadlines.insert_timer(now + delay.as_secs_f64());
+        }
+    }
+
+    #[inline]
+    pub(in crate::runtime) fn schedule_app_wakes_from(&mut self, now: f64, wakes: impl IntoIterator<Item = Wake>) {
+        for wake in wakes {
+            self.deadlines.insert_app(wake.deadline(now));
         }
     }
 
     #[inline]
     pub(in crate::runtime) fn next_wake_deadline(&self) -> Option<f64> {
-        self.wake_deadlines.first().copied()
+        self.deadlines.first()
     }
 
     #[inline]
-    pub(in crate::runtime) fn begin_frame_poll(&mut self, clock: f64) -> (bool, usize) {
+    pub(in crate::runtime) fn begin_frame_poll(&mut self, clock: f64) -> (bool, bool) {
         if matches!(self.timer_wake, TimerWake::FollowUp { .. }) {
             let polled = self.timer_wake.frame_polled(false);
-            return (polled, 0);
+            return (polled, false);
         }
-        let polled = self.timer_wake.frame_polled(self.wake_deadlines.first().is_some_and(|t| *t <= clock));
-        let due = self.wake_deadlines.partition_point(|t| *t <= clock);
-        (polled, due)
+        let due = self.deadlines.any_due(clock);
+        (self.timer_wake.frame_polled(due), due)
     }
 
     #[inline]
@@ -272,8 +275,8 @@ impl FrameState {
     }
 
     #[inline]
-    pub(in crate::runtime) fn drain_due_wakes(&mut self, due: usize) {
-        self.wake_deadlines.drain(..due);
+    pub(in crate::runtime) fn drain_due_wakes(&mut self, clock: f64) {
+        self.deadlines.drain_due(clock);
     }
 
     #[inline]
@@ -283,14 +286,20 @@ impl FrameState {
 
     #[cfg(test)]
     #[inline]
-    pub(in crate::runtime) fn wake_deadlines(&self) -> &[f64] {
-        &self.wake_deadlines
+    pub(in crate::runtime) fn wake_deadlines(&self) -> Vec<f64> {
+        self.deadlines.all()
+    }
+
+    #[cfg(test)]
+    #[inline]
+    pub(in crate::runtime) fn app_wake_count(&self) -> usize {
+        self.deadlines.app_len()
     }
 
     #[cfg(test)]
     #[inline]
     pub(in crate::runtime) fn clear_wake_deadlines(&mut self) {
-        self.wake_deadlines.clear();
+        self.deadlines.clear();
     }
 }
 
@@ -372,13 +381,13 @@ impl RuntimeCore {
     /// its drawable: its timers count from it, and nothing polls again unless another came due.
     pub(crate) fn poll_hidden(&mut self, app: &mut dyn AppDriver) -> bool {
         let now = self.now_clock();
-        if self.frame.timer_wake.asked() && self.frame.wake_deadlines.first().is_none_or(|t| *t > now) {
+        if self.frame.timer_wake.asked() && !self.frame.deadlines.any_due(now) {
             self.cancel_timer_frame();
             return self.needs_commit();
         }
         let stale = self.poll_alone(app);
         let wakes = std::mem::take(&mut self.frame.pending.wakes);
-        self.schedule_wakes(wakes);
+        self.schedule_tx_wakes(wakes);
         stale
     }
 
@@ -387,7 +396,7 @@ impl RuntimeCore {
     /// `(stale, true)`. Otherwise schedules the poll's wakes and reports `(stale, false)`.
     pub(crate) fn poll_hidden_or_arm_follow_up(&mut self, app: &mut dyn AppDriver) -> (bool, bool) {
         let now = self.now_clock();
-        if self.frame.timer_wake.asked() && self.frame.wake_deadlines.first().is_none_or(|t| *t > now) {
+        if self.frame.timer_wake.asked() && !self.frame.deadlines.any_due(now) {
             self.cancel_timer_frame();
             return (self.needs_commit(), self.has_pending_input() || self.drag_ends_pending());
         }
@@ -398,7 +407,7 @@ impl RuntimeCore {
             return (stale, true);
         }
         let wakes = std::mem::take(&mut self.frame.pending.wakes);
-        self.schedule_wakes(wakes);
+        self.schedule_tx_wakes(wakes);
         (stale, false)
     }
 
@@ -408,11 +417,10 @@ impl RuntimeCore {
         if let Some(clock) = self.wall_clock() { self.clock = clock; }
         // An `update`'s `wake_after` counts from now; no frame may come to schedule it.
         let wakes = std::mem::take(&mut self.frame.pending.wakes);
-        self.schedule_wakes(wakes);
+        self.schedule_tx_wakes(wakes);
         // Due timers are spent with or without a poll, as a frame spends them; one left due
         // would wake the host again every frame interval.
-        let due = self.frame.wake_deadlines.partition_point(|t| *t <= self.clock);
-        self.frame.wake_deadlines.drain(..due);
+        self.frame.deadlines.drain_due(self.clock);
         // A glyph mask cache write that came due while nothing draws (`mask_cache`).
         let _ = self.text.mask_cache_frame(false);
         let patched = self.patch_pending();
@@ -434,7 +442,7 @@ impl RuntimeCore {
         self.latch_requests(app, &mut one);
         let stale = changed || one.frame_work() || patched || asks_frame || self.frame.queue.len() > queued;
         if std::mem::take(&mut one.request_poll) {
-            one.wakes.push(std::time::Duration::ZERO);
+            one.wakes.push(Wake::After(std::time::Duration::ZERO));
         }
         merge(&mut self.frame.pending, one);
         stale
@@ -450,7 +458,7 @@ impl RuntimeCore {
     pub(crate) fn resting_wake(&mut self, app: &mut dyn AppDriver) -> Option<bool> {
         if !self.rests() { return None; }
         let stale = self.poll_alone(app);
-        let steps = self.frame.pending.wakes.iter().any(|d| d.is_zero());
+        let steps = self.frame.pending.wakes.iter().any(|w| w.due_by(self.clock, self.clock));
         // A starved fill's wake draws the frame that resumes it; the poll alone never does.
         Some(stale || self.host.window_frame.is_some() || steps || self.commit.virtual_fill.resuming(self.clock) || self.commit.virtual_items.fill_resuming(self.clock))
     }
@@ -462,7 +470,7 @@ impl RuntimeCore {
             self.frame.timer_wake = self.frame.timer_wake.step(TimerWakeEvent::Asked { at: self.clock }).0;
         } else {
             let wakes = std::mem::take(&mut self.frame.pending.wakes);
-            self.schedule_wakes(wakes);
+            self.schedule_tx_wakes(wakes);
         }
     }
 
@@ -473,7 +481,7 @@ impl RuntimeCore {
         self.frame.timer_wake = next;
         let Some(polled) = polled else { return };
         let wakes = std::mem::take(&mut self.frame.pending.wakes);
-        self.schedule_wakes_from(polled, wakes);
+        self.schedule_tx_wakes_from(polled, wakes);
     }
 
     /// Whether user input is queued in the action queue (`ActionQueue::has_input`), as
@@ -517,7 +525,7 @@ impl RuntimeCore {
     /// The last poll asked for the next frame (`wake_after(ZERO)`, due at once): it steps
     /// something every frame.
     fn steps_frames(&self) -> bool {
-        self.frame.wake_deadlines.first().is_some_and(|t| *t <= self.clock)
+        self.frame.deadlines.any_due(self.clock)
     }
 }
 

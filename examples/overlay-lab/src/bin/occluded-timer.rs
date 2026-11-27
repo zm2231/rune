@@ -6,7 +6,10 @@
 //! `OCCLUDED_TIMER_BOTTOM=1` puts it at the bottom edge; `OCCLUDED_TIMER_WINDOW=1` runs the
 //! timer in a regular window instead. `OCCLUDED_TIMER_UPDATE=1` replaces the repeating timer
 //! with one 100 ms `wake_after` that an update from another thread sets each second, and also
-//! prints the latest that timer fired.
+//! prints the latest that timer fired. `OCCLUDED_TIMER_EVERY=1` keeps the 100 ms timer but has
+//! every poll ask `wake_after(100 ms)` instead of `wake_at` its next due time; wakes stack, so
+//! after input makes it poll early, its poll count climbs above the timer's. The once-a-second
+//! line also counts polls.
 
 #![forbid(unsafe_code)]
 
@@ -18,6 +21,7 @@ const PERIOD: f64 = 0.1;
 const ARMED: Duration = Duration::from_millis(100);
 static FIRED: AtomicUsize = AtomicUsize::new(0);
 static WORST_MS: AtomicUsize = AtomicUsize::new(0);
+static POLLS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Default)]
 struct State { next: f64, armed: Option<Instant> }
@@ -28,13 +32,18 @@ fn view(_: &State, _: &mut Cx<State>) -> El {
 }
 
 fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
+    POLLS.fetch_add(1, Ordering::Relaxed);
     if updates() { return poll_armed(s); }
     let fired = t >= s.next;
     if fired {
         FIRED.fetch_add(1, Ordering::Relaxed);
         s.next = t + PERIOD;
     }
-    tx.wake_after(Duration::from_secs_f64((s.next - t).max(0.0)));
+    if std::env::var_os("OCCLUDED_TIMER_EVERY").is_some() {
+        tx.wake_after(ARMED);
+    } else {
+        tx.wake_at(s.next);
+    }
     fired
 }
 
@@ -85,7 +94,7 @@ fn report(handle: rune::AppHandle<State>, arm: impl Fn() + Send + 'static) {
         loop {
             std::thread::sleep(Duration::from_secs(1));
             let elapsed = start.elapsed().as_secs();
-            eprintln!("occluded-timer t={elapsed} fired={} worst_ms={}", FIRED.load(Ordering::Relaxed), WORST_MS.load(Ordering::Relaxed));
+            eprintln!("occluded-timer t={elapsed} fired={} polls={} worst_ms={}", FIRED.load(Ordering::Relaxed), POLLS.load(Ordering::Relaxed), WORST_MS.load(Ordering::Relaxed));
             if quit.is_some_and(|q| elapsed >= q) { handle.quit(); return; }
             if updates() { arm(); }
         }

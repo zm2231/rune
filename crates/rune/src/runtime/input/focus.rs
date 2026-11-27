@@ -441,7 +441,7 @@ impl RuntimeCore {
     fn finish_focus_tx(&mut self, app: &mut dyn AppDriver, cb_tx: &mut Tx) {
         let wakes = std::mem::take(&mut cb_tx.wakes);
         self.latch_requests(app, cb_tx);
-        if !wakes.is_empty() { self.schedule_wakes(wakes); }
+        if !wakes.is_empty() { self.schedule_tx_wakes(wakes); }
         merge(&mut self.frame.pending, std::mem::take(cb_tx));
     }
     /// Delivers `El::on_focus_change` and `El::on_focus_within_change` for a transition from

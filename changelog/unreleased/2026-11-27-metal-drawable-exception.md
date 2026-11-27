@@ -1,0 +1,1 @@
+- Apple: an Objective-C exception from `nextDrawable` or `addPresentedHandler:` on a window whose present times Rune watches (tracing, `App::on_frame_presented`) no longer ends the app with "Rust cannot catch foreign exceptions". Rune catches it, prints its name and reason once per selector, and carries on: without that frame's drawable, or without that frame's present time.

@@ -186,7 +186,7 @@ rfd = { version = "0.17", optional = true, default-features = false }
 # Metal on macOS and iOS: present timing and system materials on macOS.
 [target.'cfg(target_vendor = "apple")'.dependencies]
 block2 = { workspace = true }
-objc2 = { workspace = true }
+objc2 = { workspace = true, features = ["exception"] }
 objc2-core-foundation = { workspace = true, features = ["std", "CFArray", "CFCGTypes", "CFDictionary", "CFNumber", "CFPreferences", "CFString", "objc2"] }
 objc2-foundation = { workspace = true, features = ["std", "NSString"] }
 objc2-metal = { workspace = true, features = ["std", "MTLDrawable", "block2", "objc2-core-foundation"] }

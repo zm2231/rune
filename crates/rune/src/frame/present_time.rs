@@ -475,7 +475,8 @@ pub(crate) mod metal {
                 None => original_class(this.class()),
             };
             // SAFETY: `base` is the layer's original CAMetalLayer class; the result is +0.
-            let drawable: *mut AnyObject = unsafe { msg_send![super(this, base), nextDrawable] };
+            let drawable = objc_call("nextDrawable", || -> *mut AnyObject { unsafe { msg_send![super(this, base), nextDrawable] } });
+            let drawable = drawable.unwrap_or(std::ptr::null_mut());
             if let (Some((_, log)), Some(raw)) = (hooked, NonNull::new(drawable)) {
                 let seq = log.next.fetch_add(1, Ordering::Relaxed) + 1;
                 log.acquired.store(seq, Ordering::Release);
@@ -488,13 +489,30 @@ pub(crate) mod metal {
                 });
                 // SAFETY: nextDrawable returns a CAMetalDrawable, which conforms to MTLDrawable;
                 // Metal copies the block.
-                unsafe {
+                let _ = objc_call("addPresentedHandler:", || unsafe {
                     let drawable = raw.cast::<ProtocolObject<dyn MTLDrawable>>().as_ref();
                     drawable.addPresentedHandler(block2::RcBlock::as_ptr(&handler));
-                }
+                });
             }
             drawable
         })
+    }
+
+    fn objc_call<R>(selector: &'static str, call: impl FnOnce() -> R) -> Option<R> {
+        static REPORTED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+        let exception = match objc2::exception::catch(std::panic::AssertUnwindSafe(call)) {
+            Ok(value) => return Some(value),
+            Err(exception) => exception,
+        };
+        let mut reported = REPORTED.lock().unwrap();
+        if !reported.contains(&selector) {
+            reported.push(selector);
+            match exception {
+                Some(exception) => eprintln!("rune: -[CAMetalLayer {selector}] threw {exception:?}; Rune carries on without it"),
+                None => eprintln!("rune: -[CAMetalLayer {selector}] threw nil; Rune carries on without it"),
+            }
+        }
+        None
     }
 
     const HOOKED_PREFIX: &str = "RunePresentTimed_";

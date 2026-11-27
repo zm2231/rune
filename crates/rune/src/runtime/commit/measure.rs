@@ -212,6 +212,7 @@ impl Measurement<'_> {
     /// playground around its stage).
     fn root_view(&self, cx: cx::CxCore) -> (El, cx::CxCore) {
         let (root, cx) = self.app.view(cx, self.viewport);
+        crate::memo::seal();
         // The Windows caption buttons go over everything the view drew, in a frame around it.
         let Some(caption) = &self.caption else { return (root, cx) };
         let symbol = cx.caption_color.unwrap_or(if self.env.system_dark { Color::WHITE } else { Color::BLACK });
@@ -586,7 +587,6 @@ impl Measurement<'_> {
             #[cfg(not(feature = "hot"))]
             let (mut root, cx) = crate::text::lend(&mut *text, || {
                 let (root, cx) = self.root_view(cx);
-                crate::memo::seal();
                 (self.build_tree(root, tx, force_all, keep_windows), cx)
             });
             // Index-built rows run the app's closures in `build_tree`, so a patch's panic there
@@ -595,7 +595,6 @@ impl Measurement<'_> {
             let (mut root, cx, memo) = {
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::text::lend(&mut *text, || {
                     let (root, cx) = self.root_view(cx);
-                    crate::memo::seal();
                     (self.build_tree(root, tx, force_all, keep_windows), cx)
                 }))) {
                     Ok((root, cx)) => (root, cx, memo),
@@ -610,7 +609,6 @@ impl Measurement<'_> {
                         let cx = fresh_cx(self);
                         let memo = crate::memo::enter(emptied, self.env, self.system_accent, (self.system_reduced_motion, self.system_increased_contrast), self.languages_gen, crate::theme::blends_srgb(), self.memo_chrome_bits(), cx.caret.clone(), cx.layout.clone());
                         let (root, cx) = crate::hot::original_only(|| self.root_view(cx));
-                        crate::memo::seal();
                         (crate::hot::original_only(|| self.build_tree(root, tx, force_all, keep_windows)), cx, memo)
                     }
                 }

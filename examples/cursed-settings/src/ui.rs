@@ -72,7 +72,8 @@ pub fn dark_theme(s: &Cursed, system_dark: bool) -> bool {
 
 pub fn view(s: &Cursed, cx: &mut Cx<Cursed>) -> El {
     cx.reduced_motion(s.p.reduce_motion);
-    let k = rune_theme_opencode::kit(dark_theme(s, cx.system_dark()));
+    let k = s.theme.kit(&rune_kit::KitEnv::of(cx).dark(dark_theme(s, cx.system_dark())));
+    let k = &*k;
     let hair = 1.0 / cx.env().scale;
     let c = &k.c;
     let mut overlays = Vec::new();

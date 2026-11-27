@@ -24,9 +24,10 @@ pub struct KitEnv {
 }
 
 impl KitEnv {
-    /// `dark`, blending in sRGB, without increased contrast, with the default system accent.
+    /// `dark`, in the blend mode of the window building the view ([`rune::theme::blends_srgb`],
+    /// sRGB outside one), without increased contrast, with the default system accent.
     pub fn new(dark: bool) -> Self {
-        Self { dark, srgb_blend: true, increased_contrast: false, accent: rune::SystemAccent::default().accent(dark) }
+        Self { dark, srgb_blend: rune::theme::blends_srgb(), increased_contrast: false, accent: rune::SystemAccent::default().accent(dark) }
     }
 
     /// The environment of the window `cx` builds.
@@ -37,6 +38,12 @@ impl KitEnv {
             increased_contrast: cx.system_increased_contrast(),
             accent: cx.accent(),
         }
+    }
+
+    /// This environment in another appearance, for a view that shows one the window isn't in.
+    pub fn dark(mut self, dark: bool) -> Self {
+        self.dark = dark;
+        self
     }
 
     pub fn srgb_blend(mut self, on: bool) -> Self {

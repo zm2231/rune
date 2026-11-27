@@ -309,8 +309,8 @@ fn default_metrics_match_explicit_kit_defaults_bit_for_bit() {
     for (name, base) in [
         ("neutral-light", Kit::neutral(false)),
         ("neutral-dark", Kit::neutral(true)),
-        ("opencode-light", rune_theme_opencode::kit(false).clone()),
-        ("opencode-dark", rune_theme_opencode::kit(true).clone()),
+        ("opencode-light", rune_theme_opencode::kit(&KitEnv::new(false))),
+        ("opencode-dark", rune_theme_opencode::kit(&KitEnv::new(true))),
     ] {
         assert_eq!(SegmentedMetrics::kit(&base), SegmentedMetrics { height: 28.0, padding_x: 12.0, radius: 6.0 });
         assert_eq!(ProgressMetrics::kit(&base), ProgressMetrics { height: 8.0, border_width: 1.0 });
@@ -649,7 +649,7 @@ fn flat_switch_omits_sheen_rim_and_shadows_and_handles_transparent_track_border(
         rt
     };
 
-    let base = rune_theme_opencode::kit(true).clone();
+    let base = rune_theme_opencode::kit(&KitEnv::new(true));
 
     // Default raised switch still paints gradients, knob rim and shadows.
     for web in [false, true] {
@@ -736,7 +736,7 @@ fn flat_switch_preserves_toggle_and_press_motion_and_keyboard() {
         if s.flat {
             sw = sw.flat();
         }
-        col().padding(20.0).child(sw.build(rune_theme_opencode::kit(true)).key("sw"))
+        col().padding(20.0).child(sw.build(&rune_theme_opencode::kit(&KitEnv::new(true))).key("sw"))
     }
     let mut rt_raised = Runtime::new(App { on: false, pressed: false, flat: false }, view, (200.0, 100.0), Env::new(true, 1.0));
     let mut rt_flat = Runtime::new(App { on: false, pressed: false, flat: true }, view, (200.0, 100.0), Env::new(true, 1.0));

@@ -6,10 +6,11 @@
 //! ```
 //! # use rune::icon;
 //! # use rune_theme_opencode::{kit, tree_icons};
+//! # use rune_kit::KitEnv;
 //! # struct Node { path: String }
 //! # let node = Node { path: "src/main.rs".into() };
 //! # let (selected, dark) = (true, true);
-//! # let k = kit(dark);
+//! # let k = kit(&KitEnv::new(dark));
 //! let t = tree_icons::file(&node.path);
 //! # let _ =
 //! icon(t.icon(), 16.0).color(if selected { t.color(dark) } else { k.c.icon_muted })

@@ -7,7 +7,7 @@ use rune::{App, AppSpec, Cx, El, Env, Runtime, col, row};
 use rune_kit::*;
 
 fn gallery_card(_: &(), cx: &mut Cx<()>) -> El {
-    let k = rune_theme_opencode::kit(cx.system_dark());
+    let k = &rune_theme_opencode::kit(&KitEnv::of(cx));
     let controls = row()
         .gap(12.0)
         .child(Button::new("Save").variant(ButtonVariant::Contrast).build(k))

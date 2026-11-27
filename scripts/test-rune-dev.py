@@ -125,12 +125,43 @@ class ArgumentTests(unittest.TestCase):
         with self.assertRaises(SystemExit), patch("sys.stderr"):
             dev.parse([*argv, "--local", "--desk"])
 
+    def test_builds_leave_the_checkout_for_an_app_and_take_the_jobs_from_the_environment(self):
+        app = dev.parse(["--manifest-path", "app/Cargo.toml", "--patch", "src/view.rs", "--local"])
+        example = dev.parse(["settings", "--local"])
+        with tempfile.TemporaryDirectory() as temp, patch.object(dev, "ROOT", Path(temp) / "rune"), patch.dict(os.environ, {"XDG_CACHE_HOME": temp}, clear=False):
+            for name in ["RUNE_DEV_TARGET_DIR", "RUNE_DEV_JOBS", "CARGO_BUILD_JOBS"]:
+                os.environ.pop(name, None)
+            self.assertEqual(dev.build_env(example)["CARGO_TARGET_DIR"], str(Path(temp) / "rune/target/live-edit-build"))
+            self.assertEqual(Path(dev.build_env(app)["CARGO_TARGET_DIR"]).parent, Path(temp) / "rune-dev")
+            self.assertEqual(dev.build_env(app)["CARGO_BUILD_JOBS"], "2")
+            os.environ.update(RUNE_DEV_TARGET_DIR=str(Path(temp) / "out"), CARGO_BUILD_JOBS="12")
+            env = dev.build_env(app)
+            self.assertEqual((env["CARGO_TARGET_DIR"], env["CARGO_BUILD_JOBS"]), (str(Path(temp) / "out"), "12"))
+            os.environ["RUNE_DEV_JOBS"] = "6"
+            self.assertEqual(dev.build_env(example)["CARGO_BUILD_JOBS"], "6")
+
     def test_a_local_run_rebuilds_after_a_restart_and_returns_the_apps_exit(self):
         with patch.dict(os.environ, {}, clear=False), patch.object(dev, "run", side_effect=[dev.Restart(), dev.Restart(), 3]) as run, patch("sys.stdout", io.StringIO()) as out:
             os.environ.pop("RUNE_DEV_WRAP", None)
             self.assertEqual(dev.local(["--local"]), 3)
         self.assertEqual(run.call_count, 3)
         self.assertEqual(out.getvalue().count("rune-dev: restarting with the new build"), 2)
+
+    def test_a_refused_edit_relaunches_a_local_run_but_a_syntax_error_waits(self):
+        def guard(code):
+            return patch.object(dev.subprocess, "run", return_value=Mock(returncode=code))
+        with guard(0), patch("sys.stdout", io.StringIO()) as out:
+            self.assertTrue(dev.guarded("g", "a.rs", "b.rs", "src/view.rs", True))
+            self.assertTrue(dev.guarded("g", "a.rs", "b.rs", "src/view.rs", False))
+        self.assertEqual(out.getvalue(), "")
+        with guard(2), patch("sys.stdout", io.StringIO()):
+            self.assertFalse(dev.guarded("g", "a.rs", "b.rs", "src/view.rs", True))
+        with guard(3), patch("sys.stdout", io.StringIO()) as out, self.assertRaises(dev.Restart):
+            dev.guarded("g", "a.rs", "b.rs", "src/view.rs", True)
+        self.assertIn("rune-dev: restart needed (guard): src/view.rs", out.getvalue())
+        with guard(3), patch("sys.stdout", io.StringIO()) as out:
+            self.assertFalse(dev.guarded("g", "a.rs", "b.rs", "src/view.rs", False))
+        self.assertIn("rerun rune-dev", out.getvalue())
 
     def test_a_local_run_execs_itself_once_under_the_wrap_prefix(self):
         with patch.dict(os.environ, {"RUNE_DEV_WRAP": "lease --kind build --"}, clear=False), patch.object(dev.os, "execvp") as execvp:

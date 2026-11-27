@@ -27,7 +27,7 @@ use super::super::keys;
 use super::super::lifecycle::{self, Phase};
 use super::super::pacing::Event;
 use super::{RuneView, Stage};
-use crate::platform::preferences::{bold_text, increased_contrast, reduced_motion, text_scale};
+use crate::platform::preferences::{bold_text, contrast, increased_contrast_with, reduced_motion, text_scale};
 
 // SAFETY: UIKit's headers declare each as an `NSNotificationName` or an `NSString`, an object
 // that lives for the process.
@@ -146,7 +146,7 @@ impl RuneView {
                         surface.set_reduced_motion(reduced_motion());
                         surface.set_text_scale(text_scale());
                         surface.set_bold_text(bold_text());
-                        surface.set_increased_contrast(increased_contrast());
+                        surface.set_increased_contrast(increased_contrast_with(contrast().is_some()));
                         surface.set_size_classes(self.size_classes());
                         // A client that asked before the app started still gets its tree.
                         if self.ivars().accessibility.borrow().asked() { let _ = surface.accessibility_wanted(); }
@@ -301,7 +301,7 @@ impl RuneView {
     pub(super) fn display_options_changed(&self) {
         self.with_surface(|surface| {
             surface.set_bold_text(bold_text());
-            surface.set_increased_contrast(increased_contrast());
+            surface.set_increased_contrast(increased_contrast_with(contrast().is_some()));
         });
         self.pace(Event::Wake);
     }

@@ -1,8 +1,9 @@
 use super::duplex::{self, Heard, Render};
 use super::echo_path::{EchoPath, SystemAec, choose};
-use super::io::{self, Ends};
+use super::io::{self, Ends, Meters};
 use super::{VoiceMic, VoiceSpeaker};
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 const RATE: u32 = 16_000;
 
@@ -12,15 +13,16 @@ struct Room {
     mic: VoiceMic,
     speaker: VoiceSpeaker,
     air: VecDeque<f32>,
+    meters: Arc<Meters>,
     seed: u32,
 }
 
 impl Room {
     fn new(path: EchoPath, delay_ms: usize) -> Self {
-        let Ends { capture, playback, mic, speaker, .. } = io::ends(RATE as usize * 20, RATE as usize * 20);
+        let Ends { capture, playback, mic, speaker, meters } = io::ends(RATE as usize * 20, RATE as usize * 20);
         let air = std::iter::repeat_n(0.0, RATE as usize * delay_ms / 1_000).collect();
         let (render, heard) = duplex::for_path(path, RATE, capture, playback);
-        Self { render, heard, mic, speaker, air, seed: 7 }
+        Self { render, heard, mic, speaker, air, meters, seed: 7 }
     }
 
     fn noise(&mut self) -> f32 {
@@ -70,6 +72,47 @@ fn in_process_cancelling_removes_a_delayed_speaker_echo() {
     let (heard, kept) = room.run(RATE as usize * 4, 160, true, false);
     let reduction = db(heard / kept);
     assert!(reduction >= 25.0, "echo reduced by only {reduction:.1} dB");
+}
+
+#[test]
+fn a_speaker_thread_stall_that_starves_the_canceller_leaves_the_echo_cancelled() {
+    let mut room = Room::new(EchoPath::InProcess, 80);
+    let (block, period, burst) = (160, RATE as usize * 2, RATE as usize / 5);
+    let talk: Vec<f32> = (0..period * 6).map(|i| if i % period < burst { room.speech(i) } else { 0.0 }).collect();
+    room.speaker.write(&talk);
+    let mut device: VecDeque<Vec<f32>> = VecDeque::new();
+    let mut out = vec![0.0; block];
+    let mut cleaned = Vec::new();
+    let mut read = vec![0.0; RATE as usize];
+    let mut silence = 0;
+    for tick in 0..talk.len() / block {
+        if !(650..658).contains(&tick) {
+            room.render.silence(std::mem::take(&mut silence));
+            while device.len() < 4 {
+                room.render.render(&mut out);
+                device.push_back(out.clone());
+            }
+        }
+        let played = device.pop_front().unwrap_or_else(|| {
+            silence += block as u64;
+            vec![0.0; block]
+        });
+        let input: Vec<f32> = played
+            .iter()
+            .map(|&sample| {
+                room.air.push_back(sample);
+                0.5 * room.air.pop_front().unwrap_or(0.0) + 0.0005 * room.noise()
+            })
+            .collect();
+        room.heard.capture(&input);
+        let n = room.mic.read(&mut read);
+        cleaned.extend_from_slice(&read[..n]);
+    }
+    let burst_energy: f64 = talk[..burst].iter().map(|&s| f64::from(s * s)).sum();
+    let echo = |p: usize| db(cleaned[p * period..(p + 1) * period].iter().map(|&s| f64::from(s * s)).sum::<f64>() / burst_energy);
+    let (before, after) = (echo(2), echo(4));
+    assert_eq!(room.meters.stats().speaker_gap_frames, 5 * block as u64);
+    assert!(after <= -40.0, "the burst after the stall came back at {after:.1} dB (before it, {before:.1} dB)");
 }
 
 #[test]

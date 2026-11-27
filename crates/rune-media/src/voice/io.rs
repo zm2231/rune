@@ -13,6 +13,8 @@ pub(crate) struct Meters {
     mic_dropped: AtomicU64,
     oversized: AtomicU64,
     late: AtomicU64,
+    speaker_gap: AtomicU64,
+    mic_gap: AtomicU64,
     started_at: AtomicU64,
     first_audio_at: AtomicU64,
 }
@@ -28,6 +30,8 @@ impl Meters {
             mic_dropped: AtomicU64::new(0),
             oversized: AtomicU64::new(0),
             late: AtomicU64::new(0),
+            speaker_gap: AtomicU64::new(0),
+            mic_gap: AtomicU64::new(0),
             started_at: AtomicU64::new(0),
             first_audio_at: AtomicU64::new(0),
         }
@@ -61,6 +65,18 @@ impl Meters {
         }
     }
 
+    pub(crate) fn count_speaker_gap(&self, frames: u64) {
+        if frames > 0 {
+            self.speaker_gap.fetch_add(frames, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn count_mic_gap(&self, frames: u64) {
+        if frames > 0 {
+            self.mic_gap.fetch_add(frames, Ordering::Relaxed);
+        }
+    }
+
     pub(crate) fn stats(&self) -> super::VoiceStats {
         let started = self.started_at.load(Ordering::Acquire);
         let first = self.first_audio_at.load(Ordering::Acquire);
@@ -70,6 +86,8 @@ impl Meters {
             mic_dropped_frames: self.mic_dropped.load(Ordering::Relaxed),
             oversized_callbacks: self.oversized.load(Ordering::Relaxed),
             late_frames: self.late.load(Ordering::Relaxed),
+            speaker_gap_frames: self.speaker_gap.load(Ordering::Relaxed),
+            mic_gap_frames: self.mic_gap.load(Ordering::Relaxed),
             start_to_audio: (started != 0 && first >= started).then(|| Duration::from_nanos(first - started)),
         }
     }

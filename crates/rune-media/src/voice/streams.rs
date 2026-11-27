@@ -13,11 +13,17 @@ const PATIENCE: Duration = Duration::from_millis(500);
 pub(crate) trait MicLink: Send {
     fn begin(&mut self) {}
     fn read(&mut self, out: &mut [f32]) -> Result<(), Fault>;
+    fn take_lost(&mut self) -> u64 {
+        0
+    }
 }
 
 pub(crate) trait SpeakerLink: Send {
     fn begin(&mut self) {}
     fn write(&mut self, frames: &[f32]) -> Result<(), Fault>;
+    fn take_silence(&mut self) -> u64 {
+        0
+    }
 }
 
 pub(crate) struct Opened {
@@ -182,8 +188,12 @@ fn listen(mut link: Box<dyn MicLink>, slot: &Mutex<Option<Heard>>, block: usize,
     let result = (|| {
         while !stop.load(Ordering::Relaxed) {
             link.read(&mut frames)?;
+            let lost = link.take_lost();
             match lock(slot).as_mut() {
-                Some(heard) if !stop.load(Ordering::Relaxed) => heard.capture(&frames),
+                Some(heard) if !stop.load(Ordering::Relaxed) => {
+                    heard.lost(lost);
+                    heard.capture(&frames);
+                }
                 _ => break,
             }
         }
@@ -197,8 +207,12 @@ fn play(mut link: Box<dyn SpeakerLink>, slot: &Mutex<Option<Render>>, block: usi
     let mut frames = vec![0.0; block];
     let result = (|| {
         while !stop.load(Ordering::Relaxed) {
+            let silence = link.take_silence();
             match lock(slot).as_mut() {
-                Some(render) if !stop.load(Ordering::Relaxed) => render.render(&mut frames),
+                Some(render) if !stop.load(Ordering::Relaxed) => {
+                    render.silence(silence);
+                    render.render(&mut frames);
+                }
                 _ => break,
             }
             link.write(&frames)?;

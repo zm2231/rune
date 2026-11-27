@@ -64,14 +64,14 @@ impl RuntimeCore {
         let (native_material, wayland_candidate, material_draw) = match n.material {
             // A dimmed-out element takes no native view: its fallback draws nothing and does not
             // count as a cap fallback.
-            Some(material) if effective_opacity * n.vis.paint_alpha > 0.001 => {
+            Some((material, params)) if effective_opacity * n.vis.paint_alpha > 0.001 => {
                 if self.paint.materials.len() < self.paint.max_native_materials {
                     let radius = crate::system_material::clamp_radius(radii, w, h);
                     let continuous = n.vis_flags.continuous_corners();
                     let material_opacity = effective_opacity * n.vis.paint_alpha;
                     let draw = crate::system_material::MaterialDraw {
                         id: n.id, material, rect: [r[0], r[1], w, h], radius, continuous,
-                        opacity: material_opacity,
+                        opacity: material_opacity, params,
                     };
                     self.paint.materials.push(draw);
                     let hole_r = if continuous { -radius } else { radius };
@@ -166,7 +166,7 @@ impl RuntimeCore {
                 }
             }
             let rest_fill = match n.material {
-                Some(material) if self.paint.backdrop_materials => {
+                Some((material, _)) if self.paint.backdrop_materials => {
                     self.color(n.id, P_FILL, crate::system_material::backdrop::tint(material, n.vis.fill, self.env.system_dark))
                 }
                 Some(_) => self.color(n.id, P_FILL, crate::system_material::fallback_fill(n.vis.fill, self.env.system_dark)),

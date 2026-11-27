@@ -15,20 +15,23 @@ impl OverlayCore {
         self.fit_for_show_in(app, None);
     }
 
+    /// Refreshes OS appearance and accessibility preferences before showing an overlay that was
+    /// hidden (or had no native handle yet) and so missed redraws or `WM_SETTINGCHANGE` broadcasts.
+    pub(super) fn refresh_preferences_for_show(&mut self, rt: &mut RuntimeCore) {
+        let was_dirty = rt.stale();
+        self.adopt_system_dark(rt, crate::platform::preferences::dark().unwrap_or(self.system_dark));
+        crate::input::host_events::refresh_accessibility_preferences(rt);
+        if !was_dirty && rt.stale() {
+            self.dirty = true;
+        }
+        self.accent_changed(rt, crate::system_accent());
+        self.scroll_bars_changed(rt, crate::platform::scroll_bars::current());
+    }
+
     pub(super) fn show_fading(&mut self, app: &mut dyn OverlayApp, event_loop: &ActiveEventLoop, fade: Duration) {
         if self.poll_terminal_gpu_loss(app) { return; }
         if self.presence.shown() { return; }
-        // Hidden, it missed the redraws a new accent or portal preference asks for.
-        let system_dark = crate::platform::preferences::dark().unwrap_or(self.system_dark);
-        self.adopt_system_dark(app.rt_mut(), system_dark);
-        #[cfg(target_os = "linux")]
-        {
-            let rt = app.rt_mut();
-            rt.set_system_reduced_motion(crate::platform::preferences::reduced_motion());
-            rt.double_click_interval = crate::platform::preferences::double_click_interval();
-        }
-        self.accent_changed(app.rt_mut(), crate::system_accent());
-        self.scroll_bars_changed(app.rt_mut(), crate::platform::scroll_bars::current());
+        self.refresh_preferences_for_show(app.rt_mut());
         if !self.presence.fading() { self.fit_for_show_in(app, Some(event_loop)); }
         #[cfg(target_os = "windows")]
         if self.uses_cpu_layered(app) && self.show_cpu(app, event_loop, fade) {
@@ -73,6 +76,7 @@ impl OverlayCore {
         }
         let effects = self.presence.step(presence::Event::Show, self.release);
         self.carry_out(app, effects);
+        self.after_hidden_shown(app);
         self.publish_screen_transform(app.rt());
         self.hidden_pace.reset();
         self.backoff_step(crate::window::BackoffEvent::Revealed);
@@ -263,7 +267,12 @@ impl OverlayCore {
         for effect in effects {
             match effect {
                 presence::Effect::StopDrawing => self.stop_drawing(app),
-                presence::Effect::HideWindow { fade } => self.hide_window(app, fade),
+                presence::Effect::HideWindow { fade } => {
+                    let surface_destroyed = self.hide_window(app, fade);
+                    if !self.presence.drawing() {
+                        self.after_hidden_did_hide(app, surface_destroyed);
+                    }
+                }
                 presence::Effect::ReleaseGpu => {
                     app.release_compositor_gpu();
                     self.park();
@@ -326,11 +335,13 @@ impl OverlayCore {
                 renderer.trim_uploads();
             }
         }
+        crate::window::rest::maybe_trim_heap();
     }
 
     /// Input stops, and the native window hides over `fade`. A fading window stays up while
-    /// `presence_due` steps its alpha (Windows), then hides it.
-    fn hide_window(&mut self, app: &mut dyn OverlayApp, fade: Duration) {
+    /// `presence_due` steps its alpha (Windows), then hides it. Returns whether a live Wayland
+    /// surface was destroyed as part of the hide.
+    fn hide_window(&mut self, app: &mut dyn OverlayApp, fade: Duration) -> bool {
         // A hide need not report a blur (a Wayland surface goes without `wl_keyboard.leave`),
         // and a hidden overlay hears none. A focused one blurs here, so `on_focus(false)` runs
         // and the next show's focus is a change; what it held is released.
@@ -368,9 +379,14 @@ impl OverlayCore {
                 if fading { native.fade(255) } else { native.hide() }
             }
             if !fading { self.on_hide_cpu(); }
-            return;
+            return false;
         }
-        let Some(live) = self.surface.live() else { return };
+        let Some(live) = self.surface.live() else { return false };
+        #[cfg_attr(
+            not(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))),
+            allow(unused_mut)
+        )]
+        let mut surface_destroyed = false;
         match &live.backing {
             Backing::Window(window) => {
                 if self.options.keys.takes_keys() {
@@ -403,10 +419,12 @@ impl OverlayCore {
                     rt.set_window_backdrop_supported_mask(0);
                     rt.set_wayland_blur_materials(false);
                     self.drop_hidden_images(app);
+                    surface_destroyed = true;
                 }
             }
             #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
             Backing::Layer(_) | Backing::Xwayland(_) => {
+                let is_layer = matches!(live.backing, Backing::Layer(_));
                 self.wayland_resize.step(super::sizing::WaylandResizeEvent::Reset);
                 self.surface.take_live();
                 let rt = app.rt_mut();
@@ -414,8 +432,10 @@ impl OverlayCore {
                 rt.set_window_backdrop_supported_mask(0);
                 rt.set_wayland_blur_materials(false);
                 self.drop_hidden_images(app);
+                surface_destroyed = is_layer;
             }
         }
+        surface_destroyed
     }
 
     /// Drops the last shown frame's `Pixels` references, CPU image atlas pages and GPU image
@@ -587,6 +607,7 @@ impl OverlayCore {
     /// screen-sized panels that join every Space empty Mission Control's Space thumbnails.
     /// There the window goes too, and the next show makes a new one.
     pub(super) fn park(&mut self) {
+        self.assert_no_live_frame_texture();
         self.rest = crate::window::Rest::Rested;
         #[cfg(target_os = "windows")]
         if self.has_cpu() {

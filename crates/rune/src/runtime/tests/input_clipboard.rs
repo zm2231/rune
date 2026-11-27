@@ -554,7 +554,7 @@ fn shift_insert_pastes_into_focused_field_and_root_off_macos_only() {
     rt.key(shift_ins.clone());
     rt.frame(0.0);
     rt.frame(0.0);
-    if cfg!(target_os = "macos") {
+    if crate::edit::MAC_KEYS {
         assert_eq!(rt.state.field.text, "");
         assert_eq!(rt.state.seen_app_keys.last(), Some(&shift_ins));
     } else {
@@ -594,7 +594,7 @@ fn shift_insert_pastes_into_focused_field_and_root_off_macos_only() {
     rt.key(shift_ins.clone());
     rt.frame(0.0);
     rt.frame(0.0);
-    if cfg!(target_os = "macos") {
+    if crate::edit::MAC_KEYS {
         assert_eq!(rt.state.root_pasted, "");
     } else {
         assert_eq!(rt.state.root_pasted, "😀");
@@ -652,7 +652,7 @@ fn el_line_home_end_syncs_to_model_and_preserves_model_setting() {
     assert_eq!(rt.state.managed.selected(), "first!");
 
     // Document-end chord (Cmd+End on macOS, Ctrl+End elsewhere) jumps to the end of the text.
-    let doc_end_mods = if cfg!(target_os = "macos") {
+    let doc_end_mods = if crate::edit::MAC_KEYS {
         Mods { cmd: true, ..Mods::default() }
     } else {
         Mods { ctrl: true, cmd: true, ..Mods::default() }
@@ -670,7 +670,7 @@ fn el_line_home_end_syncs_to_model_and_preserves_model_setting() {
     assert!(!rt.state.managed.line_home_end());
     rt.key(KeyEvent::from(Key::End));
     rt.frame(0.0);
-    if cfg!(target_os = "macos") {
+    if crate::edit::MAC_KEYS {
         assert_eq!(rt.state.managed.focus, rt.state.managed.text.len());
     } else {
         assert_eq!(rt.state.managed.focus, 6);

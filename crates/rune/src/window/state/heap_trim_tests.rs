@@ -8,13 +8,12 @@ use super::heap_trim::{
     uses_glibc_allocator,
 };
 use super::rest::{self, REST_AFTER, Rest, RestEffect, RestEvent};
-use crate::time::Instant;
 
 static OPT_OUT_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn trim_state_first_rest_trims_concurrent_coalesces_and_respects_30s_cooldown() {
-    let t0 = Instant::now();
+    let t0 = crate::time::now();
     let mut state = TrimState::default();
 
     // First rest triggers one trim.
@@ -53,7 +52,7 @@ fn trim_state_first_rest_trims_concurrent_coalesces_and_respects_30s_cooldown() 
 
 #[test]
 fn rest_triggers_trim_once_and_arms_no_periodic_idle_timer() {
-    let t0 = Instant::now();
+    let t0 = crate::time::now();
     let mut rest_state = Rest::default();
     let mut trim_state = TrimState::default();
 

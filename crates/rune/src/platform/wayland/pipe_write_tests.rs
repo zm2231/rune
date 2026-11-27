@@ -176,7 +176,7 @@ mod unix_pipe_tests {
         let (_read_fd2, write_fd2) = make_unix_pipe();
         let cancel2 = Arc::new(WriteCancel::new().expect("WriteCancel"));
         let c2 = cancel2.clone();
-        let t0 = std::time::Instant::now();
+        let t0 = crate::time::now();
         let handle = std::thread::spawn(move || {
             write_fd_bounded(write_fd2, &payload, &c2, MAX_PIPE_WRITE_BYTES, Duration::from_secs(5))
         });

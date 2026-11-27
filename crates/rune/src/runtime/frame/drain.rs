@@ -297,6 +297,7 @@ impl RuntimeCore {
                         *c.why |= CommitWhy::POLL;
                         c.rt.commit.watch.meter.poll();
                     }
+                    c.rt.frame.poll_asked(poll_clock, &one.wakes);
                     merge(c.tx, one);
                 }
                 for ev in std::mem::take(&mut c.tx.keys) {

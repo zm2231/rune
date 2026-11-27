@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Bool, Sel};
-use objc2::{MainThreadMarker, msg_send, sel};
+use objc2::{MainThreadMarker, ffi, msg_send, sel};
 use objc2_app_kit::NSApplication;
 
 use super::{Activity, apple};
@@ -19,19 +19,16 @@ thread_local! {
 }
 
 static INFO_KEY: u8 = 0;
-const RETAIN_NONATOMIC: usize = 1;
 
 unsafe extern "C" {
     fn class_addMethod(class: *const AnyClass, selector: Sel, implementation: *const c_void, types: *const c_char) -> Bool;
-    fn objc_setAssociatedObject(object: *const AnyObject, key: *const c_void, value: *const AnyObject, policy: usize);
-    fn objc_getAssociatedObject(object: *const AnyObject, key: *const c_void) -> *const AnyObject;
 }
 
 fn set_info(window: &AnyObject, info: Option<&AnyObject>) {
-    let info = info.map_or(std::ptr::null(), |info| info as *const AnyObject);
+    let info = info.map_or(std::ptr::null_mut(), |info| (info as *const AnyObject).cast_mut());
     // SAFETY: the window retains the dictionary under Rune's own key until it is replaced or the
     // window is deallocated.
-    unsafe { objc_setAssociatedObject(window, (&raw const INFO_KEY).cast(), info, RETAIN_NONATOMIC) };
+    unsafe { ffi::objc_setAssociatedObject((window as *const AnyObject).cast_mut(), (&raw const INFO_KEY).cast(), info, ffi::OBJC_ASSOCIATION_RETAIN_NONATOMIC) };
 }
 
 fn add(class: &AnyClass, selector: Sel, imp: *const c_void, types: &CStr) -> bool {
@@ -107,7 +104,7 @@ extern "C" fn update_state(window: *mut AnyObject, _: Sel, activity: *mut AnyObj
     // made for this window.
     let Some(activity) = (unsafe { activity.as_ref() }) else { return };
     // SAFETY: the dictionary `set_info` attached to this window, or null, kept alive by it.
-    let Some(info) = (unsafe { objc_getAssociatedObject(window, (&raw const INFO_KEY).cast()).as_ref() }) else { return };
+    let Some(info) = (unsafe { ffi::objc_getAssociatedObject(window, (&raw const INFO_KEY).cast()).as_ref() }) else { return };
     // SAFETY: as above.
     unsafe { let _: () = msg_send![activity, addUserInfoEntriesFromDictionary: info]; }
 }

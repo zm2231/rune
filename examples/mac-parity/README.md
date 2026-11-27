@@ -42,8 +42,8 @@ samples are), the other Mac's Dock shows the app's Handoff icon; clicking it run
 
 ## Spotlight
 
-Press `I` to index the listed files with `Tx::index_search_items` (domain `files`, keyword
-"mac parity"), then search Spotlight for "mac parity" or a file's name. Opening a result runs
+Press `I` to index the listed files with `Tx::index_search_items` (domain `files`, keywords
+"mac" and "parity"), then search Spotlight for "parity" or a file's name. Opening a result runs
 `App::on_open_search_item` with the item's id, the file name, and selects that file. `R` removes
 them with `Tx::remove_search_domain`. A refusal from the index shows in the status line through
 `App::on_search_index_error`.

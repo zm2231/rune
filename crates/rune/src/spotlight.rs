@@ -59,6 +59,8 @@ impl SearchItem {
         self
     }
 
+    /// A word the item is found by, besides its title and details. Give each word its own
+    /// keyword: a phrase is one keyword, which a search for one of its words may not match.
     pub fn with_keyword(mut self, keyword: impl Into<String>) -> Self {
         self.keywords.push(keyword.into());
         self

@@ -163,9 +163,9 @@ fn slot(entry: Entry) -> Slot {
     let Entry { key, mount, requests, handle, .. } = entry;
     requests.connect(pump_wake());
     if let Some(handle) = &handle { handle.connect_ios(pump_wake()); }
-    let mount: Mount = Box::new(move |layer, size, scale, dark, wake| {
+    let mount: Mount = Box::new(move |layer, size, scale, dark, wake, presents| {
         let both: Waker = Arc::new(move || { wake(); schedule(); });
-        let mut surface = mount(layer, size, scale, dark, both)?;
+        let mut surface = mount(layer, size, scale, dark, both, presents)?;
         surface.set_window(key);
         Ok(surface)
     });

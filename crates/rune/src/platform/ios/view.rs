@@ -530,10 +530,11 @@ impl RuneView {
     /// Draws the frame the display link's next refresh shows, and tells the pacing how it went.
     fn draw(&self) {
         let Some(target) = self.frame_target() else { return };
+        let refresh_hz = self.frame_rate();
         let mut loops = self.ivars().loop_frame.get();
         let only_loops = loops.only_loops();
         self.ivars().loop_frame.set(loops);
-        let drawn = self.with_surface(|surface| (surface.frame(target, only_loops), surface.text(), surface.accessibility(), surface.popup(), surface.file_dialog(), surface.share(), surface.interface_style()));
+        let drawn = self.with_surface(|surface| (surface.frame(target, refresh_hz, only_loops), surface.text(), surface.accessibility(), surface.popup(), surface.file_dialog(), surface.share(), surface.interface_style()));
         let Some((frame, text, tree, popup, file, share, style)) = drawn else {
             self.pace(Event::Frame { animating: false, wake_after: None });
             return;

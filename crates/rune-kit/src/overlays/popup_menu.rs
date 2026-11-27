@@ -130,7 +130,7 @@ impl Menu {
         let close_open = Rc::clone(&open_path);
         let mut menu = Menu::new(key)
             .label("Context menu")
-            .min_width(req.min_width().max(160.0))
+            .at_least(req.min_width())
             .open(true)
             .on_close_tx(move |s: &mut S, tx: &mut Tx| {
                 close_open.borrow_mut().clear();

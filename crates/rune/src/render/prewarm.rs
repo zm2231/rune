@@ -1,6 +1,8 @@
-//! `prewarm_gpu`'s thread and the slot a window takes its result from.
+//! `prewarm_gpu`'s thread and the slot a window takes its result from, and the device and
+//! renderer a hidden overlay gave back with its surface (`park`), which the next surface takes
+//! instead of making its own: an overlay shown for each dictation draws on one device (hex#1268).
 
-use super::{Gpu, Renderer, warm_machine::ShutdownOutcome, warmup::WarmRenderer};
+use super::{Gpu, Renderer, warm_machine::{ShutdownOutcome, SystemClock, WarmSlot}, warmup::WarmRenderer};
 use std::sync::{Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -9,7 +11,9 @@ use std::time::Duration;
 /// app turns that off, so the window renders with the pipeline compiled here.
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
-struct Prewarmed(Gpu, WarmRenderer);
+pub(super) struct Prewarmed(Gpu, WarmRenderer);
+
+pub(crate) const PARKED: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Default)]
 enum State {
@@ -124,11 +128,74 @@ impl Slot {
 
 static GLOBAL: Slot = Slot::new();
 
+pub(super) type Parked = WarmSlot<Prewarmed, SystemClock>;
+
+#[cfg(not(test))]
+static PARKED_GPU: Parked = WarmSlot::new(SystemClock);
+
+#[cfg(not(test))]
+fn parked() -> &'static Parked { &PARKED_GPU }
+
+#[cfg(test)]
+thread_local! {
+    static PARKED_GPU: &'static Parked = Box::leak(Box::new(WarmSlot::new(SystemClock)));
+}
+
+#[cfg(test)]
+pub(super) fn parked() -> &'static Parked { PARKED_GPU.with(|slot| *slot) }
+
 pub(super) fn start() { GLOBAL.start(); }
-pub(super) fn take() -> Option<(Gpu, Renderer)> { GLOBAL.take() }
-pub(super) fn restart() { GLOBAL.restart(); }
+
+pub(super) fn take() -> Option<(Gpu, Renderer)> {
+    take_from(parked(), &GLOBAL)
+}
+
+pub(super) fn take_from(parked: &Parked, prewarm: &Slot) -> Option<(Gpu, Renderer)> {
+    match parked.take() {
+        Some(Prewarmed(gpu, renderer)) => {
+            prewarm.discard();
+            Some((gpu, Renderer::from_warm(renderer)))
+        }
+        None => prewarm.take(),
+    }
+}
+
+#[cfg(test)]
+pub(super) fn take_parked() -> Option<(Gpu, Renderer)> {
+    parked().take().map(|Prewarmed(gpu, renderer)| (gpu, Renderer::from_warm(renderer)))
+}
+
+pub(crate) fn park(gpu: Gpu, mut renderer: Renderer, linger: Duration) {
+    let slot = parked();
+    if gpu.is_lost() || slot.is_stopped() { return; }
+    renderer.clear_for_park();
+    gpu.queue.submit(std::iter::empty());
+    rune_gpu::health::poll(&gpu.device, wgpu::PollType::wait_indefinitely()).ok();
+    let Some(renderer) = renderer.into_warm() else { return };
+    slot.park(slot, Prewarmed(gpu, renderer), linger);
+}
+
+pub(super) fn restart() {
+    parked().discard();
+    GLOBAL.restart();
+}
 #[cfg_attr(test, allow(dead_code))]
-pub(super) fn discard() { GLOBAL.discard(); }
-pub(super) fn cancel() { GLOBAL.discard(); }
-pub(super) fn shutdown(timeout: Duration) -> ShutdownOutcome { GLOBAL.shutdown(timeout) }
-pub(super) fn reopen() { GLOBAL.reopen(); }
+pub(super) fn discard() {
+    parked().discard();
+    GLOBAL.discard();
+}
+pub(super) fn cancel() {
+    parked().cancel();
+    GLOBAL.discard();
+}
+pub(super) fn shutdown(timeout: Duration) -> ShutdownOutcome {
+    match (parked().shutdown(timeout), GLOBAL.shutdown(timeout)) {
+        (ShutdownOutcome::TimedOut { remaining: a }, ShutdownOutcome::TimedOut { remaining: b }) => ShutdownOutcome::TimedOut { remaining: a + b },
+        (ShutdownOutcome::TimedOut { remaining }, _) | (_, ShutdownOutcome::TimedOut { remaining }) => ShutdownOutcome::TimedOut { remaining },
+        _ => ShutdownOutcome::Drained,
+    }
+}
+pub(super) fn reopen() {
+    parked().reopen();
+    GLOBAL.reopen();
+}

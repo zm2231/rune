@@ -70,7 +70,17 @@ fn memory_mb() -> f64 {
     pages * 4096.0 / 1e6
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+fn memory_mb() -> f64 {
+    let mut info = std::mem::MaybeUninit::<libc::rusage_info_v2>::zeroed();
+    // SAFETY: `RUSAGE_INFO_V2` fills a `rusage_info_v2`, which `info` has room for.
+    if unsafe { libc::proc_pid_rusage(libc::getpid(), libc::RUSAGE_INFO_V2, info.as_mut_ptr().cast()) } != 0 { return 0.0; }
+    // SAFETY: all-zero integers are a valid `rusage_info_v2`, and the call above filled it.
+    unsafe { info.assume_init() }.ri_phys_footprint as f64 / 1e6
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 fn memory_mb() -> f64 { 0.0 }
 
 fn main() {

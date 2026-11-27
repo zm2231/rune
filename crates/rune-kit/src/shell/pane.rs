@@ -448,13 +448,13 @@ impl Default for SidebarPeek {
     }
 }
 
-/// Whether `ev` is the sidebar's show/hide shortcut: ⇧⌘B (Ctrl+Shift+B off macOS), and on macOS
-/// also ⌃⌘S, AppKit's Toggle Sidebar. Call it from the app's key handler (`AppSpec::on_key`)
-/// and toggle the sidebar's [`PaneState`] when it matches.
+/// Whether `ev` is the sidebar's show/hide shortcut: ⇧⌘B (Ctrl+Shift+B off macOS and iOS), and
+/// on macOS and iOS also ⌃⌘S, the system's Toggle Sidebar. Call it from the app's key handler
+/// (`AppSpec::on_key`) and toggle the sidebar's [`PaneState`] when it matches.
 pub fn is_sidebar_toggle(ev: &KeyEvent) -> bool {
     let m = ev.mods;
-    let shift_b = ev.is_command('b') && m.shift && !m.alt && !(cfg!(target_os = "macos") && m.ctrl);
-    let ctrl_s = cfg!(target_os = "macos") && ev.is_command('s') && m.ctrl && !m.shift && !m.alt;
+    let shift_b = ev.is_command('b') && m.shift && !m.alt && !(rune::MAC_KEYS && m.ctrl);
+    let ctrl_s = rune::MAC_KEYS && ev.is_command('s') && m.ctrl && !m.shift && !m.alt;
     shift_b || ctrl_s
 }
 

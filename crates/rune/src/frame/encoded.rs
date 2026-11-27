@@ -54,7 +54,7 @@ impl FrameEncoded {
     pub fn seq(&self) -> u64 { self.seq }
 
     /// The display refresh the window's display link aimed this frame at, when one paced it:
-    /// macOS windows that are visible and not being resized. `None` elsewhere, for `Skipped`
+    /// macOS windows that are visible and not being resized, and iOS views. `None` elsewhere, for `Skipped`
     /// frames, and for a frame drawn at once after the window rested (the first after a key
     /// press, say), which aims at the next refresh without waiting for a tick.
     pub fn presents_at(&self) -> Option<Instant> { self.presents_at }
@@ -65,7 +65,7 @@ impl FrameEncoded {
     pub fn started(&self) -> Option<Instant> { self.started }
 
     /// The refresh rate of the display the window was on, in Hz: the display link's on macOS
-    /// (120 on a ProMotion panel), else what the monitor reports. `None` when neither knows.
+    /// and iOS (120 on a ProMotion panel), else what the monitor reports. `None` when neither knows.
     pub fn refresh_hz(&self) -> Option<f64> { self.refresh_hz }
 
     /// For `Drawn`, the milliseconds from the frame's start (after its drawable came) until the

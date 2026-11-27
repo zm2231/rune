@@ -66,6 +66,13 @@ pub fn detail_scale(fit_ratio: f32) -> f32 {
     if actual >= 1.5 { actual } else { 2.0 }
 }
 
+/// The Ctrl + wheel a pinch handler hears as `pinch` (`MagnifyEvent::wheel`), as the wheel event
+/// it came from: its `wheel_dy`, Ctrl held, at the pinch's point.
+pub fn pinch_wheel(pinch: rune::MagnifyEvent) -> rune::WheelEvent {
+    let ctrl = rune::Mods { ctrl: true, ..rune::Mods::default() };
+    rune::WheelEvent::new(0.0, pinch.wheel_dy).at(pinch.x, pinch.y).mods(ctrl)
+}
+
 /// The zoom factor for one wheel event of `delta_y` (a browser's sign: positive scrolls down),
 /// bounded so a coarse mouse-wheel notch is a step rather than a jump.
 pub fn wheel_zoom_factor(delta_y: f32) -> f32 {

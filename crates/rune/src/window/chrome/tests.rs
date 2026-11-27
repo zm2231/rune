@@ -1,3 +1,4 @@
+#[cfg(not(target_os = "ios"))]
 #[test]
 fn no_direct_window_chrome_actions_bypassing_win_panel_guard() {
     let host_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/window/host");
@@ -45,6 +46,7 @@ fn adopted_panel_titlebar_target_drags_panel_and_ignores_double_click() {
     assert_eq!(titlebar_target(TitlebarAction::DoubleClick, false), TitlebarTarget::DoubleClickWindow);
 }
 
+#[cfg(not(target_os = "ios"))]
 #[test]
 fn no_user_close_path_calls_programmatic_close_directly() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

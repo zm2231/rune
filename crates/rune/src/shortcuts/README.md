@@ -126,6 +126,11 @@ ShortcutRecorder::new("shortcut", &state.shortcut, |s: &mut State| &mut s.shortc
     .build(&kit)
 ```
 
+A chord another app holds globally never reaches the window, so a capture that gets no
+key within five seconds ends, keeps the old binding and says "Nothing arrived; that
+shortcut may be taken by another app." The app's `poll` calls
+`ShortcutRecorderState::poll(now)` for that deadline to fire.
+
 The change callback returns `Result<(), ShortcutError>`. A registration failure
 retains the old binding; the recorder keeps showing the refused chord with a message
 until another modifier starts the next chord. Unchanged chords skip the callback,

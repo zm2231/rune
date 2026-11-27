@@ -1,0 +1,1 @@
+- macOS: an overlay with `release_gpu_when_hidden` hands its GPU device and renderer to the next window or overlay surface, as on Windows and Linux, instead of every show making a new device.

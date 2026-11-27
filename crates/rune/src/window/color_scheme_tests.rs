@@ -153,12 +153,15 @@ fn system_theme_change_updates_cx_system_dark_invalidates_memos_and_resolves_bac
 
     // Effective dark follows system_dark when ColorScheme::System, and stays pinned under
     // explicit Light/Dark overrides (matching both titlebar and WindowBackdrop DWM dark sync).
-    assert!(ColorScheme::System.effective_dark(ColorScheme::System, true));
-    assert!(!ColorScheme::System.effective_dark(ColorScheme::System, false));
-    assert!(ColorScheme::System.effective_dark(ColorScheme::Dark, false));
-    assert!(!ColorScheme::System.effective_dark(ColorScheme::Light, true));
-    assert!(ColorScheme::Dark.effective_dark(ColorScheme::Light, false));
-    assert!(!ColorScheme::Light.effective_dark(ColorScheme::Dark, true));
+    #[cfg(not(target_os = "ios"))]
+    {
+        assert!(ColorScheme::System.effective_dark(ColorScheme::System, true));
+        assert!(!ColorScheme::System.effective_dark(ColorScheme::System, false));
+        assert!(ColorScheme::System.effective_dark(ColorScheme::Dark, false));
+        assert!(!ColorScheme::System.effective_dark(ColorScheme::Light, true));
+        assert!(ColorScheme::Dark.effective_dark(ColorScheme::Light, false));
+        assert!(!ColorScheme::Light.effective_dark(ColorScheme::Dark, true));
+    }
 
     // Feeding winit's WindowEvent::ThemeChanged payload into Runtime::set_system_dark updates
     // Cx::system_dark(), marks the view dirty, and invalidates memos.

@@ -210,7 +210,7 @@ pub(crate) fn local_rect_for(
 /// configures: after sending `set_size` + `commit`, holds the previous frame until the compositor
 /// answers with `configure` (including when the compositor clamps or keeps the old size).
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg_attr(not(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))), allow(dead_code))]
+#[cfg_attr(not(any(all(test, not(target_os = "ios")), all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum WaylandResize {
     #[default]
@@ -219,7 +219,7 @@ pub(crate) enum WaylandResize {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg_attr(not(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))), allow(dead_code))]
+#[cfg_attr(not(any(all(test, not(target_os = "ios")), all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WaylandResizeEvent {
     RequestResize((u32, u32)),
@@ -228,7 +228,7 @@ pub(crate) enum WaylandResizeEvent {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg_attr(not(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))), allow(dead_code))]
+#[cfg_attr(not(any(all(test, not(target_os = "ios")), all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WaylandResizeEffect {
     CommitAndHold((u32, u32)),
@@ -236,7 +236,7 @@ pub(crate) enum WaylandResizeEffect {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg_attr(not(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))), allow(dead_code))]
+#[cfg_attr(not(any(all(test, not(target_os = "ios")), all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))), allow(dead_code))]
 impl WaylandResize {
     pub(crate) fn step(&mut self, event: WaylandResizeEvent) -> Effects<WaylandResizeEffect> {
         match (*self, event) {
@@ -576,6 +576,6 @@ impl super::OverlayCore {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, not(any(target_arch = "wasm32", target_os = "ios"))))]
 #[path = "sizing_tests.rs"]
 mod tests;

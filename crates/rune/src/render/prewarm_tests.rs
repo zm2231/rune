@@ -71,6 +71,26 @@ mod macos {
         assert!(restarted.take().is_none(), "a taken slot stays taken");
     }
 
+    #[test]
+    fn a_window_takes_the_parked_gpu_over_the_prewarmed_one_and_drops_that() {
+        use super::super::prewarm;
+        let Some(gpu) = Gpu::test_headless() else { return };
+        let device = gpu.device.clone();
+        let renderer = Renderer::new(&gpu.device, wgpu::TextureFormat::Bgra8Unorm);
+        crate::render::park_gpu(gpu, renderer);
+        let prewarmed = prewarm::Slot::new();
+        prewarmed.start();
+        let (gpu, renderer) = prewarm::take_from(prewarm::parked(), &prewarmed).expect("the parked GPU");
+        assert!(gpu.device == device, "the window draws on the device the overlay parked");
+        assert_eq!(renderer.format, wgpu::TextureFormat::Bgra8Unorm);
+        assert!(prewarmed.take().is_none(), "the prewarmed GPU is dropped, not kept beside the parked one");
+        assert!(prewarm::take_parked().is_none(), "the parked GPU goes to one window");
+
+        let prewarmed = prewarm::Slot::new();
+        prewarmed.start();
+        assert!(prewarm::take_from(prewarm::parked(), &prewarmed).is_some(), "with nothing parked, the prewarmed GPU");
+    }
+
     /// A prewarmed device without a feature the window wants (and the adapter has) is replaced on
     /// the same instance, with the surface made once: a second surface would add a second layer.
     #[test]

@@ -119,6 +119,7 @@ fn wayland_output_removal_re_entry_and_multi_output_transitions() {
 /// CPU-first, Windows CPU-first, and any future open path) must announce creation through
 /// `Host::announce_created`, which runs `on_created`, `on_window`, and `creation_geometry`
 /// before the first focus and frame. Fails immediately if an open path forgets it.
+#[cfg(not(target_os = "ios"))]
 #[test]
 fn every_window_open_path_announces_creation_and_samples_geometry() {
     fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {

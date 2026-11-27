@@ -342,7 +342,7 @@ fn draw_facts(key: &str, rows: &[(String, String)], k: &Kit) -> El {
         if let Some(st) = st {
             let tone = status_color(st, k);
             right = right
-                .child(el().w(7.0).h(7.0).radius(3.5).fill(tone))
+                .child(el().key("dot").a11y_hidden().w(k.text_size(7.0)).h(k.text_size(7.0)).radius(k.text_size(3.5)).fill(tone))
                 .child(text(st).font(k.text(TextStyle::new(12.5, 580.0))).color(tone));
         }
         if !rest.is_empty() {
@@ -386,7 +386,7 @@ fn draw_compare(key: &str, sides: &[(String, String)], k: &Kit) -> El {
                 row()
                     .gap(6.0)
                     .center_y()
-                    .child(el().w(6.0).h(6.0).radius(3.0).fill(accent))
+                    .child(el().key("dot").a11y_hidden().w(k.text_size(6.0)).h(k.text_size(6.0)).radius(k.text_size(3.0)).fill(accent))
                     .child(text(label.to_uppercase()).font(k.text(CAPS)).color(accent))
                     .a11y_hidden(),
             )
@@ -418,9 +418,9 @@ fn draw_steps(key: &str, steps: &[StepRow], k: &Kit) -> El {
         let tone = status_color(&step.status, k);
         let done = matches!(step.status.to_ascii_lowercase().as_str(), "built" | "done" | "shipped" | "merged");
         let dot = if done {
-            el().w(9.0).h(9.0).radius(4.5).fill(tone)
+            el().key("dot").a11y_hidden().w(k.text_size(9.0)).h(k.text_size(9.0)).radius(k.text_size(4.5)).fill(tone)
         } else {
-            el().w(9.0).h(9.0).radius(4.5).border(1.5, tone)
+            el().key("dot").a11y_hidden().w(k.text_size(9.0)).h(k.text_size(9.0)).radius(k.text_size(4.5)).border(1.5, tone)
         };
         // The dot's colour says the status; the row says it in words.
         let said = match &step.note {
@@ -477,7 +477,7 @@ fn draw_size(key: &str, size: &SizeBar, k: &Kit) -> El {
         let fill = kind_color(name);
         legend =
             legend.child(
-                row().gap(5.0).center_y().child(el().w(7.0).h(7.0).radius(2.0).fill(fill)).child(
+                row().gap(5.0).center_y().child(el().key("dot").a11y_hidden().w(k.text_size(7.0)).h(k.text_size(7.0)).radius(2.0).fill(fill)).child(
                     text(format!("{name} +{adds} −{dels}")).font(k.text(TextStyle::new(12.0, 480.0))).color(c.text_base),
                 ),
             );

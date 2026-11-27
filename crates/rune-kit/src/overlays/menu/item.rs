@@ -322,7 +322,7 @@ impl MenuItem {
             let mark = icon(k.glyph.check_small, k.text_size(14.0))
                 .color(if standard { c.std_icon } else { c.icon_base })
                 .opacity(if on { 1.0 } else { 0.0 });
-            e = e.child(el().key("indicator").size(16.0, 16.0).center().child(mark).a11y_hidden());
+            e = e.child(el().key("indicator").size(k.text_size(16.0), k.text_size(16.0)).center().child(mark).a11y_hidden());
         }
         let sub_open = self.sub.as_ref().is_some_and(|s| s.1);
         let toggle = self.sub.as_ref().and(self.sub_toggle.clone()).filter(|_| !disabled);

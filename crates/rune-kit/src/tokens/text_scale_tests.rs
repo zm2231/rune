@@ -146,6 +146,9 @@ fn at_twice_the_text_size_every_control_holds_its_text_and_grows_only_by_it() {
     }
 }
 
+#[cfg(feature = "markdown")]
+const NOTES: &str = "```facts\nLatency: {verified} 11.9 ms\n```\n\n```compare\nBefore: Software loop.\nAfter: One GPU pass.\n```\n\n```steps\n{built} Shared pass\n{proposed} Live preview\n```\n\n```size\napp +120 \u{2212}30 \u{b7} tests +45 \u{2212}0 \u{b7} 4 files\n```\n";
+
 struct Scene {
     scale: TextScale,
     diff: crate::diff::DiffState,
@@ -179,20 +182,25 @@ fn scene(s: &Scene, cx: &mut Cx<Scene>) -> El {
             let folder = TreeItem::new("lib").build(k, &TreeRow::new("lib", 0).expanded(Some(true)), &TreeStyle::from_kit(k));
             let diff = crate::diff::DiffView::new(|s: &Scene| &s.diff, |s: &mut Scene| &mut s.diff).on_comment(|_: &mut Scene, _, _| {}).build(s, k);
             #[cfg(feature = "markdown")]
-            let markdown = crate::Markdown::new("# One\n\n## Two\n\n### Three\n\n#### Four\n\nBody with `code`.\n\n```\nlet x = 1;\n```\n").build(k);
+            let markdown = crate::Markdown::new("# One\n\n## Two\n\n### Three\n\n#### Four\n\nBody with `code`.\n\n![Missing chart](missing.png)\n\n```\nlet x = 1;\n```\n").build(k);
             #[cfg(not(feature = "markdown"))]
             let markdown = el();
+            #[cfg(feature = "markdown")]
+            let notes = crate::Note::new(NOTES).build(k);
+            #[cfg(not(feature = "markdown"))]
+            let notes = el();
             col()
                 .w(900.0)
                 .items_start()
                 .child(el().w(600.0).child(markdown.key("markdown")))
+                .child(el().w(600.0).child(notes.key("notes")))
                 .child(row().child(tabs.key("tab_strip")))
                 .child(row().child(list.key("list")))
                 .child(row().child(menu))
                 .child(row().child(select))
                 .child(Toast::new("toast", "Saved").icon(k, &STAR).closable().build(k).key("toast"))
                 .child(SidebarHeader::new("Pinned").collapsed(false).build(k).key("sidebar_header"))
-                .child(el().w(240.0).child(SidebarRow::new("Inbox").icon(&STAR).build(k).key("sidebar_icon_row")))
+                .child(el().w(240.0).child(SidebarRow::new("Inbox").icon(&STAR).status(crate::shell::RowStatus::Busy).build(k).key("sidebar_icon_row")))
                 .child(el().w(300.0).child(tree.key("tree_row")))
                 .child(el().w(300.0).child(folder.key("tree_folder")))
                 .child(el().w(900.0).h(400.0).child(diff.key("diff")))
@@ -225,7 +233,11 @@ fn at_twice_the_text_size_kit_text_and_the_glyphs_beside_it_double() {
                 stuck.push(format!("{} {:?}: {} / {} to {} / {}", b.path, b.text, sa.size, sa.line_height, sb.size, sb.line_height));
             }
         }
-        if b.role == "icon" || b.role == "progressbar" {
+        let holder = matches!(b.key.as_deref(), Some("status" | "status-mark" | "indicator" | "avatar" | "dot"))
+            || (b.key.as_deref() == Some("icon") && b.role != "icon")
+            || (b.role == "image" && b.path.contains("/markdown/"));
+        let broken_glyph = big.iter().any(|p| p.role == "image" && p.path.contains("/markdown/") && b.path == format!("{}/#0", p.path));
+        if b.role == "icon" || b.role == "progressbar" || (holder && b.role != "image") || broken_glyph {
             glyphs += 1;
             if [b.target[2], b.target[3]] != [a.target[2] * 2.0, a.target[3] * 2.0] {
                 stuck.push(format!("{} glyph: {:?} to {:?}", b.path, &a.target[2..], &b.target[2..]));
@@ -235,7 +247,8 @@ fn at_twice_the_text_size_kit_text_and_the_glyphs_beside_it_double() {
     assert!(stuck.is_empty(), "text and glyphs that kept their size:\n{}", stuck.join("\n"));
     for key in ["tab_strip", "list", "menu-menu", "select-content", "toast", "sidebar_header", "sidebar_icon_row", "tree_row", "tree_folder", "diff"]
         .into_iter()
-        .chain(cfg!(feature = "markdown").then_some("markdown")) {
+        .chain(cfg!(feature = "markdown").then_some("markdown"))
+        .chain(cfg!(feature = "markdown").then_some("notes")) {
         let inside = |els: &[rune::ElementInfo]| {
             let root = els.iter().find(|e| e.key.as_deref() == Some(key) || e.path.ends_with(&format!("/{key}"))).map(|e| e.path.clone());
             root.map_or(0, |r| els.iter().filter(|e| e.path.starts_with(&r) && (e.text_style.is_some() || e.role == "icon")).count())
@@ -243,6 +256,10 @@ fn at_twice_the_text_size_kit_text_and_the_glyphs_beside_it_double() {
         assert!(inside(&big) > 0, "{key} draws text or glyphs");
     }
     assert!(texts > 20 && glyphs > 8, "{texts} texts and {glyphs} glyphs compared");
+
+    let tab = |key: &str| big.iter().find(|e| e.path.contains("/t-b/") && e.key.as_deref() == Some(key)).unwrap_or_else(|| panic!("the busy tab's {key}"));
+    let (title, status) = (tab("title"), tab("status"));
+    assert!(title.target[0] + title.target[2] <= status.target[0] + 0.5, "the busy tab's title {:?} ends before its status {:?}", title.target, status.target);
 
     let mut pluses = 0;
     for b in big.iter().filter(|e| e.key.as_deref() == Some("plus")) {

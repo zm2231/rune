@@ -100,7 +100,7 @@ impl Host {
 
     fn step(&mut self) -> Result<Vec<u32>, &'static str> {
         let at = self.next();
-        crate::frame::loop_frame::step(&mut self.clock, self.rt.core_mut(), at).map(|(patched, _)| patched)
+        crate::frame::loop_frame::step(&mut self.clock, self.rt.core_mut(), None, at).map(|(patched, _)| patched)
     }
 }
 

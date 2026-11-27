@@ -10,7 +10,7 @@ use super::render::{
 };
 use super::stepping::FrameMove;
 use crate::frame::clock::FrameClock;
-use crate::frame::loop_frame;
+use crate::frame::loop_frame::LoopFrame;
 use crate::frame::host_step::{
     self, Acquire, FrameHost, Gate, PostStepCheck, ReacquireReason, RenderPrep, StepInfo,
 };
@@ -216,7 +216,7 @@ struct FrameState {
     materials_checked: bool,
     #[cfg(target_os = "macos")]
     frame_time: Option<Instant>,
-    only_loops: bool,
+    loops: Option<LoopFrame>,
     looped: Option<Vec<u32>>,
     profile: FrameProfile,
     post_acquire_done: bool,
@@ -370,10 +370,10 @@ impl FrameHost for WindowFrame<'_> {
         let (Some(l), Some((_, renderer))) = (self.host.win.as_mut(), self.host.gpu.as_ref()) else { return Gate::Skip };
         // Only the window's loops asked for this frame (`LoopFrame`): a step of them may stand
         // for the whole of it (`Runtime::loop_step`), drawn on Windows only where they draw (`arm_loop`).
-        let only_loops = l.loop_frame.only_loops();
-        if !only_loops { self.state.profile.set_loop_why("something reached the window"); }
+        let asked = l.loop_frame.take();
+        if asked == LoopFrame::Touched { self.state.profile.set_loop_why("something reached the window"); }
         // The app's waker ran and its event is still on its way: what it brought may be readable now.
-        let only_loops = only_loops && !self.host.app_woken.load(Ordering::Acquire);
+        let only_loops = asked != LoopFrame::Touched && !self.host.app_woken.load(Ordering::Acquire);
         if !only_loops { self.state.profile.set_loop_why_if_none("an app wake on its way"); }
         let only_loops = only_loops && !hidden && !live_resize && self.host.trace.is_none() && self.host.args.trace.is_none()
             && self.host.app.rt().host.window_frame.is_none() && !FrameMove::moving(&self.host.frame_move) && !self.host.app.compositor_animating();
@@ -381,7 +381,7 @@ impl FrameHost for WindowFrame<'_> {
         let only_loops = only_loops && !l.native.materials.native();
         #[cfg(target_os = "macos")]
         let only_loops = only_loops && self.state.shown.is_none();
-        self.state.only_loops = only_loops;
+        self.state.loops = only_loops.then_some(asked);
         // Only a timer woke the resting window: build the frame first, and take no drawable
         // when it draws what's on screen.
         let quiet = l.timer_frame.take_quiet() && !hidden && !live_resize && l.presented.is_some()
@@ -442,7 +442,7 @@ impl FrameHost for WindowFrame<'_> {
         let at = self.state.target.unwrap_or(now);
         #[cfg(target_os = "macos")]
         { self.state.frame_time = Some(at); }
-        let step = if self.state.only_loops { loop_frame::step(&mut self.host.clock, self.host.app.rt_mut(), at) } else { Err("") };
+        let step = match self.state.loops { Some(asked) => self.host.app.loop_step(&mut self.host.clock, at, asked == LoopFrame::Woken), None => Err("") };
         let (animating, dt) = match step {
             Ok((patched, dt)) => {
                 if !patched.is_empty() {
@@ -554,7 +554,7 @@ impl FrameHost for WindowFrame<'_> {
         if self.state.hidden && self.host.win.as_ref().is_some_and(|l| l.first_frame.settles()) {
             self.host.app.rt_mut().settle_all();
         }
-        let stepped = if self.state.only_loops { loop_frame::step(&mut self.host.clock, self.host.app.rt_mut(), frame_time) } else { Err("") };
+        let stepped = match self.state.loops { Some(asked) => self.host.app.loop_step(&mut self.host.clock, frame_time, asked == LoopFrame::Woken), None => Err("") };
         if let Err(why) = stepped && !why.is_empty() { self.state.profile.set_loop_why(why); }
         let (animating, dt) = if self.state.hidden {
             self.host.clock.hold(frame_time);

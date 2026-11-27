@@ -222,6 +222,8 @@ pub(crate) use window_requests::HostState;
 #[cfg(test)]
 mod hidden_wake_tests;
 #[cfg(test)]
+mod loop_poll_tests;
+#[cfg(test)]
 mod poll_after_handlers_tests;
 #[cfg(test)]
 mod timer_wake_tests;

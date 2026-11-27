@@ -754,6 +754,11 @@ impl<S: 'static> Runtime<S> {
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     #[inline(always)]
     pub(crate) fn paint_cycle_tick(&mut self) -> bool { self.core_mut().paint_cycle_tick() }
+    #[cfg(test)]
+    pub(crate) fn loop_step_polled(&mut self, dt: f64, woke: bool) -> Result<Vec<u32>, &'static str> {
+        let (core, mut app) = self.split_mut();
+        core.loop_step_polled(&mut app, dt, woke)
+    }
     #[inline(always)]
     pub(crate) fn loop_step(&mut self, dt: f64) -> Result<Vec<u32>, &'static str> { self.core_mut().loop_step(dt) }
     #[inline(always)]

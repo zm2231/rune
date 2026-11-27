@@ -86,7 +86,10 @@ pub(crate) struct A11yTree {
     changes: Changes,
     /// Live roots hidden by an open modal or muted on return until their spoken content changes.
     live_modal: HashMap<u64, ModalLive>,
+    texts: Option<(TextsAt, (u64, u64))>,
 }
+
+type TextsAt = (u64, u64, usize);
 
 /// A live region temporarily suppressed across a modal open/close cycle so platform adapters do
 /// not re-announce unchanged text when background nodes return to the tree.
@@ -289,7 +292,8 @@ impl RuntimeCore {
     /// since the last one. `None` before the first frame has laid anything out.
     pub(crate) fn a11y_update(&mut self) -> Option<TreeUpdate> {
         if self.host.a11y().is_none() || self.paint.drawn.len() != self.tree.nodes.len() || self.tree.nodes.is_empty() { return None; }
-        let stamp = self.a11y_stamp();
+        let texts = self.a11y_texts();
+        let stamp = self.a11y_stamp(texts);
         let tree = self.host.a11y()?;
         if !tree.full && !tree.held && tree.stamp.as_ref() == Some(&stamp) { return None; }
         // Only scrolled or lazily shaped waiting paragraphs: rows keep their bounds in their
@@ -530,11 +534,9 @@ impl RuntimeCore {
         TreeInfo { root: ROOT, toolkit_name: Some("Rune".into()), toolkit_version: Some(env!("CARGO_PKG_VERSION").into()) }
     }
 
-    fn a11y_stamp(&self) -> Stamp {
-        let mut scrolls = 0u64;
-        for (id, s) in &self.scroll.scrolls {
-            scrolls = scrolls.wrapping_add(id.0.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (s.drawn_x.to_bits() as u64) << 32 ^ s.drawn.y().to_bits() as u64);
-        }
+    fn a11y_texts(&mut self) -> (u64, u64) {
+        let key = (self.commit.commits, self.paint_count(), self.tree.nodes.len());
+        if let Some((at, texts)) = self.host.a11y().and_then(|t| t.texts) && at == key { return texts; }
         let mut text_fills = 0u64;
         let mut text_settled = 0u64;
         for n in &self.tree.nodes {
@@ -547,6 +549,15 @@ impl RuntimeCore {
                     text_settled = mix(mix(text_settled, n.id.0), u64::from(p.waiting()));
                 }
             }
+        }
+        if let Some(tree) = self.host.a11y_mut() { tree.texts = Some((key, (text_fills, text_settled))); }
+        (text_fills, text_settled)
+    }
+
+    fn a11y_stamp(&self, (text_fills, text_settled): (u64, u64)) -> Stamp {
+        let mut scrolls = 0u64;
+        for (id, s) in &self.scroll.scrolls {
+            scrolls = scrolls.wrapping_add(id.0.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (s.drawn_x.to_bits() as u64) << 32 ^ s.drawn.y().to_bits() as u64);
         }
         let focus = self.kbd.focus.path().map_or(0, hash_str) ^ self.link_focus().map_or(0, |k| k as u64 + 1) << 48;
         let caret_sel = self.caret_browse_endpoints().map_or(0, |(h, ai, a, fi, f)| {

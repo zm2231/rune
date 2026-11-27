@@ -177,9 +177,23 @@ impl RuntimeCore {
     /// else is due (input, a wake, a timer, a commit, other motion), a loop on screen is one a
     /// step can't draw, or a step would show or hide anything.
     pub(crate) fn loop_step(&mut self, dt: f64) -> Result<Vec<u32>, &'static str> {
+        self.loop_step_polling(dt, None)
+    }
+
+    pub(crate) fn loop_step_polled(&mut self, app: &mut dyn AppDriver, dt: f64, woke: bool) -> Result<Vec<u32>, &'static str> {
+        self.loop_step_polling(dt, Some((app, woke)))
+    }
+
+    #[cfg(any(test, target_vendor = "apple"))]
+    pub(crate) fn poll_timer_due(&self) -> bool {
+        self.poll_wake_deadline().is_some_and(|d| d <= self.now_clock())
+    }
+
+    fn loop_step_polling(&mut self, dt: f64, poll: Option<(&mut dyn AppDriver, bool)>) -> Result<Vec<u32>, &'static str> {
         // Checked on the virtual clock (headless), the step is due where the frame will be.
         let virtual_check = checking() && self.wall_start.is_none();
-        let wall = if virtual_check { self.clock + dt } else { self.now_clock() };
+        let mut wall = if virtual_check { self.clock + dt } else { self.now_clock() };
+        let timer_due = self.poll_wake_deadline().is_some_and(|d| d <= wall);
         let keep = &self.paint.keep.cycles;
         let loops = keep.slots.len() + keep.turns.len() + 2 * keep.slides.len() + self.unseen_loops();
         let has_icons = !keep.icons.is_empty();
@@ -189,7 +203,7 @@ impl RuntimeCore {
             else if keep.mixed || keep.generation != self.commit.commits { "other motion or a commit" }
             else if (self.wall_start.is_none() && !virtual_check) || self.reduced_motion || self.time_scale <= 0.0 || !self.live_visible() || self.tracing() { "not live" }
             else if dt < 0.0 || (!has_icons && dt > crate::frame::clock::MAX_GAP) { "late" }
-            else if self.poll_wake_deadline().is_some_and(|d| d <= wall) { "timer due" }
+            else if timer_due && poll.is_none() { "timer due" }
             else if self.commit.virtual_fill.resuming(wall) || self.commit.virtual_items.fill_resuming(wall) { "a list filling" }
             else if let Some(work) = self.waiting_work() { work }
             else { "" };
@@ -203,6 +217,10 @@ impl RuntimeCore {
                 (AnimSource::VIDEO, "motion: a video"), (AnimSource::TEXT_FLIGHT, "motion: a text flight"),
                 (AnimSource::ICON_ANIM, "motion: an animated icon")];
             return Err(other.iter().find(|(bit, _)| self.motion.anim_sources & bit != 0).map_or("motion: unknown", |o| o.1));
+        }
+        if let Some((app, woke)) = poll && (woke || timer_due) {
+            if self.poll_wants_frame(app) { return Err("a poll changed something"); }
+            if !virtual_check { wall = wall.max(self.clock); }
         }
         if !self.animating && !due { return if checking() { Err("no loop due") } else { Ok(Vec::new()) }; }
         if has_icons {

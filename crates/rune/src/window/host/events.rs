@@ -183,7 +183,7 @@ impl Host {
         }
         // The display tick a timer's frame waits for draws that frame.
         if !matches!(event, WakeEvent::DisplayTick(_)) && let Some(w) = &mut self.win { w.timer_frame.no_longer_quiet(); }
-        if !matches!(event, WakeEvent::DisplayTick(_) | WakeEvent::FrameSlot(_)) && let Some(w) = &mut self.win { w.loop_frame.touched(); }
+        if let Some(w) = &mut self.win { match event { WakeEvent::DisplayTick(_) | WakeEvent::FrameSlot(_) => {} WakeEvent::App(_) => w.loop_frame.woke(), _ => w.loop_frame.touched() } }
         match event {
             WakeEvent::App(_) => {
                 self.app_woken.store(false, Ordering::Relaxed);

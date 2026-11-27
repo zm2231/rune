@@ -217,7 +217,7 @@ impl MarkdownStyle {
             inline_code_pad: 3.5,
             code_block_pad: [12.0, 12.0],
             code_block_radius: 6.0,
-            list_indent: 32.0,
+            list_indent: k.text_size(32.0),
             list_gap: 4.0,
             strong_weight: 670.0,
             table_outline: Some(c.border_muted),
@@ -362,8 +362,8 @@ impl MarkdownStyle {
         self.code_block_radius = super::table::pts(radius);
         self
     }
-    /// The column a list's markers sit centred in (32 by default), and the gap between its
-    /// items (4).
+    /// The column a list's markers sit centred in (32 at the default text size, widening for a
+    /// list's widest marker), and the gap between its items (4).
     pub fn list(mut self, indent: f32, gap: f32) -> Self {
         self.list_indent = indent;
         self.list_gap = gap;

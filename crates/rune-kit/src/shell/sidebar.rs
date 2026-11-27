@@ -215,7 +215,7 @@ impl SidebarHeader {
         }
         if let Some(collapsed) = self.collapsed {
             let glyph = if collapsed { k.glyph.triangle_right } else { k.glyph.triangle_down };
-            title = title.child(icon(glyph, 12.0).key("disclosure").color(c.icon_faint));
+            title = title.child(icon(glyph, k.text_size(12.0)).key("disclosure").color(c.icon_faint));
         }
         // Its title names it, the count describes it, and a reader hears it expanded or collapsed.
         let mut header = row()
@@ -618,7 +618,7 @@ impl SidebarRow {
         }
         let lead = match (self.avatar, self.icon) {
             (Some(a), _) => Some(row().key("avatar").size(16.0, 16.0).center().child(a).a11y_hidden()),
-            (None, Some(i)) => Some(icon(i, 16.0).key("icon").color(glyph).a11y_hidden()),
+            (None, Some(i)) => Some(icon(i, k.text_size(16.0)).key("icon").color(glyph).a11y_hidden()),
             _ => None,
         };
         let has_lead = lead.is_some();

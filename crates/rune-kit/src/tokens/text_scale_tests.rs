@@ -145,3 +145,93 @@ fn at_twice_the_text_size_every_control_holds_its_text_and_grows_only_by_it() {
         assert_eq!(b.inset, a.inset, "{key}'s padding stays");
     }
 }
+
+struct Scene {
+    scale: TextScale,
+    diff: crate::diff::DiffState,
+}
+
+fn scene(s: &Scene, cx: &mut Cx<Scene>) -> El {
+    use crate::glyphs::STAR;
+    use crate::shell::{TabItem, TabOrientation, TabStrip};
+    use crate::{List, ListItem, Menu, MenuEntry, MenuItem, Select, SidebarHeader, Toast, TreeItem, TreeRow, TreeStyle};
+    let theme = KitTheme::neutral();
+    cx.with_text_scale(&s.scale, |cx| {
+        cx.with_kit(&theme, |cx| {
+            let k = cx.kit();
+            let k = &*k;
+            let mut layer = Vec::new();
+            let menu = Menu::new("menu")
+                .trigger(Button::new("Edit").build(k))
+                .item(MenuItem::new("Copy").icon(&STAR))
+                .item(MenuItem::new("Wrap").checked(true))
+                .item(MenuItem::new("More").submenu(vec![MenuEntry::item(MenuItem::new("Less"))], false))
+                .open(true)
+                .build(k, &mut layer);
+            let select = Select::new("select", &["One", "Two"]).current(Some("One")).open(true).build(k, &mut layer);
+            let tabs = TabStrip::new("tabs", TabOrientation::Horizontal)
+                .tabs([TabItem::new("a", "Alpha").icon(&STAR).closable(true)])
+                .viewport_width(Some(400.0))
+                .on_close(|_: &mut Scene, _, _| {})
+                .build(k);
+            let list = List::new().item(ListItem::new("Inbox").selected(true)).build(k);
+            let tree = TreeItem::new("src").icon(&STAR).build(k, &TreeRow::new("src", 0), &TreeStyle::from_kit(k));
+            let diff = crate::diff::DiffView::new(|s: &Scene| &s.diff, |s: &mut Scene| &mut s.diff).build(s, k);
+            col()
+                .w(900.0)
+                .items_start()
+                .child(row().child(tabs.key("tab_strip")))
+                .child(row().child(list.key("list")))
+                .child(row().child(menu))
+                .child(row().child(select))
+                .child(Toast::new("toast", "Saved").icon(k, &STAR).closable().build(k).key("toast"))
+                .child(SidebarHeader::new("Pinned").collapsed(false).build(k).key("sidebar_header"))
+                .child(el().w(240.0).child(SidebarRow::new("Inbox").icon(&STAR).build(k).key("sidebar_icon_row")))
+                .child(el().w(300.0).child(tree.key("tree_row")))
+                .child(el().w(900.0).h(400.0).child(diff.key("diff")))
+                .children(layer)
+        })
+    })
+}
+
+fn scene_at(scale: f32) -> Vec<rune::ElementInfo> {
+    let old: String = (1..=40).map(|i| format!("line {i}\n")).collect();
+    let new = old.replace("line 20\n", "line twenty\n");
+    let diff = crate::diff::DiffState::new(vec![crate::diff::FileDiff::from_texts("a.txt", &old, &new)]);
+    let mut rt = Runtime::new(Scene { scale: TextScale::new(scale), diff }, scene, (900.0, 1600.0), Env::new(true, 1.0));
+    rt.frame(0.0);
+    rt.settle_all();
+    rt.frame(0.0);
+    rt.elements()
+}
+
+#[test]
+fn at_twice_the_text_size_kit_text_and_the_glyphs_beside_it_double() {
+    let (plain, big) = (scene_at(1.0), scene_at(2.0));
+    let at = |els: &[rune::ElementInfo], path: &str| els.iter().find(|e| e.path == path).cloned();
+    let (mut texts, mut glyphs, mut stuck) = (0, 0, Vec::new());
+    for b in &big {
+        let Some(a) = at(&plain, &b.path) else { continue };
+        if let (Some(sa), Some(sb)) = (&a.text_style, &b.text_style) {
+            texts += 1;
+            if (sb.size, sb.line_height) != (sa.size * 2.0, sa.line_height * 2.0) {
+                stuck.push(format!("{} {:?}: {} / {} to {} / {}", b.path, b.text, sa.size, sa.line_height, sb.size, sb.line_height));
+            }
+        }
+        if b.role == "icon" {
+            glyphs += 1;
+            if [b.target[2], b.target[3]] != [a.target[2] * 2.0, a.target[3] * 2.0] {
+                stuck.push(format!("{} glyph: {:?} to {:?}", b.path, &a.target[2..], &b.target[2..]));
+            }
+        }
+    }
+    assert!(stuck.is_empty(), "text and glyphs that kept their size:\n{}", stuck.join("\n"));
+    for key in ["tab_strip", "list", "menu-menu", "select-content", "toast", "sidebar_header", "sidebar_icon_row", "tree_row", "diff"] {
+        let inside = |els: &[rune::ElementInfo]| {
+            let root = els.iter().find(|e| e.key.as_deref() == Some(key) || e.path.ends_with(&format!("/{key}"))).map(|e| e.path.clone());
+            root.map_or(0, |r| els.iter().filter(|e| e.path.starts_with(&r) && (e.text_style.is_some() || e.role == "icon")).count())
+        };
+        assert!(inside(&big) > 0, "{key} draws text or glyphs");
+    }
+    assert!(texts > 20 && glyphs > 8, "{texts} texts and {glyphs} glyphs compared");
+}

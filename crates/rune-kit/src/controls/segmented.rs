@@ -388,7 +388,7 @@ impl SegmentedControl {
                 seg = seg.controls(ctrl);
             }
             if let Some(ic) = extra.icon {
-                let mut glyph = icon(ic, 14.0).key("icon").color(ink).a11y_hidden();
+                let mut glyph = icon(ic, k.text_size(14.0)).key("icon").color(ink).a11y_hidden();
                 if hovers {
                     glyph = glyph.group_color(c.text_base);
                 }

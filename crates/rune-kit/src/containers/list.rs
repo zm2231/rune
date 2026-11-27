@@ -135,7 +135,7 @@ impl List {
                         .center_y()
                         .radius(k.radius.md)
                         .fill(c.surface_base)
-                        .child(icon(k.glyph.search, 16.0).color(c.std_icon))
+                        .child(icon(k.glyph.search, k.text_size(16.0)).color(c.std_icon))
                         .child(input),
                 ),
             );
@@ -203,12 +203,12 @@ impl List {
                 .gap(4.0)
                 .child(text(item.label).font(item_font).color(c.text_strong).shrink().truncate().a11y_hidden());
             if item.selected {
-                r = r.child(icon(k.glyph.check_small, 16.0).color(c.std_icon_strong));
+                r = r.child(icon(k.glyph.check_small, k.text_size(16.0)).color(c.std_icon_strong));
             }
             if active {
                 r = r.fill(c.surface_raised_hover);
                 if let Some(ai) = self.active_icon {
-                    r = r.child(icon(ai, 16.0).color(c.std_icon_strong));
+                    r = r.child(icon(ai, k.text_size(16.0)).color(c.std_icon_strong));
                 }
             } else if pressable {
                 r = r.focus_highlight(c.surface_raised_hover);

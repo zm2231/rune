@@ -684,7 +684,7 @@ impl TextInput {
         }
         if (self.copy && !self.edit.is_secure()) || self.clear {
             let (glyph, side, radius) =
-                if self.clear { (k.glyph.clear, 28.0, k.radius.md) } else { (k.glyph.copy, 20.0, k.radius.sm) };
+                if self.clear { (k.glyph.clear, k.text_size(28.0), k.radius.md) } else { (k.glyph.copy, k.text_size(20.0), k.radius.sm) };
             let mut b = row()
                 .key("action")
                 .role("button")
@@ -695,7 +695,7 @@ impl TextInput {
                 .radius(radius)
                 // Inside, clear of the field's edge it sits on (`text-input.css`, opencode#64909).
                 .focus_ring(2.0, -2.0, c.border_focus)
-                .child(icon(glyph, 16.0).color(c.icon_muted))
+                .child(icon(glyph, k.text_size(16.0)).color(c.icon_muted))
                 .disabled(disabled);
             if self.clear {
                 b = b.mr(-m.padding_x);

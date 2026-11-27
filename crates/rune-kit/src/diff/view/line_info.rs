@@ -4,7 +4,7 @@
 use rune::{Anim, Cursor, El, Icon, Span, col, icon, rich, row, text};
 
 use super::{DiffLabel, View};
-use crate::diff::state::{DiffState, EXPAND_STEP, Expand, GAP_H};
+use crate::diff::state::{DiffState, EXPAND_STEP, Expand};
 
 // Pierre's separator glyphs (`diffs-icon-expand`, `diffs-icon-expand-all`). Its "up" button
 // shows the chevron as drawn, pointing down into the lines it opens; its "down" button flips it.
@@ -54,7 +54,7 @@ impl View {
         let (first, last) = (gap == 0, gap == file.hunks.len());
         // Pierre's words, which OpenCode Desktop shows untranslated by default.
         let count = self.label(DiffLabel::UnmodifiedLines(hidden));
-        let mut inner = row().key("inner").h(GAP_H).min_w(0.0);
+        let mut inner = row().key("inner").h(l.rows.gap).min_w(0.0);
         if hidden > 0 && file.expandable() {
             let steps: Vec<(Expand, &'static Icon, String)> = match (first, last) {
                 (true, _) => vec![(Expand::Up, &LINE_INFO_DOWN, self.label(DiffLabel::ShowMoreLinesAbove(hidden.min(EXPAND_STEP))))],
@@ -66,7 +66,7 @@ impl View {
                 ],
             };
             let w = self.gutter_w(st, f) - LINE_INFO_GAP;
-            let h = if steps.len() == 2 { (GAP_H - LINE_INFO_GAP) / 2.0 } else { GAP_H };
+            let h = if steps.len() == 2 { (l.rows.gap - LINE_INFO_GAP) / 2.0 } else { l.rows.gap };
             let buttons = steps.into_iter().map(|(how, glyph, label)| {
                 let btn = row()
                     .key(format!("{how:?}"))
@@ -78,10 +78,10 @@ impl View {
                     .cursor(Cursor::Pointer)
                     .role("button")
                     .label(label)
-                    .child(icon(glyph, 16.0).color(l.faint).group_color(l.text).absolute((w - 16.0) / 2.0, (h - 16.0) / 2.0));
+                    .child(icon(glyph, l.icon).color(l.faint).group_color(l.text).absolute((w - l.icon) / 2.0, (h - l.icon) / 2.0));
                 self.bind.bind_expand(btn, f, gap, how, true)
             });
-            inner = inner.child(col().key("expand").w(w + LINE_INFO_GAP).h(GAP_H).gap(LINE_INFO_GAP).fill(l.bg).children(buttons));
+            inner = inner.child(col().key("expand").w(w + LINE_INFO_GAP).h(l.rows.gap).gap(LINE_INFO_GAP).fill(l.bg).children(buttons));
             // The words open the range from both ends; the pointer anywhere on the row underlines them.
             let words = self
                 .bind
@@ -101,14 +101,14 @@ impl View {
                         .group_opacity(0.0, 1.0)
                         .absolute(0.0, 0.0),
                 );
-            inner = inner.child(row().key("content").h(GAP_H).px(l.adv).items_center().hover_group().hover_motion(Anim::INSTANT, Anim::INSTANT).cursor(Cursor::Pointer).child(words));
+            inner = inner.child(row().key("content").h(l.rows.gap).px(l.adv).items_center().hover_group().hover_motion(Anim::INSTANT, Anim::INSTANT).cursor(Cursor::Pointer).child(words));
         } else {
             // With nothing to open, the count starts 1ch into the gutter.
-            inner = inner.child(row().key("content").h(GAP_H).px(l.adv).items_center().child(text(count.clone()).key("count").font(l.separator_text).color(l.faint)));
+            inner = inner.child(row().key("content").h(l.rows.gap).px(l.adv).items_center().child(text(count.clone()).key("count").font(l.separator_text).color(l.faint)));
         }
         if let Some(w) = self.view_w(st, false) {
             inner = inner.max_w(w).sticky_left(0.0);
         }
-        row().w_full().h(GAP_H).fill(l.separator).role("group").label(count).child(inner)
+        row().w_full().h(l.rows.gap).fill(l.separator).role("group").label(count).child(inner)
     }
 }

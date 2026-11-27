@@ -7,7 +7,7 @@ use rune::{Color, Cursor, El, Icon, col, icon, row, text};
 
 use super::{CODE_PAD, DiffLabel, View};
 use crate::diff::model::FileStatus;
-use crate::diff::state::{DiffState, EXPAND_STEP, Expand, GAP_H, HEADER_H, NOTE_H};
+use crate::diff::state::{DiffState, EXPAND_STEP, Expand};
 
 static EXPAND_UP: Icon = Icon {
     name: "kit-diff-expand-up",
@@ -39,14 +39,14 @@ impl View {
             let mut add = |how: Expand, glyph: &'static Icon, label: String| {
                 let btn = row()
                     .key(format!("{how:?}"))
-                    .size(24.0, 24.0)
+                    .size(l.icon * 1.5, l.icon * 1.5)
                     .center()
                     .radius(6.0)
                     .hover(l.hover)
                     .cursor(Cursor::Pointer)
                     .role("button")
                     .label(label)
-                    .child(icon(glyph, 16.0).color(l.muted));
+                    .child(icon(glyph, l.icon).color(l.muted));
                 buttons.push(self.bind.bind_expand(btn, f, gap, how, false));
             };
             let step = hidden.min(EXPAND_STEP);
@@ -61,8 +61,8 @@ impl View {
                 }
             }
         }
-        let buttons = row().key("expand").w(self.gutter_w(st, f)).h(GAP_H).center().gap(2.0).children(buttons);
-        let mut inner = row().key("inner").h(GAP_H).items_center().gap(12.0).child(buttons);
+        let buttons = row().key("expand").w(self.gutter_w(st, f)).h(l.rows.gap).center().gap(2.0).children(buttons);
+        let mut inner = row().key("inner").h(l.rows.gap).items_center().gap(12.0).child(buttons);
         if let Some(w) = self.view_w(st, false) {
             inner = inner.max_w(w).sticky_left(0.0);
         }
@@ -84,7 +84,7 @@ impl View {
             Some(header) => self.label(DiffLabel::UnchangedLinesBefore { count: hidden, header }),
             None => self.label(DiffLabel::UnchangedLines(hidden)),
         };
-        row().w_full().h(GAP_H).items_center().fill(l.gap_bg).role("group").label(label).child(inner)
+        row().w_full().h(l.rows.gap).items_center().fill(l.gap_bg).role("group").label(label).child(inner)
     }
 
     /// A file with no lines to show.
@@ -103,11 +103,11 @@ impl View {
             DiffLabel::NoChanges
         };
         let msg = self.label(kind);
-        let mut inner = row().key("inner").h(NOTE_H).items_center().pl(self.gutter_w(st, f) + CODE_PAD.0).child(text(msg.clone()).font(l.small).color(l.muted));
+        let mut inner = row().key("inner").h(l.rows.note).items_center().pl(self.gutter_w(st, f) + CODE_PAD.0).child(text(msg.clone()).font(l.small).color(l.muted));
         if let Some(w) = self.view_w(st, false) {
             inner = inner.max_w(w).sticky_left(0.0);
         }
-        row().w_full().h(NOTE_H).fill(l.bg).role("note").label(msg).child(inner)
+        row().w_full().h(l.rows.note).fill(l.bg).role("note").label(msg).child(inner)
     }
 
     pub(super) fn file_header(&self, s: &dyn Any, st: &DiffState, f: usize, sticky: bool) -> El {
@@ -122,14 +122,14 @@ impl View {
             let toggle_label = self.label(if collapsed { DiffLabel::ExpandFile } else { DiffLabel::CollapseFile });
             let toggle = row()
                 .key("toggle")
-                .size(24.0, 24.0)
+                .size(l.icon * 1.5, l.icon * 1.5)
                 .center()
                 .radius(6.0)
                 .hover(l.hover)
                 .cursor(Cursor::Pointer)
                 .role("button")
                 .label(toggle_label).expanded(!collapsed)
-                .child(icon(if collapsed { l.triangle_right } else { l.triangle_down }, 16.0).color(l.muted));
+                .child(icon(if collapsed { l.triangle_right } else { l.triangle_down }, l.icon).color(l.muted));
             let toggle = self.bind.bind_toggle_file(toggle, f, sticky);
             let path = |p: &str, c: Color| text(p.to_owned()).font(l.label).color(c).truncate_head().min_w(0.0).shrink();
             let mut name = row().key("path").items_center().gap(6.0).min_w(0.0).shrink();
@@ -174,7 +174,7 @@ impl View {
             deletions: dels,
         });
         let line = |key: &'static str, c: Color| col().key(key).w_full().h(1.0).fill(c).a11y_hidden();
-        let mut h = col().w_full().h(HEADER_H).fill(l.header_bg).role("heading").label(label);
+        let mut h = col().w_full().h(l.rows.header).fill(l.header_bg).role("heading").label(label);
         // In the list, as wide as the view and held to its left edge while the code scrolls
         // sideways, so the counts and actions stay in sight.
         if let (false, Some(w)) = (sticky, self.view_w(st, false)) {

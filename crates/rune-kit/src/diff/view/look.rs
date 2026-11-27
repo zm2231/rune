@@ -7,13 +7,15 @@ use rune::{Color, Icon, TextStyle};
 use super::DiffView;
 use crate::Kit;
 use crate::diff::model::LineKind;
-use crate::diff::state::{GAP_H, LINE_H};
+use crate::diff::state::RowHeights;
 use crate::syntax::SyntaxTheme;
 use crate::tokens::palette::tint;
 
 /// Colours and type, from the kit's palette so themes restyle them.
 pub(super) struct Look {
     pub(super) font: TextStyle,
+    pub(super) rows: RowHeights,
+    pub(super) icon: f32,
     pub(super) label: TextStyle,
     pub(super) small: TextStyle,
     /// [`FoldRow::LineInfo`]'s count: the interface face at the code's size, on the row's height.
@@ -128,13 +130,17 @@ impl Look {
             bar: hue,
             count: fg,
         };
-        let font = spec.code_font.map_or(TextStyle { size: k.text_size(13.0), line_height: LINE_H, ..k.ty.mono }, resolve_line_height);
+        let font = spec.code_font.map_or(TextStyle { size: k.text_size(13.0), line_height: k.text_size(RowHeights::BASE.line), ..k.ty.mono }, resolve_line_height);
         let info = c.info.icon;
+        let base = RowHeights::BASE;
+        let rows = RowHeights { line: font.line_height, header: k.text_size(base.header), gap: k.text_size(base.gap), note: k.text_size(base.note) };
         let mut look = Look {
             font,
+            rows,
+            icon: k.text_size(16.0),
             label: TextStyle { size: k.text_size(13.0), line_height: k.text_size(20.0), ..k.ty.ui_medium },
             small: TextStyle { size: k.text_size(12.0), line_height: k.text_size(16.0), ..k.ty.mono },
-            separator_text: TextStyle { size: font.size, line_height: GAP_H, ..k.ty.ui },
+            separator_text: TextStyle { size: font.size, line_height: rows.gap, ..k.ty.ui },
             separator: tint(bg, if dark { c.white } else { Color::BLACK }, if dark { 0.05 } else { 0.02 }),
             adv: 0.6 * font.size,
             bg,
@@ -163,6 +169,7 @@ impl Look {
             [c.r, c.g, c.b, c.a].map(f32::to_bits).hash(&mut h);
         }
         look.font.hash(&mut h);
+        [rows.header, rows.gap, rows.note].map(f32::to_bits).hash(&mut h);
         look.syntax.hash(&mut h);
         look.version = h.finish();
         look
@@ -185,10 +192,10 @@ impl Look {
     }
 
     /// The height of a code line: the code font's line height.
-    pub(super) fn line_h(&self) -> f32 { self.font.line_height }
+    pub(super) fn line_h(&self) -> f32 { self.rows.line }
 
-    /// Where the 16 pt comment button sits in a line's gutter: centred on the first line.
-    pub(super) fn plus_y(&self) -> f32 { ((self.line_h() - 16.0) / 2.0).max(0.0) }
+    /// Where the comment button sits in a line's gutter: centred on the first line.
+    pub(super) fn plus_y(&self) -> f32 { ((self.line_h() - self.icon) / 2.0).max(0.0) }
 
     /// One line-number column for numbers of `digits` digits.
     pub(super) fn number_w(&self, digits: u32) -> f32 {

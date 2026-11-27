@@ -25,7 +25,7 @@ impl Toast {
     }
     /// A 16 point icon in the theme's base icon colour.
     pub fn icon(mut self, k: &Kit, i: &'static Icon) -> Self {
-        self.icon = Some(icon(i, 16.0).color(k.c.icon_base));
+        self.icon = Some(icon(i, k.text_size(16.0)).color(k.c.icon_base));
         self
     }
     /// Any 16 point leading element (coloured icons, a loader).
@@ -83,11 +83,11 @@ impl Toast {
                     .key("close")
                     .role("button")
                     .label("Close")
-                    .size(20.0, 20.0)
+                    .size(k.text_size(20.0), k.text_size(20.0))
                     .center()
                     .radius(4.0)
                     .focusable(true)
-                    .child(icon(k.glyph.close, 16.0).color(c.icon_muted)),
+                    .child(icon(k.glyph.close, k.text_size(16.0)).color(c.icon_muted)),
                 2.0,
                 0.0,
             ));

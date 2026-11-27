@@ -171,11 +171,11 @@ impl TextField {
                 .key("copy")
                 .role("button")
                 .label("Copy")
-                .size(24.0, 24.0)
+                .size(k.text_size(24.0), k.text_size(24.0))
                 .center()
                 .radius(k.radius.md)
                 .hover(c.hover)
-                .child(icon(k.glyph.copy, 16.0).color(c.std_icon))
+                .child(icon(k.glyph.copy, k.text_size(16.0)).color(c.std_icon))
                 .disabled(self.state == State::Disabled);
             if self.state != State::Disabled {
                 b = self.copy_acts.apply(k.interactive(b.hit()), true);

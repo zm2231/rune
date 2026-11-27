@@ -146,7 +146,7 @@ impl TreeItem {
             e = e.child(chevron);
         }
         if let Some(i) = self.icon.filter(|_| !(style.chevron_only && folder)) {
-            e = e.child(icon(i, 16.0).key("icon").color(self.icon_color.unwrap_or(c.icon_muted)).a11y_hidden());
+            e = e.child(icon(i, k.text_size(16.0)).key("icon").color(self.icon_color.unwrap_or(c.icon_muted)).a11y_hidden());
         }
         let color = self.label_color.unwrap_or(if r.selected { style.label_selected } else { style.label_rest });
         let font = style.label;

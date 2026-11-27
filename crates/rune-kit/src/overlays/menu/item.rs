@@ -247,7 +247,7 @@ impl MenuItem {
             content = content.child(l);
         }
         if let Some(i) = self.icon {
-            content = content.child(icon(i, 14.0).key("icon").color(if danger {
+            content = content.child(icon(i, k.text_size(14.0)).key("icon").color(if danger {
                 c.danger.fg
             } else if standard {
                 c.std_icon
@@ -319,7 +319,7 @@ impl MenuItem {
             );
         }
         if let Some(on) = self.checked {
-            let mark = icon(k.glyph.check_small, 14.0)
+            let mark = icon(k.glyph.check_small, k.text_size(14.0))
                 .color(if standard { c.std_icon } else { c.icon_base })
                 .opacity(if on { 1.0 } else { 0.0 });
             e = e.child(el().key("indicator").size(16.0, 16.0).center().child(mark).a11y_hidden());
@@ -382,7 +382,7 @@ impl MenuItem {
         }
         if let Some((entries, open)) = self.sub {
             // It points where the submenu opens: left, right to left (`menu.css`).
-            e = e.child(icon(k.glyph.caret_right, 16.0).key("chevron").a11y_hidden().mirror_in_rtl().color(if standard {
+            e = e.child(icon(k.glyph.caret_right, k.text_size(16.0)).key("chevron").a11y_hidden().mirror_in_rtl().color(if standard {
                 c.std_icon
             } else {
                 c.text_faint

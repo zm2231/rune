@@ -407,6 +407,10 @@ name = "share_macos"
 harness = false
 
 [[test]]
+name = "share_picker_forms"
+harness = false
+
+[[test]]
 name = "video_gui"
 harness = false
 

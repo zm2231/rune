@@ -180,6 +180,7 @@ impl RuntimeCore {
         self.loop_step_polling(dt, None)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn loop_step_polled(&mut self, app: &mut dyn AppDriver, dt: f64, woke: bool) -> Result<Vec<u32>, &'static str> {
         self.loop_step_polling(dt, Some((app, woke)))
     }

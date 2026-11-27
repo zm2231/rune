@@ -1,21 +1,18 @@
 //! The share sheet on macOS: an `NSSharingServicePicker` beside the anchor in the window's
-//! content view. The picker answers when the user chooses a service, with its title, or
-//! dismisses the picker, with none. It opens from a run-loop block after the winit handler
-//! returns (`platform::macos::run_later`), so every window keeps drawing while its menu tracks.
-//! Where it shows as a window of its own, that window going off screen without a choice answers
-//! none too, however it went: a timer checks the picker's windows while it shows. A window is the
-//! picker's when it opens on screen after the picker shows, as a child window of the window it
-//! shows over and not a sheet (each window shows one share at a time).
+//! content view, which macOS shows as a popover. The picker answers when the user chooses a
+//! service, with its title, or dismisses the popover (a click outside it), with none. It opens
+//! from a run-loop block after the winit handler returns (`platform::macos::run_later`), so every
+//! window keeps drawing while it shows. A window hidden or closed under it answers its share
+//! itself (`RuntimeCore::cancel_shares`).
 
 #![allow(unsafe_code)]
 
 use std::cell::RefCell;
 
-use block2::RcBlock;
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyObject, NSObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, msg_send};
-use objc2_app_kit::{NSApplication, NSWindow};
+use objc2_app_kit::NSWindow;
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSString, NSURL};
 
@@ -23,8 +20,6 @@ use super::{Reply, Shown};
 
 /// `NSRectEdgeMinY`: below the anchor in a flipped view, above it otherwise.
 const MIN_Y_EDGE: usize = 1;
-
-const CHECK_EVERY_SECS: f64 = 0.1;
 
 define_class!(
     // SAFETY: `NSObject` has no subclassing requirements, and the class has no `Drop`.
@@ -43,35 +38,19 @@ define_class!(
                 let title: Retained<NSString> = unsafe { msg_send![service, title] };
                 title.to_string()
             });
-            self.answer(title);
+            if let Some(reply) = self.ivars().borrow_mut().take() { reply.send(Ok(title)); }
+            let answered: *const Delegate = self;
+            crate::platform::macos::run_later("share picker", move || {
+                SHOWING.with(|showing| showing.borrow_mut().retain(|s| !std::ptr::eq(&*s.delegate, answered)));
+            });
         }
     }
 );
-
-impl Delegate {
-    fn answer(&self, title: Option<String>) {
-        if let Some(reply) = self.ivars().borrow_mut().take() { reply.send(Ok(title)); }
-        let answered: *const Delegate = self;
-        crate::platform::macos::run_later("share picker", move || {
-            SHOWING.with(|showing| showing.borrow_mut().retain(|s| !std::ptr::eq(&*s.delegate, answered)));
-        });
-    }
-}
 
 struct Showing {
     _picker: Retained<AnyObject>,
     delegate: Retained<Delegate>,
     host: Retained<NSWindow>,
-    before: Vec<Retained<NSWindow>>,
-    watched: Vec<Retained<NSWindow>>,
-    timer: Option<Retained<AnyObject>>,
-}
-
-impl Drop for Showing {
-    fn drop(&mut self) {
-        // SAFETY: `invalidate` takes no arguments; it stops the timer and releases its block.
-        if let Some(timer) = &self.timer { unsafe { let _: () = msg_send![&**timer, invalidate]; } }
-    }
 }
 
 thread_local! {
@@ -108,8 +87,11 @@ pub(crate) fn show(shown: Shown, window: &winit::window::Window) {
             let _: () = msg_send![&*picker, setDelegate: &*delegate];
             picker
         };
-        let before = windows(mtm);
-        SHOWING.with(|showing| showing.borrow_mut().push(Showing { _picker: picker.clone(), delegate: delegate.clone(), host, before, watched: Vec::new(), timer: None }));
+        SHOWING.with(|showing| {
+            let mut showing = showing.borrow_mut();
+            showing.retain(|s| s.host.isVisible());
+            showing.push(Showing { _picker: picker.clone(), delegate, host });
+        });
         // SAFETY: `bounds` is a rect and `isFlipped` a `BOOL` of the view, and the picker shows
         // relative to a rect in it.
         unsafe {
@@ -120,49 +102,5 @@ pub(crate) fn show(shown: Shown, window: &winit::window::Window) {
             let rect = CGRect::new(CGPoint::new(x, y), CGSize::new(w.max(1.0), h.max(1.0)));
             let _: () = msg_send![&*picker, showRelativeToRect: rect, ofView: &*view, preferredEdge: MIN_Y_EDGE];
         }
-        check(mtm, &delegate);
-        let ticking = delegate.clone();
-        let tick = RcBlock::new(move |_timer: *mut AnyObject| check(mtm, &ticking));
-        // SAFETY: `timerWithTimeInterval:repeats:block:` copies the block and returns a retained
-        // timer, which the main run loop runs in its common modes (those of menu tracking too).
-        // `Showing::drop` invalidates it.
-        let timer: Retained<AnyObject> = unsafe {
-            let timer: Retained<AnyObject> = msg_send![class!(NSTimer), timerWithTimeInterval: CHECK_EVERY_SECS, repeats: true, block: &*tick];
-            let run_loop: Retained<AnyObject> = msg_send![class!(NSRunLoop), mainRunLoop];
-            let _: () = msg_send![&*run_loop, addTimer: &*timer, forMode: &*NSString::from_str("kCFRunLoopCommonModes")];
-            timer
-        };
-        SHOWING.with(|showing| match showing.borrow_mut().iter_mut().find(|s| std::ptr::eq(&*s.delegate, &*delegate)) {
-            Some(entry) => entry.timer = Some(timer),
-            // SAFETY: as in `Showing::drop`.
-            None => unsafe { let _: () = msg_send![&*timer, invalidate]; },
-        });
     });
-}
-
-fn windows(mtm: MainThreadMarker) -> Vec<Retained<NSWindow>> {
-    NSApplication::sharedApplication(mtm).windows().iter().collect()
-}
-
-fn check(mtm: MainThreadMarker, delegate: &Retained<Delegate>) {
-    let now = windows(mtm);
-    let gone = SHOWING.with(|showing| {
-        let mut showing = showing.borrow_mut();
-        let Some(at) = showing.iter().position(|s| std::ptr::eq(&*s.delegate, &**delegate)) else { return false };
-        let entry = &mut showing[at];
-        let has = |list: &[Retained<NSWindow>], window: &NSWindow| list.iter().any(|w| std::ptr::eq(&**w, window));
-        let opened: Vec<Retained<NSWindow>> = now.into_iter().filter(|window| {
-            let object: &AnyObject = window;
-            window.isVisible()
-                && window.parentWindow().is_some_and(|parent| std::ptr::eq(&*parent, &*entry.host))
-                && window.sheetParent().is_none()
-                && !has(&entry.before, window)
-                && !has(&entry.watched, window)
-                && !crate::platform::objc_class::has_subclass(object, b"Winit")
-                && !crate::platform::objc_class::has_subclass(object, b"Rune")
-        }).collect();
-        entry.watched.extend(opened);
-        !entry.watched.is_empty() && entry.watched.iter().all(|w| !w.isVisible())
-    });
-    if gone { delegate.answer(None); }
 }

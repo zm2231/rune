@@ -1123,7 +1123,7 @@ app.run();
   (`with_thumbnail(path)`) over `SEARCH_THUMBNAIL_BYTES`. `App::on_open_search_item(|s, id, tx| ..)`
   (and `WindowSpec::on_open_search_item`) runs when the user opens a result, before the first
   frame when that launched the app; `App::on_search_index_error` hears what the index refused or
-  Rune dropped. macOS finds an item by its title, details and keywords; iOS's home-screen search
+  Rune dropped. macOS finds an item by its title, details and keywords; from iOS 17 the home-screen search
   finds it by the words of its title only, and may not match three letters or fewer. Ignored on other platforms;
   headless runs keep the requests.
 - Links and relaunches on Windows: Windows starts a new process for each launch, passing a link

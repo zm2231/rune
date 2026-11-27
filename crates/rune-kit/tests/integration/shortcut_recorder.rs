@@ -198,8 +198,9 @@ fn a_capture_no_key_reaches_times_out_and_keeps_the_old_shortcut() {
     assert!(shows(&rt, HINT));
     assert_eq!(rt.state.recorder.shortcut().unwrap().to_string(), "ctrl+k");
     assert_eq!(rt.state.changes, 0);
+    rt.frame(1.0);
     physical(&mut rt, Code::KeyJ, Mods { ctrl: true, ..Mods::default() }, true, false);
-    assert_eq!(rt.state.changes, 0, "a key after the timeout isn't captured");
+    assert_eq!(rt.state.changes, 0, "a key well after the timeout isn't captured");
     click(&mut rt, "shortcut"); rt.frame(0.0);
     assert!(rt.state.recorder.is_recording(), "clicking records again");
     rt.frame(1.0);
@@ -228,4 +229,15 @@ fn a_cancelled_capture_s_timer_does_not_end_the_next_one() {
     assert!(rt.state.recorder.is_recording(), "the first capture's deadline belongs to it alone");
     rt.frame(2.6);
     assert!(rt.state.recorder.timed_out(), "the second capture keeps its own deadline");
+}
+
+#[test]
+fn a_key_handled_in_the_frame_that_reaches_the_deadline_still_counts() {
+    let mut rt = runtime(); rt.state.reject = true; click(&mut rt, "shortcut"); rt.frame(0.0);
+    rt.frame(4.9);
+    rt.physical_input(PhysicalInput::Key { key: Code::KeyJ, mods: Mods { ctrl: true, ..Mods::default() }, pressed: true, repeat: false, text: None, consumed_mods: Default::default() });
+    rt.frame(0.2);
+    assert!(rt.state.recorder.is_recording(), "the key reached the window before the deadline's frame ran");
+    assert_eq!(rt.state.recorder.error(), Some(&ShortcutError::Conflict));
+    assert!(!rt.state.recorder.timed_out());
 }

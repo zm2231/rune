@@ -18,6 +18,7 @@ pub struct ShortcutRecorderState {
 }
 
 const NOTHING_ARRIVED_SECS: f64 = 5.0;
+const LATE_KEY_SECS: f64 = 0.25;
 const NOTHING_ARRIVED: &str = "Nothing arrived; that shortcut may be taken by another app.";
 
 #[derive(Clone, Debug, Default)]
@@ -29,7 +30,7 @@ enum Recording {
     Capturing { refusal: Option<Refusal>, finishing: Option<PhysicalKeyCode>, waiting: Option<Waiting> },
     /// The capture is over, and the key that ended it still swallows its repeats and release.
     Swallowing { key: PhysicalKeyCode },
-    TimedOut,
+    TimedOut { at: f64 },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -41,7 +42,7 @@ struct Waiting {
 #[derive(Clone, Copy, Debug)]
 enum Event {
     Begin { now: f64 },
-    KeyArrived,
+    KeyArrived { now: f64 },
     Due { attempt: Attempt, now: f64 },
 }
 
@@ -55,19 +56,19 @@ impl Recording {
         match self {
             Recording::Capturing { finishing, .. } => *finishing,
             Recording::Swallowing { key } => Some(*key),
-            Recording::Idle | Recording::TimedOut => None,
+            Recording::Idle | Recording::TimedOut { .. } => None,
         }
     }
     fn finishing_mut(&mut self) -> Option<&mut Option<PhysicalKeyCode>> {
         match self {
             Recording::Capturing { finishing, .. } => Some(finishing),
-            Recording::Idle | Recording::Swallowing { .. } | Recording::TimedOut => None,
+            Recording::Idle | Recording::Swallowing { .. } | Recording::TimedOut { .. } => None,
         }
     }
     fn refusal_mut(&mut self) -> Option<&mut Option<Refusal>> {
         match self {
             Recording::Capturing { refusal, .. } => Some(refusal),
-            Recording::Idle | Recording::Swallowing { .. } | Recording::TimedOut => None,
+            Recording::Idle | Recording::Swallowing { .. } | Recording::TimedOut { .. } => None,
         }
     }
 }
@@ -85,7 +86,7 @@ impl ShortcutRecorderState {
     fn refusal(&self) -> Option<&Refusal> {
         match &self.phase {
             Recording::Capturing { refusal, .. } => refusal.as_ref(),
-            Recording::Idle | Recording::Swallowing { .. } | Recording::TimedOut => None,
+            Recording::Idle | Recording::Swallowing { .. } | Recording::TimedOut { .. } => None,
         }
     }
     pub fn error(&self) -> Option<&ShortcutError> { self.refusal().map(|r| &r.error) }
@@ -107,10 +108,10 @@ impl ShortcutRecorderState {
     pub fn poll(&mut self, now: f64) -> bool {
         let Recording::Capturing { waiting: Some(waiting), .. } = self.phase else { return false };
         let _ = self.step(Event::Due { attempt: waiting.attempt, now });
-        matches!(self.phase, Recording::TimedOut)
+        matches!(self.phase, Recording::TimedOut { .. })
     }
     /// Whether the last capture ended because no key arrived, until the next one starts.
-    pub fn timed_out(&self) -> bool { matches!(self.phase, Recording::TimedOut) }
+    pub fn timed_out(&self) -> bool { matches!(self.phase, Recording::TimedOut { .. }) }
 
     fn step(&mut self, event: Event) -> Effects<Effect> {
         match (&mut self.phase, event) {
@@ -119,14 +120,18 @@ impl ShortcutRecorderState {
                 self.phase = Recording::Capturing { refusal: None, finishing: None, waiting: Some(waiting) };
                 Effects::one(Effect::WakeAt(waiting.due))
             }
-            (Recording::Capturing { waiting, .. }, Event::KeyArrived) => {
+            (Recording::Capturing { waiting, .. }, Event::KeyArrived { .. }) => {
                 *waiting = None;
+                Effects::none()
+            }
+            (Recording::TimedOut { at }, Event::KeyArrived { now }) if now - *at <= LATE_KEY_SECS => {
+                self.phase = Recording::Capturing { refusal: None, finishing: None, waiting: None };
                 Effects::none()
             }
             (Recording::Capturing { waiting: Some(waiting), .. }, Event::Due { attempt, now })
                 if waiting.attempt == attempt && now >= waiting.due =>
             {
-                self.phase = Recording::TimedOut;
+                self.phase = Recording::TimedOut { at: now };
                 self.held = Mods::default();
                 Effects::none()
             }
@@ -147,10 +152,10 @@ impl ShortcutRecorderState {
         else { self.shortcut.as_ref().map(Shortcut::keycaps).unwrap_or_default() }
     }
 
-    fn input(&mut self, event: &PhysicalInput) -> Outcome {
+    fn input(&mut self, event: &PhysicalInput, now: f64) -> Outcome {
         match *event {
             PhysicalInput::FocusLost => {
-                let active = !matches!(self.phase, Recording::Idle | Recording::TimedOut);
+                let active = !matches!(self.phase, Recording::Idle | Recording::TimedOut { .. });
                 self.cancel();
                 self.phase = Recording::Idle;
                 if active { Outcome::Consumed } else { Outcome::Pass }
@@ -170,9 +175,10 @@ impl ShortcutRecorderState {
                     }
                     return Outcome::Consumed;
                 }
+                let qualifying = pressed && !repeat && !is_modifier(key);
+                if qualifying { let _ = self.step(Event::KeyArrived { now }); }
                 if !self.is_recording() { return Outcome::Pass; }
-                if !pressed || repeat || is_modifier(key) { return Outcome::Consumed; }
-                let _ = self.step(Event::KeyArrived);
+                if !qualifying { return Outcome::Consumed; }
                 if let Some(finishing) = self.phase.finishing_mut() { *finishing = Some(key); }
                 if key == PhysicalKeyCode::Escape { self.cancel(); return Outcome::Consumed; }
                 if key == PhysicalKeyCode::Backspace { return Outcome::Change(None); }
@@ -199,11 +205,11 @@ impl ShortcutRecorderState {
         if let Some(refusal) = self.phase.refusal_mut() { *refusal = Some(Refusal { error, chord }); }
     }
 
-    fn prepare_change(&mut self, event: &PhysicalInput, disabled: bool, unmodified: bool) -> PhysicalStep {
+    fn prepare_change(&mut self, event: &PhysicalInput, now: f64, disabled: bool, unmodified: bool) -> PhysicalStep {
         if disabled && !matches!(event, PhysicalInput::FocusLost) {
             return PhysicalStep::Pass;
         }
-        match self.input(event) {
+        match self.input(event, now) {
             Outcome::Pass => PhysicalStep::Pass,
             Outcome::Consumed => PhysicalStep::Consumed,
             Outcome::Change(next) => {
@@ -274,7 +280,7 @@ impl<S: 'static> RecorderBind for RecorderHandlers<S> {
         }
         let access = self.access.clone();
         let change = self.change.clone();
-        control.on_physical_input(move |s: &mut S, event, tx| match access(s).prepare_change(event, disabled, unmodified) {
+        control.on_physical_input(move |s: &mut S, event, tx| match access(s).prepare_change(event, tx.clock(), disabled, unmodified) {
             PhysicalStep::Pass => false,
             PhysicalStep::Consumed => true,
             PhysicalStep::Propose(next) => {

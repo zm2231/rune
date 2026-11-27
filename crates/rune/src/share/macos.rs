@@ -2,7 +2,8 @@
 //! content view. The picker answers when the user chooses a service, with its title, or
 //! dismisses the picker, with none. It opens from a run-loop block after the winit handler
 //! returns (`platform::macos::run_later`), so every window keeps drawing while its menu tracks.
-//! Where it shows as a window of its own, that window closing without a choice answers none too.
+//! Where it shows as a window of its own, that window closing without a choice answers none too;
+//! a window is a picker's when it opens after that picker shows and before any later one does.
 
 #![allow(unsafe_code)]
 
@@ -56,7 +57,8 @@ impl Delegate {
 struct Showing {
     _picker: Retained<AnyObject>,
     delegate: Retained<Delegate>,
-    known: Vec<Retained<NSWindow>>,
+    before: Vec<Retained<NSWindow>>,
+    watched: Vec<Retained<NSWindow>>,
     observers: Vec<Retained<AnyObject>>,
 }
 
@@ -71,8 +73,6 @@ impl Drop for Showing {
 }
 
 thread_local! {
-    /// Each picker on screen (one per window at most). Kept until a run-loop pass after it
-    /// answers, so nothing goes while it is still answering.
     static SHOWING: RefCell<Vec<Showing>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -107,7 +107,7 @@ pub(crate) fn show(shown: Shown, window: &winit::window::Window) {
             picker
         };
         let before = windows(mtm);
-        SHOWING.with(|showing| showing.borrow_mut().push(Showing { _picker: picker.clone(), delegate: delegate.clone(), known: before, observers: Vec::new() }));
+        SHOWING.with(|showing| showing.borrow_mut().push(Showing { _picker: picker.clone(), delegate: delegate.clone(), before, watched: Vec::new(), observers: Vec::new() }));
         // SAFETY: `bounds` is a rect and `isFlipped` a `BOOL` of the view, and the picker shows
         // relative to a rect in it.
         unsafe {
@@ -131,11 +131,18 @@ fn watch_picker_windows(mtm: MainThreadMarker, delegate: &Retained<Delegate>) {
     let now = windows(mtm);
     SHOWING.with(|showing| {
         let mut showing = showing.borrow_mut();
-        let Some(entry) = showing.iter_mut().find(|s| std::ptr::eq(&*s.delegate, &**delegate)) else { return };
-        for window in now {
-            if entry.known.iter().any(|w| std::ptr::eq(&**w, &*window)) { continue; }
-            let object: &AnyObject = &window;
-            if crate::platform::macos::has_subclass(object, b"Winit") || crate::platform::macos::has_subclass(object, b"Rune") { continue; }
+        let Some(at) = showing.iter().position(|s| std::ptr::eq(&*s.delegate, &**delegate)) else { return };
+        let has = |list: &[Retained<NSWindow>], window: &NSWindow| list.iter().any(|w| std::ptr::eq(&**w, window));
+        let opened: Vec<Retained<NSWindow>> = now.into_iter().filter(|window| {
+            let object: &AnyObject = window;
+            !has(&showing[at].before, window)
+                && showing[at + 1..].iter().all(|later| has(&later.before, window))
+                && !showing.iter().any(|s| has(&s.watched, window))
+                && !crate::platform::macos::has_subclass(object, b"Winit")
+                && !crate::platform::macos::has_subclass(object, b"Rune")
+        }).collect();
+        let entry = &mut showing[at];
+        for window in opened {
             let delegate = delegate.clone();
             let closed = RcBlock::new(move |_note: *mut AnyObject| delegate.answer(None));
             // SAFETY: the center copies the block and calls it on the posting (main) thread; the
@@ -147,7 +154,7 @@ fn watch_picker_windows(mtm: MainThreadMarker, delegate: &Retained<Delegate>) {
                     object: &*window, queue: std::ptr::null::<AnyObject>(), usingBlock: &*closed]
             };
             entry.observers.extend(token);
-            entry.known.push(window);
+            entry.watched.push(window);
         }
     });
 }

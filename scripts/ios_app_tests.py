@@ -54,7 +54,7 @@ class Tools:
     """
 
     def __init__(self, platform="IOSSIMULATOR", minos="16.0", stdout=None, json=None, profile=None, fails=None, stderr=None):
-        self.calls, self.platform, self.minos = [], platform, minos
+        self.calls, self.platform, self.minos, self.slept = [], platform, minos, []
         self.stdout, self.json, self.fails, self.stderr = stdout or {}, json or {}, fails or {}, stderr or {}
         if profile:
             # What `security cms -D` prints: the profile out of its signed envelope.
@@ -96,7 +96,7 @@ def args(tmp, **over):
     binary.write_text("binary")
     binary.chmod(0o755)
     base = dict(name="Hello", id="com.example.hello", bin=str(binary), exe="hello",
-                simulator="booted", device=None, profile=None, url_scheme=[], multiple_scenes=False, no_launch=False, args=[],
+                simulator="booted", device=None, profile=None, url_scheme=[], activity_type=[], multiple_scenes=False, no_launch=False, args=[],
                 min_os="16.0", wait=0, version="0.0.1", build="1", display_name="Hello", icon=None, privacy=None, distribution=False)
     return SimpleNamespace(**{**base, **over})
 
@@ -216,6 +216,15 @@ class BundleRegression(unittest.TestCase):
             plist = plistlib.loads((stage / "Info.plist").read_bytes())
             self.assertIs(plist["UIApplicationSceneManifest"]["UIApplicationSupportsMultipleScenes"], True)
             self.assertEqual(plist["NSUserActivityTypes"], ["rune.window"])
+
+    def test_activity_types_join_the_one_that_opens_a_window_so_handoff_and_scenes_both_continue(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command", Tools()):
+            stage = Path(tmp) / "out/Hello.app"
+            ios_app.build(stage, args(tmp, activity_type=["com.example.hello.viewing"]))
+            self.assertEqual(plistlib.loads((stage / "Info.plist").read_bytes())["NSUserActivityTypes"], ["com.example.hello.viewing"])
+            ios_app.build(stage, args(tmp, multiple_scenes=True, activity_type=["com.example.hello.viewing"]))
+            plist = plistlib.loads((stage / "Info.plist").read_bytes())
+            self.assertEqual(plist["NSUserActivityTypes"], ["rune.window", "com.example.hello.viewing"])
 
     def test_the_url_scheme_flag_repeats_and_refuses_what_is_not_a_scheme(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "build") as build, \
@@ -597,8 +606,7 @@ class LaunchRegression(unittest.TestCase):
 
     def test_a_wait_of_zero_and_no_launch_watch_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            for over in (dict(wait=0), dict(no_launch=True)):
-                tools = self.simulator(tmp, "", **over)
+            for tools in (self.simulator(tmp, "", wait=0), self.simulator(tmp, "", no_launch=True)):
                 self.assertEqual(tools.slept, [])
                 self.assertEqual(tools.ran("ps"), [])
 

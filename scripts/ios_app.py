@@ -28,7 +28,8 @@ def info(args):
     """The bundle's Info.plist: a full-screen app on one window scene Rune configures in code."""
     # The schemes whose links iOS opens with the app (`App::on_open_url`).
     links = dict(CFBundleURLTypes=[dict(CFBundleURLName=args.id, CFBundleURLSchemes=list(args.url_scheme))]) if args.url_scheme else {}
-    windows = {"NSUserActivityTypes": ["rune.window"]} if args.multiple_scenes else {}
+    types = (["rune.window"] if args.multiple_scenes else []) + list(args.activity_type)
+    windows = {"NSUserActivityTypes": types} if types else {}
     return dict(
         **links,
         **windows,
@@ -134,7 +135,7 @@ def built_for(args):
     except ValueError as error:
         raise RuntimeError(f"{args.bin}: {error}") from None
     problem = min_os_mismatch(args.bin, built, args.min_os)
-    if problem:
+    if problem or built is None:
         raise RuntimeError(problem)
     return built[0]
 
@@ -252,22 +253,21 @@ def outlive(args, launched, pid, alive, crash_log):
 
 
 def devicectl(*argv, check=True):
-    """Run a `devicectl device` command, whose first two words name it; its JSON result is the answer's `json`."""
+    """Run a `devicectl device` command, whose first two words name it: the finished process and its JSON result."""
     with tempfile.TemporaryDirectory() as tmp:
         result = Path(tmp) / "result.json"
         # devicectl's own flags go before the app's identifier, which its arguments follow.
         ran = command("xcrun", "devicectl", "device", *argv[:2], "--json-output", str(result), *argv[2:], check=check, timeout=SLOW)
-        ran.json = json.loads(result.read_text()) if not ran.returncode and result.is_file() else {}
-        return ran
+        return ran, json.loads(result.read_text()) if not ran.returncode and result.is_file() else {}
 
 
 def install_device(stage, args):
     """Replace the app on a paired device and, unless told not to, launch it in place of a running one."""
     command("xcrun", "devicectl", "device", "install", "app", "--device", args.device, str(stage), timeout=SLOW)
     if not args.no_launch:
-        launched = devicectl("process", "launch", "--device", args.device, "--terminate-existing", args.id, *args.args, check=False)
-        outlive(args, launched, launched_pid(launched.json),
-                lambda pid: alive_device(devicectl("info", "processes", "--device", args.device).json, pid), lambda: device_crash_logs(args.device))
+        launched, answer = devicectl("process", "launch", "--device", args.device, "--terminate-existing", args.id, *args.args, check=False)
+        outlive(args, launched, launched_pid(answer),
+                lambda pid: alive_device(devicectl("info", "processes", "--device", args.device)[1], pid), lambda: device_crash_logs(args.device))
 
 
 def flags():
@@ -294,6 +294,8 @@ def flags():
                         help=f"the oldest iOS the app runs on, which the binary must have been built for (default: {MIN_OS})")
     parser.add_argument("--url-scheme", action="append", default=[], metavar="SCHEME",
                         help="a scheme whose links open the app (myapp for myapp://...); repeat for more")
+    parser.add_argument("--activity-type", action="append", default=[], metavar="TYPE",
+                        help="an NSUserActivity type the app advertises or continues (Handoff, Tx::advertise); repeat for several")
     parser.add_argument("--multiple-scenes", action="store_true",
                         help="on an iPad, show each of the app's windows in a scene of its own (default: the others are sheets)")
     parser.add_argument("--no-install", action="store_true", help="stage the bundle only")
@@ -311,6 +313,9 @@ def refusal(args):
     for scheme in args.url_scheme:
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9+.-]*", scheme):
             return f"--url-scheme {scheme!r}: a scheme is the part before ://, a letter then letters, digits, + . or -"
+    for kind in args.activity_type:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*", kind):
+            return f"--activity-type {kind!r}: a type is a reverse-DNS name, such as com.example.app.viewing"
     # Each names a file or folder the script makes, and removes before it makes it again.
     for flag, value in (("--name", args.name), ("--exe", args.exe)):
         if file_name_problem(value):

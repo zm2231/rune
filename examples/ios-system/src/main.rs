@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use rune::tok::{self, type_};
 use rune::{
-    AppSpec, Cx, El, FileDialogOptions, MediaKind, MediaPicker, ScrollSpec, Share, ShareError, SizeClass, TextEdit, Tx, col, el, row, text,
+    Activity, AppSpec, Cx, El, FileDialogOptions, MediaKind, MediaPicker, ScrollSpec, SearchIndexError, SearchItem, Share, ShareError, SizeClass, TextEdit, Tx, col, el, row, text,
     text_input,
 };
 
@@ -129,6 +129,40 @@ fn pickers(state: &State, t: &tok::Theme) -> El {
     ])
 }
 
+const VIEWING: &str = "dev.rune.ios-system.viewing";
+const NOTES: [&str; 3] = ["Groceries", "Packing list", "Book club"];
+
+fn system_search(t: &tok::Theme) -> El {
+    section("Handoff and Spotlight", t, vec![
+        button("index", "Index three notes in Spotlight", t, |s, tx| {
+            tx.index_search_items(NOTES.iter().enumerate().map(|(i, title)| {
+                SearchItem::new(format!("note-{}", i + 1)).with_domain("notes").with_title(*title).with_keyword("rune system")
+            }));
+            s.say("Indexed 3 notes: search for \"rune system\" from the home screen");
+        }),
+        button("unindex", "Remove them from Spotlight", t, |s, tx| {
+            tx.remove_search_domain("notes");
+            s.say("Removed the notes from Spotlight");
+        }),
+        button("advertise", "Advertise \"Groceries\" for Handoff", t, |s, tx| {
+            tx.advertise(Activity::new(VIEWING).with_title("Viewing Groceries").with_info("note", "note-1"));
+            s.say("Advertising note-1");
+        }),
+        button("stop-advertising", "Stop advertising", t, |s, tx| {
+            tx.stop_advertising();
+            s.say("Not advertising");
+        }),
+    ])
+}
+
+fn on_open_search_item(s: &mut State, id: &str, _: &mut Tx) { s.say(format!("Opened from Spotlight: {id}")); }
+
+fn on_search_index_error(s: &mut State, error: &SearchIndexError, _: &mut Tx) { s.say(format!("Spotlight: {error}")); }
+
+fn on_continue(s: &mut State, activity: &Activity, _: &mut Tx) {
+    s.say(format!("Continued {}: {}", activity.kind(), activity.info("note").unwrap_or("?")));
+}
+
 fn export(path: PathBuf) {
     std::thread::spawn(move || write(&path));
 }
@@ -148,7 +182,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
             .font(type_::LABEL).color(t.text_secondary).wrap().w_full())
         .child(text(format!("Status: {}", state.status)).key("status").font(type_::LABEL).color(t.text_secondary).wrap().w_full());
     let first = col().w_full().gap(24.0).child(links(&t)).child(clipboard(state, &t));
-    let second = col().w_full().gap(24.0).child(sharing(&t)).child(pickers(state, &t));
+    let second = col().w_full().gap(24.0).child(sharing(&t)).child(pickers(state, &t)).child(system_search(&t));
     let body = if horizontal == Some(SizeClass::Regular) {
         row().w_full().gap(32.0).child(first.grow(1.0).shrink()).child(second.grow(1.0).shrink())
     } else {
@@ -160,5 +194,9 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
 }
 
 fn main() {
-    rune::App::new(AppSpec::new("System", (390.0, 760.0), State::default, view)).run();
+    rune::App::new(AppSpec::new("System", (390.0, 760.0), State::default, view))
+        .on_open_search_item(on_open_search_item)
+        .on_search_index_error(on_search_index_error)
+        .on_continue_activity(on_continue)
+        .run();
 }

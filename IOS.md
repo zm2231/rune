@@ -305,6 +305,7 @@ usage: ios-app [-h] --name NAME --id ID --bin BIN [--exe EXE]
                [--icon PNG] [--privacy FILE] [--out OUT]
                [--simulator SIMULATOR] [--device DEVICE] [--profile PROFILE]
                [--distribution] [--min-os X.Y] [--url-scheme SCHEME]
+               [--activity-type TYPE] [--multiple-scenes]
                [--no-install] [--no-launch] [--wait SECONDS]
                ...
 ```
@@ -687,6 +688,29 @@ A UIKit app calls it from its scene delegate: with each context's `url.absoluteS
 with both from the connection options in `scene(_:willConnectTo:options:)`. The first view
 made whose app has the hook gets the link. One passed on before any view is made waits for
 the first view; once a view is made, a link no view has a hook for is dropped.
+
+## Handoff and Spotlight
+
+**Handoff.** `tx.advertise(Activity::new("com.example.hello.viewing").with_title(..).with_info(..))`
+offers what the window shows to the user's other devices, and `App::on_continue_activity` gets an
+activity continued here, the one that launched the app before the first frame. Each window has
+its own activity, which becomes current while the window is in front; `tx.stop_advertising()`
+retires it. iOS continues only the types the bundle lists in `NSUserActivityTypes`:
+`scripts/ios-app --activity-type com.example.hello.viewing` adds one (repeat the flag for more),
+beside the `rune.window` type `--multiple-scenes` lists. Handoff needs two devices signed in to
+the same Apple Account, with apps from the same team; a simulator can't hand off.
+
+**Spotlight.** `tx.index_search_items([SearchItem::new("note-7").with_title("Groceries")])` adds
+items to the device's search, and `App::on_open_search_item` gets the id of a result the user
+opens, the one that launched the app before the first frame. It needs nothing in the bundle and
+works on a simulator: index, swipe down on the home screen, search, and open the result.
+`examples/ios-system` does both:
+
+```sh
+cargo build -p ios-system --target aarch64-apple-ios-sim
+scripts/ios-app --name System --id dev.rune.ios-system --bin target/aarch64-apple-ios-sim/debug/ios-system \
+    --activity-type dev.rune.ios-system.viewing
+```
 
 ## Voice calls
 

@@ -19,7 +19,7 @@
 //! and resumes afterwards.
 //!
 //! **Linux.** The stream opens a record and a playback stream on the default devices through
-//! PulseAudio's simple API, which PipeWire desktops serve through `pipewire-pulse`, and falls back
+//! PulseAudio's asynchronous API, which PipeWire desktops serve through `pipewire-pulse`, and falls back
 //! to ALSA's `default` device. Both libraries are loaded at run time, so a system without either
 //! fails to open with [`VoiceError::OpenFailed`]. Echo cancellation and noise suppression run in
 //! the app, with WebRTC's AEC3 and noise suppressor, using exactly the samples Rune plays as the
@@ -29,9 +29,15 @@
 //! about 700 ms after it was played (a long virtual-cable or network loop) may not be found, and
 //! then isn't cancelled; the sound server moves the streams when the default devices change, and a stream that fails is
 //! rebuilt ([`VoiceEvent::DeviceChanged`]). If the default source is already PipeWire's or
-//! PulseAudio's echo-cancel node, the echo is cancelled twice, which is harmless. Verified
-//! against a real PulseAudio server whose microphone hears the speaker directly; a desktop with
-//! a sound card and PipeWire hasn't been verified yet. Linux has no microphone permission, so
+//! PulseAudio's echo-cancel node, the echo is cancelled twice, which is harmless. When the
+//! speaker runs dry and plays silence, the stream measures the gap (PulseAudio: from the two
+//! streams' timing; ALSA: from the device's delay when it reports an underrun) and counts it in
+//! [`VoiceStats::speaker_gap_frames`]; frames the microphone loses (a hole in PulseAudio's
+//! record stream, or an ALSA overrun) are counted in [`VoiceStats::mic_gap_frames`] and filled
+//! with silence, so later audio keeps its timing. Verified against a real PulseAudio server
+//! whose microphone hears the speaker directly, including a speaker underrun on both
+//! PulseAudio and ALSA; a microphone overrun and a desktop with a sound card and PipeWire
+//! haven't been verified yet. Linux has no microphone permission, so
 //! [`Voice::permission`] is [`MicPermission::Granted`].
 //!
 //! **Windows.** The stream opens shared-mode WASAPI clients on the default communications
@@ -91,7 +97,7 @@ mod machine;
 mod rates;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 mod streams;
-#[cfg(any(test, target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 mod underrun;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple;
@@ -265,10 +271,10 @@ pub struct VoiceStats {
     /// passes through the page's main thread, so a long frame or a busy script shows up here.
     pub late_frames: u64,
     /// Silence the speaker device played because the audio thread fed it late (an underrun),
-    /// as the device reports it. Windows counts these.
+    /// as the device reports it. Linux and Windows count these.
     pub speaker_gap_frames: u64,
     /// Frames the microphone device lost in a glitch, as the device reports it. They are
-    /// replaced with silence, so later audio keeps its timing. Windows counts these.
+    /// replaced with silence, so later audio keeps its timing. Linux and Windows count these.
     pub mic_gap_frames: u64,
     /// From the last [`Voice::start`] to the device's first callback.
     pub start_to_audio: Option<Duration>,

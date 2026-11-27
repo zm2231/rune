@@ -18,7 +18,7 @@ pub(crate) fn step(state: &mut State, reading: Reading) -> u64 {
     let (next, silence) = match *state {
         State::Waiting => (State::Steady { lead: now }, 0),
         State::Steady { lead } if low => (State::Refilling { lead: lead.max(now), settled: 0 }, now - lead),
-        State::Steady { lead } => (State::Steady { lead: lead.max(now) }, 0),
+        State::Steady { .. } => (State::Steady { lead: now }, 0),
         State::Refilling { lead, settled } => {
             let settled = if low { 0 } else { settled + 1 };
             let grown = now - lead;

@@ -539,9 +539,10 @@ impl El {
     ///   cooldown, unfocused document, or `pointerlockerror`), `Cx::pointer_locked()` stays
     ///   `false`, normal pointer input continues without getting stuck, and a later press can try
     ///   again.
-    /// - **iPadOS**: a mouse's or trackpad's click (a `UITouchTypeIndirectPointer` touch, which
-    ///   needs `UIApplicationSupportsIndirectInputEvents` in the app's Info.plist; `scripts/ios-app`
-    ///   sets it) sets Rune's view controller's `prefersPointerLocked`. iPadOS locks only a
+    /// - **iPadOS**: a mouse's or trackpad's click (a `UITouchTypeIndirectPointer` touch; before
+    ///   iPadOS 17 that needs `UIApplicationSupportsIndirectInputEvents` in the app's Info.plist,
+    ///   which `scripts/ios-app` sets, and Rune logs once when a click on a lockable element arrives
+    ///   as a finger's touch instead) sets Rune's view controller's `prefersPointerLocked`. iPadOS locks only a
     ///   full-screen or Stage Manager key window in front, so `Cx::pointer_locked()` turns `true`
     ///   only once the scene's `pointerLockState` says it is locked, and stays `false` when iPadOS
     ///   doesn't lock within half a second. Deltas come from `GCMouse`'s `mouseMovedHandler` (down

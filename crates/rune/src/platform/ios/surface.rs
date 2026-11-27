@@ -67,6 +67,7 @@ pub(crate) trait Surface {
     fn touch(&mut self, id: u64, phase: TouchPhase, x: f32, y: f32, time: f64, source: TouchSource);
     fn set_pointer_lock(&mut self, supported: bool);
     fn take_pointer_lock(&mut self) -> Option<LockEffect>;
+    fn pointer_lock_ready(&self) -> bool;
     fn pointer_lock_answer(&mut self, locked: bool);
     fn pointer_motion(&mut self, dx: f32, dy: f32);
     /// The pointer of a mouse or trackpad is at this point of the view, or left it.
@@ -344,6 +345,8 @@ impl<S: 'static> Surface for Hosted<S> {
     }
 
     fn take_pointer_lock(&mut self) -> Option<LockEffect> { self.host.runtime_mut().core_mut().take_pointer_lock_effect() }
+
+    fn pointer_lock_ready(&self) -> bool { self.host.runtime().core().pointer_lock_ready() }
 
     fn pointer_lock_answer(&mut self, locked: bool) {
         let core = self.host.runtime_mut().core_mut();

@@ -208,6 +208,11 @@ impl PointerLock {
     }
 
     #[inline]
+    pub(in crate::runtime) fn is_ready(&self) -> bool {
+        self.state == LockState::Ready
+    }
+
+    #[inline]
     pub(in crate::runtime) fn is_off(&self) -> bool {
         self.state == LockState::Off
     }
@@ -241,6 +246,11 @@ impl RuntimeCore {
     #[inline]
     pub fn pointer_locked(&self) -> bool {
         self.pointer.pointer_lock.is_locked()
+    }
+
+    #[cfg(target_os = "ios")]
+    pub(crate) fn pointer_lock_ready(&self) -> bool {
+        self.pointer.pointer_lock.is_ready()
     }
 
     /// Sets the host's pointer-lock grant policy (`Immediate`, `Async`, or `Unsupported`).

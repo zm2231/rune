@@ -610,7 +610,10 @@ policy changes are applied in the same mutation phase.
   one cached boolean check per press. `.pointer_lock(|s, [dx, dy], tx| ..)` requests declarative
   relative mouse-look capture on desktop windows, web browsers and iPads (a mouse's or trackpad's
   click sets the view controller's `prefersPointerLocked`, and `Cx::pointer_locked()` turns true only
-  once iPadOS locks a full-screen key window; native overlays never capture): a primary press whose primary target is that element captures (HUD buttons and covering
+  once iPadOS locks a full-screen key window; the clicks must arrive as pointer touches, which needs
+  `UIApplicationSupportsIndirectInputEvents` in the Info.plist on iPadOS 16, where a missing key reads
+  as NO, and Rune logs once when a lockable element hears a click as a finger's; `scripts/ios-app` sets
+  it; native overlays never capture): a primary press whose primary target is that element captures (HUD buttons and covering
   elements do not), hides the cursor while focused (desktop `CursorGrabMode::Locked`, falling back
   to `Confined` on X11; web plain `canvas.requestPointerLock()` synchronously inside the user gesture, then
   upgrading in place to `{ unadjustedMovement: true }` once locked where supported), freezes the

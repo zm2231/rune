@@ -1,6 +1,9 @@
 #![allow(unsafe_code)]
 
+use std::sync::{Once, OnceLock};
+
 use block2::{Block, RcBlock};
+use objc2_foundation::NSString;
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, class, msg_send, sel};
@@ -51,6 +54,12 @@ impl RuneView {
             LockEffect::Grab => Event::Grab,
             LockEffect::Ungrab => Event::Ungrab,
         });
+    }
+
+    pub(super) fn finger_pressed(&self) {
+        static TOLD: Once = Once::new();
+        if TOLD.is_completed() || !self.with_surface(|surface| surface.pointer_lock_ready()).unwrap_or(false) || pointer_clicks_are_pointers() { return; }
+        TOLD.call_once(|| eprintln!("rune: El::pointer_lock can't capture on this iPad: the app's Info.plist doesn't set UIApplicationSupportsIndirectInputEvents (iPadOS before 17 reads a missing key as NO), so mouse and trackpad clicks arrive as finger touches"));
     }
 
     pub(super) fn pointer_lock_changed(&self) {
@@ -146,3 +155,25 @@ impl MainOnly {
         if let Some(view) = self.0.load() { view.pointer_lock_due(attempt); }
     }
 }
+
+fn pointer_clicks_are_pointers() -> bool {
+    static POINTERS: OnceLock<bool> = OnceLock::new();
+    *POINTERS.get_or_init(|| {
+        // SAFETY: `UIDevice.currentDevice` and `NSBundle.mainBundle` are singletons read on the
+        // main thread; `userInterfaceIdiom` is an `NSInteger` enum, `systemVersion` a string,
+        // and an Info.plist value is a nullable object, a number for a Boolean key.
+        unsafe {
+            let device: Retained<AnyObject> = msg_send![class!(UIDevice), currentDevice];
+            let idiom: isize = msg_send![&*device, userInterfaceIdiom];
+            if idiom != IDIOM_PAD { return true; }
+            let bundle: Retained<AnyObject> = msg_send![class!(NSBundle), mainBundle];
+            let key = NSString::from_str("UIApplicationSupportsIndirectInputEvents");
+            let value: Option<Retained<AnyObject>> = msg_send![&*bundle, objectForInfoDictionaryKey: &*key];
+            if let Some(value) = value { return msg_send![&*value, boolValue]; }
+            let version: Retained<NSString> = msg_send![&*device, systemVersion];
+            version.to_string().split('.').next().and_then(|major| major.parse::<u32>().ok()).is_some_and(|major| major >= 17)
+        }
+    })
+}
+
+const IDIOM_PAD: isize = 1;

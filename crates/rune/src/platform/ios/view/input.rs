@@ -298,6 +298,7 @@ impl RuneView {
             }).collect()
         };
         if read.is_empty() { return; }
+        if phase == TouchPhase::Started && read.iter().any(|touch| touch.3 == TouchSource::Finger) { self.finger_pressed(); }
         if phase == TouchPhase::Started && self.takes_keys_on_touch() { self.take_keys(); }
         let count = read.len();
         let input = self.ivars().text.borrow().clone();

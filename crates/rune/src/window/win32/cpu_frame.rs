@@ -114,12 +114,13 @@ fn copy_last(cpu: &Cpu, window: &Window) {
 
 /// The first frame, painted while the window was hidden, into the window that now shows, whole
 /// (nothing composes the window before its cloak lifts).
-fn copy_first(cpu: &mut Cpu, window: &Window, size: (u32, u32)) {
-    let (Shown::Waiting, Buffer::Ready(dib)) = (&cpu.shown, &cpu.buffer) else { return };
-    let Some(hwnd) = crate::platform::win32::hwnd(window) else { return };
+fn copy_first(cpu: &mut Cpu, window: &Window, size: (u32, u32)) -> bool {
+    let (Shown::Waiting, Buffer::Ready(dib)) = (&cpu.shown, &cpu.buffer) else { return false };
+    let Some(hwnd) = crate::platform::win32::hwnd(window) else { return false };
     dib.present(hwnd, size, Blit::All);
     cpu.shown = Shown::Copied(size);
     crate::marks::mark("frame.first.copied");
+    true
 }
 
 /// Threads the CPU renderer paints on: the UI thread and up to five workers that park between
@@ -517,12 +518,12 @@ impl FrameHost for CpuWindowFrame<'_> {
                 l.window.set_visible(true);
                 crate::marks::mark("window.visible");
             }
-            copy_first(cpu, &l.window, (width, height));
+            if copy_first(cpu, &l.window, (width, height)) { self.whole = Some("first copy"); }
             l.native.cloak.lift(&l.window);
             crate::marks::mark("window.shown");
         } else if l.window.is_visible() == Some(true) {
             // A frame after the show that came before the first copy.
-            copy_first(cpu, &l.window, (width, height));
+            if copy_first(cpu, &l.window, (width, height)) { self.whole = Some("first copy"); }
         }
         self.profile.mark_submitted();
         false

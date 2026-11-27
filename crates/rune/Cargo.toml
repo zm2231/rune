@@ -113,6 +113,9 @@ metal-backend = ["rune-gpu/metal-backend", "rune-media/metal-backend"]
 accessibility = ["dep:accesskit_windows", "dep:accesskit_macos", "dep:accesskit_unix"]
 # Use upstream `taffy::TaffyTree` instead of `rune_taffy::LayoutStore` for A/B benchmarks and parity checks.
 baseline-taffy = ["rune-taffy/baseline-taffy"]
+# `Tx::at` and `Tx::requested`, for calling an app's `poll` and handlers in its tests. Enable it
+# from `[dev-dependencies]` only.
+test-support = []
 # Live GPU resource counters (`Device::get_internal_counters`) for upload tests and `upload_bench`.
 test-gpu-counters = ["wgpu/counters"]
 # GPU-free wgpu noop backend for Linux surface-failure and device-loss tests.
@@ -196,7 +199,7 @@ accesskit_macos = { version = "0.27.2", optional = true }
 # Names for the interaction watchdog's stack samples (`tooling::interaction::stack`).
 rustc-demangle = "0.1"
 objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSAttributedString", "NSData", "NSDictionary", "NSEnumerator", "NSError", "NSGeometry", "NSObject", "NSRange", "NSValue", "NSProcessInfo", "NSString", "NSThread", "NSURL", "NSUserDefaults", "objc2-core-foundation"] }
-objc2-app-kit = { workspace = true, features = ["std", "bitflags", "objc2-core-foundation", "NSApplication", "NSButton", "NSCell", "NSColorSpace", "NSControl", "NSEvent", "NSFont", "NSFontDescriptor", "NSHapticFeedback", "NSMenu", "NSMenuItem", "NSResponder", "NSRunningApplication", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSView", "NSWindow", "NSColor", "NSGraphics", "NSPanel", "NSScreen", "NSPasteboard", "NSPasteboardItem", "NSDragging", "NSDraggingItem", "NSDraggingSession", "NSGraphicsContext", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSAttributedString"] }
+objc2-app-kit = { workspace = true, features = ["std", "bitflags", "objc2-core-foundation", "NSAccessibilityProtocols", "NSApplication", "NSButton", "NSCell", "NSColorSpace", "NSControl", "NSEvent", "NSFont", "NSFontDescriptor", "NSHapticFeedback", "NSMenu", "NSMenuItem", "NSResponder", "NSRunningApplication", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSView", "NSWindow", "NSColor", "NSGraphics", "NSPanel", "NSScreen", "NSPasteboard", "NSPasteboardItem", "NSDragging", "NSDraggingItem", "NSDraggingSession", "NSGraphicsContext", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSAttributedString"] }
 objc2-core-video = { workspace = true, features = ["std", "CVBase", "CVDisplayLink", "CVHostTime", "CVReturn", "objc2-core-graphics"] }
 objc2-core-graphics = { workspace = true, features = ["std", "CGColorSpace"] }
 

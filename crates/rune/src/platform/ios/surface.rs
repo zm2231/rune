@@ -33,6 +33,7 @@ use crate::{GesturePhase, Ime, KeyEvent, MagnifyEvent, PhysicalInput, RotateEven
 pub(crate) struct Reading {
     pub(crate) tree: Option<TreeUpdate>,
     pub(crate) masks: Option<Vec<(u64, String)>>,
+    pub(crate) first: Option<u64>,
     pub(crate) zoom: f32,
 }
 
@@ -463,7 +464,8 @@ impl<S: 'static> Surface for Hosted<S> {
         let tree = self.accessibility.update(self.host.runtime_mut().core_mut());
         let core = self.host.runtime().core();
         let masks = (tree.is_some() || (core.has_secure_focus() && core.a11y_listening())).then(|| core.a11y_masks());
-        (tree.is_some() || masks.is_some()).then_some(Reading { tree, masks, zoom })
+        let first = tree.as_ref().and_then(|_| core.a11y_first());
+        (tree.is_some() || masks.is_some()).then_some(Reading { tree, masks, first, zoom })
     }
 
     // The app's lifecycle.

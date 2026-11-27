@@ -25,7 +25,9 @@ mod layer_timing;
 use std::collections::{HashMap, HashSet};
 
 use rune::{AppSpec, Cx, El, TextEdit, col};
-use rune_kit::Kit;
+use std::rc::Rc;
+
+use rune_kit::{Kit, KitCx, KitTheme};
 
 pub struct G {
     pub story: &'static str,
@@ -89,6 +91,7 @@ pub struct G {
     pub images: stories::images::ImageDemo,
     pub neutral: bool,
     pub palette: bool,
+    pub theme: KitTheme,
     /// `--reduced-motion`: the runtime's reduced-motion mode.
     pub reduced: bool,
 }
@@ -117,6 +120,8 @@ impl G {
 }
 
 fn init() -> G {
+    let neutral = rune::extra_args().iter().any(|a| a == "neutral");
+    let palette = rune::extra_args().iter().any(|a| a == "palette");
     G {
         story: "index",
         on: HashSet::new(),
@@ -175,8 +180,9 @@ fn init() -> G {
         diff_scroll: stories::scroll_bars_diff(),
         diff_comment: None,
         images: stories::images::ImageDemo::default(),
-        neutral: rune::extra_args().iter().any(|a| a == "neutral"),
-        palette: rune::extra_args().iter().any(|a| a == "palette"),
+        neutral,
+        palette,
+        theme: theme(neutral, palette),
         reduced: rune::extra_args().iter().any(|a| a == "--reduced-motion"),
     }
 }
@@ -232,45 +238,38 @@ pub(crate) fn lazy_files() -> rune_kit::TreeModel<rune_kit::FileNode<()>> {
     m
 }
 
-pub fn kit(s: &G, dark: bool) -> &'static Kit {
-    if s.palette {
-        static D: std::sync::OnceLock<Kit> = std::sync::OnceLock::new();
-        static L: std::sync::OnceLock<Kit> = std::sync::OnceLock::new();
+/// The gallery's theme for `--kit neutral`, `--kit palette [black|warm]` or OpenCode's.
+pub fn theme(neutral: bool, palette: bool) -> KitTheme {
+    if palette {
         let hex = |c: &str| rune::color::hex(c).unwrap();
-        let seed = |bg: &str, fg: &str, accent: &str| rune_kit::PaletteSeed { bg: hex(bg), fg: hex(fg), accent: hex(accent) };
+        let seed = move |bg: &str, fg: &str, accent: &str| rune_kit::PaletteSeed { bg: hex(bg), fg: hex(fg), accent: hex(accent) };
         // `--kit palette black|warm`: pure-black and paper seeds with ink focus.
         let variant = |name: &str| rune::extra_args().iter().any(|a| a == name);
         let ink = |seed| Kit::from_palette_focus(seed, rune_kit::PaletteFocus::Ink);
-        return if dark {
-            D.get_or_init(|| match variant("black") {
-                true => ink(seed("#000000", "#ffffff", "#ff2a2a")),
-                false => Kit::from_palette(seed("#0a0a0a", "#ededed", "#e5484d")),
-            })
-        } else {
-            L.get_or_init(|| match variant("warm") {
-                true => ink(seed("#e8e4dc", "#000000", "#d81414")),
-                false => Kit::from_palette(seed("#ffffff", "#171717", "#e5484d")),
-            })
-        };
+        let (black, warm) = (variant("black"), variant("warm"));
+        return contrasted(move |dark| match (dark, black, warm) {
+            (true, true, _) => ink(seed("#000000", "#ffffff", "#ff2a2a")),
+            (true, false, _) => Kit::from_palette(seed("#0a0a0a", "#ededed", "#e5484d")),
+            (false, _, true) => ink(seed("#e8e4dc", "#000000", "#d81414")),
+            (false, _, false) => Kit::from_palette(seed("#ffffff", "#171717", "#e5484d")),
+        });
     }
-    if s.neutral {
-        static D: std::sync::OnceLock<Kit> = std::sync::OnceLock::new();
-        static L: std::sync::OnceLock<Kit> = std::sync::OnceLock::new();
-        return if dark { D.get_or_init(|| Kit::neutral(true)) } else { L.get_or_init(|| Kit::neutral(false)) };
+    if neutral {
+        return KitTheme::neutral();
     }
-    rune_theme_opencode::kit(dark)
+    rune_theme_opencode::kit_theme()
 }
 
-fn contrasted(k: &'static Kit) -> &'static Kit {
-    thread_local! {
-        static MADE: std::cell::RefCell<Vec<(*const Kit, &'static Kit)>> = const { std::cell::RefCell::new(Vec::new()) };
-    }
-    MADE.with_borrow_mut(|made| {
-        if let Some((_, more)) = made.iter().find(|(from, _)| std::ptr::eq(*from, k)) { return *more; }
-        let more: &'static Kit = Box::leak(Box::new(k.increased_contrast()));
-        made.push((k, more));
-        more
+fn contrasted(build: impl Fn(bool) -> Kit + 'static) -> KitTheme {
+    KitTheme::new(move |env| {
+        let k = build(env.dark);
+        if env.increased_contrast { k.increased_contrast() } else { k }
     })
+}
+
+/// The gallery's kit for `dark` outside a window, as [`theme`] makes it.
+pub fn kit(s: &G, dark: bool) -> Rc<Kit> {
+    theme(s.neutral, s.palette).kit(&rune_kit::KitEnv::new(dark))
 }
 
 fn view(s: &G, cx: &mut Cx<G>) -> El {
@@ -279,8 +278,12 @@ fn view(s: &G, cx: &mut Cx<G>) -> El {
     }
     cx.zoom(cx.system_text_scale());
     cx.bold_text(cx.system_bold_text());
-    let k = kit(s, cx.system_dark());
-    let k = if cx.system_increased_contrast() { contrasted(k) } else { k };
+    cx.with_kit(&s.theme, |cx| themed(s, cx))
+}
+
+fn themed(s: &G, cx: &mut Cx<G>) -> El {
+    let kit = cx.kit();
+    let k = &*kit;
     if s.story == "rune-tooltip--help-arrow" {
         cx.help_look(
             rune_kit::TooltipStyle::from_kit(k, rune_kit::TooltipAppearance::Compact)
@@ -290,7 +293,7 @@ fn view(s: &G, cx: &mut Cx<G>) -> El {
         );
     }
     let mut overlays = Vec::new();
-    let body = stories::render(s, k, &mut overlays);
+    let body = stories::render(s, &kit, &mut overlays);
     stories::field_menu::mount_live_field_menu(s, k, &mut overlays);
     stories::popup_menu::mount_live_popup_menu(s, k, &mut overlays);
     let [top, right, bottom, left] = cx.safe_area();
@@ -346,7 +349,7 @@ mod tests {
                     setup(&mut s);
                     let k = kit(&s, dark);
                     let mut layer = Vec::new();
-                    let _ = stories::render(&s, k, &mut layer);
+                    let _ = stories::render(&s, &k, &mut layer);
                     assert_eq!(s.story, *id);
                 }
             }

@@ -101,6 +101,8 @@ pub(crate) struct Mirror {
     focus: Option<u64>,
     paging: Option<(u64, Axis)>,
     masks: HashMap<u64, String>,
+    start: Option<u64>,
+    landing: Option<u64>,
 }
 
 impl Mirror {
@@ -112,6 +114,10 @@ impl Mirror {
         self.masks = masks;
         true
     }
+
+    pub(crate) fn set_start(&mut self, start: Option<u64>) { self.start = start; }
+
+    pub(crate) fn landing(&self) -> Option<u64> { self.landing }
 
     pub(crate) fn refresh(&mut self) -> Changes {
         let Some(focus) = self.focus.filter(|_| self.root.is_some()) else { return Changes::default() };
@@ -126,9 +132,10 @@ impl Mirror {
         let focus = update.focus.0;
         if let Some(tree) = &update.tree { self.root = Some(tree.root); }
         for (id, node) in update.nodes { self.nodes.insert(id.0, node); }
-        let mut walk = Walk { nodes: &self.nodes, masks: &self.masks, focus, elements: Vec::new(), live: Vec::new(), seen: Vec::new() };
-        if let Some(root) = self.root { walk.node(root, [0.0, 0.0], true, None, None); }
-        let Walk { elements, live, seen, .. } = walk;
+        let mut walk = Walk { nodes: &self.nodes, masks: &self.masks, focus, start: self.start, landing: None, elements: Vec::new(), live: Vec::new(), seen: Vec::new() };
+        if let Some(root) = self.root { walk.node(root, [0.0, 0.0], true, None, None, None); }
+        let Walk { elements, live, seen, landing, .. } = walk;
+        self.landing = landing;
         let seen: crate::runtime::HashSet<u64> = seen.into_iter().collect();
         self.nodes.retain(|id, _| seen.contains(id));
         let mut announce = Vec::new();
@@ -167,6 +174,7 @@ impl Mirror {
             if let Some(value) = &e.value { v["value"] = value.as_str().into(); }
             if let Some(hint) = &e.hint { v["hint"] = hint.as_str().into(); }
             if let Some(expanded) = e.expanded { v["expanded"] = expanded.into(); }
+            if self.landing == Some(e.id) { v["first"] = true.into(); }
             let actions: Vec<&str> = GESTURES.iter().filter(|(g, _)| self.resolve(e.id, *g).is_some()).map(|(_, name)| *name).collect();
             if !actions.is_empty() { v["actions"] = actions.into(); }
             v
@@ -206,6 +214,8 @@ impl Mirror {
 
 struct Walk<'a> {
     focus: u64,
+    start: Option<u64>,
+    landing: Option<u64>,
     nodes: &'a HashMap<u64, Node>,
     masks: &'a HashMap<u64, String>,
     elements: Vec<Element>,
@@ -215,7 +225,7 @@ struct Walk<'a> {
 
 impl Walk<'_> {
     /// `clip` is what the scroll views around the node show of it: left, top, right, bottom.
-    fn node(&mut self, id: NodeId, origin: [f64; 2], root: bool, scrolls: Option<u64>, clip: Option<[f64; 4]>) {
+    fn node(&mut self, id: NodeId, origin: [f64; 2], root: bool, scrolls: Option<u64>, clip: Option<[f64; 4]>, owner: Option<u64>) {
         let Some(n) = self.nodes.get(&id.0) else { return };
         self.seen.push(id.0);
         let origin = super::read::origin(n, origin, root);
@@ -234,7 +244,11 @@ impl Walk<'_> {
         // An element's name already holds the text inside it; its children are still walked so
         // they stay in the mirror, but add nothing a reader lands on.
         let mark = self.elements.len();
-        for child in n.children() { self.node(*child, origin, false, scrolls, clip); }
+        let owner = owner.or(leaf.then_some(id.0));
+        for child in n.children() { self.node(*child, origin, false, scrolls, clip, owner); }
+        if self.start == Some(id.0) && !hidden {
+            self.landing = owner.or_else(|| self.elements.get(mark).map(|e| e.id));
+        }
         if leaf || hidden { self.elements.truncate(mark); }
     }
 }
@@ -330,9 +344,28 @@ fn element(id: u64, n: &Node, name: Option<String>, mask: Option<&str>, shown: [
 }
 
 impl crate::runtime::RuntimeCore {
+    pub(crate) fn a11y_first(&self) -> Option<u64> {
+        let nodes = &self.tree.nodes;
+        let marked = nodes.iter().position(|n| n.a11y.more.as_ref().is_some_and(|more| more.first))?;
+        let inside = (marked..self.subtree_end(marked)).find(|&j| self.a11y_in_tree(j));
+        let unseen = |j: usize| {
+            let n = &nodes[j];
+            n.is_moved_stub() || n.a11y.hidden || n.vis.opacity <= 0.01 || self.is_exiting(n.id) || !self.scene.contains(n.id)
+        };
+        let around = || {
+            for j in std::iter::successors(Some(marked), |&p| nodes[p].parent) {
+                if unseen(j) { return None }
+                if j != marked && self.a11y_in_tree(j) { return Some(j) }
+            }
+            None
+        };
+        inside.or_else(around).map(|j| super::tree::element_id(nodes[j].id).0)
+    }
+
     pub fn ios_accessibility_json(&self) -> serde_json::Value {
         let mut mirror = Mirror::default();
         mirror.set_masks(self.a11y_masks());
+        mirror.set_start(self.a11y_first());
         mirror.apply(self.accessibility_tree());
         mirror.json()
     }

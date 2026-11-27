@@ -1,6 +1,7 @@
 //! Virtualized scrollable index of every story, building only rows in and near the viewport.
 
 use std::borrow::Cow;
+use std::rc::Rc;
 
 use rune::{El, GrowthSpec, ScrollSpec, col};
 use rune_kit::Kit;
@@ -15,8 +16,9 @@ use super::{
 /// Every story stacked in a scrollable virtualized list, for browsing in a window.
 /// Only rows in and near the viewport are built and mounted; open overlays are collected
 /// separately so they still mount above the scroll container under `kit-root`.
-pub(super) fn index(s: &G, k: &'static Kit, layer: &mut Vec<El>) -> El {
+pub(super) fn index(s: &G, k: &Rc<Kit>, layer: &mut Vec<El>) -> El {
     collect_open_overlays(s, k, layer);
+    let k = k.clone();
     let rows = col()
         .key("index")
         .w_full()
@@ -30,7 +32,7 @@ pub(super) fn index(s: &G, k: &'static Kit, layer: &mut Vec<El>) -> El {
             move |s: &G, i| {
                 let (id, f) = STORIES[i];
                 let mut discard = Vec::new();
-                col().w_full().gap(8.0).child(caption(k, id)).child(f(s, k, &mut discard))
+                col().w_full().gap(8.0).child(caption(&k, id)).child(f(s, &k, &mut discard))
             },
         );
     col()

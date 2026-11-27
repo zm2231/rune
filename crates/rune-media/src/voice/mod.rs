@@ -25,8 +25,9 @@
 //! the app, with WebRTC's AEC3 and noise suppressor, using exactly the samples Rune plays as the
 //! reference, so no system echo-cancel module is needed. Limits: only Rune's own output is
 //! cancelled, not other apps' sound; steady pure tones are cancelled far less than speech or
-//! noise; the microphone level isn't adjusted automatically; the
-//! sound server moves the streams when the default devices change, and a stream that fails is
+//! noise; the microphone level isn't adjusted automatically; an echo that comes back more than
+//! about 700 ms after it was played (a long virtual-cable or network loop) may not be found, and
+//! then isn't cancelled; the sound server moves the streams when the default devices change, and a stream that fails is
 //! rebuilt ([`VoiceEvent::DeviceChanged`]). If the default source is already PipeWire's or
 //! PulseAudio's echo-cancel node, the echo is cancelled twice, which is harmless. Verified
 //! against a real PulseAudio server whose microphone hears the speaker directly; a desktop with
@@ -49,19 +50,24 @@
 //!
 //! **The web.** The stream asks the browser for the microphone with its own echo cancellation,
 //! noise suppression and gain control on, and runs both directions through one AudioWorklet in
-//! an `AudioContext` at the stream's rate, so echo cancellation is the browser's. Without
-//! threads in the page's wasm, the stream's control and audio both pass through the page's main
-//! thread: the worklet posts each 10 ms of microphone audio there and gets the same amount of
-//! speaker audio back, buffered 20 ms ahead. A main thread busy for longer than the buffer (a
-//! long frame, heavy script) plays silence or drops speaker audio, counted in
-//! [`VoiceStats::late_frames`]. The page needs HTTPS or `localhost`. Browsers start audio only
-//! after the person interacts with the page, so call [`Voice::start`] from a click or key
-//! handler; started earlier, audio begins at the next click or key press. The first start asks
-//! for the microphone; a refusal fails the stream ([`VoiceState::Failed`]) and
-//! [`Voice::permission`] then reads [`MicPermission::Denied`]. A change of audio devices rebuilds
-//! the stream. Checked in headless Chromium with a fake microphone; echo cancellation in Chrome,
-//! Firefox and Safari with real speakers hasn't been verified yet, and whether each browser
-//! cancels the page's own Web Audio output is up to the browser.
+//! an `AudioContext` at the audio device's own rate, so echo cancellation is the browser's. The
+//! context keeps the device's rate because Firefox cancels only the sound played in the same
+//! audio graph as the microphone, and a context at any other rate gets a graph of its own; Rune
+//! converts between the device's rate and the stream's. Without threads in the page's wasm, the
+//! stream's control and audio both pass through the page's main thread: the worklet posts each
+//! 10 ms of microphone audio there and gets the same amount of speaker audio back, buffered
+//! 20 ms ahead. A main thread busy for longer than the buffer (a long frame, heavy script) plays
+//! silence or drops speaker audio, counted in [`VoiceStats::late_frames`]. The page needs HTTPS
+//! or `localhost`. Browsers start audio only after the person interacts with the page, so call
+//! [`Voice::start`] from a click or key handler; started earlier, audio begins at the next click
+//! or key press. The stream stays [`VoiceState::Starting`] until the first microphone audio
+//! arrives, so it isn't [`VoiceState::Running`] while the browser's permission prompt is open.
+//! The first start asks for the microphone; a refusal fails the stream ([`VoiceState::Failed`])
+//! and [`Voice::permission`] then reads [`MicPermission::Denied`]. With no microphone at all the
+//! stream fails too, with a message that says so, rather than retrying. A change of audio devices
+//! rebuilds the stream. Echo cancellation has been measured in headless Firefox and Chromium
+//! against a PulseAudio server whose microphone hears the speaker, at device rates of 44.1 and
+//! 48 kHz; Safari and real speakers haven't been verified yet.
 //!
 //! Elsewhere, [`Voice::open`] returns [`VoiceError::Unsupported`].
 //!
@@ -77,6 +83,8 @@ mod echo_path;
 mod fake;
 mod io;
 mod machine;
+#[cfg(target_arch = "wasm32")]
+mod rates;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 mod streams;
 #[cfg(any(target_os = "macos", target_os = "ios"))]

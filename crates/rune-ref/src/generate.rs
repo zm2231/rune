@@ -118,7 +118,7 @@ pub fn seeded(seed: u64, count: usize) -> Scene {
     scene(&records)
 }
 
-/// `seeded`, with every primitive redrawn as a dashed border ring (kind 10). A separate corpus,
+/// `seeded`, with every primitive redrawn as a dashed border ring (kind 10), butt or round capped. A separate corpus,
 /// so adding the kind left the canonical hashes of `seeded` alone.
 pub fn dashed(seed: u64, count: usize) -> Scene {
     let mut scene = seeded(seed, count);
@@ -127,22 +127,9 @@ pub fn dashed(seed: u64, count: usize) -> Scene {
         let bw = 0.5 + (b(0) % 8) as f32 * 0.25;
         p.params = [bw, 10.0, if b(1) % 4 == 0 { p.params[2] } else { 0.0 }, 1.0];
         let dash = 1.0 + (b(2) % 24) as f32 * 0.5;
-        let mut gap = 1.0 + (b(3) % 16) as f32 * 0.5;
-        // Avoid exact half-integer `total / nominal`, where a 1-ULP GPU reciprocal division
-        // can flip `floor(total / nominal + 0.5)` by a whole dash period.
-        let h = bw * 0.5;
-        let m = (p.rect[2] * 0.5).min(p.rect[3] * 0.5);
-        let rc = p.radii.map(|r| (r.abs().min(m) - h).max(0.0));
-        let total = (p.rect[2] - bw - rc[0] - rc[1]).max(0.0)
-            + (p.rect[3] - bw - rc[1] - rc[2]).max(0.0)
-            + (p.rect[2] - bw - rc[2] - rc[3]).max(0.0)
-            + (p.rect[3] - bw - rc[3] - rc[0]).max(0.0)
-            + rc.iter().map(|r| r * 1.5707964).sum::<f32>();
-        let periods = total / (dash + gap);
-        if (periods - libm::floorf(periods) - 0.5).abs() < 1e-3 {
-            gap += 0.25;
-        }
-        p.uv = [dash, gap, (b(1) % 32) as f32 * 0.75 - 6.0, 0.0];
+        let gap = 1.0 + (b(3) % 16) as f32 * 0.5;
+        let round = ((b(2) / 24) % 2) as f32;
+        p.uv = [dash, gap, (b(1) % 32) as f32 * 0.75 - 6.0, round];
         if b(0) % 3 == 0 { p.border = p.fill; }
     }
     scene

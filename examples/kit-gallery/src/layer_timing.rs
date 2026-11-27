@@ -4,12 +4,13 @@ use rune::render::{Gpu, Instance, Renderer, Offscreen, OFFSCREEN_FORMAT, KIND_LA
 
 fn disabled_controls(_: &G, _: &mut Cx<G>) -> El {
     let mut s = init();
-    let k = kit(&s, true);
+    let kit = kit(&s, true);
+    let k = &*kit;
     let mut overlays = Vec::new();
     let mut columns = rune::row().gap(24.0);
     for story in ["ui-radio--states", "ui-text-input--states", "ui-select--disabled"] {
         s.story = story;
-        columns = columns.child(col().w(300.0).child(stories::render(&s, k, &mut overlays)));
+        columns = columns.child(col().w(300.0).child(stories::render(&s, &kit, &mut overlays)));
     }
     let segmented = rune_kit::SegmentedControl::new(&["List", "Grid", "Board"], Some(0))
         .segment_state(0, rune_kit::State::Disabled)

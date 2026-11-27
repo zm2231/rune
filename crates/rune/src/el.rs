@@ -67,7 +67,7 @@ pub(crate) use focus::ModalSpec;
 pub(crate) use handler_set::Handlers;
 pub use grid::{GridRow, grid};
 pub use handlers::{Drag, Phase, PointerEvent, PointerPress, SwipeEdge};
-pub(crate) use handlers::{A11yActionFn, AnyPressFn, DragEndFn, DragFn, DragOutFn, InputKeyFn, PointerFn, PointerMotionFn, PressFn, SetValueFn, StepFn, StepLimitFn, WindowDrag};
+pub(crate) use handlers::{A11yActionFn, AnyPressFn, DragEndFn, DragFn, DragOutFn, InputKeyFn, PointerFn, PointerMotionFn, PressFn, SetExpandedFn, SetValueFn, StepFn, StepLimitFn, WindowDrag};
 pub(crate) use help::{HELP_KEY, HELP_ROW, help_words};
 pub use input::{InputSpec, auto_grow, edit_access, text_input};
 pub use items::VirtualItems;
@@ -89,6 +89,8 @@ pub use text_spec::LineFill;
 pub use text_spec::TextSpec;
 pub(crate) use tx::{Commit, FocusAsk, FullScreenRequest, MotionSource, SelectRequest, TraceCalls};
 pub use tx::{Shell, Tx};
+#[cfg(feature = "test-support")]
+pub use tx::{FocusKind, FocusRequest, Requested, RevealRequest};
 pub(crate) use visual::VisualFlags;
 pub use visual::{Visual, VisualCold};
 pub(crate) use visuals::{GradientGeometry, RadialGradient};

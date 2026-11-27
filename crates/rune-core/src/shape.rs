@@ -11,11 +11,13 @@
 //! it once.
 
 mod area;
+mod dash;
 mod planar;
 mod svg_path;
 mod triangulate;
 
 pub use area::Area;
+pub use dash::Dash;
 #[doc(hidden)]
 pub use svg_path::{SvgPathSink, parse_svg_path};
 #[doc(hidden)]
@@ -132,6 +134,39 @@ impl Shape {
                 cap,
                 color,
             });
+        }
+        self
+    }
+
+    /// A polyline cut into dashes by `dash`, `width` wide; `closed` joins the last point back to
+    /// the first, and a dash that runs over that join stays one piece. Dashes are measured in
+    /// the shape's own coordinates, so under [`Self::view_box`] they stretch with the shape.
+    pub fn stroke_dashed(
+        mut self,
+        points: impl Into<Vec<[f32; 2]>>,
+        closed: bool,
+        width: f32,
+        dash: Dash,
+        color: Color,
+    ) -> Shape {
+        let points = points.into();
+        let cap = dash.line_cap();
+        match dash.pieces(&points, closed) {
+            Some(pieces) => {
+                for piece in pieces {
+                    self = self.stroke_with(piece, false, width, cap, color);
+                }
+                self
+            }
+            None => self.stroke_with(points, closed, width, cap, color),
+        }
+    }
+
+    /// Strokes every subpath of `path` cut into dashes by `dash`, each subpath starting the
+    /// pattern afresh, as [`Self::stroke_dashed`] does.
+    pub fn stroke_path_dashed(mut self, path: &Path, width: f32, dash: Dash, color: Color) -> Shape {
+        for sub in &path.subpaths {
+            self = self.stroke_dashed(sub.points.clone(), sub.closed, width, dash, color);
         }
         self
     }

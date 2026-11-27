@@ -156,6 +156,86 @@ fn wakes_a_poll_keeps_asking_for_collapse_to_one_poll_a_frame() {
     }
 }
 
+fn busy_then_idle(poll: fn(&mut (usize, f64), f64, &mut Tx) -> bool) -> Runtime<(usize, f64)> {
+    fn view(_: &(usize, f64), _: &mut Cx<(usize, f64)>) -> El { el() }
+    let mut rt = Runtime::new((0, 0.0), view, (100.0, 100.0), Env::new(true, 1.0));
+    rt.poll = Some(poll);
+    rt.frame(0.0);
+    for _ in 0..10 {
+        rt.update(|s, tx| tx.wake_at(s.1));
+        rt.frame(0.03);
+    }
+    rt.frame(1.5 - rt.clock());
+    rt.state.0 = 0;
+    rt.frame(5.0);
+    rt
+}
+
+#[test]
+fn a_poll_asking_wake_at_on_a_fixed_schedule_keeps_its_cadence_after_a_busy_stretch() {
+    fn poll(s: &mut (usize, f64), clock: f64, tx: &mut Tx) -> bool {
+        s.0 += 1;
+        while s.1 <= clock {
+            s.1 += 0.25;
+        }
+        tx.wake_at(s.1);
+        false
+    }
+    let rt = busy_then_idle(poll);
+    assert_eq!(rt.state.0, 20, "four polls a second");
+    assert!(rt.frame.app_wake_count() <= 1, "{} wakes pending", rt.frame.app_wake_count());
+}
+
+#[test]
+fn a_poll_asking_wake_after_on_every_run_stacks_its_wakes() {
+    fn poll(s: &mut (usize, f64), _: f64, tx: &mut Tx) -> bool {
+        s.0 += 1;
+        tx.wake_after(std::time::Duration::from_millis(250));
+        false
+    }
+    let rt = busy_then_idle(poll);
+    assert!(rt.state.0 > 20, "each early poll's wake still fires: {} polls", rt.state.0);
+    assert!(rt.frame.app_wake_count() > 1);
+}
+
+#[test]
+fn a_wake_at_asked_again_for_the_same_instant_adds_nothing() {
+    fn view(_: &Vec<f64>, _: &mut Cx<Vec<f64>>) -> El { el() }
+    fn poll(polls: &mut Vec<f64>, clock: f64, _: &mut Tx) -> bool {
+        polls.push((clock * 1000.0).round() / 1000.0);
+        false
+    }
+    let mut rt = Runtime::new(Vec::new(), view, (100.0, 100.0), Env::new(true, 1.0));
+    rt.poll = Some(poll);
+    rt.frame(0.0);
+    rt.update(|_, tx| tx.wake_at(0.7));
+    rt.frame(0.1);
+    rt.update(|_, tx| tx.wake_at(0.7));
+    rt.frame(0.13);
+    rt.update(|_, tx| tx.wake_at(0.7));
+    rt.frame(0.0);
+    assert_eq!(rt.frame.wake_deadlines(), [0.7]);
+    rt.state.clear();
+    rt.frame(1.0);
+    assert_eq!(rt.state, [0.7, 1.23], "one poll at the deadline, and the step's own");
+}
+
+#[test]
+fn a_wake_at_nan_wakes_the_next_frame_and_infinity_never() {
+    fn view(_: &(), _: &mut Cx<()>) -> El { el() }
+    let mut rt = Runtime::new((), view, (100.0, 100.0), Env::new(true, 1.0));
+    rt.frame(0.0);
+    rt.update(|_, tx| tx.wake_at(0.4));
+    rt.update(|_, tx| tx.wake_at(f64::NAN));
+    rt.update(|_, tx| tx.wake_at(f64::INFINITY));
+    rt.frame(0.1);
+    assert_eq!(rt.wake_deadline(), Some(0.0), "the NaN wake is due at once");
+    rt.frame(0.0);
+    assert_eq!(rt.wake_deadline(), Some(0.4), "the next frame spends it, and nothing waits forever");
+    rt.frame(0.4);
+    assert_eq!(rt.wake_deadline(), None);
+}
+
 #[test]
 fn a_zero_wake_does_not_hide_a_later_wake_in_a_coarse_frame() {
     use std::time::Duration;

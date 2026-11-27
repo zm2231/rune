@@ -33,6 +33,7 @@ use super::undo::uikit::Undo;
 use super::undo::{Action, Offer};
 
 mod grab;
+use crate::platform::objc_boundary::guarded;
 use crate::machine::Effects;
 use crate::input::traits::InputTraits;
 use super::super::view::{RuneView, UIResponder, UIView};
@@ -149,17 +150,17 @@ define_class!(
     impl Span {
         #[unsafe(method_id(start))]
         fn start(&self) -> Retained<Position> {
-            Position::new(self.mtm(), self.ivars().0)
+            guarded("start", || Position::new(self.mtm(), self.ivars().0))
         }
 
         #[unsafe(method_id(end))]
         fn end(&self) -> Retained<Position> {
-            Position::new(self.mtm(), self.ivars().1)
+            guarded("end", || Position::new(self.mtm(), self.ivars().1))
         }
 
         #[unsafe(method(isEmpty))]
         fn is_empty(&self) -> bool {
-            self.ivars().0 == self.ivars().1
+            guarded("isEmpty", || self.ivars().0 == self.ivars().1)
         }
     }
 );
@@ -212,114 +213,120 @@ define_class!(
     impl RuneTextInput {
         #[unsafe(method(canBecomeFirstResponder))]
         fn can_become_first_responder(&self) -> bool {
-            true
+            guarded("canBecomeFirstResponder", || true)
         }
 
         // The standard edit actions, which UIKit sends a first responder for the three-finger
         // copy, cut and paste gestures and from any system menu. The field does each itself,
         // as for the hardware keyboard's shortcut, with Rune's clipboard.
         #[unsafe(method(selectAll:))]
-        fn select_all(&self, _sender: Option<&AnyObject>) { self.command('a'); }
+        fn select_all(&self, _sender: Option<&AnyObject>) { guarded("selectAll:", || { self.command('a'); }) }
 
         #[unsafe(method(copy:))]
-        fn copy(&self, _sender: Option<&AnyObject>) { self.command('c'); }
+        fn copy(&self, _sender: Option<&AnyObject>) { guarded("copy:", || { self.command('c'); }) }
 
         #[unsafe(method(cut:))]
-        fn cut(&self, _sender: Option<&AnyObject>) { self.command('x'); }
+        fn cut(&self, _sender: Option<&AnyObject>) { guarded("cut:", || { self.command('x'); }) }
 
         #[unsafe(method(paste:))]
-        fn paste(&self, _sender: Option<&AnyObject>) { self.command('v'); }
+        fn paste(&self, _sender: Option<&AnyObject>) { guarded("paste:", || { self.command('v'); }) }
 
         /// What a shake and the three-finger undo gestures ask whether there is anything to
         /// undo or redo, and tell to do it: the focused field's history, through a manager
         /// that holds one action for each. Nil with no field focused, so nothing is offered.
         #[unsafe(method_id(undoManager))]
         fn undo_manager(&self) -> Option<Retained<AnyObject>> {
-            self.ivars().undo.manager()
+            guarded("undoManager", || self.ivars().undo.manager())
         }
 
         #[unsafe(method(runeUndo:))]
-        fn undo_fired(&self, _object: Option<&AnyObject>) { self.history(Action::Undo); }
+        fn undo_fired(&self, _object: Option<&AnyObject>) { guarded("runeUndo:", || { self.history(Action::Undo); }) }
 
         #[unsafe(method(runeRedo:))]
-        fn redo_fired(&self, _object: Option<&AnyObject>) { self.history(Action::Redo); }
+        fn redo_fired(&self, _object: Option<&AnyObject>) { guarded("runeRedo:", || { self.history(Action::Redo); }) }
 
         /// A hardware key going down. The host hears it as a physical key, and takes it from
         /// UIKit when it names an edit, a move or a shortcut. UIKit types the key when it is a
         /// character, and has it to itself while the keyboard is composing.
         #[unsafe(method(pressesBegan:withEvent:))]
         fn presses_began(&self, presses: &AnyObject, event: Option<&AnyObject>) {
-            let composing = self.ivars().doc.borrow().marked().is_some();
-            let taken = !composing && self.ivars().host.load().is_some_and(|host| host.presses(presses, true, true));
-            if !taken {
-                // SAFETY: `presses` and `event` are UIKit's own objects, passed unchanged to
-                // `UIView`'s method of the same signature.
-                let _: () = unsafe { msg_send![super(self), pressesBegan: presses, withEvent: event] };
-            }
+            guarded("pressesBegan:withEvent:", || {
+                let composing = self.ivars().doc.borrow().marked().is_some();
+                let taken = !composing && self.ivars().host.load().is_some_and(|host| host.presses(presses, true, true));
+                if !taken {
+                    // SAFETY: `presses` and `event` are UIKit's own objects, passed unchanged to
+                    // `UIView`'s method of the same signature.
+                    let _: () = unsafe { msg_send![super(self), pressesBegan: presses, withEvent: event] };
+                }
+            })
         }
 
         #[unsafe(method(pressesEnded:withEvent:))]
         fn presses_ended(&self, presses: &AnyObject, event: Option<&AnyObject>) {
-            if let Some(host) = self.ivars().host.load() { host.presses(presses, false, true); }
-            // SAFETY: as in `pressesBegan:withEvent:`.
-            let _: () = unsafe { msg_send![super(self), pressesEnded: presses, withEvent: event] };
+            guarded("pressesEnded:withEvent:", || {
+                if let Some(host) = self.ivars().host.load() { host.presses(presses, false, true); }
+                // SAFETY: as in `pressesBegan:withEvent:`.
+                let _: () = unsafe { msg_send![super(self), pressesEnded: presses, withEvent: event] };
+            })
         }
 
         #[unsafe(method(pressesCancelled:withEvent:))]
         fn presses_cancelled(&self, presses: &AnyObject, event: Option<&AnyObject>) {
-            if let Some(host) = self.ivars().host.load() { host.presses(presses, false, true); }
-            // SAFETY: as in `pressesBegan:withEvent:`.
-            let _: () = unsafe { msg_send![super(self), pressesCancelled: presses, withEvent: event] };
+            guarded("pressesCancelled:withEvent:", || {
+                if let Some(host) = self.ivars().host.load() { host.presses(presses, false, true); }
+                // SAFETY: as in `pressesBegan:withEvent:`.
+                let _: () = unsafe { msg_send![super(self), pressesCancelled: presses, withEvent: event] };
+            })
         }
 
         #[unsafe(method(isSecureTextEntry))]
         fn is_secure(&self) -> bool {
-            self.ivars().secure.get()
+            guarded("isSecureTextEntry", || self.ivars().secure.get())
         }
 
         #[unsafe(method(keyboardType))]
         fn keyboard_type(&self) -> isize {
-            traits::keyboard_type(self.ivars().traits.get().mode)
+            guarded("keyboardType", || traits::keyboard_type(self.ivars().traits.get().mode))
         }
 
         #[unsafe(method(textContentType))]
         fn text_content_type(&self) -> Option<&'static NSString> {
-            traits::content_type(self.ivars().traits.get().autocomplete).map(content_type)
+            guarded("textContentType", || traits::content_type(self.ivars().traits.get().autocomplete).map(content_type))
         }
 
         #[unsafe(method(autocapitalizationType))]
         fn autocapitalization_type(&self) -> isize {
-            traits::autocapitalization_type(self.ivars().traits.get().autocapitalize)
+            guarded("autocapitalizationType", || traits::autocapitalization_type(self.ivars().traits.get().autocapitalize))
         }
 
         #[unsafe(method(autocorrectionType))]
         fn autocorrection_type(&self) -> isize {
-            traits::correction_type(self.ivars().traits.get().autocorrect)
+            guarded("autocorrectionType", || traits::correction_type(self.ivars().traits.get().autocorrect))
         }
 
         #[unsafe(method(spellCheckingType))]
         fn spell_checking_type(&self) -> isize {
-            traits::correction_type(self.ivars().traits.get().spellcheck)
+            guarded("spellCheckingType", || traits::correction_type(self.ivars().traits.get().spellcheck))
         }
 
         #[unsafe(method(returnKeyType))]
         fn return_key_type(&self) -> isize {
-            traits::return_key_type(self.ivars().traits.get().enter_key_hint)
+            guarded("returnKeyType", || traits::return_key_type(self.ivars().traits.get().enter_key_hint))
         }
 
         #[unsafe(method(hasText))]
         fn has_text(&self) -> bool {
-            self.ivars().doc.borrow().len() > 0
+            guarded("hasText", || self.ivars().doc.borrow().len() > 0)
         }
 
         #[unsafe(method(insertText:))]
         fn insert_text(&self, text: &NSString) {
-            self.edit(Event::Insert(text.to_string()));
+            guarded("insertText:", || { self.edit(Event::Insert(text.to_string())); })
         }
 
         #[unsafe(method(deleteBackward))]
         fn delete_backward(&self) {
-            self.edit(Event::DeleteBackward);
+            guarded("deleteBackward", || { self.edit(Event::DeleteBackward); })
         }
     }
 
@@ -329,168 +336,182 @@ define_class!(
     unsafe impl TextInput for RuneTextInput {
         #[unsafe(method_id(textInRange:))]
         fn text_in_range(&self, range: &Span) -> Option<Retained<NSString>> {
-            Some(NSString::from_str(&self.ivars().doc.borrow().slice(range.range())))
+            guarded("textInRange:", || Some(NSString::from_str(&self.ivars().doc.borrow().slice(range.range()))))
         }
 
         #[unsafe(method(replaceRange:withText:))]
         fn replace_range(&self, range: &Span, text: &NSString) {
-            self.edit(Event::Replace { range: range.range(), text: text.to_string() });
+            guarded("replaceRange:withText:", || { self.edit(Event::Replace { range: range.range(), text: text.to_string() }); })
         }
 
         #[unsafe(method_id(selectedTextRange))]
         fn selected_text_range(&self) -> Option<Retained<Span>> {
-            Some(Span::new(self.mtm(), self.ivars().doc.borrow().selection()))
+            guarded("selectedTextRange", || Some(Span::new(self.mtm(), self.ivars().doc.borrow().selection())))
         }
 
         #[unsafe(method(setSelectedTextRange:))]
         fn set_selected_text_range(&self, range: Option<&Span>) {
-            if let Some(range) = range { self.edit(Event::Select(range.range())); }
+            guarded("setSelectedTextRange:", || if let Some(range) = range { self.edit(Event::Select(range.range())); })
         }
 
         #[unsafe(method_id(markedTextRange))]
         fn marked_text_range(&self) -> Option<Retained<Span>> {
-            self.ivars().doc.borrow().marked().map(|range| Span::new(self.mtm(), range))
+            guarded("markedTextRange", || self.ivars().doc.borrow().marked().map(|range| Span::new(self.mtm(), range)))
         }
 
         #[unsafe(method_id(markedTextStyle))]
         fn marked_text_style(&self) -> Option<Retained<NSDictionary>> {
-            None
+            guarded("markedTextStyle", || None)
         }
 
         /// Rune draws the composition its own way.
         #[unsafe(method(setMarkedTextStyle:))]
-        fn set_marked_text_style(&self, _style: Option<&NSDictionary>) {}
+        fn set_marked_text_style(&self, _style: Option<&NSDictionary>) { guarded("setMarkedTextStyle:", || {}) }
 
         #[unsafe(method(setMarkedText:selectedRange:))]
         fn set_marked_text(&self, text: Option<&NSString>, selected: NSRange) {
-            let text = text.map(NSString::to_string).unwrap_or_default();
-            self.edit(Event::SetMarked { text, selection: selected.location..selected.location + selected.length });
+            guarded("setMarkedText:selectedRange:", || {
+                let text = text.map(NSString::to_string).unwrap_or_default();
+                self.edit(Event::SetMarked { text, selection: selected.location..selected.location + selected.length });
+            })
         }
 
         #[unsafe(method(unmarkText))]
         fn unmark_text(&self) {
-            self.edit(Event::Unmark);
+            guarded("unmarkText", || { self.edit(Event::Unmark); })
         }
 
         #[unsafe(method_id(beginningOfDocument))]
         fn beginning_of_document(&self) -> Retained<Position> {
-            Position::new(self.mtm(), 0)
+            guarded("beginningOfDocument", || Position::new(self.mtm(), 0))
         }
 
         #[unsafe(method_id(endOfDocument))]
         fn end_of_document(&self) -> Retained<Position> {
-            Position::new(self.mtm(), self.ivars().doc.borrow().len())
+            guarded("endOfDocument", || Position::new(self.mtm(), self.ivars().doc.borrow().len()))
         }
 
         #[unsafe(method_id(textRangeFromPosition:toPosition:))]
         fn text_range(&self, from: &Position, to: &Position) -> Option<Retained<Span>> {
-            Some(Span::new(self.mtm(), from.at().min(to.at())..from.at().max(to.at())))
+            guarded("textRangeFromPosition:toPosition:", || Some(Span::new(self.mtm(), from.at().min(to.at())..from.at().max(to.at()))))
         }
 
         #[unsafe(method_id(positionFromPosition:offset:))]
         fn position_offset(&self, position: &Position, offset: isize) -> Option<Retained<Position>> {
-            self.moved(position.at(), offset)
+            guarded("positionFromPosition:offset:", || self.moved(position.at(), offset))
         }
 
         #[unsafe(method_id(positionFromPosition:inDirection:offset:))]
         fn position_in_direction(&self, position: &Position, direction: isize, offset: isize) -> Option<Retained<Position>> {
-            let signed = if backward(direction) { -offset } else { offset };
-            // A line up or down where the field's lines are known, else by characters.
-            let line = (direction == DIRECTION_UP || direction == DIRECTION_DOWN)
-                .then(|| self.place(position.at())).flatten()
-                .and_then(|(geometry, byte)| geometry.vertical(byte, signed));
-            match line {
-                Some(byte) => Some(Position::new(self.mtm(), self.ivars().doc.borrow().offset_of(byte))),
-                None => self.moved(position.at(), signed),
-            }
+            guarded("positionFromPosition:inDirection:offset:", || {
+                let signed = if backward(direction) { -offset } else { offset };
+                // A line up or down where the field's lines are known, else by characters.
+                let line = (direction == DIRECTION_UP || direction == DIRECTION_DOWN)
+                    .then(|| self.place(position.at())).flatten()
+                    .and_then(|(geometry, byte)| geometry.vertical(byte, signed));
+                match line {
+                    Some(byte) => Some(Position::new(self.mtm(), self.ivars().doc.borrow().offset_of(byte))),
+                    None => self.moved(position.at(), signed),
+                }
+            })
         }
 
         #[unsafe(method(comparePosition:toPosition:))]
         fn compare(&self, a: &Position, b: &Position) -> isize {
-            ORDER[(a.at().cmp(&b.at()) as isize + 1) as usize]
+            guarded("comparePosition:toPosition:", || ORDER[(a.at().cmp(&b.at()) as isize + 1) as usize])
         }
 
         #[unsafe(method(offsetFromPosition:toPosition:))]
         fn offset(&self, from: &Position, to: &Position) -> isize {
-            to.at() as isize - from.at() as isize
+            guarded("offsetFromPosition:toPosition:", || to.at() as isize - from.at() as isize)
         }
 
         #[unsafe(method_id(inputDelegate))]
         fn input_delegate(&self) -> Option<Retained<AnyObject>> {
-            self.delegate()
+            guarded("inputDelegate", || self.delegate())
         }
 
         #[unsafe(method(setInputDelegate:))]
         fn set_input_delegate(&self, delegate: Option<&AnyObject>) {
-            *self.ivars().delegate.borrow_mut() = delegate.map(Weak::new);
+            guarded("setInputDelegate:", || { *self.ivars().delegate.borrow_mut() = delegate.map(Weak::new); })
         }
 
         #[unsafe(method_id(tokenizer))]
         fn tokenizer(&self) -> Retained<AnyObject> {
-            self.ivars().tokenizer.borrow_mut().get_or_insert_with(|| {
-                // SAFETY: UIKit's own tokenizer, made for a view that conforms to `UITextInput`.
-                unsafe {
-                    let tokenizer: Allocated<AnyObject> = msg_send![class!(UITextInputStringTokenizer), alloc];
-                    msg_send![tokenizer, initWithTextInput: self]
-                }
-            }).clone()
+            guarded("tokenizer", || {
+                self.ivars().tokenizer.borrow_mut().get_or_insert_with(|| {
+                    // SAFETY: UIKit's own tokenizer, made for a view that conforms to `UITextInput`.
+                    unsafe {
+                        let tokenizer: Allocated<AnyObject> = msg_send![class!(UITextInputStringTokenizer), alloc];
+                        msg_send![tokenizer, initWithTextInput: self]
+                    }
+                }).clone()
+            })
         }
 
         #[unsafe(method_id(positionWithinRange:farthestInDirection:))]
         fn farthest(&self, range: &Span, direction: isize) -> Option<Retained<Position>> {
-            Some(Position::new(self.mtm(), if backward(direction) { range.range().start } else { range.range().end }))
+            guarded("positionWithinRange:farthestInDirection:", || Some(Position::new(self.mtm(), if backward(direction) { range.range().start } else { range.range().end })))
         }
 
         #[unsafe(method_id(characterRangeByExtendingPosition:inDirection:))]
         fn extending(&self, position: &Position, direction: isize) -> Option<Retained<Span>> {
-            let end = if backward(direction) { 0 } else { self.ivars().doc.borrow().len() };
-            Some(Span::new(self.mtm(), position.at().min(end)..position.at().max(end)))
+            guarded("characterRangeByExtendingPosition:inDirection:", || {
+                let end = if backward(direction) { 0 } else { self.ivars().doc.borrow().len() };
+                Some(Span::new(self.mtm(), position.at().min(end)..position.at().max(end)))
+            })
         }
 
         #[unsafe(method(baseWritingDirectionForPosition:inDirection:))]
         fn base_writing_direction(&self, _position: &Position, _direction: isize) -> isize {
-            WRITING_NATURAL
+            guarded("baseWritingDirectionForPosition:inDirection:", || WRITING_NATURAL)
         }
 
         /// The field takes its direction from its text.
         #[unsafe(method(setBaseWritingDirection:forRange:))]
-        fn set_base_writing_direction(&self, _direction: isize, _range: &Span) {}
+        fn set_base_writing_direction(&self, _direction: isize, _range: &Span) { guarded("setBaseWritingDirection:forRange:", || {}) }
 
         #[unsafe(method(firstRectForRange:))]
         fn first_rect(&self, range: &Span) -> CGRect {
-            let range = range.range();
-            let rect = self.place(range.start).zip(self.ivars().doc.borrow().field_byte(range.end))
-                .and_then(|((geometry, from), to)| geometry.first_rect(from..to));
-            rect.map_or(self.ivars().caret.get(), cg_rect)
+            guarded("firstRectForRange:", || {
+                let range = range.range();
+                let rect = self.place(range.start).zip(self.ivars().doc.borrow().field_byte(range.end))
+                    .and_then(|((geometry, from), to)| geometry.first_rect(from..to));
+                rect.map_or(self.ivars().caret.get(), cg_rect)
+            })
         }
 
         #[unsafe(method(caretRectForPosition:))]
         fn caret_rect(&self, position: &Position) -> CGRect {
-            let rect = self.place(position.at()).and_then(|(geometry, byte)| geometry.caret(byte));
-            rect.map_or(self.ivars().caret.get(), cg_rect)
+            guarded("caretRectForPosition:", || {
+                let rect = self.place(position.at()).and_then(|(geometry, byte)| geometry.caret(byte));
+                rect.map_or(self.ivars().caret.get(), cg_rect)
+            })
         }
 
         #[unsafe(method_id(selectionRectsForRange:))]
         fn selection_rects(&self, range: &Span) -> Retained<NSArray> {
-            let range = range.range();
-            let rects = self.place(range.start).zip(self.ivars().doc.borrow().field_byte(range.end))
-                .map(|((geometry, from), to)| geometry.selection_rects(from..to)).unwrap_or_default();
-            selection::rects(self.mtm(), &rects)
+            guarded("selectionRectsForRange:", || {
+                let range = range.range();
+                let rects = self.place(range.start).zip(self.ivars().doc.borrow().field_byte(range.end))
+                    .map(|((geometry, from), to)| geometry.selection_rects(from..to)).unwrap_or_default();
+                selection::rects(self.mtm(), &rects)
+            })
         }
 
         #[unsafe(method_id(closestPositionToPoint:))]
         fn closest_position(&self, point: CGPoint) -> Option<Retained<Position>> {
-            Some(Position::new(self.mtm(), self.closest(point)))
+            guarded("closestPositionToPoint:", || Some(Position::new(self.mtm(), self.closest(point))))
         }
 
         #[unsafe(method_id(closestPositionToPoint:withinRange:))]
         fn closest_position_within(&self, point: CGPoint, range: &Span) -> Option<Retained<Position>> {
-            Some(Position::new(self.mtm(), self.closest(point).clamp(range.range().start, range.range().end)))
+            guarded("closestPositionToPoint:withinRange:", || Some(Position::new(self.mtm(), self.closest(point).clamp(range.range().start, range.range().end))))
         }
 
         #[unsafe(method_id(characterRangeAtPoint:))]
         fn character_range_at(&self, _point: CGPoint) -> Option<Retained<Span>> {
-            None
+            guarded("characterRangeAtPoint:", || None)
         }
 
         // The space bar as a trackpad. UIKit moves the selection through
@@ -498,17 +519,17 @@ define_class!(
         // that floats under the finger between those positions.
         #[unsafe(method(beginFloatingCursorAtPoint:))]
         fn begin_floating_cursor(&self, point: CGPoint) {
-            self.float(Some(point), false);
+            guarded("beginFloatingCursorAtPoint:", || { self.float(Some(point), false); })
         }
 
         #[unsafe(method(updateFloatingCursorAtPoint:))]
         fn update_floating_cursor(&self, point: CGPoint) {
-            self.float(Some(point), false);
+            guarded("updateFloatingCursorAtPoint:", || { self.float(Some(point), false); })
         }
 
         #[unsafe(method(endFloatingCursor))]
         fn end_floating_cursor(&self) {
-            self.float(None, true);
+            guarded("endFloatingCursor", || { self.float(None, true); })
         }
     }
 );

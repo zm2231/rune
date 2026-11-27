@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use rune::tok::{self, type_};
 use rune::{
-    AppSpec, Cx, El, FileDialogOptions, MediaKind, MediaPicker, ScrollSpec, Share, SizeClass, TextEdit, Tx, col, el, row, text,
+    AppSpec, Cx, El, FileDialogOptions, MediaKind, MediaPicker, ScrollSpec, Share, ShareError, SizeClass, TextEdit, Tx, col, el, row, text,
     text_input,
 };
 
@@ -14,10 +14,29 @@ struct State {
     picked: Vec<PathBuf>,
     pasted: String,
     scratch: TextEdit,
+    shares: u32,
+    sharing: Option<u32>,
 }
 
 impl State {
     fn say(&mut self, status: impl Into<String>) { self.status = status.into(); }
+}
+
+fn share(s: &mut State, tx: &mut Tx, what: &'static str, share: Share, anchor: &'static str) {
+    s.shares += 1;
+    let n = s.shares;
+    match s.sharing {
+        Some(open) => s.say(format!("{what} #{n}: asked while #{open} is open")),
+        None => s.say(format!("{what} #{n}: sharing…")),
+    }
+    s.sharing = s.sharing.or(Some(n));
+    tx.share(share, anchor, move |s: &mut State, result, _| match result {
+        Err(ShareError::Busy) => s.say(format!("{what} #{n}: refused, #{} is still open", s.sharing.unwrap_or(n))),
+        result => {
+            if s.sharing == Some(n) { s.sharing = None; }
+            s.say(format!("{what} #{n}: {result:?}"));
+        }
+    });
 }
 
 fn names(paths: &[PathBuf]) -> String {
@@ -70,14 +89,12 @@ fn clipboard(state: &State, t: &tok::Theme) -> El {
 
 fn sharing(t: &tok::Theme) -> El {
     section("Share", t, vec![
-        button("share-link", "Share a link", t, |_, tx| {
-            tx.share(Share::new().title("Rune").text("Made with Rune").url("https://example.com/"), "share-link", |s: &mut State, result, _| {
-                s.say(format!("Share link: {result:?}"));
-            });
+        button("share-link", "Share a link", t, |s, tx| {
+            share(s, tx, "Share link", Share::new().title("Rune").text("Made with Rune").url("https://example.com/"), "share-link");
         }),
         button("share-picked", "Share the picked files", t, |s, tx| {
-            let share = s.picked.iter().fold(Share::new(), |share, path| share.file(path.clone()));
-            tx.share(share, "share-picked", |s: &mut State, result, _| s.say(format!("Share files: {result:?}")));
+            let files = s.picked.iter().fold(Share::new(), |share, path| share.file(path.clone()));
+            share(s, tx, "Share files", files, "share-picked");
         }),
     ])
 }
@@ -126,7 +143,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
     let (horizontal, vertical) = (cx.horizontal_size_class(), cx.vertical_size_class());
     let [width, height] = cx.layout_size("root").unwrap_or_default();
     let header = col().w_full().gap(4.0)
-        .child(text("System").font(type_::TITLE).color(t.text))
+        .child(text("System").role("heading").level(1).font(type_::TITLE).color(t.text))
         .child(text(format!("Size classes: {horizontal:?} across, {vertical:?} down; {width:.0}×{height:.0} pt")).key("size-class")
             .font(type_::LABEL).color(t.text_secondary).wrap().w_full())
         .child(text(format!("Status: {}", state.status)).key("status").font(type_::LABEL).color(t.text_secondary).wrap().w_full());

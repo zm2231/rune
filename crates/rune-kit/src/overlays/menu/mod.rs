@@ -39,6 +39,7 @@ type AnyState = dyn Any + 'static;
 type SetOpen = Rc<dyn Fn(&mut AnyState, bool)>;
 type HoverFn = Rc<dyn Fn(&mut AnyState, bool, &mut Tx)>;
 type KeyFn = Rc<dyn Fn(&mut AnyState, &KeyEvent, &mut Tx) -> bool>;
+type ExpandFn = Rc<dyn Fn(&mut AnyState, bool, Option<rune::PointerEvent>, &mut Tx)>;
 type Bind<F> = Rc<dyn Fn(El, F) -> El>;
 /// Closers of every controlled submenu open in a menu, its nested submenus' included.
 type Closers = Rc<[SetOpen]>;
@@ -76,6 +77,7 @@ struct SubToggle {
     set: SetOpen,
     hover: Bind<HoverFn>,
     key: Bind<KeyFn>,
+    expand: Bind<ExpandFn>,
 }
 
 impl SubToggle {
@@ -88,6 +90,11 @@ impl SubToggle {
             }),
             hover: Rc::new(|e: El, h: HoverFn| e.on_hover_change(move |s: &mut S, inside: bool, tx: &mut Tx| h(s as &mut AnyState, inside, tx))),
             key: Rc::new(|e: El, h: KeyFn| e.on_key(move |s: &mut S, ev: &KeyEvent, tx: &mut Tx| h(s as &mut AnyState, ev, tx))),
+            expand: Rc::new(|e: El, h: ExpandFn| {
+                let press = h.clone();
+                e.on_press_tx(move |s: &mut S, tx: &mut Tx| press(s as &mut AnyState, true, tx.press_point(), tx))
+                    .on_set_expanded(move |s: &mut S, open: bool, tx: &mut Tx| h(s as &mut AnyState, open, None, tx))
+            }),
         }
     }
 }

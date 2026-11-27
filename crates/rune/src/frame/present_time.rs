@@ -465,32 +465,36 @@ pub(crate) mod metal {
     static LAYERS: Mutex<Vec<Hooked>> = Mutex::new(Vec::new());
 
     unsafe extern "C-unwind" fn next_drawable(this: &AnyObject, _: Sel) -> *mut AnyObject {
-        let addr = this as *const AnyObject as usize;
-        let hooked = LAYERS.lock().unwrap().iter().find(|h| h.addr == addr).map(|h| (h.base, h.log.clone()));
-        let base = match hooked {
-            Some((base, _)) => base,
-            // The hook dropped while another subclass (key-value observing) sat on top of ours,
-            // so the class stayed. Skip every hooked class, or `super` lands back here.
-            None => original_class(this.class()),
-        };
-        // SAFETY: `base` is the layer's original CAMetalLayer class; the result is +0.
-        let drawable: *mut AnyObject = unsafe { msg_send![super(this, base), nextDrawable] };
-        if let (Some((_, log)), Some(raw)) = (hooked, NonNull::new(drawable)) {
-            let seq = log.next.fetch_add(1, Ordering::Relaxed) + 1;
-            log.acquired.store(seq, Ordering::Release);
-            let handler = block2::RcBlock::new(move |d: NonNull<ProtocolObject<dyn MTLDrawable>>| {
-                // SAFETY: Metal passes the presented drawable for the handler's duration.
-                let at = unsafe { d.as_ref() }.presentedTime();
-                if log.record_presented(seq, at) { log.wake(); }
-            });
-            // SAFETY: nextDrawable returns a CAMetalDrawable, which conforms to MTLDrawable;
-            // Metal copies the block.
-            unsafe {
-                let drawable = raw.cast::<ProtocolObject<dyn MTLDrawable>>().as_ref();
-                drawable.addPresentedHandler(block2::RcBlock::as_ptr(&handler));
+        crate::platform::objc_boundary::guarded("nextDrawable", || {
+            let addr = this as *const AnyObject as usize;
+            let hooked = LAYERS.lock().unwrap().iter().find(|h| h.addr == addr).map(|h| (h.base, h.log.clone()));
+            let base = match hooked {
+                Some((base, _)) => base,
+                // The hook dropped while another subclass (key-value observing) sat on top of ours,
+                // so the class stayed. Skip every hooked class, or `super` lands back here.
+                None => original_class(this.class()),
+            };
+            // SAFETY: `base` is the layer's original CAMetalLayer class; the result is +0.
+            let drawable: *mut AnyObject = unsafe { msg_send![super(this, base), nextDrawable] };
+            if let (Some((_, log)), Some(raw)) = (hooked, NonNull::new(drawable)) {
+                let seq = log.next.fetch_add(1, Ordering::Relaxed) + 1;
+                log.acquired.store(seq, Ordering::Release);
+                let handler = block2::RcBlock::new(move |d: NonNull<ProtocolObject<dyn MTLDrawable>>| {
+                    crate::platform::objc_boundary::guarded("presented handler", || {
+                        // SAFETY: Metal passes the presented drawable for the handler's duration.
+                        let at = unsafe { d.as_ref() }.presentedTime();
+                        if log.record_presented(seq, at) { log.wake(); }
+                    })
+                });
+                // SAFETY: nextDrawable returns a CAMetalDrawable, which conforms to MTLDrawable;
+                // Metal copies the block.
+                unsafe {
+                    let drawable = raw.cast::<ProtocolObject<dyn MTLDrawable>>().as_ref();
+                    drawable.addPresentedHandler(block2::RcBlock::as_ptr(&handler));
+                }
             }
-        }
-        drawable
+            drawable
+        })
     }
 
     const HOOKED_PREFIX: &str = "RunePresentTimed_";

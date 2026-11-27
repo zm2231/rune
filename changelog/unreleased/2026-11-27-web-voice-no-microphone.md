@@ -1,0 +1,1 @@
+- `rune::Voice` on the web fails at once with "no microphone was found" when the browser has no audio input, instead of rebuilding the stream over and over: a failure that arrived after the stream already read `Running` used to start a fresh round of retries each time.

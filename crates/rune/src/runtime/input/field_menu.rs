@@ -221,7 +221,7 @@ impl RuntimeCore {
         } else {
             deferred.restore_into(&mut post_tx);
         }
-        self.schedule_wakes(post_tx.wakes.drain(..));
+        self.schedule_tx_wakes(post_tx.wakes.drain(..));
         if self.commit.dirty || self.commit.relayout || self.kbd.focus_request.is_some() {
             self.capture_keeps(&mut post_tx);
             self.commit.set_state_unchanged(false);

@@ -25,8 +25,10 @@ pub struct VisualCold {
     pub(crate) border_layout: bool,
     /// Dash and gap lengths of a dashed border, in points (`El::border_dash`).
     pub border_dash: Option<[f32; 2]>,
-    /// Points into the dash pattern where it starts (`El::border_dash_phase`).
+    /// Points into the dash pattern where each corner sits (`El::border_dash_phase`).
     pub border_dash_phase: f32,
+    /// How each dash of a dashed border ends (`El::border_dash_cap`).
+    pub border_dash_cap: crate::LineCap,
     pub shadows: Vec<Shadow>,
     pub blur_motion: Option<Box<Anim>>,
     /// Soft clip of children to this rect: fade widths left, top, right, bottom. A negative
@@ -168,6 +170,7 @@ impl Empty for VisualCold {
         border_layout: false,
         border_dash: None,
         border_dash_phase: 0.0,
+        border_dash_cap: crate::LineCap::Butt,
         shadows: Vec::new(),
         blur_motion: None,
         clip: None,

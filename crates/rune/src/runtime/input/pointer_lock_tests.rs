@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use super::{LockEffect, LockEvent, LockState, PointerLock, step};
+use super::{LockEffect, LockEvent, LockPolicy, LockState, PointerLock, step};
 use crate::runtime::input::action::Action;
 use crate::tooling::{Kind, ScriptEvent, load_script, script_input};
 use crate::{
@@ -133,6 +133,7 @@ fn fixture_view(s: &Scene, cx: &mut Cx<Scene>) -> El {
 
 fn make_rt(scene: Scene) -> Runtime<Scene> {
     let mut rt = Runtime::new(scene, fixture_view, (300.0, 200.0), Env::new(true, 1.0));
+    rt.core_mut().set_pointer_lock_policy(LockPolicy::Immediate);
     rt.on_key = Some(|s, ev, _| {
         if ev.key == Key::Escape {
             s.app_escapes += 1;
@@ -180,6 +181,7 @@ fn state_machine_transitions_and_effect_cancellation() {
 
     // PointerLock cancels opposite owed effects before host sync.
     let mut lock = PointerLock::new();
+    lock.set_policy(LockPolicy::Immediate);
     assert!(!lock.step(LockEvent::Asked(true)));
     assert!(lock.step(LockEvent::Pressed));
     assert!(lock.is_locked());
@@ -682,4 +684,27 @@ fn async_policy_duplicate_grant_from_in_place_option_upgrade_is_idempotent() {
     assert!(!rt.core_mut().pointer_lock_granted());
     assert!(rt.pointer_locked());
     assert_eq!(rt.core_mut().take_pointer_lock_effect(), None);
+}
+
+#[test]
+fn an_ipad_pointer_click_delivered_as_a_touch_asks_for_the_lock_and_a_finger_does_not() {
+    use crate::runtime::{TouchPhase, TouchSource};
+    let mut rt = make_rt(Scene::playing());
+    rt.core_mut().set_pointer_lock_policy(super::LockPolicy::Async);
+
+    rt.touch_from(1, TouchPhase::Started, 150.0, 100.0, 0.0, TouchSource::Finger);
+    rt.touch_from(1, TouchPhase::Ended, 150.0, 100.0, 0.05, TouchSource::Finger);
+    rt.frame(0.0);
+    assert_eq!(rt.core().pointer.pointer_lock.state(), LockState::Ready);
+    assert_eq!(rt.core_mut().take_pointer_lock_effect(), None);
+
+    rt.touch_from(2, TouchPhase::Started, 150.0, 100.0, 1.0, TouchSource::Pointer);
+    assert_eq!(rt.core().pointer.pointer_lock.state(), LockState::Pending);
+    assert_eq!(rt.core_mut().take_pointer_lock_effect(), Some(LockEffect::Grab));
+    rt.touch_from(2, TouchPhase::Ended, 150.0, 100.0, 1.05, TouchSource::Pointer);
+    rt.frame(0.0);
+    assert!(rt.core_mut().pointer_lock_granted());
+    rt.pointer_motion(4.0, -2.0);
+    rt.frame(0.0);
+    assert_eq!(rt.state.motions, vec![[4.0, -2.0]]);
 }

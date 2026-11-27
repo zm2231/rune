@@ -158,7 +158,7 @@ enum Label {
 pub(crate) fn format_shortcut(s: &str) -> String {
     let s = s.trim();
     if let Ok(sc) = s.parse::<rune::Shortcut>() {
-        sc.menu_keycaps().join(if cfg!(target_os = "macos") { "" } else { "+" })
+        sc.menu_keycaps().join(if rune::MAC_KEYS { "" } else { "+" })
     } else {
         s.to_owned()
     }
@@ -350,7 +350,7 @@ impl Button {
         let small = if self.variant == ButtonVariant::GhostMuted { k.ty.small } else { k.ty.small_medium };
         match control {
             Some(ControlSize::Small) => font = small,
-            Some(ControlSize::Mini) => font = TextStyle { size: 9.0, ..small },
+            Some(ControlSize::Mini) => font = TextStyle { size: k.text_size(9.0), ..small },
             _ => {}
         }
         let (ink, icon_c) = (s.ink, s.icon);

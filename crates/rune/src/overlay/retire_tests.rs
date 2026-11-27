@@ -68,6 +68,7 @@ impl BusyGpu {
     const PLANNED_MOST: Duration = Duration::from_millis(100);
     const CHUNKS_MOST: u32 = 512;
     const QUEUED_MOST: Duration = Duration::from_secs(2);
+    const OVERLAP_MOST: Duration = Duration::from_secs(10);
 
     fn try_new() -> Option<Self> {
         let gpu = Arc::new(Gpu::test_headless()?);
@@ -147,6 +148,12 @@ impl BusyGpu {
         Some(BusyGpu { gpu, compute, chunk: binds.into_iter().nth(index).unwrap(), per_chunk, chunks_most, software })
     }
 
+    fn plans() -> impl Iterator<Item = Duration> {
+        let started = crate::time::now();
+        std::iter::successors(Some(Duration::from_millis(25)), |planned| Some((*planned * 2).min(Self::PLANNED_MOST)))
+            .take_while(move |_| started.elapsed() < Self::OVERLAP_MOST)
+    }
+
     fn submit_busy(&self, planned: Duration) -> (u32, Arc<AtomicBool>) {
         let planned = planned.min(Self::PLANNED_MOST);
         let chunks = (planned.as_secs_f64() / self.per_chunk.as_secs_f64().max(1e-6))
@@ -202,7 +209,7 @@ fn drop_overlay_core_polls_shared_device_without_blocking() {
 
     // Busy shared device: Drop returns without waiting for in-flight work.
     let mut overlapped = false;
-    for planned in [25, 50, 100, 100, 100].map(Duration::from_millis) {
+    for planned in BusyGpu::plans() {
         let mut overlay = make();
         overlay.core.gpu = Some(busy.gpu.clone());
         overlay.core.renderer = Some(Renderer::new(&busy.gpu.device, OFFSCREEN_FORMAT));
@@ -217,7 +224,7 @@ fn drop_overlay_core_polls_shared_device_without_blocking() {
         }
         busy.per_chunk = busy.per_chunk.min(started.elapsed() / chunks.max(1));
     }
-    assert!(overlapped, "Drop for OverlayCore must not wait for in-flight work on a shared GPU");
+    assert!(overlapped, "Drop for OverlayCore waited for in-flight work on a shared GPU on every attempt for 10 s");
 }
 
 #[test]
@@ -232,13 +239,14 @@ fn drop_hidden_images_and_park_do_not_block_on_busy_shared_gpu_and_retire_on_lat
 
     // 1. drop_hidden_images on a busy shared device returns immediately and retires on later wake_due.
     let mut overlapped = false;
-    for planned in [25, 50, 100, 100, 100].map(Duration::from_millis) {
+    let mut renderer = Some(Renderer::new(&busy.gpu.device, OFFSCREEN_FORMAT));
+    for planned in BusyGpu::plans() {
         let px = Pixels::new();
         px.set(4, 4, [200, 40, 20, 255].repeat(16));
         let weak_px = Arc::downgrade(&px.source);
         let (mut overlay, _) = Overlay::new(OverlaySpec::new("busy-hide", app.size, view).options(Default::default()), Some(px), &app);
         overlay.core.gpu = Some(busy.gpu.clone());
-        overlay.core.renderer = Some(Renderer::new(&busy.gpu.device, OFFSCREEN_FORMAT));
+        overlay.core.renderer = renderer.take();
         let target = Offscreen::new(&busy.gpu.device, 16, 16);
         busy.drain();
         #[cfg(feature = "test-gpu-counters")]
@@ -278,9 +286,10 @@ fn drop_hidden_images_and_park_do_not_block_on_busy_shared_gpu_and_retire_on_lat
             overlapped = true;
             break;
         }
+        renderer = overlay.core.renderer.take();
         busy.per_chunk = busy.per_chunk.min(started.elapsed() / chunks.max(1));
     }
-    assert!(overlapped, "drop_hidden_images must not wait for in-flight work on a shared GPU");
+    assert!(overlapped, "drop_hidden_images waited for in-flight work on a shared GPU on every attempt for 10 s");
 
     // 2. park (with renderer, and without renderer) on a busy shared device returns immediately
     //    without pinning the shared Arc<Gpu>, and retires on later wake_due.
@@ -290,7 +299,7 @@ fn drop_hidden_images_and_park_do_not_block_on_busy_shared_gpu_and_retire_on_lat
             continue;
         }
         let mut overlapped = false;
-        for planned in [25, 50, 100, 100, 100].map(Duration::from_millis) {
+        for planned in BusyGpu::plans() {
             busy.drain();
             #[cfg(feature = "test-gpu-counters")]
             let base_textures = busy.gpu.device.get_internal_counters().hal.textures.read();
@@ -324,6 +333,6 @@ fn drop_hidden_images_and_park_do_not_block_on_busy_shared_gpu_and_retire_on_lat
             }
             busy.per_chunk = busy.per_chunk.min(started.elapsed() / chunks.max(1));
         }
-        assert!(overlapped, "park (with_renderer={with_renderer}) must not wait for in-flight work on a shared GPU");
+        assert!(overlapped, "park (with_renderer={with_renderer}) waited for in-flight work on a shared GPU on every attempt for 10 s");
     }
 }

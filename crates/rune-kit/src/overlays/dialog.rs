@@ -13,7 +13,7 @@ pub struct Dialog {
     body: Vec<El>,
     open: bool,
     outside: bool,
-    width: f32,
+    width: Option<f32>,
     fit: bool,
     close_label: Option<String>,
     close_disabled: bool,
@@ -23,12 +23,14 @@ pub struct Dialog {
 impl Dialog {
     pub fn new(key: impl Into<String>, title: impl Into<String>) -> Self {
         Self { key: key.into(), title: title.into(), description: None, body: Vec::new(), open: false,
-            outside: true, width: 480.0, fit: false, close_label: None, close_disabled: false, close: None, button: None }
+            outside: true, width: None, fit: false, close_label: None, close_disabled: false, close: None, button: None }
     }
     pub fn open(mut self, open: bool) -> Self { self.open = open; self }
     pub fn description(mut self, description: impl Into<String>) -> Self { self.description = Some(description.into()); self }
     pub fn child(mut self, body: El) -> Self { self.body.push(body); self }
-    pub fn width(mut self, width: f32) -> Self { self.width = width; self }
+    /// The panel's widest, in points (480 at the default text size by default, following the
+    /// kit's text size); a narrower window takes the panel's width.
+    pub fn width(mut self, width: f32) -> Self { self.width = Some(width); self }
     /// Sizes the panel to its header and body instead of the standard 368 point height, for
     /// short dialogs such as a confirmation. The panel is capped at the window's height less its
     /// 16 point margin and its body shrinks; give a growing child a scroll view with
@@ -83,13 +85,13 @@ impl Dialog {
         if !self.open { return; }
         let dm = k.dialog_metrics();
         let title_font = dm.title.unwrap_or_else(|| {
-            if self.description.is_some() { TextStyle { size: 15.0, tracking: -0.13, ..k.ty.ui_medium }.lh(20.0) }
-            else { k.ty.ui_medium.lh(16.0) }
+            if self.description.is_some() { TextStyle { size: k.text_size(15.0), tracking: k.text_size(-0.13), ..k.ty.ui_medium }.lh(k.text_size(20.0)) }
+            else { k.ty.ui_medium.lh(k.text_size(16.0)) }
         });
         let mut title = col().grow(1.0).shrink().gap(4.0).child(text(self.title.clone())
             .font(title_font).color(k.c.text_base));
         if let Some(description) = self.description.clone() {
-            title = title.child(text(description).font(k.ty.ui.lh(20.0)).color(k.c.text_muted).wrap().w_full());
+            title = title.child(text(description).font(k.ty.ui.lh(k.text_size(20.0))).color(k.c.text_muted).wrap().w_full());
         }
         let mut header = row().key("header").w_full().padding(dm.padding).items_start().child(title);
         if let Some(button) = self.button {
@@ -100,14 +102,14 @@ impl Dialog {
                 .control_size(ControlSize::Regular).label(close_label).disabled(self.close_disabled)
                 .build(k).key("close");
             let dismiss = if self.close_disabled { dismiss } else { button(dismiss) }
-                .size(20.0, 20.0).mt(-2.0).mr(-2.0);
+                .size(k.text_size(20.0), k.text_size(20.0)).mt(-2.0).mr(-2.0);
             header = header.child(dismiss);
         }
         let body = col().key("body").w_full().shrink().min_h(0.0).children(self.body);
-        let (panel, body) = if self.fit { (col(), body) } else { (col().h(368.0), body.grow(1.0)) };
+        let (panel, body) = if self.fit { (col(), body) } else { (col().h(k.text_size(368.0)), body.grow(1.0)) };
         let panel = panel.description(self.description.unwrap_or_default());
         let panel = k.elevate(panel.key(format!("{}-dialog", self.key)).role("dialog").label(self.title.clone())
-            .w_full().max_w(self.width).shrink().min_h(0.0).radius(dm.radius).fill(k.c.layer_01)
+            .w_full().max_w(self.width.unwrap_or_else(|| k.text_size(480.0))).shrink().min_h(0.0).radius(dm.radius).fill(k.c.layer_01)
             .child(header)
             .child(body)
             .token_motion(k.motion.overlay), &k.elevation.overlay);

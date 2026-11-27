@@ -1,6 +1,7 @@
 """Staged-bundle regressions: never boots a simulator."""
 import contextlib
 from datetime import datetime
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -46,6 +47,14 @@ TOOLCHAIN = {"--show-sdk-version": "27.2\n", "--show-sdk-build-version": "24B811
              "xcodebuild": "Xcode 27.2\nBuild version 27B52\n", "sw_vers": "26A434\n"}
 
 
+STORE_CERT = b"made-up distribution certificate"
+STORE_SHA = hashlib.sha1(STORE_CERT).hexdigest().upper()
+FIND_IDENTITY = f"""  1) {STORE_SHA} "Apple Distribution: Example Org (TEAM123456)"
+  2) {"AB" * 20} "Apple Development: Someone (ABCDE12345)"
+     2 valid identities found
+"""
+
+
 class Tools:
     """Stands in for `command`: keeps each call and answers vtool as a binary built this way.
 
@@ -55,7 +64,7 @@ class Tools:
 
     def __init__(self, platform="IOSSIMULATOR", minos="16.0", stdout=None, json=None, profile=None, fails=None, stderr=None):
         self.calls, self.platform, self.minos, self.slept = [], platform, minos, []
-        self.stdout, self.json, self.fails, self.stderr = stdout or {}, json or {}, fails or {}, stderr or {}
+        self.stdout, self.json, self.fails, self.stderr = {"find-identity": FIND_IDENTITY, **(stdout or {})}, json or {}, fails or {}, stderr or {}
         if profile:
             # What `security cms -D` prints: the profile out of its signed envelope.
             self.stdout["security"] = plistlib.dumps(profile).decode()
@@ -97,7 +106,7 @@ def args(tmp, **over):
     binary.chmod(0o755)
     base = dict(name="Hello", id="com.example.hello", bin=str(binary), exe="hello",
                 simulator="booted", device=None, profile=None, url_scheme=[], activity_type=[], multiple_scenes=False, no_launch=False, args=[],
-                min_os="16.0", wait=0, version="0.0.1", build="1", display_name="Hello", icon=None, privacy=None, distribution=False)
+                min_os="16.0", wait=0, version="0.0.1", build="1", display_name="Hello", icon=None, privacy=None, distribution=False, sign=None)
     return SimpleNamespace(**{**base, **over})
 
 
@@ -204,6 +213,12 @@ class BundleRegression(unittest.TestCase):
             ios_app.build(stage, args(tmp, url_scheme=["myapp", "myapp-dev"]))
             plist = plistlib.loads((stage / "Info.plist").read_bytes())
             self.assertEqual(plist["CFBundleURLTypes"], [dict(CFBundleURLName="com.example.hello", CFBundleURLSchemes=["myapp", "myapp-dev"])])
+
+    def test_a_pointers_clicks_reach_the_app_as_pointer_touches(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command", Tools()):
+            stage = Path(tmp) / "out/Hello.app"
+            ios_app.build(stage, args(tmp))
+            self.assertIs(plistlib.loads((stage / "Info.plist").read_bytes())["UIApplicationSupportsIndirectInputEvents"], True)
 
     def test_multiple_scenes_declares_them_and_the_activity_that_opens_a_window_and_a_bundle_without_it_has_one_scene(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command", Tools()):
@@ -409,16 +424,46 @@ class BundleRegression(unittest.TestCase):
             signed["identity"] = argv[argv.index("--sign") + 1]
             signed["entitlements"] = plistlib.loads(Path(argv[argv.index("--entitlements") + 1]).read_bytes())
 
-        with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command", command), \
-                patch.dict(ios_app.os.environ, {"IOS_APP_SIGN": "Apple Development: Someone"}):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command", command):
             profile = Path(tmp) / "dev.mobileprovision"
             profile.write_text("profile")
             stage = Path(tmp) / "out/Hello.app"
-            ios_app.build(stage, args(tmp, device="phone", profile=profile))
+            ios_app.build(stage, args(tmp, device="phone", profile=profile, sign="Apple Development: Someone"))
             self.assertEqual((stage / "embedded.mobileprovision").read_text(), "profile")
             self.assertEqual(signed["identity"], "Apple Development: Someone")
             self.assertEqual(signed["entitlements"]["application-identifier"], "TEAM123456.com.example.hello")
             self.assertIs(signed["entitlements"]["get-task-allow"], True)
+
+    def test_without_sign_the_identity_is_the_keychain_one_whose_certificate_the_profile_lists(self):
+        mine, other = b"my development certificate", b"a teammate's development certificate"
+        sha = lambda cert: hashlib.sha1(cert).hexdigest().upper()
+        listed = f'  1) {sha(other)} "Apple Development: Someone (ABCDE12345)"\n  2) {sha(mine)} "Apple Development: Someone (ABCDE12345)"\n'
+        granted = {"DeveloperCertificates": [mine], "Entitlements": {"application-identifier": "TEAM123456.*", "com.apple.developer.team-identifier": "TEAM123456"}}
+        with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command", Tools("IOS", profile=granted, stdout={"find-identity": listed})) as tools:
+            profile = Path(tmp) / "dev.mobileprovision"
+            profile.write_text("profile")
+            ios_app.build(Path(tmp) / "out/Hello.app", args(tmp, device="phone", profile=profile))
+            self.assertEqual(tools.ran("codesign")[0][3], sha(mine))
+            self.assertEqual(tools.entitlements["application-identifier"], "TEAM123456.com.example.hello")
+
+    def test_a_profile_whose_certificate_the_keychain_holds_never_or_twice_is_refused_with_the_identities(self):
+        cert = b"my development certificate"
+        sha = hashlib.sha1(cert).hexdigest().upper()
+        granted = {"DeveloperCertificates": [cert], "Entitlements": {"application-identifier": "TEAM123456.*", "com.apple.developer.team-identifier": "TEAM123456"}}
+        twice = {"DeveloperCertificates": [cert, b"its renewal"], "Entitlements": granted["Entitlements"]}
+        renewal = hashlib.sha1(b"its renewal").hexdigest().upper()
+        both = f'  1) {sha} "Apple Development: Someone (ABCDE12345)"\n  2) {renewal} "Apple Development: Someone (ABCDE12345)"\n'
+        for profile, listed, said in ((granted, f'  1) {"AB" * 20} "Apple Development: Other (ZZZZZ99999)"\n', ["no signing identity", "AB" * 20]),
+                                      (twice, both, ["several signing identities", sha, renewal, "--sign"])):
+            with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command", Tools("IOS", profile=profile, stdout={"find-identity": listed})) as tools:
+                path = Path(tmp) / "dev.mobileprovision"
+                path.write_text("profile")
+                with self.assertRaises(RuntimeError) as refused:
+                    ios_app.build(Path(tmp) / "out/Hello.app", args(tmp, device="phone", profile=path))
+                for words in said:
+                    self.assertIn(words, str(refused.exception))
+                self.assertEqual(tools.ran("codesign"), [])
+                self.assertFalse((Path(tmp) / "out/Hello.app").exists())
 
     def test_a_device_install_replaces_the_app_and_launches_it_over_a_running_one(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command", Tools(json={"launch": LAUNCHED})) as tools:
@@ -429,7 +474,7 @@ class BundleRegression(unittest.TestCase):
 
 
 # An App Store profile: no devices, no debugger, a wildcard-free identifier. All made up.
-STORE = {"Name": "Hello App Store", "Entitlements": {
+STORE = {"Name": "Hello App Store", "DeveloperCertificates": [STORE_CERT], "Entitlements": {
     "application-identifier": "TEAM123456.*", "com.apple.developer.team-identifier": "TEAM123456", "get-task-allow": False}}
 
 
@@ -439,17 +484,14 @@ class DistributionRegression(unittest.TestCase):
         return "--distribution", "--profile", str(Path(tmp) / "store.mobileprovision"), "--icon", str(Path(tmp) / "icon.png")
 
     def run_main(self, tmp, *flags, tools=None, sign=None):
-        """Run the command line with these flags and `IOS_APP_SIGN` as given; returns the fake tools and what was printed."""
+        """Run the command line with these flags and `--sign` as given; returns the fake tools and what was printed."""
         tools = tools or Tools("IOS", profile=STORE)
         (Path(tmp) / "store.mobileprovision").write_text("profile")
         (Path(tmp) / "icon.png").write_bytes(png())
-        argv = ["ios-app", "--name", "Hello", "--id", "com.example.hello", "--bin", args(tmp).bin, "--out", str(Path(tmp) / "out"), *flags]
+        argv = ["ios-app", "--name", "Hello", "--id", "com.example.hello", "--bin", args(tmp).bin, "--out", str(Path(tmp) / "out"), *flags, *(["--sign", sign] if sign else [])]
         printed = io.StringIO()
         with patch.object(ios_app.sys, "argv", argv), patch.object(ios_app, "command", tools), \
-                patch.dict(ios_app.os.environ), contextlib.redirect_stdout(printed):
-            ios_app.os.environ.pop("IOS_APP_SIGN", None)
-            if sign:
-                ios_app.os.environ["IOS_APP_SIGN"] = sign
+                contextlib.redirect_stdout(printed):
             ios_app.main()
         return tools, printed.getvalue().split()
 
@@ -459,11 +501,11 @@ class DistributionRegression(unittest.TestCase):
             tools, printed = self.run_main(tmp, *self.store(tmp))
             binary = str(out / "Hello.app/hello")
             steps = tools.steps()
-            self.assertEqual([step[0] for step in steps], ["security", "vtool", "actool", "dsymutil", "strip", "codesign", "codesign", "plutil"])
-            steps = steps[3:]
+            self.assertEqual([step[0] for step in steps], ["security", "security", "vtool", "actool", "dsymutil", "strip", "codesign", "codesign", "plutil"])
+            steps = steps[4:]
             self.assertEqual(steps[0], ("dsymutil", binary, "-o", str(out / "Hello.app.dSYM")))
             self.assertEqual(steps[1], ("strip", "-S", "-x", binary))
-            self.assertEqual(steps[2][:4], ("codesign", "--force", "--sign", "Apple Distribution"))
+            self.assertEqual(steps[2][:4], ("codesign", "--force", "--sign", STORE_SHA))
             self.assertEqual(steps[3], ("codesign", "--verify", "--deep", "--strict", str(out / "Hello.app")))
             self.assertEqual(steps[4], ("plutil", "-lint", str(out / "Hello.app/Info.plist")))
             self.assertEqual(tools.entitlements["application-identifier"], "TEAM123456.com.example.hello")
@@ -474,7 +516,7 @@ class DistributionRegression(unittest.TestCase):
                     f"Payload/Hello.app/{name}" for name in ("Assets.car", "Info.plist", "PrivacyInfo.xcprivacy", "embedded.mobileprovision", "hello")])
                 self.assertEqual(archive.getinfo("Payload/Hello.app/hello").external_attr >> 16 & 0o777, 0o755)
 
-    def test_ios_app_sign_names_the_distribution_identity(self):
+    def test_sign_names_the_distribution_identity(self):
         with tempfile.TemporaryDirectory() as tmp:
             tools, _ = self.run_main(tmp, *self.store(tmp), sign="Apple Distribution: Example Org")
             self.assertEqual(tools.ran("codesign")[0][3], "Apple Distribution: Example Org")
@@ -572,20 +614,20 @@ class DistributionRegression(unittest.TestCase):
 
 
 class LaunchRegression(unittest.TestCase):
-    def simulator(self, tmp, ps, launched="com.example.hello: 4242\n", **over):
+    def simulator(self, tmp, ps, launched="com.example.hello: 4242\n", over=None):
         """Install and launch on a simulator whose `ps` answers this; returns the fake tools."""
         tools = Tools(stdout={"launch": launched, "ps": ps})
         with patch.object(ios_app, "command", tools), patch.object(ios_app.time, "sleep") as sleep, \
                 patch.object(ios_app, "REPORTS", Path(tmp) / "reports"), contextlib.redirect_stdout(io.StringIO()):
             try:
-                ios_app.install_simulator(Path(tmp) / "Hello.app", args(tmp, **{"wait": 3, **over}))
+                ios_app.install_simulator(Path(tmp) / "Hello.app", args(tmp, **{"wait": 3, **(over or {})}))
             finally:
                 tools.slept = [call.args[0] for call in sleep.call_args_list]
         return tools
 
     def test_a_simulator_app_still_running_after_the_wait_is_a_launch(self):
         with tempfile.TemporaryDirectory() as tmp:
-            tools = self.simulator(tmp, " 4242\n", wait=1.5)
+            tools = self.simulator(tmp, " 4242\n", over={"wait": 1.5})
             self.assertEqual(tools.slept, [1.5])
             self.assertEqual(tools.calls[-1], ("ps", "-p", "4242", "-o", "pid="))
 
@@ -606,7 +648,8 @@ class LaunchRegression(unittest.TestCase):
 
     def test_a_wait_of_zero_and_no_launch_watch_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            for tools in (self.simulator(tmp, "", wait=0), self.simulator(tmp, "", no_launch=True)):
+            for over in (dict(wait=0), dict(no_launch=True)):
+                tools = self.simulator(tmp, "", over=over)
                 self.assertEqual(tools.slept, [])
                 self.assertEqual(tools.ran("ps"), [])
 

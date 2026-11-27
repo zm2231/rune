@@ -290,13 +290,13 @@ fn status_color(status: &str, k: &Kit) -> Color {
     let lower = status.to_ascii_lowercase();
     let c = &k.c;
     if matches!(lower.as_str(), "built" | "done" | "shipped" | "merged" | "verified" | "green" | "good") {
-        c.success.fg
+        k.roles.done
     } else if matches!(lower.as_str(), "risk" | "blocked" | "failed" | "red" | "bad" | "error") {
-        c.danger.fg
+        k.roles.error
     } else if matches!(lower.as_str(), "proposal" | "proposed" | "warn" | "warning" | "hold") {
-        c.warning.fg
+        k.roles.needs_attention
     } else if matches!(lower.as_str(), "working" | "on a branch" | "in flight") {
-        c.info.fg
+        k.roles.working
     } else {
         c.text_muted
     }
@@ -342,11 +342,11 @@ fn draw_facts(key: &str, rows: &[(String, String)], k: &Kit) -> El {
         if let Some(st) = st {
             let tone = status_color(st, k);
             right = right
-                .child(el().w(7.0).h(7.0).radius(3.5).fill(tone))
-                .child(text(st).font(TextStyle::new(12.5, 580.0)).color(tone));
+                .child(el().key("dot").a11y_hidden().w(k.text_size(7.0)).h(k.text_size(7.0)).radius(k.text_size(3.5)).fill(tone))
+                .child(text(st).font(k.text(TextStyle::new(12.5, 580.0))).color(tone));
         }
         if !rest.is_empty() {
-            right = right.child(text(rest).font(CELL).color(c.text_base));
+            right = right.child(text(rest).font(k.text(CELL)).color(c.text_base));
         }
         list = list.child(
             row()
@@ -358,7 +358,7 @@ fn draw_facts(key: &str, rows: &[(String, String)], k: &Kit) -> El {
                 .py(7.0)
                 .center_y()
                 .gap(16.0)
-                .child(text(label.to_uppercase()).font(CAPS).color(c.text_muted).a11y_hidden())
+                .child(text(label.to_uppercase()).font(k.text(CAPS)).color(c.text_muted).a11y_hidden())
                 .child(spacer())
                 .child(right.a11y_hidden()),
         );
@@ -386,11 +386,11 @@ fn draw_compare(key: &str, sides: &[(String, String)], k: &Kit) -> El {
                 row()
                     .gap(6.0)
                     .center_y()
-                    .child(el().w(6.0).h(6.0).radius(3.0).fill(accent))
-                    .child(text(label.to_uppercase()).font(CAPS).color(accent))
+                    .child(el().key("dot").a11y_hidden().w(k.text_size(6.0)).h(k.text_size(6.0)).radius(k.text_size(3.0)).fill(accent))
+                    .child(text(label.to_uppercase()).font(k.text(CAPS)).color(accent))
                     .a11y_hidden(),
             )
-            .child(text(body).wrap().font(CELL).color(c.text_base));
+            .child(text(body).wrap().font(k.text(CELL)).color(c.text_base));
         grid = grid.child(pane);
     }
     grid
@@ -413,14 +413,14 @@ fn draw_steps(key: &str, steps: &[StepRow], k: &Kit) -> El {
         .radius(8.0)
         .fill(c.layer_02)
         .border(1.0, c.border_weak)
-        .child(text(summary).font(CAPS).color(c.text_muted).a11y_hidden());
+        .child(text(summary).font(k.text(CAPS)).color(c.text_muted).a11y_hidden());
     for (idx, step) in steps.iter().enumerate() {
         let tone = status_color(&step.status, k);
         let done = matches!(step.status.to_ascii_lowercase().as_str(), "built" | "done" | "shipped" | "merged");
         let dot = if done {
-            el().w(9.0).h(9.0).radius(4.5).fill(tone)
+            el().key("dot").a11y_hidden().w(k.text_size(9.0)).h(k.text_size(9.0)).radius(k.text_size(4.5)).fill(tone)
         } else {
-            el().w(9.0).h(9.0).radius(4.5).border(1.5, tone)
+            el().key("dot").a11y_hidden().w(k.text_size(9.0)).h(k.text_size(9.0)).radius(k.text_size(4.5)).border(1.5, tone)
         };
         // The dot's colour says the status; the row says it in words.
         let said = match &step.note {
@@ -436,7 +436,7 @@ fn draw_steps(key: &str, steps: &[StepRow], k: &Kit) -> El {
             .gap(9.0)
             .center_y()
             .child(dot)
-            .child(text(&step.title).font(TextStyle::new(13.5, 540.0)).color(c.text_base).a11y_hidden());
+            .child(text(&step.title).font(k.text(TextStyle::new(13.5, 540.0))).color(c.text_base).a11y_hidden());
         if let Some(note) = &step.note {
             r = r.child(spacer()).child(text(note).font(k.ty.ui).color(c.text_muted).a11y_hidden());
         }
@@ -477,13 +477,13 @@ fn draw_size(key: &str, size: &SizeBar, k: &Kit) -> El {
         let fill = kind_color(name);
         legend =
             legend.child(
-                row().gap(5.0).center_y().child(el().w(7.0).h(7.0).radius(2.0).fill(fill)).child(
-                    text(format!("{name} +{adds} −{dels}")).font(TextStyle::new(12.0, 480.0)).color(c.text_base),
+                row().gap(5.0).center_y().child(el().key("dot").a11y_hidden().w(k.text_size(7.0)).h(k.text_size(7.0)).radius(2.0).fill(fill)).child(
+                    text(format!("{name} +{adds} −{dels}")).font(k.text(TextStyle::new(12.0, 480.0))).color(c.text_base),
                 ),
             );
     }
     if let Some(files) = &size.files {
-        legend = legend.child(spacer()).child(text(files).font(CAPS).color(c.text_muted));
+        legend = legend.child(spacer()).child(text(files).font(k.text(CAPS)).color(c.text_muted));
     }
 
     // The bar's blocks draw the legend's shares; the legend reads them.
@@ -519,9 +519,9 @@ fn draw_code(key: &str, title: Option<&str>, marks: &[RangeInclusive<usize>], li
         let added = raw.starts_with('+');
         let removed = raw.starts_with('-');
         let (bar, bg, ink) = if added {
-            (c.success.fg, c.success.fg.alpha(0.12), c.success.fg)
+            (k.roles.added, k.roles.added.alpha(0.12), k.roles.added)
         } else if removed {
-            (c.danger.fg, c.danger.fg.alpha(0.12), c.danger.fg)
+            (k.roles.removed, k.roles.removed.alpha(0.12), k.roles.removed)
         } else if marked {
             (c.info.fg, c.info.fg.alpha(0.12), c.text_base)
         } else {
@@ -537,8 +537,8 @@ fn draw_code(key: &str, title: Option<&str>, marks: &[RangeInclusive<usize>], li
                 .center_y()
                 .fill(bg)
                 .child(el().w(2.5).h(15.0).radius(1.0).fill(bar))
-                .child(text(format!("{line_no:>2}")).font(CODE).color(c.text_muted).a11y_hidden())
-                .child(text(raw).font(CODE).color(ink)),
+                .child(text(format!("{line_no:>2}")).font(k.text(CODE)).color(c.text_muted).a11y_hidden())
+                .child(text(raw).font(k.text(CODE)).color(ink)),
         );
     }
     card.child(body)
@@ -548,7 +548,7 @@ fn draw_callout(key: &str, label: Option<&str>, body: &str, k: &Kit) -> El {
     let c = &k.c;
     let mut inner = col().grow(1.0).shrink().gap(4.0);
     if let Some(label) = label {
-        inner = inner.child(text(label.to_uppercase()).font(CAPS).color(c.info.fg).a11y_hidden());
+        inner = inner.child(text(label.to_uppercase()).font(k.text(CAPS)).color(c.info.fg).a11y_hidden());
     }
     inner = inner.child(Markdown::new(body).build(k));
     row()

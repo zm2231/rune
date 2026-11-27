@@ -257,7 +257,7 @@ struct ComboboxCore {
     search_placeholder: String,
     search_label: Option<String>,
     empty: String,
-    width: f32,
+    width: Option<f32>,
     max_height: f32,
     placement: Placement,
     trigger: Option<El>,
@@ -277,7 +277,7 @@ impl ComboboxCore {
             search_placeholder: "Search".into(),
             search_label: None,
             empty: "No results".into(),
-            width: 280.0,
+            width: None,
             max_height: 192.0,
             placement: Placement::BottomStart,
             trigger: None,
@@ -288,13 +288,14 @@ impl ComboboxCore {
     }
 
     fn build(self, k: &Kit, layer: &mut Vec<El>, bind: &dyn ComboboxBind) -> El {
+        let width = self.width.unwrap_or_else(|| k.text_size(280.0));
         let selected = self.options.iter().find(|o| Some(&o.id) == self.current.as_ref());
         let name = self.label.clone().unwrap_or_else(|| self.placeholder.clone());
         let mut trigger = match self.trigger {
             Some(trigger) => trigger,
             None => Select::new::<&str>(format!("{}-value", self.key), &[])
                 .current(selected.map(|o| o.label.as_str())).placeholder(self.placeholder).label(name.clone())
-                .appearance(SelectAppearance::Field).width(self.width).disabled(self.disabled)
+                .appearance(SelectAppearance::Field).width(width).disabled(self.disabled)
                 .trigger(k),
         };
         if !self.disabled {
@@ -302,7 +303,7 @@ impl ComboboxCore {
         }
         let popover = bind.bind_popover(
             Popover::new(&self.key).trigger(trigger).label(name.clone()).placement(self.placement).padding(0.0)
-                .width(self.width)
+                .width(width)
                 .open(self.state.is_open() && !self.disabled),
         );
         if !self.state.is_open() || self.disabled { return popover.build(k, layer); }
@@ -314,7 +315,7 @@ impl ComboboxCore {
         let search_label = self.search_label
             .filter(|l| !l.trim().is_empty())
             .unwrap_or_else(|| if name.is_empty() { "Search".to_owned() } else { format!("Search {name}") });
-        let mut field = TextInput::new(&self.state.search).plain().leading_icon(k.glyph.search).height(36.0)
+        let mut field = TextInput::new(&self.state.search).plain().leading_icon(k.glyph.search).height(k.text_size(36.0))
             .width(None).placeholder(self.search_placeholder).label(search_label)
             .auto_complete(rune::AutoComplete::List)
             .active_descendant(active.map(|i| format!("{}-option-{}", self.key, self.options[i].id)));
@@ -325,7 +326,7 @@ impl ComboboxCore {
         let items: Vec<_> = choices.iter().map(|&i| {
             let option = &self.options[i];
             PopupItem::new(&option.id, &option.label).description(&option.detail).disabled(option.disabled).trailing(
-                icon(k.glyph.check_small, 14.0)
+                icon(k.glyph.check_small, k.text_size(14.0))
                     .color(k.c.icon_base)
                     .opacity(if self.current.as_deref() == Some(option.id.as_str()) { 1.0 } else { 0.0 }),
             )
@@ -383,8 +384,9 @@ impl<S: 'static> Combobox<S> {
     /// ```
     pub fn search_label(mut self, text: impl Into<String>) -> Self { self.core.search_label = Some(text.into()); self }
     pub fn empty_message(mut self, text: impl Into<String>) -> Self { self.core.empty = text.into(); self }
-    /// The popover's width, 280 by default; the trigger keeps its own.
-    pub fn width(mut self, width: f32) -> Self { self.core.width = width; self }
+    /// The popover's width, 280 at the default text size by default, following the kit's
+    /// text size; the trigger keeps its own.
+    pub fn width(mut self, width: f32) -> Self { self.core.width = Some(width); self }
     /// The tallest the result list grows, 192 by default. A window with less room below (or
     /// above) the trigger shortens it further, and it scrolls.
     pub fn max_height(mut self, height: f32) -> Self { self.core.max_height = height; self }

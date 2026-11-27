@@ -157,10 +157,10 @@ fn row_from_follows_the_views_line_height() {
     let s = DiffState::new(vec![FileDiff::from_texts("a.txt", &old, &new)]);
     assert_eq!(s.rows.len(), 61);
     assert_eq!(s.row_from(1, 200.0), Some(11), "20 pt lines by default");
-    s.set_line_height(28.0);
+    s.set_row_heights(RowHeights { line: 28.0, ..RowHeights::BASE });
     assert_eq!(s.row_from(1, 280.0), Some(11), "ten 28 pt lines down is ten rows");
     assert_eq!(s.row_from(11, -280.0), Some(1));
-    s.set_line_height(0.0);
+    s.set_row_heights(RowHeights { line: 0.0, ..RowHeights::BASE });
     assert_eq!(s.row_from(1, 200.0), Some(11), "a zero height falls back to 20 pt");
 }
 

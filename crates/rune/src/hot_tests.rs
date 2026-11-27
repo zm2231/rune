@@ -336,7 +336,7 @@ fn typed_window_app_with_turn_scope_connects_hot_session_wakes_rebuilds_and_fall
     let waker: Waker = Arc::new(move || { w.fetch_add(1, Ordering::Relaxed); });
     let app = crate::App::new(AppSpec::new("scoped", (80.0, 60.0), Scoped::default, view))
         .turn_scope(enter, leave);
-    let mut win = TypedWindowApp::from_app(app, waker);
+    let mut win = TypedWindowApp::from_app(app, "main", waker);
     let hub: &'static Hub = Box::leak(Box::default());
     win.rt.frame.hot_mut().expect("App::turn_scope connects a hot::Session").move_to(hub);
     BUILDS.set(0);
@@ -403,7 +403,7 @@ fn remaining_app_hooks_dispatch_through_patch_table_with_panic_fallback() {
     let _listening = inbox.listen(&app, &FakeGlue).expect("on_open_url listens");
     let files_inbox: &'static Inbox<Vec<std::path::PathBuf>> = Box::leak(Box::new(Inbox::new()));
     let _listening_files = files_inbox.listen_files(&app, &FakeGlue).expect("on_open_files listens");
-    let mut win = TypedWindowApp::from_app(app, Arc::new(|| {}));
+    let mut win = TypedWindowApp::from_app(app, "main", Arc::new(|| {}));
     win.rt.frame(0.0);
 
     CALLS.set(0);

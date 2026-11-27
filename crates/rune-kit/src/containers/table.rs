@@ -701,8 +701,8 @@ impl TableStyle {
     pub fn from_kit(k: &Kit) -> TableStyle {
         let c = &k.c;
         TableStyle {
-            row_height: 28.0,
-            header_height: 30.0,
+            row_height: k.text_size(28.0),
+            header_height: k.text_size(30.0),
             cell_pad: 10.0,
             font: k.ty.text_small,
             mono: k.ty.mono.features("'tnum' 1"),

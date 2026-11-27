@@ -108,6 +108,12 @@ mod presence;
 use presence::{Presence, Release};
 #[cfg(target_os = "ios")]
 pub(crate) mod ios;
+#[cfg(any(test, target_os = "ios"))]
+#[path = "overlay/standby.rs"]
+mod standby;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "overlay/hide_wait.rs"]
+mod hide_wait;
 mod requests;
 use requests::{KeyRequest, Requests, Update, Visibility};
 #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
@@ -131,11 +137,11 @@ pub(crate) mod xwayland;
 pub(crate) use app::OverlayHost;
 #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 use app::OverlayApp;
-#[cfg(test)]
+#[cfg(all(test, not(any(target_arch = "wasm32", target_os = "ios"))))]
 use crate::compose::{Compositor, Frame};
-#[cfg(test)]
+#[cfg(all(test, not(any(target_arch = "wasm32", target_os = "ios"))))]
 use crate::tooling::AppSpec;
-#[cfg(test)]
+#[cfg(all(test, not(any(target_arch = "wasm32", target_os = "ios"))))]
 use app::Overlay;
 
 /// The screen edge an overlay sits on.
@@ -1328,19 +1334,19 @@ impl OverlayCore {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(any(target_arch = "wasm32", target_os = "ios"))))]
 #[path = "overlay/availability_tests.rs"]
 mod availability_tests;
 
-#[cfg(test)]
+#[cfg(all(test, not(any(target_arch = "wasm32", target_os = "ios"))))]
 #[path = "overlay/tests.rs"]
 mod tests;
 
-#[cfg(test)]
+#[cfg(all(test, not(any(target_arch = "wasm32", target_os = "ios"))))]
 #[path = "overlay/rest_tests.rs"]
 mod rest_tests;
 
-#[cfg(test)]
+#[cfg(all(test, not(any(target_arch = "wasm32", target_os = "ios"))))]
 #[path = "overlay/state_walk_tests.rs"]
 mod state_walk_tests;
 
@@ -1349,7 +1355,7 @@ mod state_walk_tests;
 mod lost_release_tests;
 
 /// A Windows overlay's alpha (255 opaque) at `now`, fading out linearly over `length` until `end`.
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "windows", all(test, not(any(target_arch = "wasm32", target_os = "ios")))))]
 fn fade_alpha(end: Instant, length: Duration, now: Instant) -> u8 {
     if length.is_zero() { return 0; }
     let left = end.saturating_duration_since(now).as_secs_f64() / length.as_secs_f64();

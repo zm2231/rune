@@ -4,10 +4,13 @@
 //! stayed hidden that long. The device waits for the next show, which takes it rather than
 //! making another (hex#1268). Prints
 //! how long each show waits for its first present, and the process's private memory along the
-//! way. Opens overlays, so it only runs with RUNE_GUI_TESTS=1 in a desktop session.
+//! way. Opens overlays, so it only runs with RUNE_GUI_TESTS=1 in a desktop session, on Windows and
+//! Linux.
 
 #[cfg(target_os = "macos")]
-fn main() {}
+fn main() {
+    println!("overlay_gpu_lifecycle: skipped on macOS, where release_gpu_after keeps a panel's surface; overlay_soak checks that every show draws on one device");
+}
 
 #[cfg(not(target_os = "macos"))]
 fn main() { lazy::main() }
@@ -81,6 +84,7 @@ mod lazy {
             return;
         }
         std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(120)); eprintln!("timeout"); std::process::exit(2) });
+        rune::orderly_exit();
         on_gpu(|event| if event == GpuEvent::Starting { STARTS.fetch_add(1, Ordering::SeqCst); });
         let mut app = App::new(AppSpec::new("overlay gpu lifecycle", (100.0, 100.0), || (), view)).args(Vec::new()).windowless();
         let created = Arc::new(AtomicUsize::new(0));
@@ -156,6 +160,7 @@ mod lazy {
                 println!("| --- | --- |");
                 for (name, ms) in r { println!("| {name} | {} |", ms.map_or("none".into(), |ms| format!("{ms:.0} ms"))); }
             });
+            if run.is_err() { eprintln!("overlay_gpu_lifecycle: failed"); std::process::exit(1); }
             *out.lock().unwrap() = Some(run.is_ok());
             handle.quit();
         });

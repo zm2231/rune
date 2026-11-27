@@ -223,10 +223,14 @@ pub(super) struct CascadeFont {
     via: Option<CFRetained<CTFont>>,
 }
 
-// SAFETY: a `CTFont` is immutable once made, and CoreText documents its font objects as safe
-// to use from several threads at once. This wrapper holds two of them and nothing else: no
-// cell, no lock, no state of its own that a second thread could change.
+// SAFETY: the wrapper holds two retained `CTFont`s and nothing else. Moving it to another
+// thread moves those references, and Core Foundation's retain and release are atomic, so the
+// thread that drops it may be any thread.
 unsafe impl Send for CascadeFont {}
+// SAFETY: a `CTFont` is immutable once made, and Core Text documents its functions as
+// thread-safe and its font objects as usable by several threads at once. Through `&self` the
+// wrapper only hands out `&CTFont` for those calls; it has no cell, lock or other state of its
+// own that a second thread could change.
 unsafe impl Sync for CascadeFont {}
 
 /// What Chinese falls back to, kept in `Fallbacks` between texts.

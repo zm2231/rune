@@ -69,6 +69,7 @@ impl RuntimeCore {
         let hold_windows = self.checking_live_only();
         let m = Measurement {
             app,
+            window: self.host.window_key.clone(),
             env: self.env,
             viewport: self.viewport,
             content_sizing: self.host.content_sizing,
@@ -545,6 +546,7 @@ impl Measurement<'_> {
     fn measure_view(&mut self, text: &mut TextSystem, tx: &Tx, force_all: bool) -> ViewMeasured {
         let scale = self.env.scale;
         let fresh_cx = |this: &Self| cx::CxCore {
+            window: this.window.clone(),
             env: this.env,
             titlebar_inset: this.titlebar_inset,
             safe_area: this.safe_area,

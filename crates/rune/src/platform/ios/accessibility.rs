@@ -24,6 +24,7 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class,
 use super::surface::Reading;
 use super::text::input::RuneTextInput;
 use super::view::RuneView;
+use crate::platform::objc_boundary::guarded;
 use crate::a11y::ios::{Element, Gesture, Mirror, Toward, traits};
 use crate::runtime::HashMap;
 
@@ -124,71 +125,77 @@ define_class!(
     impl RuneElement {
         #[unsafe(method(accessibilityActivate))]
         fn activate(&self) -> bool {
-            self.did(Gesture::Activate)
+            guarded("accessibilityActivate", || self.did(Gesture::Activate))
         }
 
         #[unsafe(method(accessibilityIncrement))]
         fn increment(&self) {
-            self.did(Gesture::Increment);
+            guarded("accessibilityIncrement", || { self.did(Gesture::Increment); })
         }
 
         #[unsafe(method(accessibilityDecrement))]
         fn decrement(&self) {
-            self.did(Gesture::Decrement);
+            guarded("accessibilityDecrement", || { self.did(Gesture::Decrement); })
         }
 
         #[unsafe(method(accessibilityElementDidBecomeFocused))]
         fn focused(&self) {
-            self.did(Gesture::Focused);
+            guarded("accessibilityElementDidBecomeFocused", || { self.did(Gesture::Focused); })
         }
 
         #[unsafe(method(accessibilityScroll:))]
         fn scroll(&self, direction: isize) -> bool {
-            toward(direction).is_some_and(|toward| self.did(Gesture::Scroll(toward)))
+            guarded("accessibilityScroll:", || toward(direction).is_some_and(|toward| self.did(Gesture::Scroll(toward))))
         }
 
         #[unsafe(method(isAccessibilityElement))]
         fn is_element(&self) -> bool {
-            true
+            guarded("isAccessibilityElement", || true)
         }
 
         #[unsafe(method_id(accessibilityCustomActions))]
         fn custom_actions(&self) -> Option<Retained<AnyObject>> {
-            self.ivars().actions.borrow().clone()
+            guarded("accessibilityCustomActions", || self.ivars().actions.borrow().clone())
         }
 
         #[unsafe(method(accessibilityExpandedStatus))]
         fn expanded_status(&self) -> isize {
-            self.ivars().expanded.get()
+            guarded("accessibilityExpandedStatus", || self.ivars().expanded.get())
         }
 
         #[unsafe(method(respondsToSelector:))]
         fn responds(&self, sel: Sel) -> bool {
-            // SAFETY: `NSObject`'s method of this signature.
-            let own: bool = unsafe { msg_send![super(self), respondsToSelector: sel] };
-            own || self.text_input(sel).is_some()
+            guarded("respondsToSelector:", || {
+                // SAFETY: `NSObject`'s method of this signature.
+                let own: bool = unsafe { msg_send![super(self), respondsToSelector: sel] };
+                own || self.text_input(sel).is_some()
+            })
         }
 
         #[unsafe(method(conformsToProtocol:))]
         fn conforms(&self, protocol: &AnyProtocol) -> bool {
-            // SAFETY: `NSObject`'s method of this signature.
-            let own: bool = unsafe { msg_send![super(self), conformsToProtocol: protocol] };
-            own || (field::is_text_protocol(protocol) && self.editing_input().is_some())
+            guarded("conformsToProtocol:", || {
+                // SAFETY: `NSObject`'s method of this signature.
+                let own: bool = unsafe { msg_send![super(self), conformsToProtocol: protocol] };
+                own || (field::is_text_protocol(protocol) && self.editing_input().is_some())
+            })
         }
 
         #[unsafe(method(forwardingTargetForSelector:))]
         fn forward(&self, sel: Sel) -> *mut AnyObject {
-            match self.text_input(sel) {
-                // The view holds the input, so it outlives the call it is forwarded.
-                Some(input) => Retained::as_ptr(&input).cast_mut().cast(),
-                // SAFETY: `NSObject`'s method of this signature.
-                None => unsafe { msg_send![super(self), forwardingTargetForSelector: sel] },
-            }
+            guarded("forwardingTargetForSelector:", || {
+                match self.text_input(sel) {
+                    // The view holds the input, so it outlives the call it is forwarded.
+                    Some(input) => Retained::as_ptr(&input).cast_mut().cast(),
+                    // SAFETY: `NSObject`'s method of this signature.
+                    None => unsafe { msg_send![super(self), forwardingTargetForSelector: sel] },
+                }
+            })
         }
 
         #[unsafe(method(runeShowMenu:))]
         fn show_menu(&self, _action: &AnyObject) -> bool {
-            self.did(Gesture::Menu)
+            guarded("runeShowMenu:", || self.did(Gesture::Menu))
         }
     }
 );

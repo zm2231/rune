@@ -12,6 +12,7 @@ use accesskit::{ActionRequest, TreeUpdate};
 
 use super::appearance::Appearance;
 use super::dropped::{self, Kind, Reported};
+use super::feedback::Feedback;
 use super::field_touch;
 use super::keys::Stroke;
 use super::lifecycle;
@@ -25,7 +26,7 @@ use crate::embed::{EmbedFrame, LayerHost};
 use crate::overlay::ios::{Control, Feed};
 use crate::file_dialog::{DialogAnswer, FileDialogError};
 use crate::popup_menu::Show;
-use crate::runtime::{TouchPhase, Waker};
+use crate::runtime::{LockEffect, TouchPhase, TouchSource, Waker};
 use crate::time::Instant;
 use crate::{GesturePhase, Ime, KeyEvent, MagnifyEvent, PhysicalInput, RotateEvent};
 
@@ -55,12 +56,20 @@ pub(crate) trait Surface {
     // Size and frames.
     /// The view's size in points and its display scale.
     fn resize(&mut self, size: (f32, f32), scale: f32);
-    /// Steps the app to `target`, when the frame will be on screen, and presents it.
-    fn frame(&mut self, target: Instant) -> EmbedFrame;
+    /// Steps the app to `target`, when the frame will be on screen, and presents it: with
+    /// `only_loops`, when nothing but its loops asked for the frame, a loop-only step may do.
+    fn frame(&mut self, target: Instant, refresh_hz: Option<f64>, only_loops: bool) -> EmbedFrame;
+    fn presents(&mut self);
 
     // Touch and pointer.
-    /// One finger's event at (x, y) in the view's points, `time` in seconds since boot.
-    fn touch(&mut self, id: u64, phase: TouchPhase, x: f32, y: f32, time: f64);
+    /// One finger's event at (x, y) in the view's points, `time` in seconds since boot, or a
+    /// mouse's or trackpad's click that UIKit delivers as a touch.
+    fn touch(&mut self, id: u64, phase: TouchPhase, x: f32, y: f32, time: f64, source: TouchSource);
+    fn set_pointer_lock(&mut self, supported: bool);
+    fn take_pointer_lock(&mut self) -> Option<LockEffect>;
+    fn pointer_lock_ready(&self) -> bool;
+    fn pointer_lock_answer(&mut self, locked: bool);
+    fn pointer_motion(&mut self, dx: f32, dy: f32);
     /// The pointer of a mouse or trackpad is at this point of the view, or left it.
     fn hover(&mut self, at: Option<(f32, f32)>);
     /// A wheel or a trackpad scrolled the content under `at` by `moved` points; `velocity` is
@@ -143,13 +152,25 @@ pub(crate) trait Surface {
 
     fn takes_touch(&self, control: &Control, x: f32, y: f32) -> bool;
     fn take_overlays(&mut self) -> Vec<OverlaySlot>;
+    fn hidden_parts(&mut self) -> crate::overlay::ios::Mounted<'_>;
     fn set_window(&mut self, key: String);
     fn close(&mut self);
+
+    fn enter_turn(&mut self);
+    fn leave_turn(&mut self);
+}
+
+pub(super) fn in_turn<R>(surface: &mut dyn Surface, f: impl FnOnce(&mut dyn Surface) -> R) -> R {
+    surface.enter_turn();
+    let result = f(&mut *surface);
+    surface.leave_turn();
+    result
 }
 
 pub(crate) struct OverlaySlot {
     pub(crate) control: Rc<RefCell<Control>>,
     pub(crate) mount: Mount,
+    pub(crate) standby: crate::overlay::ios::Standby,
 }
 
 pub(super) struct Hosted<S: 'static> {
@@ -165,6 +186,14 @@ pub(super) struct Hosted<S: 'static> {
     pub(super) wake: Waker,
     pub(super) appearance: Appearance,
     pub(super) park: park::State,
+    pub(super) feedback: Feedback,
+    pub(super) member: Option<crate::shared_state::Member<S>>,
+}
+
+impl<S: 'static> Drop for Hosted<S> {
+    fn drop(&mut self) {
+        if let Some(member) = &mut self.member { member.release(self.host.runtime_mut()); }
+    }
 }
 
 pub(super) enum Role<S: 'static> {
@@ -222,7 +251,10 @@ impl<S: 'static> Hosted<S> {
         for effect in park::step(&mut self.park, event) {
             match effect {
                 park::Effect::Trim => work |= self.host.trim_memory_with(self.role.on_rest()),
-                park::Effect::Release => self.host.release_gpu(),
+                park::Effect::Release => {
+                    self.feedback.reset();
+                    self.host.release_gpu();
+                }
                 park::Effect::Remake => if let Err(error) = self.host.remake_gpu() { eprintln!("rune: a view could not make its renderer again: {error}") },
             }
         }
@@ -272,13 +304,16 @@ impl<S: 'static> Surface for Hosted<S> {
     // Size and frames.
     fn resize(&mut self, size: (f32, f32), scale: f32) { self.host.resize(size, scale); }
 
-    fn frame(&mut self, target: Instant) -> EmbedFrame {
+    fn frame(&mut self, target: Instant, refresh_hz: Option<f64>, only_loops: bool) -> EmbedFrame {
         self.accessibility.receive(self.host.runtime_mut().core_mut(), self.title);
         self.park_step(park::Event::Drawing);
         self.app_requests();
         if let Role::Overlay(overlay) = &self.role { overlay.feed.drain(self.host.runtime_mut()); }
         self.host.runtime_mut().core_mut().take_late_link_answers();
-        let frame = self.host.frame_at(target);
+        let summary = self.host.frame_summary(Some(target), only_loops);
+        if summary.drawn.is_some() { crate::marks::presented(); }
+        self.feedback.frame(&summary, target, refresh_hz);
+        let frame = EmbedFrame::from(summary);
         match &mut self.role {
             Role::App(_) => self.app_frame_done(frame),
             Role::Overlay(overlay) => overlay.feed.fit(self.host.runtime_mut()),
@@ -291,8 +326,10 @@ impl<S: 'static> Surface for Hosted<S> {
         frame
     }
 
+    fn presents(&mut self) { self.feedback.drain(); }
+
     // Touch and pointer.
-    fn touch(&mut self, id: u64, phase: TouchPhase, x: f32, y: f32, time: f64) {
+    fn touch(&mut self, id: u64, phase: TouchPhase, x: f32, y: f32, time: f64, source: TouchSource) {
         let (vx, vy) = self.in_view(x, y);
         let rt = self.host.runtime();
         // The field as it is before the runtime hears of the finger, which places the caret.
@@ -302,8 +339,24 @@ impl<S: 'static> Surface for Hosted<S> {
             field_touch::Event::Touch { phase, at: (x, y) }
         };
         self.field_step(event);
-        self.host.runtime_mut().touch(id, phase, vx, vy, time);
+        self.host.runtime_mut().touch_from(id, phase, vx, vy, time, source);
     }
+
+    fn set_pointer_lock(&mut self, supported: bool) {
+        let supported = supported && matches!(self.role, Role::App(_));
+        self.host.runtime_mut().set_pointer_lock_supported(supported);
+    }
+
+    fn take_pointer_lock(&mut self) -> Option<LockEffect> { self.host.runtime_mut().core_mut().take_pointer_lock_effect() }
+
+    fn pointer_lock_ready(&self) -> bool { self.host.runtime().core().pointer_lock_ready() }
+
+    fn pointer_lock_answer(&mut self, locked: bool) {
+        let core = self.host.runtime_mut().core_mut();
+        if locked { core.pointer_lock_granted(); } else { core.pointer_lock_lost(); }
+    }
+
+    fn pointer_motion(&mut self, dx: f32, dy: f32) { self.host.runtime_mut().pointer_motion(dx, dy); }
 
     fn hover(&mut self, at: Option<(f32, f32)>) {
         let at = at.map(|(x, y)| self.in_view(x, y));
@@ -533,6 +586,8 @@ impl<S: 'static> Surface for Hosted<S> {
         control.takes(self.host.runtime().hit_regions(), x, y)
     }
 
+    fn hidden_parts(&mut self) -> crate::overlay::ios::Mounted<'_> { self.host.hidden_parts() }
+
     fn take_overlays(&mut self) -> Vec<OverlaySlot> {
         match &mut self.role {
             Role::App(app) => std::mem::take(&mut app.overlays),
@@ -548,11 +603,20 @@ impl<S: 'static> Surface for Hosted<S> {
         if let Role::App(app) = &self.role && let Some(close) = app.on_close { self.host.runtime_mut().update(close); }
         (self.wake)();
     }
+
+    fn enter_turn(&mut self) {
+        if let Some(member) = &mut self.member { member.enter(self.host.runtime_mut()); }
+    }
+
+    fn leave_turn(&mut self) {
+        if let Some(member) = &mut self.member { member.leave(self.host.runtime_mut()); }
+    }
 }
 
 /// Starts an app on a `CAMetalLayer`, once its view has a size: the layer, the view's size in
-/// points, its scale, whether the system is dark, and the waker other threads call.
-pub(crate) type Mount = Box<dyn FnOnce(*mut std::ffi::c_void, (f32, f32), f32, bool, Waker) -> Result<Box<dyn Surface>, String>>;
+/// points, its scale, whether the system is dark, the waker other threads call, and the one a
+/// frame's present time calls when it lands.
+pub(crate) type Mount = Box<dyn FnOnce(*mut std::ffi::c_void, (f32, f32), f32, bool, Waker, Waker) -> Result<Box<dyn Surface>, String>>;
 
 impl<S: 'static> Hosted<S> {
     /// A point of the `UIView` in the app's own points (`zoom`).

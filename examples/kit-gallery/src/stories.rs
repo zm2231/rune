@@ -27,6 +27,7 @@ mod markdown;
 mod metrics;
 mod overlay_metrics;
 mod overlays;
+mod shell_rows;
 pub(crate) mod sidebar;
 mod split_view;
 mod table;
@@ -372,6 +373,9 @@ stories! {
     "rune-scroll-bar--styled" => scroll_bar_styled,
     "rune-scroll-bar--xy" => scroll_bar_xy,
     "rune-sidebar--reorder" => sidebar::reorder,
+    "rune-sidebar--two-line" => shell_rows::sidebar_two_line,
+    "rune-tab-strip--status" => shell_rows::tab_status,
+    "rune-avatar--rows" => shell_rows::avatar_rows,
     "components-file-icon--samples" => icons::file_icon_samples,
     "components-file-icon--folder" => icons::file_icon_folder,
     "ui-icon--gallery" => icons::icon_gallery,

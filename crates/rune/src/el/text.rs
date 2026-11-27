@@ -1152,7 +1152,7 @@ impl El {
         }
         self
     }
-    /// Vertically aligns a text element's or [`text_input`](crate::text_input)'s laid-out lines
+    /// Vertically aligns a text element's or [`text_input`]'s laid-out lines
     /// inside its content box when the box is taller than the text, as CSS Box Alignment
     /// `align-content` does (`Align::Center` matches HTML `<input type="text">` vertical
     /// centring). Defaults to [`Align::Start`] (top of the content box).

@@ -183,7 +183,7 @@ impl RuntimeCore {
         }
         if let Some((ic, _)) = n.vis.icon {
             let color = text_tint(text_color.unwrap());
-            let looped = if matches!(n.looping.as_ref().map(|l| l.kind), Some(rune_motion::LoopKind::Rotation)) { loop_value.unwrap_or(0.0) } else { 0.0 };
+            let looped = if matches!(n.looping.as_ref().map(|l| l.kind), Some(rune_motion::LoopKind::Rotation { .. })) { loop_value.unwrap_or(0.0) } else { 0.0 };
             let turn = looped + if self.scene.store().has(n.id, P_ICON_TURN) {
                 self.scene.get(n.id, P_ICON_TURN).unwrap_or(n.vis.icon_turn)
             } else { n.vis.icon_turn };

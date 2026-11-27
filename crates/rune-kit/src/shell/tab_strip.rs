@@ -215,7 +215,8 @@ impl<'a, S: 'static> TabItem<'a, S> {
     /// A second, muted line under the title in a vertical strip (a project's name); the row
     /// grows to 45 points.
     pub fn subtitle(mut self, subtitle: impl Into<Cow<'a, str>>) -> Self { self.core.subtitle = Some(subtitle.into()); self }
-    /// A 16 point leading element: a project's avatar.
+    /// A leading element in a 16 point slot that follows the kit's text size: a project's
+    /// avatar. Size it with `k.text_size(16.0)` so it fills the slot at every text size.
     pub fn avatar(mut self, avatar: El) -> Self { self.core.avatar = Some(avatar); self }
     /// A 16 point leading icon in place of an avatar (a draft's pencil), muted until active.
     pub fn icon(mut self, icon: &'static Icon) -> Self { self.core.icon = Some(icon); self }
@@ -426,8 +427,8 @@ impl<'a, S: 'static> TabStrip<'a, S> {
     pub fn overflow(mut self, policy: TabOverflow) -> Self { self.core.overflow = Some(policy); self }
     /// Points between tabs (default 6 horizontal, 3 vertical).
     pub fn gap(mut self, points: f32) -> Self { self.core.gap = Some(points.max(0.0)); self }
-    /// A tab's height (default 28).
-    pub fn row_height(mut self, points: f32) -> Self { self.core.row_height = points.max(1.0); self }
+    /// A tab's height (default 28 at the kit's [`Kit::text_scale`]).
+    pub fn row_height(mut self, points: f32) -> Self { self.core.row_height = Some(points.max(1.0)); self }
     /// Whether a press selects the tab as the button goes down, so a drag selects it too (default
     /// true, as tab-nav.tsx's onMouseDown does in either orientation), or the release does and
     /// a drag leaves the selection (for touch, where a long press opens a menu).

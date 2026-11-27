@@ -46,3 +46,20 @@ fn the_innermost_value_is_in_scope_and_a_new_one_rebuilds_memos_in_virtual_rows(
     rt.frame(2.0 / 60.0);
     assert_eq!(ROW_BUILDS.get(), 6, "an equal but new value rebuilds the rows");
 }
+
+fn catching(_: &(), cx: &mut Cx<()>) -> El {
+    let value = Provided::new(7u32);
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cx.provide(&value, |_| panic!("a view part fails"))));
+    assert!(caught.is_err());
+    assert!(cx.provided::<u32>().is_none(), "the failed scope is gone");
+    let outer = Provided::new(1u32);
+    let inner = cx.provide(&outer, |cx| cx.provided::<u32>().map(|p| *p));
+    assert_eq!(inner, Some(1));
+    el()
+}
+
+#[test]
+fn a_panic_caught_inside_a_scope_leaves_no_value_in_scope() {
+    let mut rt = Runtime::new((), catching, (100.0, 100.0), Env::new(true, 1.0));
+    rt.frame(0.0);
+}

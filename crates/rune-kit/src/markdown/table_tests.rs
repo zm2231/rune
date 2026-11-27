@@ -122,8 +122,8 @@ fn column_rules_place_height_width_invariance_and_rtl() {
             let cell_right = cell.rect[0] + cell.rect[2];
             let rule_right = rule.rect[0] + rule.rect[2];
             assert!(
-                (rule_right - cell_right).abs() < 0.01,
-                "RTL rule sits at cell right edge ({row}/c{j}): rule={:?} cell={:?}",
+                (rule_right - cell_right).abs() <= 1.0 / 64.0 + 1e-4,
+                "RTL rule sits at cell right edge, within the 1/64 px grid a cell's width lands on at rest ({row}/c{j}): rule={:?} cell={:?}",
                 rule.rect,
                 cell.rect
             );

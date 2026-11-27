@@ -27,6 +27,9 @@ mod mmap_alloc {
         ps
     }
 
+    // SAFETY: each allocation is its own anonymous mapping, aligned to at least the layout's
+    // alignment and at least its size; `dealloc` unmaps exactly the mapping `alloc` recorded, and
+    // the allocator keeps no shared state besides the cached page size.
     unsafe impl GlobalAlloc for MmapAlloc {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             let size = layout.size().max(1);
@@ -63,7 +66,8 @@ mod mmap_alloc {
         }
 
         unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-            // Anonymous `mmap` pages are already zero-initialized by the kernel.
+            // SAFETY: the caller's `layout` contract passes through to `alloc`; anonymous `mmap`
+            // pages are zero-filled by the kernel.
             unsafe { self.alloc(layout) }
         }
 
@@ -88,6 +92,7 @@ mod mmap_alloc {
             let Ok(new_layout) = Layout::from_size_align(new_size, layout.align()) else {
                 return ptr::null_mut();
             };
+            // SAFETY: `new_layout` was just validated by `Layout::from_size_align`.
             let new_ptr = unsafe { self.alloc(new_layout) };
             if new_ptr.is_null() {
                 return ptr::null_mut();
@@ -121,4 +126,16 @@ fn custom_global_allocator_skips_glibc_malloc_trim() {
         0,
         "malloc_trim(0) must never run under a custom global allocator"
     );
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[test]
+fn a_custom_allocator_stops_being_probed_after_the_missed_rests() {
+    for _ in 0..rune::__heap_trim::PROBE_MISSES {
+        rune::__heap_trim::reset_cooldown();
+        rune::__heap_trim::on_rest();
+        rune::__heap_trim::wait_idle();
+    }
+    assert!(rune::__heap_trim::settled_foreign());
+    assert_eq!(rune::__heap_trim::trim_calls(), 0);
 }

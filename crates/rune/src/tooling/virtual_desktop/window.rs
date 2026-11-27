@@ -4,8 +4,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::app::{Shared, SharedCore, WindowRequest, WindowRequests};
-use crate::compose::{Compositor, Frame};
+use crate::app::{SharedCore, WindowRequest};
 use crate::desktop::Slot;
 use crate::desktop::displays::VirtualDesktop;
 use crate::el::Shell;
@@ -13,11 +12,17 @@ use crate::frame::clock::FrameClock;
 use crate::frame::encoded::{FrameReports, OnFrameEncoded};
 use crate::frame::host_step::{self, Acquire, FrameHost, Gate, RenderPrep, StepInfo, draw_ui, prepare_gpu_resources};
 use crate::render::{Gpu, OFFSCREEN_FORMAT, OFFSCREEN_FORMAT_LINEAR, Renderer};
-use crate::runtime::{AppDriver, Env, Runtime, RuntimeCore};
+use crate::runtime::{Env, RuntimeCore};
+#[cfg(test)]
+use crate::runtime::Runtime;
 use crate::time::Instant;
 use crate::tooling::{Args, FrameTiming, Kind, Trace, headless::{step_window_frame, take_window_frame}};
 use crate::window::{Life, WakeEvent};
 use crate::{WindowHandle, WindowSpec};
+
+mod app;
+
+use app::{DesktopApp, DesktopRenderArgs, TypedDesktopApp};
 
 /// Corner radius of a titled window, in points.
 const RADIUS: f32 = 10.0;
@@ -85,134 +90,6 @@ pub(crate) trait Member {
     fn tree(&self, t: f64) -> Value;
     fn trace(&mut self, trace: &mut Trace, t_ms: f64, cpu_ms: f64);
     fn summary(&mut self, device: &wgpu::Device) -> Option<String>;
-}
-
-struct DesktopRenderArgs<'a> {
-    device: &'a wgpu::Device,
-    queue: &'a wgpu::Queue,
-    encoder: &'a mut wgpu::CommandEncoder,
-    target: &'a wgpu::TextureView,
-    format: wgpu::TextureFormat,
-    size: (u32, u32),
-    dt: f64,
-    update_ms: f64,
-    ui: &'a mut Renderer,
-}
-
-trait DesktopApp {
-    fn rt(&self) -> &RuntimeCore;
-    fn rt_mut(&mut self) -> &mut RuntimeCore;
-    fn with_driver(&mut self, f: &mut dyn FnMut(&mut RuntimeCore, &mut dyn AppDriver));
-    fn run_on_close_request(&mut self) -> Option<crate::CloseResponse>;
-    fn run_on_quit_request(&mut self) -> Option<crate::QuitResponse>;
-    fn run_on_close(&mut self);
-    fn run_on_reopen(&mut self, has_visible_windows: bool) -> bool;
-    fn drain_updates(&mut self, menus: &mut crate::native_menu::MenuGuard) -> WindowRequests;
-    fn has_updates(&self) -> bool;
-    fn has_compositor(&self) -> bool;
-    fn compositor_features(&self) -> wgpu::Features;
-    fn render_compositor(&mut self, args: DesktopRenderArgs<'_>) -> bool;
-    fn compositor_summary(&mut self, device: &wgpu::Device) -> Option<String>;
-    #[cfg(test)]
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
-}
-
-impl dyn DesktopApp + '_ {
-    fn driver<R>(&mut self, f: impl FnOnce(&mut RuntimeCore, &mut dyn AppDriver) -> R) -> R {
-        let mut f = Some(f);
-        let mut out = None;
-        self.with_driver(&mut |core, app| {
-            out = Some(f.take().unwrap()(core, app));
-        });
-        out.unwrap()
-    }
-
-    fn content_height(&mut self) -> f32 { self.driver(|rt, app| rt.content_height(app)) }
-    fn set_live_visible(&mut self, visible: bool) { self.driver(|rt, app| rt.set_live_visible(app, visible)); }
-    fn cancel_popups(&mut self) { self.driver(|rt, app| rt.cancel_popups(app)); }
-    fn cancel_file_dialogs(&mut self) { self.driver(|rt, app| rt.cancel_file_dialogs(app)); }
-    fn open_popup_headless(&mut self) { self.driver(|rt, app| rt.open_popup_headless(app)); }
-    fn resolve_popup(&mut self, picked: Option<&str>) -> Result<(), crate::PopupMenuError> {
-        self.driver(|rt, app| rt.resolve_popup(app, picked))
-    }
-    fn frame(&mut self, dt: f64) -> bool { self.driver(|rt, app| rt.frame(app, dt)) }
-    fn window_focus(&mut self, focused: bool) { self.driver(|rt, app| rt.window_focus(app, focused)); }
-    fn script_input(&mut self, kind: &Kind, at: (f32, f32)) {
-        self.driver(|rt, app| { crate::tooling::script_input(rt, app, kind, at); });
-    }
-}
-
-struct TypedDesktopApp<S: 'static> {
-    rt: Runtime<S>,
-    shared: Arc<Shared<S>>,
-    comp: Option<Box<dyn Compositor<S>>>,
-    on_close_request: Option<fn(&mut S, &mut crate::Tx) -> crate::CloseResponse>,
-    on_quit_request: Option<fn(&mut S, &mut crate::Tx) -> crate::QuitResponse>,
-    on_close: Option<fn(&mut S, &mut crate::Tx)>,
-    on_reopen: Option<fn(&mut S, bool, &mut crate::Tx) -> bool>,
-}
-
-impl<S: 'static> DesktopApp for TypedDesktopApp<S> {
-    fn rt(&self) -> &RuntimeCore { self.rt.core() }
-    fn rt_mut(&mut self) -> &mut RuntimeCore { self.rt.core_mut() }
-    fn with_driver(&mut self, f: &mut dyn FnMut(&mut RuntimeCore, &mut dyn AppDriver)) {
-        let (core, mut driver) = self.rt.split_mut();
-        f(core, &mut driver);
-    }
-    fn run_on_close_request(&mut self) -> Option<crate::CloseResponse> {
-        let f = self.on_close_request?;
-        let mut resp = crate::CloseResponse::Close;
-        self.rt.update(|s, tx| resp = f(s, tx));
-        Some(resp)
-    }
-    fn run_on_quit_request(&mut self) -> Option<crate::QuitResponse> {
-        let f = self.on_quit_request?;
-        let mut resp = crate::QuitResponse::Quit;
-        self.rt.update(|s, tx| resp = f(s, tx));
-        Some(resp)
-    }
-    fn run_on_close(&mut self) {
-        if let Some(f) = self.on_close { self.rt.update(f); }
-    }
-    fn run_on_reopen(&mut self, has_visible_windows: bool) -> bool {
-        let Some(f) = self.on_reopen else { return false };
-        let mut handled = false;
-        self.rt.update(|s, tx| handled = f(s, has_visible_windows, tx));
-        handled
-    }
-    fn drain_updates(&mut self, menus: &mut crate::native_menu::MenuGuard) -> WindowRequests {
-        self.shared.drain(|f| {
-            self.rt.update_if(f);
-            menus.drain();
-        })
-    }
-    fn has_updates(&self) -> bool { self.shared.has_updates() }
-    fn has_compositor(&self) -> bool { self.comp.is_some() }
-    fn compositor_features(&self) -> wgpu::Features {
-        self.comp.as_ref().map_or(wgpu::Features::empty(), |c| c.features())
-    }
-    fn render_compositor(&mut self, args: DesktopRenderArgs<'_>) -> bool {
-        let Some(c) = self.comp.as_mut() else { return false };
-        let mut f = Frame {
-            device: args.device,
-            queue: args.queue,
-            encoder: args.encoder,
-            target: args.target,
-            format: args.format,
-            size: args.size,
-            dt: args.dt,
-            update_ms: args.update_ms,
-            rt: &mut self.rt,
-            ui: args.ui,
-        };
-        c.render(&mut f);
-        c.animating()
-    }
-    fn compositor_summary(&mut self, device: &wgpu::Device) -> Option<String> {
-        self.comp.as_mut().and_then(|c| c.summary(device))
-    }
-    #[cfg(test)]
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
 
 fn inherited_window_args(args: &Args, selected: bool) -> Args {
@@ -293,7 +170,7 @@ impl Window {
         let (chrome, titlebar) = (app.chrome, app.titlebar);
         let (playground, attach_playground) = (app.playground.take(), app.attach_playground);
         crate::credentials::note_headless_runtime();
-        let (spec, state, shared, runtime) = app.into_parts(own.scene.as_deref());
+        let (spec, state, shared, runtime, member) = app.into_member_parts(&key, own.scene.as_deref());
         let shortcuts = crate::shortcuts::Guard::attach(&shared, Arc::new(|| {}), true, false);
         let menus = crate::native_menu::MenuGuard::attach(&shared, true);
         let size = own.size.unwrap_or(spec.size);
@@ -304,8 +181,9 @@ impl Window {
             attach(&mut rt, playground, &spec, own.playground.clone(), own.variant.clone(), false);
         }
         rt.configure(runtime);
+        rt.core_mut().set_window_key(&key);
         let (shared_core, shortcuts_core) = (shared.core.clone(), shared.shortcuts.core.clone());
-        let typed = Box::new(TypedDesktopApp { rt, shared, comp, on_close_request, on_quit_request, on_close, on_reopen });
+        let typed = Box::new(TypedDesktopApp { rt, shared, comp, on_close_request, on_quit_request, on_close, on_reopen, member });
         Self::from_app(typed, WindowInit {
             key,
             shared_core,

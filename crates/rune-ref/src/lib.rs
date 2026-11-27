@@ -155,7 +155,8 @@ impl Scene {
                 })
                 || (p.params[1] == 1.0 && p.uv[2] > 0.0 && p.uv[3] <= 0.0)
                 || (p.params[1] == 4.0 && !color(&p.uv))
-                || (p.params[1] == 10.0 && (p.uv[0] <= 0.0 || p.uv[1] <= 0.0))
+                || (p.params[1] == 10.0
+                    && (p.uv[0] < 0.0 || p.uv[1] == 0.0 || [p.params[3], p.uv[3]].iter().any(|v| *v < 0.0 || v.fract() != 0.0 || *v >= 16_777_216.0)))
                 || (p.params[1] == 11.0 && (p.uv[2] < 0.0 || p.uv[3] < 0.0 || (p.uv[2] > 0.0) != (p.uv[3] > 0.0)))
                 || (p.params[1] == 2.0 && (p.params[3] <= 0.0 || p.uv.iter().any(|v| *v < 0.0)))
             {

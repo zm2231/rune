@@ -202,7 +202,9 @@ impl RuntimeCore {
                 self.apply_select_request(app, request, from_change);
             }
             if matches!(action, Action::Layout(..) | Action::ScreenLayout(..) | Action::DrawnLayout(_, _, false) | Action::VisibleRows(..)) {
-                *ran_layout |= self.run_action(app, action, tx);
+                let r = self.run_action(app, action, tx);
+                if r { self.note_state_change(); }
+                *ran_layout |= r;
             } else {
                 let observer = matches!(action, Action::DrawnLayout(..) | Action::Visible(..) | Action::AtBottom(..) | Action::FarFromBottom(..));
                 #[cfg(debug_assertions)]
@@ -218,7 +220,10 @@ impl RuntimeCore {
                     *handler_ran |= non_live;
                 }
                 *ran |= r;
-                if r { *why |= if input { CommitWhy::INPUT } else { CommitWhy::DIRTY }; }
+                if r {
+                    *why |= if input { CommitWhy::INPUT } else { CommitWhy::DIRTY };
+                    self.note_state_change();
+                }
             }
             self.run_pick_reads(app, tx);
             *drag_cancelled |= self.flush_cancel_pointer(
@@ -295,8 +300,10 @@ impl RuntimeCore {
                     })) {
                         *c.ran = true;
                         *c.why |= CommitWhy::POLL;
+                        c.rt.note_state_change();
                         c.rt.commit.watch.meter.poll();
                     }
+                    c.rt.frame.poll_asked(poll_clock, &one.wakes);
                     merge(c.tx, one);
                 }
                 for ev in std::mem::take(&mut c.tx.keys) {

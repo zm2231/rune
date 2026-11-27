@@ -596,3 +596,87 @@ fn resting_wake_with_queued_input_refuses_to_rest_until_delivered() {
     assert!(!pg.has_input_waiting());
     assert_eq!(pg.playground_state::<HandlerClockApp>().unwrap().focuses.last().map(|(k, _)| *k), Some("two"));
 }
+
+fn polls_between_its_own_wakes(rt: &mut Runtime<App>) {
+    rt.update(|_, tx| {
+        for n in 1..=6 { tx.wake_after(Duration::from_millis(700 * n)); }
+    });
+    rt.frame(crate::frame::clock::RESUME_STEP);
+    for _ in 0..6 {
+        reach_next_timer(rt);
+        let stale = rt.resting_wake().expect("the window rests");
+        rt.resting_wake_frame(stale);
+    }
+}
+
+#[test]
+fn a_resting_window_notices_a_poll_that_asks_a_wake_on_every_run() {
+    let mut rt = runtime(App::default());
+    for _ in 0..6 { timer_wake(&mut rt); }
+    assert!(!rt.frame.polls_stacking(), "a poll woken only by its own wake stacks nothing");
+
+    let polls = rt.state.polls;
+    polls_between_its_own_wakes(&mut rt);
+    assert_eq!(rt.state.polls, polls + 7, "the handler's frame, then each of its wakes");
+    assert!(rt.frame.polls_stacking(), "each poll asked while its last wake was pending");
+}
+
+#[test]
+fn a_resting_window_notices_a_long_wake_asked_on_every_run_beside_a_short_one() {
+    let mut rt = runtime(App::default());
+    rt.poll = Some(|s, _, tx| {
+        s.polls += 1;
+        tx.wake_after(Duration::from_millis(100));
+        tx.wake_after(Duration::from_secs(1));
+        false
+    });
+    rt.frame(crate::frame::clock::RESUME_STEP);
+    for _ in 0..6 {
+        reach_next_timer(&mut rt);
+        let stale = rt.resting_wake().expect("the window rests");
+        rt.resting_wake_frame(stale);
+    }
+    assert!(rt.frame.polls_stacking(), "each short wake's poll asked another second while the last was pending");
+
+    let mut rt = runtime(App::default());
+    rt.poll = Some(|s, _, tx| {
+        s.polls += 1;
+        tx.wake_after(Duration::from_millis(100));
+        if s.change_at == 0 {
+            s.change_at = s.polls;
+            tx.wake_after(Duration::from_secs(1));
+        }
+        false
+    });
+    rt.frame(crate::frame::clock::RESUME_STEP);
+    for _ in 0..12 {
+        reach_next_timer(&mut rt);
+        let stale = rt.resting_wake().expect("the window rests");
+        rt.resting_wake_frame(stale);
+    }
+    assert!(!rt.frame.polls_stacking(), "a long wake asked only when arming, beside a short one asked every run");
+}
+
+#[test]
+fn a_resting_window_does_not_flag_a_poll_on_a_fixed_schedule_or_one_that_asks_when_arming() {
+    let mut rt = runtime(App::default());
+    rt.poll = Some(|s, clock, tx| {
+        s.polls += 1;
+        tx.wake_at((clock / 5.0).floor() * 5.0 + 5.0);
+        false
+    });
+    polls_between_its_own_wakes(&mut rt);
+    assert!(!rt.frame.polls_stacking(), "wake_at on a fixed schedule");
+
+    let mut rt = runtime(App::default());
+    rt.poll = Some(|s, _, tx| {
+        s.polls += 1;
+        if s.change_at == 0 {
+            s.change_at = s.polls;
+            tx.wake_after(PERIOD);
+        }
+        false
+    });
+    polls_between_its_own_wakes(&mut rt);
+    assert!(!rt.frame.polls_stacking(), "wake_after only when arming");
+}

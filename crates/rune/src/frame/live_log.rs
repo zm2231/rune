@@ -102,6 +102,17 @@ pub(crate) fn waker(at: &'static std::panic::Location<'static>, wait: std::time:
     });
 }
 
+pub(crate) fn link(event: &'static str, at: &'static std::panic::Location<'static>) {
+    if !on() { return; }
+    let line = serde_json::json!({ "t": now_ns(), "link": event, "at": format!("{}:{}", at.file(), at.line()) });
+    OUT.with_borrow_mut(|out| {
+        if let Some(Some(w)) = out.as_mut() {
+            writeln!(w, "{line}").ok();
+            w.flush().ok();
+        }
+    });
+}
+
 /// Now on the monotonic clock, in ns.
 pub(crate) fn now() -> u64 { now_ns() }
 

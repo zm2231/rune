@@ -16,6 +16,7 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
 fn runtime() -> Runtime<State> {
     let mut rt = Runtime::new(State { recorder: ShortcutRecorderState::new(Some("ctrl+k".parse().unwrap())), reject: false, disabled: false, changes: 0, worded: false, unmodified: false },
         view, (400.0, 200.0), Env { system_dark: true, scale: 1.0 });
+    rt.poll = Some(|s: &mut State, now, _| s.recorder.poll(now));
     rt.frame(0.0); rt
 }
 fn shows(rt: &Runtime<State>, s: &str) -> bool { rt.elements().iter().any(|e| e.text.as_deref() == Some(s)) }
@@ -180,4 +181,63 @@ fn recording_the_same_chord_retries_it_after_mark_unregistered() {
     physical(&mut rt, Code::KeyK, ctrl, true, false);
     assert_eq!(rt.state.changes, 2);
     assert_eq!(rt.state.recorder.shortcut().unwrap().to_string(), "ctrl+k");
+}
+
+const HINT: &str = "Nothing arrived; that shortcut may be taken by another app.";
+
+#[test]
+fn a_capture_no_key_reaches_times_out_and_keeps_the_old_shortcut() {
+    let mut rt = runtime(); click(&mut rt, "shortcut"); rt.frame(0.0);
+    rt.physical_input(PhysicalInput::Modifiers(Mods { cmd: true, shift: true, ..Mods::default() })); rt.frame(0.0);
+    rt.physical_input(PhysicalInput::Modifiers(Mods::default()));
+    rt.frame(4.9);
+    assert!(rt.state.recorder.is_recording(), "modifiers alone are what a chord held elsewhere leaves behind");
+    assert!(!shows(&rt, HINT));
+    rt.frame(0.2);
+    assert!(!rt.state.recorder.is_recording() && rt.state.recorder.timed_out());
+    assert!(shows(&rt, HINT));
+    assert_eq!(rt.state.recorder.shortcut().unwrap().to_string(), "ctrl+k");
+    assert_eq!(rt.state.changes, 0);
+    rt.frame(1.0);
+    physical(&mut rt, Code::KeyJ, Mods { ctrl: true, ..Mods::default() }, true, false);
+    assert_eq!(rt.state.changes, 0, "a key well after the timeout isn't captured");
+    click(&mut rt, "shortcut"); rt.frame(0.0);
+    assert!(rt.state.recorder.is_recording(), "clicking records again");
+    rt.frame(1.0);
+    assert!(!shows(&rt, HINT), "recording again clears the hint");
+}
+
+#[test]
+fn a_key_just_before_the_deadline_keeps_the_capture() {
+    let mut rt = runtime(); rt.state.reject = true; click(&mut rt, "shortcut"); rt.frame(0.0);
+    rt.frame(4.9);
+    physical(&mut rt, Code::KeyJ, Mods { ctrl: true, ..Mods::default() }, true, false);
+    rt.frame(10.0);
+    assert!(rt.state.recorder.is_recording(), "a key arrived, so the system delivers to this window");
+    assert_eq!(rt.state.recorder.error(), Some(&ShortcutError::Conflict));
+    assert!(!rt.state.recorder.timed_out() && !shows(&rt, HINT));
+}
+
+#[test]
+fn a_cancelled_capture_s_timer_does_not_end_the_next_one() {
+    let mut rt = runtime(); click(&mut rt, "shortcut"); rt.frame(0.0);
+    rt.frame(3.0);
+    physical(&mut rt, Code::Escape, Mods::default(), true, false);
+    physical(&mut rt, Code::Escape, Mods::default(), false, false);
+    click(&mut rt, "shortcut"); rt.frame(0.0);
+    rt.frame(2.5);
+    assert!(rt.state.recorder.is_recording(), "the first capture's deadline belongs to it alone");
+    rt.frame(2.6);
+    assert!(rt.state.recorder.timed_out(), "the second capture keeps its own deadline");
+}
+
+#[test]
+fn a_key_handled_in_the_frame_that_reaches_the_deadline_still_counts() {
+    let mut rt = runtime(); rt.state.reject = true; click(&mut rt, "shortcut"); rt.frame(0.0);
+    rt.frame(4.9);
+    rt.physical_input(PhysicalInput::Key { key: Code::KeyJ, mods: Mods { ctrl: true, ..Mods::default() }, pressed: true, repeat: false, text: None, consumed_mods: Default::default() });
+    rt.frame(0.2);
+    assert!(rt.state.recorder.is_recording(), "the key reached the window before the deadline's frame ran");
+    assert_eq!(rt.state.recorder.error(), Some(&ShortcutError::Conflict));
+    assert!(!rt.state.recorder.timed_out());
 }

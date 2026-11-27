@@ -48,8 +48,14 @@ impl RuntimeCore {
     /// The last committed frame is out of date: state changed (an update, poll or handler), or
     /// one asked for a scroll or text flight that waits for the next frame.
     pub(crate) fn needs_commit(&self) -> bool {
-        self.commit.dirty || self.frame.pending.frame_work() || self.patch_pending()
+        self.commit.dirty || self.commit.shared_dirty || self.frame.pending.frame_work() || self.patch_pending()
     }
+
+    pub(crate) fn state_changes(&self) -> u64 { self.commit.state_changes }
+
+    pub(in crate::runtime) fn note_state_change(&mut self) { self.commit.state_changes += 1; }
+
+    pub(crate) fn invalidate_shared(&mut self) { self.commit.shared_dirty = true; }
 
     /// The last frame no longer shows the window: state, its size or queued input changed since.
     pub(crate) fn stale(&self) -> bool {
@@ -101,7 +107,7 @@ impl RuntimeCore {
     /// Drops uploaded image atlas pages and every `Pixels` reference kept in the last committed
     /// tree and memo cache, marking the view dirty so the next frame rebuilds and re-uploads any
     /// image the view still shows.
-    #[cfg_attr(not(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))), allow(dead_code))]
+    #[cfg_attr(not(any(all(test, not(target_os = "ios")), all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))), allow(dead_code))]
     pub(crate) fn drop_images(&mut self) {
         let mut dropped = self.images.clear();
         let has_tree_pixels = self.tree.nodes.iter().any(|n| {
@@ -389,8 +395,10 @@ impl RuntimeCore {
             if self.frame.record_poll(crate::tooling::perf_warn::timed("poll", || app.poll(self.clock, &mut one))) {
                 ran = true;
                 why |= CommitWhy::POLL;
+                self.note_state_change();
                 self.commit.watch.meter.poll();
             }
+            self.frame.poll_asked(self.clock, &one.wakes);
             merge(&mut tx, one);
         }
         if !polled && app.playground().is_some_and(|p| p.polls()) {
@@ -518,22 +526,23 @@ impl RuntimeCore {
         let settling = self.commit.is_settling();
         let has_scroll_request = !tx.scroll_to.is_empty() || !tx.scroll_bottom.is_empty()
             || !tx.scroll_pages.is_empty() || !tx.scroll_offsets.is_empty() || self.edit.caret_follow;
-        let shifted = !(self.commit.dirty || self.commit.relayout || settling) && self.virtual_window_changed();
+        let shared = self.commit.shared_dirty;
+        let shifted = !(self.commit.dirty || shared || self.commit.relayout || settling) && self.virtual_window_changed();
         // When a scroll request is about to move viewports and nothing else needs a commit,
         // wait for the request so we remount once at the new offset instead of filling the old one.
         let defer_shift = shifted && !ran && !ran_layout && !read_moved && !tx.commit.lands() && has_scroll_request;
-        let besides = self.commit.dirty || self.commit.relayout || settling || (shifted && !defer_shift);
+        let besides = self.commit.dirty || shared || self.commit.relayout || settling || (shifted && !defer_shift);
         let other = ran || besides;
         self.count_layout_echo(ran_layout || read_moved, other);
         if other || ran_layout || read_moved {
-            if self.commit.relayout && !ran && !self.commit.dirty {
+            if self.commit.relayout && !ran && !self.commit.dirty && !shared {
                 if self.commit.is_viewport_stepped() { tx.window_step = true } else { tx.relayout = true }
             }
             if settling {
                 tx.commit = Commit::Settle;
             }
             self.settled = tx.commit.lands();
-            self.commit.set_state_unchanged(!ran && !self.commit.dirty && !ran_layout && !settling && self.commit.commits > 0);
+            self.commit.set_state_unchanged(!ran && !self.commit.dirty && !shared && !ran_layout && !settling && self.commit.commits > 0);
             #[cfg(debug_assertions)]
             if ran_other || besides || ran_layout || read_moved { self.frame.clear_live_check(); }
             self.capture_keeps(&mut tx);
@@ -544,7 +553,7 @@ impl RuntimeCore {
             // Its layout lands too, as an instant change's does: a container that grows to fit what a
             // server brought doesn't ease to its height (motion already running keeps on).
             if tx.unprompted { tx.commit = tx.commit.without_input(); }
-            self.commit_for(app, &tx, why | flag(self.commit.dirty, CommitWhy::DIRTY) | flag(self.commit.relayout, CommitWhy::RELAYOUT) | flag(settling, CommitWhy::SETTLE)
+            self.commit_for(app, &tx, why | flag(self.commit.dirty, CommitWhy::DIRTY) | flag(self.commit.relayout, CommitWhy::RELAYOUT) | flag(settling, CommitWhy::SETTLE) | flag(shared, CommitWhy::SHARED)
                 | flag(shifted, CommitWhy::VIRTUAL) | flag(ran_layout, CommitWhy::LAYOUT) | flag(read_moved, CommitWhy::READ));
             #[cfg(debug_assertions)]
             { let check = self.frame.take_live_check(); self.compare_live_check(check); }

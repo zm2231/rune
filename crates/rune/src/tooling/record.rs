@@ -358,7 +358,7 @@ mod tests {
         assert_eq!(unpad(&data, 1, 2, 8), [1, 2, 3, 4, 5, 6, 7, 8]);
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "ios")))]
     #[test]
     fn encoder_errors_close_stdin_and_report_the_exit_status() {
         let start = |command| {

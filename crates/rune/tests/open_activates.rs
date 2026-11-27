@@ -74,6 +74,7 @@ mod mac {
             return;
         }
         std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(90)); eprintln!("timeout"); std::process::exit(2) });
+        rune::orderly_exit();
         let mut child = Command::new(std::env::current_exe().unwrap()).env(HELPER, "1").spawn().expect("helper");
         let pid = child.id() as i32;
         let mut app = App::new(AppSpec::new(MAIN_TITLE, (240.0, 120.0), || (), view)).args(Vec::new())
@@ -118,6 +119,7 @@ mod mac {
                 expect_active(&main, SETTINGS_TITLE, "opening a hidden App::window window");
                 println!("App::window open: active and key");
             });
+            if run.is_err() { eprintln!("open_activates: failed"); std::process::exit(1); }
             *out.lock().unwrap() = Some(run.is_ok());
             main.quit();
         });

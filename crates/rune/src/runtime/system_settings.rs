@@ -335,7 +335,7 @@ impl RuntimeCore {
         if self.host.set_renderer_kind(kind) { self.commit.dirty = true; }
     }
 
-    #[cfg_attr(not(any(all(target_os = "windows", feature = "windows-system-material"), test)), allow(dead_code))]
+    #[cfg_attr(not(any(all(target_os = "windows", feature = "windows-system-material"), all(test, not(target_os = "ios")))), allow(dead_code))]
     #[inline]
     pub(crate) fn renderer_kind(&self) -> crate::RendererKind {
         self.host.renderer_kind

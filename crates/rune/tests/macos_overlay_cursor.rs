@@ -5,7 +5,8 @@
 //! test warps it (which moves the cursor but posts no events) and reads the window server's
 //! cursor with `[NSCursor currentSystemCursor]`. Off the hit region it is the arrow again.
 //! Fading out, the panel clicks through at once, for the whole fade.
-//! Opens windows, so it only runs with RUNE_GUI_TESTS=1 in a logged-in GUI session.
+//! Opens windows, so it only runs with RUNE_GUI_TESTS=1 in a logged-in GUI session:
+//! `RUNE_GUI_TESTS=1 cargo test -p rune --features macos-background-cursor --test macos_overlay_cursor`.
 
 #[cfg(not(target_os = "macos"))]
 fn main() {}
@@ -168,6 +169,7 @@ mod mac {
             return;
         }
         std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(60)); eprintln!("timeout"); std::process::exit(2) });
+        rune::orderly_exit();
         let mut child = Command::new(std::env::current_exe().unwrap()).env(HELPER, "1").spawn().expect("helper");
         let pid = child.id() as i32;
         let mut app = App::new(AppSpec::new("overlay cursor", (200.0, 100.0), || (), view)).args(Vec::new())
@@ -189,6 +191,7 @@ mod mac {
                 std::thread::sleep(Duration::from_millis(500));
                 drive(&handle, &overlay, pid);
             }));
+            if run.is_err() { eprintln!("macos_overlay_cursor: failed"); std::process::exit(1); }
             *out.lock().unwrap() = Some(run.is_ok());
             handle.quit();
         });

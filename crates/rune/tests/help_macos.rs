@@ -124,6 +124,7 @@ mod mac {
             return;
         }
         std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(120)); eprintln!("timeout"); std::process::exit(2) });
+        rune::orderly_exit();
         let hold = rune::env::var("RUNE_HELP_HOLD").and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
         let (ready_tx, ready_rx) = mpsc::channel();
         let app = App::new(AppSpec::new("help", (320.0, 160.0), || (), view)).args(Vec::new()).on_ready(move |_| { ready_tx.send(()).ok(); });
@@ -157,6 +158,7 @@ mod mac {
                 assert!(wait(Duration::from_secs(2), || PRESSES.load(Ordering::SeqCst) == 1), "the press reaches the element");
                 assert!(wait(Duration::from_secs(2), || tooltip(&handle).is_none()), "a press hides the tooltip");
             });
+            if run.is_err() { eprintln!("help_macos: failed"); std::process::exit(1); }
             handle.quit();
             run.is_ok()
         });

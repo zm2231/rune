@@ -13,8 +13,6 @@ pub(in crate::window) mod corners;
 #[cfg(target_os = "macos")]
 pub(in crate::window) mod launch_drawables;
 #[cfg(not(target_arch = "wasm32"))]
-pub(in crate::window) mod loop_frame;
-#[cfg(not(target_arch = "wasm32"))]
 pub(in crate::window) mod native;
 pub(in crate::window) mod pacing;
 pub(in crate::window) mod presented;
@@ -34,7 +32,7 @@ pub(crate) use configure::configure_then;
 #[cfg(target_os = "macos")]
 pub(crate) use launch_drawables::LaunchDrawables;
 #[cfg(not(target_arch = "wasm32"))]
-pub(in crate::window) use loop_frame::LoopFrame;
+pub(in crate::window) use crate::frame::loop_frame::LoopFrame;
 #[cfg(not(target_arch = "wasm32"))]
 pub(in crate::window) use native::Native;
 #[cfg(not(target_arch = "wasm32"))]

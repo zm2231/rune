@@ -166,8 +166,16 @@ impl Session {
         let level = if self.level.1 > 0 { db((self.level.0 / self.level.1 as f64).sqrt()) } else { db(0.0) };
         self.level = (0.0, 0);
         let ms = |d: Option<Duration>| d.map(|d| format!("{:.1} ms", d.as_secs_f64() * 1e3)).unwrap_or_else(|| "-".into());
+        let canceller = stats
+            .echo_canceller
+            .map(|c| {
+                let (low, high) = c.reference_lead_frames;
+                format!("aec erle {:.1} dB erl {:.1} dB aligned {} ms lead {low}..{high}", c.erle_db, c.erl_db, c.alignment.as_millis())
+            })
+            .unwrap_or_else(|| "aec -".into());
+        let skew = i128::from(stats.captured_frames) - i128::from(stats.played_frames);
         format!(
-            "[{:>7.3}s] {:?} | open->running {} | start->audio {} | captured {} played {} dropped {} oversized {} late {} | mic {level:.1} dBFS | {residual}",
+            "[{:>7.3}s] {:?} | open->running {} | start->audio {} | captured {} played {} (captured-played {skew}) dropped {} oversized {} late {} speaker gaps {} mic gaps {} | mic {level:.1} dBFS | {canceller} | {residual}",
             self.elapsed().as_secs_f64(),
             self.state,
             ms(self.running_at),
@@ -177,6 +185,8 @@ impl Session {
             stats.mic_dropped_frames,
             stats.oversized_callbacks,
             stats.late_frames,
+            stats.speaker_gap_frames,
+            stats.mic_gap_frames,
         )
     }
 }

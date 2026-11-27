@@ -111,10 +111,10 @@ impl List {
 
     pub fn build(self, k: &Kit) -> El {
         let c = &k.c;
-        let item_font = TextStyle::new(14.0, 500.0).lh(21.0);
+        let item_font = k.text(TextStyle::new(14.0, 500.0).lh(21.0));
         let mut root = col().w_full().gap(12.0);
         if let Some((edit, placeholder)) = &self.search {
-            let mut input = text_input(edit, TextStyle::new(14.0, 400.0).lh(20.0))
+            let mut input = text_input(edit, k.text(TextStyle::new(14.0, 400.0).lh(20.0)))
                 .single_line()
                 .key("input")
                 .label(placeholder.clone())
@@ -135,7 +135,7 @@ impl List {
                         .center_y()
                         .radius(k.radius.md)
                         .fill(c.surface_base)
-                        .child(icon(k.glyph.search, 16.0).color(c.std_icon))
+                        .child(icon(k.glyph.search, k.text_size(16.0)).color(c.std_icon))
                         .child(input),
                 ),
             );
@@ -154,7 +154,7 @@ impl List {
                     .px(48.0)
                     .py(32.0)
                     .center()
-                    .child(text(self.empty).font(TextStyle::new(14.0, 400.0).lh(21.0)).color(c.text_weak)),
+                    .child(text(self.empty).font(k.text(TextStyle::new(14.0, 400.0).lh(21.0))).color(c.text_weak)),
             );
         }
         let n = self.items.len();
@@ -182,7 +182,7 @@ impl List {
                     g =
                         g.child(
                             row().key("header").w_full().pt(8.0).pb(8.0).pl(8.0).pr(12.0).fill(c.surface_raised).child(
-                                text(name.clone()).font(TextStyle::new(14.0, 500.0).lh(21.0)).color(c.text_weak),
+                                text(name.clone()).font(k.text(TextStyle::new(14.0, 500.0).lh(21.0))).color(c.text_weak),
                             ).a11y_hidden(),
                         );
                 }
@@ -203,12 +203,12 @@ impl List {
                 .gap(4.0)
                 .child(text(item.label).font(item_font).color(c.text_strong).shrink().truncate().a11y_hidden());
             if item.selected {
-                r = r.child(icon(k.glyph.check_small, 16.0).color(c.std_icon_strong));
+                r = r.child(icon(k.glyph.check_small, k.text_size(16.0)).color(c.std_icon_strong));
             }
             if active {
                 r = r.fill(c.surface_raised_hover);
                 if let Some(ai) = self.active_icon {
-                    r = r.child(icon(ai, 16.0).color(c.std_icon_strong));
+                    r = r.child(icon(ai, k.text_size(16.0)).color(c.std_icon_strong));
                 }
             } else if pressable {
                 r = r.focus_highlight(c.surface_raised_hover);

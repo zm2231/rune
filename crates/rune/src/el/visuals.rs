@@ -111,12 +111,17 @@ impl El {
     }
     /// Dashes the border (`border` or `border_gradient`): `dash` points on, `gap` points off,
     /// along the ring's centre line, round the corners too. A dash is centred on the middle of
-    /// every corner, and each side runs the pattern out from both of its corners to meet in its
-    /// middle, so dashes keep their places while the box changes size: a side that grows or
-    /// shrinks moves only the dash or gap where its two runs meet. The fill shows through the
-    /// gaps, and the dashes draw over it as a solid border does. Ends are butt unless
-    /// [`Self::border_dash_cap`] rounds them; a zero `dash` with round caps draws dots. A zero
-    /// `gap`, or a zero `dash` with butt ends, keeps the border solid.
+    /// every corner, and each side, from corner middle to corner middle, holds a whole number of
+    /// dashes with its gaps widened or narrowed to match, so every gap on a side is the same, as
+    /// a browser spaces a dashed border. While the box changes size the corner dashes stay put
+    /// and a side's dashes spread or close up with it; a side changes its count only once its
+    /// length is a quarter of a period past the halfway mark, so a box that settles near a
+    /// boundary doesn't flick between counts. Along straight runs each dash moves under half a
+    /// device pixel so its ends land on the pixel grid where the ring's edges do, and dots stay
+    /// round at fractional scales. The fill shows through the gaps, and the dashes draw over it
+    /// as a solid border does. Ends are butt unless [`Self::border_dash_cap`] rounds them; a
+    /// zero `dash` with round caps draws dots. A zero `gap`, or a zero `dash` with butt ends,
+    /// keeps the border solid.
     pub fn border_dash(mut self, dash: f32, gap: f32) -> Self {
         let valid = dash.is_finite() && gap.is_finite() && dash >= 0.0 && gap > 0.0;
         let v = valid.then_some([dash, gap]);
@@ -127,7 +132,9 @@ impl El {
     }
     /// Moves every corner `phase` points into the dash pattern, along both sides that meet
     /// there: `0` centres a dash on each corner, `(dash + gap) / 2` a gap. A phase of
-    /// `dash + gap` is one whole period. It is applied as given every frame and never springs.
+    /// `dash + gap` is one whole period. On a side whose gaps are widened or narrowed to fit,
+    /// the phase scales with them, so each corner sits the same fraction of a period into the
+    /// pattern. It is applied as given every frame and never springs.
     pub fn border_dash_phase(mut self, phase: f32) -> Self {
         let p = if phase.is_finite() { phase } else { 0.0 };
         if p != 0.0 || !self.vis.cold.is_empty() {

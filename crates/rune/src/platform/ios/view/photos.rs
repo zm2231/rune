@@ -12,6 +12,7 @@ use objc2_foundation::{NSString, NSURL};
 use super::super::pacing::Event;
 use super::RuneView;
 use super::link::MainOnly;
+use crate::platform::objc_boundary::guarded;
 use crate::file_dialog::{DialogAnswer, MediaKind, MediaPicker};
 use crate::platform::main_queue::on_main;
 
@@ -63,7 +64,7 @@ impl RuneView {
             self.pace(Event::Wake);
             return;
         }
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+        let nanos = crate::time::system_now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
         let folder = Arc::new(std::env::temp_dir().join(format!("Picked-{nanos}")));
         let copies = Arc::new(Mutex::new(Copies { left: count, paths: vec![None; count] }));
         let view = Arc::new(MainOnly(Weak::new(self)));
@@ -83,8 +84,10 @@ impl RuneView {
                 };
                 let (copies, view, folder) = (copies.clone(), view.clone(), folder.clone());
                 let block = RcBlock::new(move |url: *mut NSURL, _error: *mut AnyObject| {
-                    let copied = url.as_ref().and_then(|url| copy(url, &folder.join(index.to_string())));
-                    finish(&copies, &view, id, index, copied);
+                    guarded("photo file completion handler", || {
+                        let copied = url.as_ref().and_then(|url| copy(url, &folder.join(index.to_string())));
+                        finish(&copies, &view, id, index, copied);
+                    })
                 });
                 let _: Option<Retained<AnyObject>> = msg_send![&*provider, loadFileRepresentationForTypeIdentifier: &*NSString::from_str(kind), completionHandler: &*block];
             }

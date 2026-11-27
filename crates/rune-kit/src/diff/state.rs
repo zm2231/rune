@@ -111,11 +111,17 @@ pub enum Expand {
 /// Lines one expand step reveals.
 pub const EXPAND_STEP: u32 = 20;
 
-/// Row heights in points. Lines are fixed unless they wrap or carry annotations.
-pub(crate) const LINE_H: f32 = 20.0;
-pub(crate) const HEADER_H: f32 = 44.0;
-pub(crate) const GAP_H: f32 = 32.0;
-pub(crate) const NOTE_H: f32 = 40.0;
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RowHeights {
+    pub(crate) line: f32,
+    pub(crate) header: f32,
+    pub(crate) gap: f32,
+    pub(crate) note: f32,
+}
+
+impl RowHeights {
+    pub(crate) const BASE: RowHeights = RowHeights { line: 20.0, header: 44.0, gap: 32.0, note: 40.0 };
+}
 
 /// One row of the virtual list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -194,8 +200,7 @@ pub struct DiffState {
     pub(crate) keys_rev: u64,
     visible_rows: std::ops::Range<usize>,
     view_w: std::cell::Cell<f32>,
-    /// The height the view draws a code line at (its code font's line height).
-    line_h: std::cell::Cell<f32>,
+    heights: std::cell::Cell<RowHeights>,
     visible: usize,
     /// The visible file last reported to the app.
     reported: Option<usize>,
@@ -241,7 +246,7 @@ impl DiffState {
             keys_rev: 0,
             visible_rows: 0..0,
             view_w: std::cell::Cell::new(0.0),
-            line_h: std::cell::Cell::new(LINE_H),
+            heights: std::cell::Cell::new(RowHeights::BASE),
             visible: 0,
             reported: None,
             nav: None,

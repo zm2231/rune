@@ -64,6 +64,7 @@ impl RuntimeCore {
         let (mut virtual_culled, mut virtual_inputs, mut stats, mut key_warnings) = (HashSet::default(), HashMap::default(), FrameStats::default(), None);
         let m = Measurement {
             app,
+            window: self.host.window_key.clone(),
             env: self.env,
             viewport: size,
             content_sizing: crate::ContentSizing::Fixed,

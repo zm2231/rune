@@ -124,7 +124,7 @@ impl Layers {
         }
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "ios", target_arch = "wasm32")))]
+    #[cfg(not(any(target_os = "ios", target_arch = "wasm32")))]
     pub(super) fn clear_all(&mut self) {
         self.plan.clear();
         self.targets.clear();

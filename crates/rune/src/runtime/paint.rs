@@ -8,6 +8,7 @@ pub(super) mod border;
 pub(super) mod build;
 pub(super) mod cache_layer;
 pub(super) mod content;
+pub(super) mod dash;
 pub(super) mod exit_mask;
 pub(super) mod grid;
 pub(super) mod helpers;

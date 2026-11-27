@@ -79,13 +79,24 @@ mod mac {
         rx.recv_timeout(Duration::from_secs(5)).expect("an update runs on the main thread")
     }
 
-    /// The app's window, its number, and a view point (top-left origin) in window coordinates.
+    unsafe fn class_name(object: *mut AnyObject) -> String {
+        // SAFETY: caller passes a live object on the main thread; `className` returns an NSString.
+        unsafe {
+            let name: *const NSString = msg_send![object, className];
+            (*name).to_string()
+        }
+    }
+
+    /// The app's window (winit's `WinitWindow`; AppKit may list windows of its own first), its
+    /// number, and a view point (top-left origin) in window coordinates.
     unsafe fn window_point(x: f64, y: f64) -> (*mut AnyObject, isize, NSPoint) {
-        // SAFETY: caller invokes on the AppKit main thread; queries the app's only live window.
+        // SAFETY: caller invokes on the AppKit main thread; queries the app's live windows.
         unsafe {
             let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
             let windows: *mut AnyObject = msg_send![app, windows];
-            let window: *mut AnyObject = msg_send![windows, firstObject];
+            let count: usize = msg_send![windows, count];
+            let window = (0..count).map(|i| -> *mut AnyObject { msg_send![windows, objectAtIndex: i] })
+                .find(|&w| class_name(w).starts_with("Winit")).expect("the app's winit window");
             let view: *mut AnyObject = msg_send![window, contentView];
             let at: NSPoint = msg_send![view, convertPoint: NSPoint::new(x, y), toView: std::ptr::null::<AnyObject>()];
             let number: isize = msg_send![window, windowNumber];
@@ -152,6 +163,16 @@ mod mac {
             for (name, begin) in [("NSMenuDidBeginTrackingNotification", true), ("NSMenuDidEndTrackingNotification", false)] {
                 let block = block2::RcBlock::new(move |note: *mut AnyObject| {
                     let menu: *mut AnyObject = msg_send![note, object];
+                    let count: isize = msg_send![menu, numberOfItems];
+                    let first = if count > 0 {
+                        let item: *mut AnyObject = msg_send![menu, itemAtIndex: 0isize];
+                        let title: *const NSString = msg_send![item, title];
+                        (*title).to_string()
+                    } else { String::new() };
+                    if first != "System" {
+                        println!("popup_menu_macos: another menu {} tracking (first item {first:?})", if begin { "began" } else { "ended" });
+                        return;
+                    }
                     MENU.with(|slot| *slot.borrow_mut() = if begin { Retained::retain(menu) } else { None });
                     TRACKING.store(begin, Ordering::SeqCst);
                 });
@@ -183,6 +204,7 @@ mod mac {
             return;
         }
         std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(150)); eprintln!("timeout"); std::process::exit(2) });
+        rune::orderly_exit();
         assert!(popup_menu_supported());
         let spec = AppSpec { poll: Some(poll), ..AppSpec::new("popup menu", (320.0, 160.0), || State { theme: "system".into() }, view) };
         let (ready_tx, ready_rx) = mpsc::channel();
@@ -196,6 +218,7 @@ mod mac {
                 std::thread::sleep(Duration::from_millis(300));
                 run(&handle);
             });
+            if run.is_err() { eprintln!("popup_menu_macos: failed"); std::process::exit(1); }
             handle.quit();
             run.is_ok()
         });
@@ -215,7 +238,17 @@ mod mac {
     }
 
     fn run(handle: &AppHandle<State>) {
-        on_main(handle, |_, _| observe_menus());
+        on_main(handle, |_, _| {
+            observe_menus();
+            // SAFETY: main thread (an update); lists the app's live windows.
+            unsafe {
+                let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+                let windows: *mut AnyObject = msg_send![app, windows];
+                let count: usize = msg_send![windows, count];
+                let names: Vec<String> = (0..count).map(|i| class_name(msg_send![windows, objectAtIndex: i])).collect();
+                println!("popup_menu_macos: app windows {names:?}");
+            }
+        });
         let before = FRAMES.load(Ordering::SeqCst);
         std::thread::sleep(Duration::from_millis(500));
         println!("popup_menu_macos: {} frames in 500 ms before the menu", FRAMES.load(Ordering::SeqCst) - before);

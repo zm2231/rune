@@ -8,6 +8,7 @@ use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSString, NSURL};
 
 use super::RuneView;
+use crate::platform::objc_boundary::guarded;
 use crate::share::{ShareError, Shown};
 
 impl RuneView {
@@ -32,15 +33,17 @@ impl RuneView {
             let controller: Allocated<AnyObject> = msg_send![class!(UIActivityViewController), alloc];
             let controller: Retained<AnyObject> = msg_send![controller, initWithActivityItems: &*items, applicationActivities: None::<&AnyObject>];
             let done = RcBlock::new(move |activity: *mut NSString, completed: Bool, _items: *mut AnyObject, error: *mut AnyObject| {
-                let result = if let Some(error) = error.as_ref() {
-                    let what: Retained<NSString> = msg_send![error, localizedDescription];
-                    Err(ShareError::Failed(what.to_string()))
-                } else if completed.as_bool() {
-                    Ok(Some(activity.as_ref().map_or_else(String::new, |a| a.to_string())))
-                } else {
-                    Ok(None)
-                };
-                reply.send(result);
+                guarded("share sheet completion handler", || {
+                    let result = if let Some(error) = error.as_ref() {
+                        let what: Retained<NSString> = msg_send![error, localizedDescription];
+                        Err(ShareError::Failed(what.to_string()))
+                    } else if completed.as_bool() {
+                        Ok(Some(activity.as_ref().map_or_else(String::new, |a| a.to_string())))
+                    } else {
+                        Ok(None)
+                    };
+                    reply.send(result);
+                })
             });
             let _: () = msg_send![&*controller, setCompletionWithItemsHandler: &*done];
             let popover: Option<Retained<AnyObject>> = msg_send![&*controller, popoverPresentationController];

@@ -1,5 +1,5 @@
 use std::any::{Any, TypeId};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::ops::Deref;
 use std::rc::Rc;
@@ -51,14 +51,41 @@ impl<T: fmt::Debug + 'static> fmt::Debug for Provided<T> {
     }
 }
 
-#[derive(Clone, Default)]
-pub(crate) struct Stack(Vec<(TypeId, Rc<dyn Any>)>);
+type Entries = Rc<RefCell<Vec<(TypeId, Rc<dyn Any>)>>>;
+
+#[derive(Default)]
+pub(crate) struct Stack(Entries);
+
+impl Clone for Stack {
+    fn clone(&self) -> Self {
+        Self(Rc::new(RefCell::new(self.0.borrow().clone())))
+    }
+}
 
 impl Stack {
     fn find<T: 'static>(&self) -> Option<Provided<T>> {
-        let (_, any) = self.0.iter().rev().find(|(t, _)| *t == TypeId::of::<T>())?;
+        let entries = self.0.borrow();
+        let (_, any) = entries.iter().rev().find(|(t, _)| *t == TypeId::of::<T>())?;
         let inner = any.clone().downcast::<Inner<T>>().ok()?;
         Some(Provided(inner))
+    }
+
+    fn push(&self, entry: (TypeId, Rc<dyn Any>)) -> Pop {
+        let mut entries = self.0.borrow_mut();
+        let depth = entries.len();
+        entries.push(entry);
+        Pop { entries: self.0.clone(), depth }
+    }
+}
+
+struct Pop {
+    entries: Entries,
+    depth: usize,
+}
+
+impl Drop for Pop {
+    fn drop(&mut self) {
+        self.entries.borrow_mut().truncate(self.depth);
     }
 }
 
@@ -69,11 +96,8 @@ impl<S> Cx<S> {
     /// a different `Provided` (by [`Provided::id`]) is in scope, so a theme swap repaints them.
     pub fn provide<T: 'static, R>(&mut self, value: &Provided<T>, build: impl FnOnce(&mut Self) -> R) -> R {
         let _salt = crate::memo::salt(value.id());
-        self.core.provided.0.push((TypeId::of::<T>(), value.0.clone()));
-        let depth = self.core.provided.0.len();
-        let out = build(self);
-        self.core.provided.0.truncate(depth - 1);
-        out
+        let _pop = self.core.provided.push((TypeId::of::<T>(), value.0.clone()));
+        build(self)
     }
 
     /// The innermost value of type `T` a [`Self::provide`] around this build put in scope.

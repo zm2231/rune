@@ -21,11 +21,11 @@ fn shift(key: Key) -> KeyEvent {
 }
 
 fn cmd(c: char) -> KeyEvent {
-    KeyEvent { key: Key::Command(c), mods: Mods { cmd: true, ctrl: !cfg!(target_os = "macos"), ..Mods::default() } }
+    KeyEvent { key: Key::Command(c), mods: Mods { cmd: true, ctrl: !crate::edit::MAC_KEYS, ..Mods::default() } }
 }
 
 fn cmd_shift(c: char) -> KeyEvent {
-    KeyEvent { key: Key::Command(c), mods: Mods { cmd: true, ctrl: !cfg!(target_os = "macos"), shift: true, ..Mods::default() } }
+    KeyEvent { key: Key::Command(c), mods: Mods { cmd: true, ctrl: !crate::edit::MAC_KEYS, shift: true, ..Mods::default() } }
 }
 
 fn click_key<S: 'static>(rt: &mut Runtime<S>, key: &str) {

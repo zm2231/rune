@@ -1,7 +1,7 @@
 use rtrb::{Consumer, Producer, RingBuffer};
 use rune_core::time::Instant;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 pub(crate) struct Meters {
@@ -13,8 +13,50 @@ pub(crate) struct Meters {
     mic_dropped: AtomicU64,
     oversized: AtomicU64,
     late: AtomicU64,
+    speaker_gap: AtomicU64,
+    mic_gap: AtomicU64,
     started_at: AtomicU64,
     first_audio_at: AtomicU64,
+    pub(crate) canceller: CancellerMeter,
+}
+
+#[derive(Default)]
+pub(crate) struct CancellerMeter {
+    running: AtomicBool,
+    erle: AtomicU32,
+    erl: AtomicU32,
+    alignment_ms: AtomicU32,
+    lead_low: AtomicI64,
+    lead_high: AtomicI64,
+}
+
+#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+pub(crate) struct CancellerReading {
+    pub(crate) erle_db: f32,
+    pub(crate) erl_db: f32,
+    pub(crate) alignment_ms: u32,
+    pub(crate) lead: (i64, i64),
+}
+
+impl CancellerMeter {
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+    pub(crate) fn publish(&self, reading: CancellerReading) {
+        self.erle.store(reading.erle_db.to_bits(), Ordering::Relaxed);
+        self.erl.store(reading.erl_db.to_bits(), Ordering::Relaxed);
+        self.alignment_ms.store(reading.alignment_ms, Ordering::Relaxed);
+        self.lead_low.store(reading.lead.0, Ordering::Relaxed);
+        self.lead_high.store(reading.lead.1, Ordering::Relaxed);
+        self.running.store(true, Ordering::Release);
+    }
+
+    fn stats(&self) -> Option<super::EchoCancellerStats> {
+        self.running.load(Ordering::Acquire).then(|| super::EchoCancellerStats {
+            erle_db: f32::from_bits(self.erle.load(Ordering::Relaxed)),
+            erl_db: f32::from_bits(self.erl.load(Ordering::Relaxed)),
+            alignment: Duration::from_millis(u64::from(self.alignment_ms.load(Ordering::Relaxed))),
+            reference_lead_frames: (self.lead_low.load(Ordering::Relaxed), self.lead_high.load(Ordering::Relaxed)),
+        })
+    }
 }
 
 impl Meters {
@@ -28,8 +70,11 @@ impl Meters {
             mic_dropped: AtomicU64::new(0),
             oversized: AtomicU64::new(0),
             late: AtomicU64::new(0),
+            speaker_gap: AtomicU64::new(0),
+            mic_gap: AtomicU64::new(0),
             started_at: AtomicU64::new(0),
             first_audio_at: AtomicU64::new(0),
+            canceller: CancellerMeter::default(),
         }
     }
 
@@ -61,6 +106,20 @@ impl Meters {
         }
     }
 
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+    pub(crate) fn count_speaker_gap(&self, frames: u64) {
+        if frames > 0 {
+            self.speaker_gap.fetch_add(frames, Ordering::Relaxed);
+        }
+    }
+
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+    pub(crate) fn count_mic_gap(&self, frames: u64) {
+        if frames > 0 {
+            self.mic_gap.fetch_add(frames, Ordering::Relaxed);
+        }
+    }
+
     pub(crate) fn stats(&self) -> super::VoiceStats {
         let started = self.started_at.load(Ordering::Acquire);
         let first = self.first_audio_at.load(Ordering::Acquire);
@@ -70,7 +129,10 @@ impl Meters {
             mic_dropped_frames: self.mic_dropped.load(Ordering::Relaxed),
             oversized_callbacks: self.oversized.load(Ordering::Relaxed),
             late_frames: self.late.load(Ordering::Relaxed),
+            speaker_gap_frames: self.speaker_gap.load(Ordering::Relaxed),
+            mic_gap_frames: self.mic_gap.load(Ordering::Relaxed),
             start_to_audio: (started != 0 && first >= started).then(|| Duration::from_nanos(first - started)),
+            echo_canceller: self.canceller.stats(),
         }
     }
 }

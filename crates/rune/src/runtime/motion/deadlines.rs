@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 const SAME_INSTANT: f64 = 1e-6;
-const PILE_UP: usize = 8;
+const STACKED_POLLS: u32 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Wake {
@@ -31,14 +31,33 @@ impl Wake {
 pub(crate) struct Deadlines {
     app: Vec<f64>,
     timers: Vec<f64>,
+    poll_after: Vec<(Duration, f64)>,
+    stacked_polls: u32,
 }
 
 impl Deadlines {
     pub(crate) fn insert_app(&mut self, deadline: f64) {
         insert(&mut self.app, deadline);
-        if self.app.len() > PILE_UP {
-            crate::tooling::perf_warn::poll_wakes_pile_up(self.app.len());
+    }
+
+    pub(crate) fn poll_asked(&mut self, clock: f64, wakes: &[Wake]) {
+        let asked = wakes.iter().filter_map(|wake| match wake {
+            Wake::After(delay) if !delay.is_zero() => Some(*delay),
+            _ => None,
+        });
+        let stacks = asked.clone().any(|delay| {
+            self.poll_after.iter().any(|&(earlier, due)| earlier == delay && due > clock && (clock + delay.as_secs_f64() - due).abs() > SAME_INSTANT)
+        });
+        self.stacked_polls = if stacks { self.stacked_polls + 1 } else { 0 };
+        self.poll_after.clear();
+        self.poll_after.extend(asked.map(|delay| (delay, clock + delay.as_secs_f64())));
+        if self.polls_stacking() {
+            crate::tooling::perf_warn::poll_wakes_pile_up();
         }
+    }
+
+    pub(crate) fn polls_stacking(&self) -> bool {
+        self.stacked_polls >= STACKED_POLLS
     }
 
     pub(crate) fn insert_timer(&mut self, deadline: f64) {

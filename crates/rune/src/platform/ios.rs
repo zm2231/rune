@@ -11,6 +11,8 @@ pub(crate) mod appearance;
 mod controller;
 pub(crate) mod dropped;
 pub(crate) mod edit_menu;
+#[cfg(target_os = "ios")]
+mod feedback;
 pub(crate) mod field_touch;
 pub(crate) mod keys;
 pub(crate) mod lifecycle;
@@ -20,6 +22,7 @@ mod mount;
 pub(crate) mod overlay;
 pub(crate) mod pacing;
 pub(crate) mod park;
+pub(crate) mod pointer_lock;
 #[cfg(target_os = "ios")]
 pub(crate) mod scenes;
 pub(crate) mod size_class;
@@ -50,7 +53,7 @@ pub(crate) use surface::OverlaySlot;
 #[cfg(target_os = "ios")]
 pub fn view<S: 'static>(app: crate::App<S>) -> *mut std::ffi::c_void {
     let Some(mtm) = objc2::MainThreadMarker::new() else { return std::ptr::null_mut() };
-    let mount = mount::mount(app);
+    let mount = mount::mount(app, None);
     // No event loop of Rune's says when the host has made its views, so each one settles the
     // links: one handed over before the first view was made has reached its hook by now, and
     // from here a link goes to a view that listens or is dropped, never kept.

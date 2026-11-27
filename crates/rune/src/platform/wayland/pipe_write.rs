@@ -133,9 +133,10 @@ pub(crate) mod unix {
                 if fd < 0 {
                     return None;
                 }
-                // SAFETY: `fd` is owned exclusively by this `WriteCancel`.
                 Some(Self {
                     cancelled: AtomicBool::new(false),
+                    // SAFETY: `eventfd` just returned `fd` open, and nothing else owns or closes
+                    // it; `WriteCancel` takes sole ownership.
                     fd: unsafe { OwnedFd::from_raw_fd(fd) },
                 })
             }
@@ -153,10 +154,12 @@ pub(crate) mod unix {
                         libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK);
                     }
                 }
-                // SAFETY: both descriptors are newly created and owned by `WriteCancel`.
                 Some(Self {
                     cancelled: AtomicBool::new(false),
+                    // SAFETY: `pipe` just returned `fds[0]` open, and nothing else owns or closes
+                    // it; `WriteCancel` takes sole ownership.
                     read: unsafe { OwnedFd::from_raw_fd(fds[0]) },
+                    // SAFETY: as for `fds[0]`: the pipe's freshly opened write end, owned only here.
                     write: unsafe { OwnedFd::from_raw_fd(fds[1]) },
                 })
             }

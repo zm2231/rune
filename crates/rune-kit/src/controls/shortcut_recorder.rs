@@ -1,5 +1,6 @@
 //! A physical shortcut editor. The app owns registration and can reject a proposed change.
 use std::rc::Rc;
+use rune::machine::{Attempt, Effects, Seq};
 use rune::{El, Mods, PhysicalInput, PhysicalKeyCode, Shortcut, ShortcutError, Tx, col, row, text};
 use crate::{Keybind, Kit};
 
@@ -13,7 +14,12 @@ pub struct ShortcutRecorderState {
     /// The modifiers held now, which a capture shows as it waits for a key.
     held: Mods,
     unregistered: bool,
+    attempts: Seq,
 }
+
+const NOTHING_ARRIVED_SECS: f64 = 5.0;
+const LATE_KEY_SECS: f64 = 0.25;
+const NOTHING_ARRIVED: &str = "Nothing arrived; that shortcut may be taken by another app.";
 
 #[derive(Clone, Debug, Default)]
 enum Recording {
@@ -21,9 +27,28 @@ enum Recording {
     Idle,
     /// Waiting for a chord; `refusal` is the last one refused, until a new chord starts, and
     /// `finishing` is the key that ended or refused it, whose repeats and release are swallowed.
-    Capturing { refusal: Option<Refusal>, finishing: Option<PhysicalKeyCode> },
+    Capturing { refusal: Option<Refusal>, finishing: Option<PhysicalKeyCode>, waiting: Option<Waiting> },
     /// The capture is over, and the key that ended it still swallows its repeats and release.
     Swallowing { key: PhysicalKeyCode },
+    TimedOut { at: f64 },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Waiting {
+    attempt: Attempt,
+    due: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Event {
+    Begin { now: f64 },
+    KeyArrived { now: f64 },
+    Due { attempt: Attempt, now: f64 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Effect {
+    WakeAt(f64),
 }
 
 impl Recording {
@@ -31,19 +56,19 @@ impl Recording {
         match self {
             Recording::Capturing { finishing, .. } => *finishing,
             Recording::Swallowing { key } => Some(*key),
-            Recording::Idle => None,
+            Recording::Idle | Recording::TimedOut { .. } => None,
         }
     }
     fn finishing_mut(&mut self) -> Option<&mut Option<PhysicalKeyCode>> {
         match self {
             Recording::Capturing { finishing, .. } => Some(finishing),
-            Recording::Idle | Recording::Swallowing { .. } => None,
+            Recording::Idle | Recording::Swallowing { .. } | Recording::TimedOut { .. } => None,
         }
     }
     fn refusal_mut(&mut self) -> Option<&mut Option<Refusal>> {
         match self {
             Recording::Capturing { refusal, .. } => Some(refusal),
-            Recording::Idle | Recording::Swallowing { .. } => None,
+            Recording::Idle | Recording::Swallowing { .. } | Recording::TimedOut { .. } => None,
         }
     }
 }
@@ -61,7 +86,7 @@ impl ShortcutRecorderState {
     fn refusal(&self) -> Option<&Refusal> {
         match &self.phase {
             Recording::Capturing { refusal, .. } => refusal.as_ref(),
-            Recording::Idle | Recording::Swallowing { .. } => None,
+            Recording::Idle | Recording::Swallowing { .. } | Recording::TimedOut { .. } => None,
         }
     }
     pub fn error(&self) -> Option<&ShortcutError> { self.refusal().map(|r| &r.error) }
@@ -70,7 +95,49 @@ impl ShortcutRecorderState {
     /// The shortcut isn't registered (it failed at launch, say): recording the same chord
     /// proposes it through `on_change` again instead of being a no-op, until a change succeeds.
     pub fn mark_unregistered(&mut self) { self.unregistered = true; }
-    pub fn begin(&mut self) { self.phase = Recording::Capturing { refusal: None, finishing: None }; }
+    /// Starts a capture. If no key reaches the window within a few seconds (another app holds
+    /// the chord globally, so the system hands it to that app), the capture ends, keeps the
+    /// old shortcut and says so; [`Self::poll`] notices the deadline.
+    pub fn begin(&mut self, tx: &mut Tx) {
+        for effect in self.step(Event::Begin { now: tx.clock() }) {
+            match effect { Effect::WakeAt(due) => tx.wake_at(due) }
+        }
+    }
+    /// Call from the app's `poll`: ends a capture whose first key didn't arrive in time.
+    /// Returns whether that changed what the recorder shows.
+    pub fn poll(&mut self, now: f64) -> bool {
+        let Recording::Capturing { waiting: Some(waiting), .. } = self.phase else { return false };
+        let _ = self.step(Event::Due { attempt: waiting.attempt, now });
+        matches!(self.phase, Recording::TimedOut { .. })
+    }
+    /// Whether the last capture ended because no key arrived, until the next one starts.
+    pub fn timed_out(&self) -> bool { matches!(self.phase, Recording::TimedOut { .. }) }
+
+    fn step(&mut self, event: Event) -> Effects<Effect> {
+        match (&mut self.phase, event) {
+            (_, Event::Begin { now }) => {
+                let waiting = Waiting { attempt: self.attempts.next(), due: now + NOTHING_ARRIVED_SECS };
+                self.phase = Recording::Capturing { refusal: None, finishing: None, waiting: Some(waiting) };
+                Effects::one(Effect::WakeAt(waiting.due))
+            }
+            (Recording::Capturing { waiting, .. }, Event::KeyArrived { .. }) => {
+                *waiting = None;
+                Effects::none()
+            }
+            (Recording::TimedOut { at }, Event::KeyArrived { now }) if now - *at <= LATE_KEY_SECS => {
+                self.phase = Recording::Capturing { refusal: None, finishing: None, waiting: None };
+                Effects::none()
+            }
+            (Recording::Capturing { waiting: Some(waiting), .. }, Event::Due { attempt, now })
+                if waiting.attempt == attempt && now >= waiting.due =>
+            {
+                self.phase = Recording::TimedOut { at: now };
+                self.held = Mods::default();
+                Effects::none()
+            }
+            _ => Effects::none(),
+        }
+    }
     /// Ends the capture, keeping the side of a key that still swallows its repeats and release.
     pub fn cancel(&mut self) {
         self.phase = match self.phase.finishing() {
@@ -85,10 +152,10 @@ impl ShortcutRecorderState {
         else { self.shortcut.as_ref().map(Shortcut::keycaps).unwrap_or_default() }
     }
 
-    fn input(&mut self, event: &PhysicalInput) -> Outcome {
+    fn input(&mut self, event: &PhysicalInput, now: f64) -> Outcome {
         match *event {
             PhysicalInput::FocusLost => {
-                let active = !matches!(self.phase, Recording::Idle);
+                let active = !matches!(self.phase, Recording::Idle | Recording::TimedOut { .. });
                 self.cancel();
                 self.phase = Recording::Idle;
                 if active { Outcome::Consumed } else { Outcome::Pass }
@@ -108,8 +175,10 @@ impl ShortcutRecorderState {
                     }
                     return Outcome::Consumed;
                 }
+                let qualifying = pressed && !repeat && !is_modifier(key);
+                if qualifying { let _ = self.step(Event::KeyArrived { now }); }
                 if !self.is_recording() { return Outcome::Pass; }
-                if !pressed || repeat || is_modifier(key) { return Outcome::Consumed; }
+                if !qualifying { return Outcome::Consumed; }
                 if let Some(finishing) = self.phase.finishing_mut() { *finishing = Some(key); }
                 if key == PhysicalKeyCode::Escape { self.cancel(); return Outcome::Consumed; }
                 if key == PhysicalKeyCode::Backspace { return Outcome::Change(None); }
@@ -136,11 +205,11 @@ impl ShortcutRecorderState {
         if let Some(refusal) = self.phase.refusal_mut() { *refusal = Some(Refusal { error, chord }); }
     }
 
-    fn prepare_change(&mut self, event: &PhysicalInput, disabled: bool, unmodified: bool) -> PhysicalStep {
+    fn prepare_change(&mut self, event: &PhysicalInput, now: f64, disabled: bool, unmodified: bool) -> PhysicalStep {
         if disabled && !matches!(event, PhysicalInput::FocusLost) {
             return PhysicalStep::Pass;
         }
-        match self.input(event) {
+        match self.input(event, now) {
             Outcome::Pass => PhysicalStep::Pass,
             Outcome::Consumed => PhysicalStep::Consumed,
             Outcome::Change(next) => {
@@ -183,10 +252,10 @@ pub fn shortcut_error_message(error: &ShortcutError, shortcut: Option<&Shortcut>
         return if matches!(error, ShortcutError::InvalidAccelerator(_)) { "That key can't be part of a shortcut.".into() }
             else { "The shortcut couldn't be cleared.".into() };
     };
-    let chord = shortcut.keycaps().join(if cfg!(target_os = "macos") { "" } else { "+" });
+    let chord = shortcut.keycaps().join(if rune::MAC_KEYS { "" } else { "+" });
     match error {
         ShortcutError::InvalidAccelerator(_) if shortcut.require_modifier().is_err() =>
-            if cfg!(target_os = "macos") { "Add ⌘, ⌃ or ⌥.".into() } else { "Add Ctrl, Alt or Super.".into() },
+            if rune::MAC_KEYS { "Add ⌘, ⌃ or ⌥.".into() } else { "Add Ctrl, Alt or Super.".into() },
         ShortcutError::Conflict => format!("{chord} is already in use."),
         ShortcutError::Unsupported => "This desktop doesn't support global shortcuts.".into(),
         ShortcutError::PermissionDenied => format!("Permission to use {chord} was declined."),
@@ -207,11 +276,11 @@ impl<S: 'static> RecorderBind for RecorderHandlers<S> {
     fn bind_control(&self, mut control: El, disabled: bool, unmodified: bool) -> El {
         if !disabled {
             let access = self.access.clone();
-            control = control.on_press(move |s: &mut S| access(s).begin());
+            control = control.on_press_tx(move |s: &mut S, tx| access(s).begin(tx));
         }
         let access = self.access.clone();
         let change = self.change.clone();
-        control.on_physical_input(move |s: &mut S, event, tx| match access(s).prepare_change(event, disabled, unmodified) {
+        control.on_physical_input(move |s: &mut S, event, tx| match access(s).prepare_change(event, tx.clock(), disabled, unmodified) {
             PhysicalStep::Pass => false,
             PhysicalStep::Consumed => true,
             PhysicalStep::Propose(next) => {
@@ -281,13 +350,18 @@ impl RecorderCore {
         let mut root = col().key(format!("{}-field", self.key)).w(self.width).gap(4.0).child(control);
         if let Some(error) = self.state.error() {
             root = root.child(text((self.message)(error, self.state.refused())).key("error").role("alert")
-                .font(k.ty.small_medium).color(k.c.danger.fg).wrap().w_full());
+                .font(k.ty.small_medium).color(k.roles.error).wrap().w_full());
+        } else if self.state.timed_out() {
+            root = root.child(text(NOTHING_ARRIVED).key("nothing-arrived").role("alert")
+                .font(k.ty.small_medium).color(k.roles.error).wrap().w_full());
         }
         root
     }
 }
 
-/// Click (or activate with Enter/Space) to record. Escape cancels; Backspace clears.
+/// Click (or activate with Enter/Space) to record. Escape cancels; Backspace clears. Call
+/// [`ShortcutRecorderState::poll`] from the app's `poll`: a capture no key reaches within five
+/// seconds (another app holds the chord) then ends, keeps the old shortcut and says so.
 /// `on_change` must register the proposed binding before releasing the previous registration:
 /// returning an error keeps the old value and shows the refused chord with a message
 /// (`error_message` words it). An unchanged chord is a no-op unless the state was marked

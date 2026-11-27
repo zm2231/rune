@@ -86,7 +86,7 @@ impl TreeItem {
     pub fn build(self, k: &Kit, r: &TreeRow, style: &TreeStyle) -> El {
         let c = &k.c;
         let pad = style.padding;
-        let chevron_w = 16.0;
+        let chevron_w = k.text_size(16.0);
         let mut e = row()
             .role("treeitem")
             .label(self.label.clone())
@@ -132,7 +132,7 @@ impl TreeItem {
         if let Some(open) = r.expanded {
             e = e.child(
                 chevron.child(
-                    icon(style.chevron.unwrap_or(k.glyph.chevron_down), 16.0)
+                    icon(style.chevron.unwrap_or(k.glyph.chevron_down), chevron_w)
                         .key("glyph")
                         .color(if r.selected { style.chevron_selected } else { style.chevron_rest })
                         .icon_rotation(if open { 0.0 } else { -FRAC_PI_2 })
@@ -146,7 +146,7 @@ impl TreeItem {
             e = e.child(chevron);
         }
         if let Some(i) = self.icon.filter(|_| !(style.chevron_only && folder)) {
-            e = e.child(icon(i, 16.0).key("icon").color(self.icon_color.unwrap_or(c.icon_muted)).a11y_hidden());
+            e = e.child(icon(i, k.text_size(16.0)).key("icon").color(self.icon_color.unwrap_or(c.icon_muted)).a11y_hidden());
         }
         let color = self.label_color.unwrap_or(if r.selected { style.label_selected } else { style.label_rest });
         let font = style.label;
@@ -226,7 +226,7 @@ pub struct TreeStyle {
 impl TreeStyle {
     pub fn from_kit(k: &Kit) -> TreeStyle {
         TreeStyle {
-            row_height: 24.0,
+            row_height: k.text_size(24.0),
             indent: 14.0,
             padding: 6.0,
             guides: true,

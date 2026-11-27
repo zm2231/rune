@@ -16,7 +16,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_buffer::{self, WlBuffer};
@@ -56,9 +56,9 @@ struct SwayGuard {
 
 impl Drop for SwayGuard {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.runtime_dir);
+        self.child.kill().ok();
+        self.child.wait().ok();
+        std::fs::remove_dir_all(&self.runtime_dir).ok();
     }
 }
 
@@ -67,9 +67,10 @@ fn spawn_headless_sway() -> Option<(SwayGuard, PathBuf)> {
         return None;
     }
     let dir = std::env::temp_dir().join(format!("rune-sway-drag-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::remove_dir_all(&dir).ok();
     std::fs::create_dir_all(&dir).ok()?;
     #[allow(unsafe_code)]
+    // SAFETY: `cdir` is a NUL-terminated copy of the path that lives for the `chmod` call.
     unsafe {
         let cdir = std::ffi::CString::new(dir.to_string_lossy().as_bytes()).ok()?;
         libc::chmod(cdir.as_ptr(), 0o700);
@@ -90,8 +91,8 @@ fn spawn_headless_sway() -> Option<(SwayGuard, PathBuf)> {
         .spawn()
         .ok()?;
     let guard = SwayGuard { child, runtime_dir: dir.clone() };
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
+    let deadline = crate::time::now() + Duration::from_secs(5);
+    while crate::time::now() < deadline {
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name();
@@ -107,18 +108,19 @@ fn spawn_headless_sway() -> Option<(SwayGuard, PathBuf)> {
 }
 
 fn pump_queue<D>(queue: &mut EventQueue<D>, state: &mut D) {
-    let _ = queue.flush();
-    let _ = queue.dispatch_pending(state);
+    queue.flush().ok();
+    queue.dispatch_pending(state).ok();
     if let Some(guard) = queue.prepare_read() {
         use std::os::fd::AsRawFd;
         let mut pfd = libc::pollfd { fd: guard.connection_fd().as_raw_fd(), events: libc::POLLIN, revents: 0 };
         #[allow(unsafe_code)]
+        // SAFETY: `pfd` is one valid `pollfd` borrowed for the call, matching the count of 1.
         let ret = unsafe { libc::poll(&mut pfd, 1, 10) };
         if ret > 0 && (pfd.revents & libc::POLLIN != 0) {
-            let _ = guard.read();
+            guard.read().ok();
         }
     }
-    let _ = queue.dispatch_pending(state);
+    queue.dispatch_pending(state).ok();
 }
 
 // --- Driver client (persistent zwlr_virtual_pointer_v1) ---
@@ -376,9 +378,9 @@ where
     let xdg = wm.get_xdg_surface(&surface, qh, ());
     let top = xdg.get_toplevel(qh, ());
     surface.commit();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while !is_configured(state) && Instant::now() < deadline {
-        let _ = queue.roundtrip(state);
+    let deadline = crate::time::now() + Duration::from_secs(3);
+    while !is_configured(state) && crate::time::now() < deadline {
+        queue.roundtrip(state).ok();
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(is_configured(state), "xdg_surface must configure");
@@ -397,7 +399,7 @@ where
     surface.attach(Some(&buffer), 0, 0);
     surface.damage(0, 0, w, h);
     surface.commit();
-    let _ = queue.roundtrip(state);
+    queue.roundtrip(state).ok();
     MappedWindow { surface, _buffer: buffer, _pool: pool, _xdg: xdg, _top: top }
 }
 
@@ -479,20 +481,20 @@ fn headless_sway_second_wl_pointer_serial_and_end_to_end_custom_mime_drag() {
     // 4. Wait for Sway's two-window tiling transaction to finish (Client A receives its 2nd
     //    configure resizing it to the left 400x600 tile) and commit both surfaces before moving
     //    the pointer over Client A.
-    let settle_deadline = Instant::now() + Duration::from_secs(3);
+    let settle_deadline = crate::time::now() + Duration::from_secs(3);
     let mut step_ts = 10u32;
     while (src_state.configures < 2 || src_state.primary_enter_surface != Some(origin_surface_id))
-        && Instant::now() < settle_deadline
+        && crate::time::now() < settle_deadline
     {
-        let _ = src_q.roundtrip(&mut src_state);
+        src_q.roundtrip(&mut src_state).ok();
         _src_win.surface.commit();
-        let _ = dst_q.roundtrip(&mut dst_state);
+        dst_q.roundtrip(&mut dst_state).ok();
         _dst_win.surface.commit();
         step_ts += 1;
         vptr.motion_absolute(step_ts, 200, 300, 800, 600);
         vptr.frame();
-        let _ = drv_q.roundtrip(&mut drv_state);
-        let _ = src_q.roundtrip(&mut src_state);
+        drv_q.roundtrip(&mut drv_state).ok();
+        src_q.roundtrip(&mut src_state).ok();
         std::thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(src_state.primary_enter_surface, Some(origin_surface_id), "pointer must stay entered on Client A");
@@ -504,9 +506,9 @@ fn headless_sway_second_wl_pointer_serial_and_end_to_end_custom_mime_drag() {
 
     // Read Client A's primary queue ONLY via roundtrip (simulating winit reading the socket and
     // dispatching its own queue while Rune's private serial queue has NOT yet been dispatched!).
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while src_state.primary_press_serial.is_none() && Instant::now() < deadline {
-        let _ = src_q.roundtrip(&mut src_state);
+    let deadline = crate::time::now() + Duration::from_secs(3);
+    while src_state.primary_press_serial.is_none() && crate::time::now() < deadline {
+        src_q.roundtrip(&mut src_state).ok();
         if src_state.primary_press_serial.is_none() {
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -575,7 +577,7 @@ fn headless_sway_second_wl_pointer_serial_and_end_to_end_custom_mime_drag() {
     // Pump Client B so it processes Enter + accept() + set_actions() before release.
     for _ in 0..40 {
         pump_queue(&mut dst_q, &mut dst_state);
-        let _ = dst_q.flush();
+        dst_q.flush().ok();
         if dst_state.active_offer.is_some() {
             break;
         }
@@ -587,13 +589,13 @@ fn headless_sway_second_wl_pointer_serial_and_end_to_end_custom_mime_drag() {
     drv_q.flush().expect("drv release flush");
 
     // 7. Pump both clients until pipes finish, target calls finish(), and source gets DndFinished.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
+    let deadline = crate::time::now() + Duration::from_secs(10);
+    while crate::time::now() < deadline {
         pump_queue(&mut src_q, &mut src_state);
         src_state.drag_source.pump_writers(&src_state.wakers, &mut src_state.needs_flush);
         if src_state.needs_flush {
             src_state.needs_flush = false;
-            let _ = src_q.flush();
+            src_q.flush().ok();
         }
         pump_queue(&mut dst_q, &mut dst_state);
         if dst_state.dropped
@@ -608,7 +610,7 @@ fn headless_sway_second_wl_pointer_serial_and_end_to_end_custom_mime_drag() {
                 o.destroy();
                 dst_state.finished = true;
             }
-            let _ = dst_q.flush();
+            dst_q.flush().ok();
         }
         if !outcomes.lock().unwrap().is_empty() && dst_state.finished {
             break;
@@ -616,7 +618,7 @@ fn headless_sway_second_wl_pointer_serial_and_end_to_end_custom_mime_drag() {
         std::thread::sleep(Duration::from_millis(5));
     }
     for h in dst_state.readers.drain(..) {
-        let _ = h.join();
+        h.join().ok();
     }
 
     // Verify all assertions!
@@ -630,7 +632,7 @@ fn headless_sway_second_wl_pointer_serial_and_end_to_end_custom_mime_drag() {
 
     // Clean teardown before wl_display drops.
     src_state.drag_source.on_shutdown(&src_conn, &src_state.wakers, &mut src_state.needs_flush);
-    let _ = src_q.flush();
+    src_q.flush().ok();
     drop(_serial_guard);
     serial::wire::shutdown();
 }

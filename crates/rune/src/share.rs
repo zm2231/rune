@@ -272,6 +272,17 @@ impl crate::runtime::RuntimeCore {
         if !matches!(self.host.sharing.state, State::Idle) { self.share_step(Event::Refused(why.into())); }
     }
 
+    #[cfg(any(test, not(target_arch = "wasm32")))]
+    pub(crate) fn dismiss_share(&mut self) {
+        self.answer_share(Ok(None));
+    }
+
+    #[cfg(any(test, not(target_arch = "wasm32")))]
+    pub(crate) fn drop_shares(&mut self) {
+        self.host.sharing.state = State::Idle;
+        self.host.sharing.callbacks.clear();
+    }
+
     /// Queues what the hosts' sheets answered since the last frame.
     pub(crate) fn take_share_answers(&mut self) {
         let answered = std::mem::take(&mut *self.host.sharing.answered.borrow_mut());
@@ -286,13 +297,17 @@ impl crate::runtime::RuntimeCore {
     }
 
     pub(crate) fn resolve_share(&mut self, result: ShareResult) -> Result<(), ShareError> {
+        if self.answer_share(result) { Ok(()) } else { Err(ShareError::Failed("no share sheet is open".into())) }
+    }
+
+    fn answer_share(&mut self, result: ShareResult) -> bool {
         let id = match &self.host.sharing.state {
-            State::Idle => return Err(ShareError::Failed("no share sheet is open".into())),
+            State::Idle => return false,
             State::Requested(p) | State::Showing(p) => p.id,
         };
         if matches!(self.host.sharing.state, State::Requested(_)) { self.share_step(Event::Shown); }
         self.share_step(Event::Answered(id, result));
-        Ok(())
+        true
     }
 
     fn share_step(&mut self, event: Event) {

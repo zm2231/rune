@@ -10,7 +10,7 @@ use std::rc::Rc;
 use rune::{Color, Cursor, Drag, El, GrowthSpec, Icon, Phase, ScrollSpec, Tx, col, icon, memo, rich, row, text};
 
 use super::model::{LineKind, Side};
-use super::state::{Annotation, DiffMode, DiffState, Expand, HEADER_H, LineRange, LineRef, Row};
+use super::state::{Annotation, DiffMode, DiffState, Expand, LineRange, LineRef, Row};
 use crate::{Kit, ScrollBar, ScrollBarStyle};
 
 mod chrome;
@@ -469,7 +469,7 @@ impl View {
         if !wrap && let Some(r) = rune::memo::layout(&scroll_path) {
             st.set_viewport(r);
         }
-        st.set_line_height(self.look.line_h());
+        st.set_row_heights(self.look.rows);
         let count = st.rows.len();
         let mut list = col().key("rows").w_full().growth(GrowthSpec::default()).selection_group(true).role("list").label(self.label(DiffLabel::List));
         if !wrap {
@@ -484,7 +484,7 @@ impl View {
             Some(style) => {
                 // Keep the vertical track below the 44 pt sticky file header unless the caller
                 // set a custom top offset, so the sticky overlay never covers the top of the thumb.
-                let v = if style.top_offset() == 0.0 { style.track_offset(HEADER_H, style.end_offset()) } else { style };
+                let v = if style.top_offset() == 0.0 { style.track_offset(self.look.rows.header, style.end_offset()) } else { style };
                 if wrap { scroll.scroll_bar_styled(v) } else { scroll.scroll_bars_xy_styled(v, style.horizontal()) }
             }
         };
@@ -649,7 +649,7 @@ impl View {
             .child(self.number(st, i, f, c.old, Side::Old, c.kind, selected, digits).key("no"))
             .child(self.number(st, i, f, c.new, Side::New, c.kind, selected, digits).key("nn"));
         if let Some(at) = self.unified_comment_target(f, c) {
-            gutter = gutter.child(self.plus(f, at).absolute(BAR + 2.0 * l.number_w(digits) - 10.0, l.plus_y()));
+            gutter = gutter.child(self.plus(f, at).absolute(l.plus_x(BAR + 2.0 * l.number_w(digits)), l.plus_y()));
         }
         if !st.wraps() {
             gutter = gutter.sticky_left(0.0);
@@ -700,7 +700,7 @@ impl View {
                 .child(self.number(st, i, f, n, side, kind, selected, digits).key("n"))
                 .child(self.code(st, f, &cell, copy, side, &st.keys[i]).key("code"));
             if let Some(at) = n.map(|n| LineRef::new(side, n)).filter(|&at| self.bind.can_comment(f, at)) {
-                h = h.child(self.plus(f, at).absolute(BAR + l.number_w(digits) - 10.0, l.plus_y()));
+                h = h.child(self.plus(f, at).absolute(l.plus_x(BAR + l.number_w(digits)), l.plus_y()));
             }
             h
         };
@@ -751,7 +751,7 @@ impl View {
         let l = &self.look;
         let button = row()
             .key("plus")
-            .size(16.0, 16.0)
+            .size(l.icon, l.icon)
             .center()
             .radius(4.0)
             .fill(l.accent)
@@ -759,7 +759,7 @@ impl View {
             .cursor(Cursor::Pointer)
             .role("button")
             .label(self.label(DiffLabel::CommentLine))
-            .child(icon(&PLUS, 12.0).color(l.on_accent));
+            .child(icon(&PLUS, l.icon * 0.75).color(l.on_accent));
         self.bind.bind_plus(button, f, at)
     }
 

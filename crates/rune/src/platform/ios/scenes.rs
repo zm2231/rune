@@ -17,6 +17,7 @@ use super::mount::Entry;
 use super::surface::Mount;
 use super::view::RuneView;
 use super::windows::{self, Ask, Effect, Event, Mode, Scene, State, Window, Windows};
+use crate::platform::objc_boundary::guarded;
 use crate::app::WindowRequest;
 use crate::platform::main_queue::on_main;
 use crate::runtime::Waker;
@@ -45,7 +46,7 @@ define_class!(
     unsafe impl PresentationDelegate for RuneSheet {
         #[unsafe(method(presentationControllerDidDismiss:))]
         fn did_dismiss(&self, _controller: &AnyObject) {
-            post(Posted::Dismissed(self.ivars().clone()));
+            guarded("presentationControllerDidDismiss:", || { post(Posted::Dismissed(self.ivars().clone())); })
         }
     }
 );
@@ -162,9 +163,9 @@ fn slot(entry: Entry) -> Slot {
     let Entry { key, mount, requests, handle, .. } = entry;
     requests.connect(pump_wake());
     if let Some(handle) = &handle { handle.connect_ios(pump_wake()); }
-    let mount: Mount = Box::new(move |layer, size, scale, dark, wake| {
+    let mount: Mount = Box::new(move |layer, size, scale, dark, wake, presents| {
         let both: Waker = Arc::new(move || { wake(); schedule(); });
-        let mut surface = mount(layer, size, scale, dark, both)?;
+        let mut surface = mount(layer, size, scale, dark, both, presents)?;
         surface.set_window(key);
         Ok(surface)
     });
@@ -435,9 +436,11 @@ fn destroy(session: &AnyObject) {
 
 fn failure(what: String) -> RcBlock<dyn Fn(NonNull<AnyObject>)> {
     RcBlock::new(move |error: NonNull<AnyObject>| {
-        // SAFETY: the handler is given an `NSError`, whose `localizedDescription` is a string.
-        let why: Retained<NSString> = unsafe { msg_send![error.as_ref(), localizedDescription] };
-        eprintln!("rune: {what} failed: {why}");
+        guarded("scene request error handler", || {
+            // SAFETY: the handler is given an `NSError`, whose `localizedDescription` is a string.
+            let why: Retained<NSString> = unsafe { msg_send![error.as_ref(), localizedDescription] };
+            eprintln!("rune: {what} failed: {why}");
+        })
     })
 }
 

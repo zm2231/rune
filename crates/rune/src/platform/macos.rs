@@ -23,6 +23,7 @@ pub mod panel_bridge;
 mod pointer;
 pub(crate) mod presence;
 mod presentation;
+mod run_loop;
 mod surface;
 pub(crate) mod traffic_lights;
 pub(crate) mod window_shape;
@@ -30,6 +31,7 @@ pub(crate) mod window_shape;
 pub(crate) use geometry::{backing_scale, content_origin, display_bounds, outer_size, overlay_rect, overlay_screen_area, place_window, pointer_display, set_window_frame, window_geometry};
 pub(crate) use pointer::PointerState;
 pub(crate) use presentation::Prewarm;
+pub(crate) use run_loop::run_later;
 #[cfg(test)]
 pub(crate) use surface::layer_occluded;
 pub(crate) use surface::{PresumeShown, flush_while_launching, launching, pin_contents_top_left, present_with_transaction, surface_occluded, sync_contents_scale, window_occluded};
@@ -133,23 +135,6 @@ pub(crate) fn is_panel_object(window: &objc2::runtime::AnyObject) -> bool {
 /// Whether `window`'s content view currently lives in an `NSPanel`.
 pub(crate) fn is_panel(window: &winit::window::Window) -> bool {
     ns_window(window).is_some_and(|w| is_panel_object(&w))
-}
-
-/// Whether key-value observing (or another runtime subclass that hides itself from `-class`)
-/// sits on `object`. Placing a Rune per-instance subclass above KVO's crashes Foundation when
-/// an observer is removed.
-#[allow(unsafe_code)]
-pub(crate) unsafe fn kvo_observed(object: &objc2::runtime::AnyObject) -> bool {
-    // SAFETY: caller guarantees `object` is a live ObjC instance; `-class` takes no arguments.
-    let reported: &objc2::runtime::AnyClass = unsafe { msg_send![object, class] };
-    let actual = object.class();
-    !std::ptr::eq(reported, actual) || actual.name().to_bytes().starts_with(b"NSKVONotifying_")
-}
-
-/// Whether any class in `object`'s runtime superclass chain starts with `prefix`.
-pub(crate) fn has_subclass(object: &objc2::runtime::AnyObject, prefix: &[u8]) -> bool {
-    std::iter::successors(Some(object.class()), |c| c.superclass())
-        .any(|c| c.name().to_bytes().starts_with(prefix))
 }
 
 pub(crate) fn configure_window(window: &winit::window::Window, options: &crate::MacWindowOptions) {

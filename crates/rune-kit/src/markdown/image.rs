@@ -85,7 +85,8 @@ impl Renderer {
         if alt.is_empty() {
             return el().w_full().h(0.0);
         }
-        let glyph = BROKEN_PIXELS.with(|p| el().size(16.0, 16.0).pixels(p).a11y_hidden());
+        let side = self.s.broken_glyph;
+        let glyph = BROKEN_PIXELS.with(|p| el().size(side, side).pixels(p).a11y_hidden());
         let ink = self.flow.get().ink.unwrap_or(self.s.text);
         row().role("image").label(alt).w_full().cursor(Cursor::ZoomIn).child(glyph).child(self.with_reveal(text(alt.to_owned()).font(self.s.body).color(ink)).shrink())
     }

@@ -115,6 +115,6 @@ pub(crate) fn monitor_at(event_loop: &ActiveEventLoop, target: &DisplayTarget, s
     Some(monitors[i].clone())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "ios")))]
 #[path = "placement_tests.rs"]
 mod tests;

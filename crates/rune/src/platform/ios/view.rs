@@ -22,8 +22,10 @@ use super::keys;
 use super::pacing::{self, Effect, Event};
 use super::surface::{Mount, Surface};
 use super::text::input::RuneTextInput;
+use crate::frame::loop_frame::LoopFrame;
 use crate::machine::Seq;
 use crate::platform::main_queue::after_main;
+use crate::platform::objc_boundary::guarded;
 use crate::runtime::TouchPhase;
 
 mod accessibility;
@@ -35,6 +37,7 @@ mod menu;
 mod mirror;
 mod overlays;
 mod photos;
+mod pointer_lock;
 mod share;
 mod tint;
 
@@ -101,6 +104,7 @@ pub(crate) struct Ivars {
     stage: RefCell<Stage>,
     pacing: Cell<pacing::State>,
     seq: Cell<Seq>,
+    loop_frame: Cell<LoopFrame>,
     link: RefCell<Option<Retained<AnyObject>>>,
     /// A wake from another thread is on its way to the main queue: later ones ride with it.
     wake_queued: Arc<AtomicBool>,
@@ -124,6 +128,8 @@ pub(crate) struct Ivars {
     mirrored_by: RefCell<Weak<AnyObject>>,
     overlays: RefCell<Vec<overlays::Overlay>>,
     control: RefCell<Option<Rc<RefCell<crate::overlay::ios::Control>>>>,
+    pointer_lock: Cell<super::pointer_lock::State>,
+    pointer_lock_seq: Cell<Seq>,
 }
 
 define_class!(
@@ -142,28 +148,32 @@ define_class!(
         /// A pinch and a turn are one two-finger gesture: both run at once, as on a trackpad.
         #[unsafe(method(gestureRecognizer:shouldRecognizeSimultaneouslyWithGestureRecognizer:))]
         fn recognizes_with(&self, _recognizer: &AnyObject, _other: &AnyObject) -> bool {
-            true
+            guarded("gestureRecognizer:shouldRecognizeSimultaneouslyWithGestureRecognizer:", || true)
         }
 
         #[unsafe(method(gestureRecognizer:shouldReceiveTouch:))]
         fn receives_touch(&self, _recognizer: &AnyObject, touch: &AnyObject) -> bool {
-            // SAFETY: a touch's `view` is a nullable `UIView`; `isKindOfClass:` answers a `BOOL`.
-            unsafe {
-                let view: Option<Retained<AnyObject>> = msg_send![touch, view];
-                view.is_none_or(|view| {
-                    if crate::native_view::ios::hosted(&view) { return false; }
-                    let rune: bool = msg_send![&*view, isKindOfClass: class!(RuneView)];
-                    !rune || std::ptr::eq(Retained::as_ptr(&view).cast::<RuneView>(), self)
-                })
-            }
+            guarded("gestureRecognizer:shouldReceiveTouch:", || {
+                // SAFETY: a touch's `view` is a nullable `UIView`; `isKindOfClass:` answers a `BOOL`.
+                unsafe {
+                    let view: Option<Retained<AnyObject>> = msg_send![touch, view];
+                    view.is_none_or(|view| {
+                        if crate::native_view::ios::hosted(&view) { return false; }
+                        let rune: bool = msg_send![&*view, isKindOfClass: class!(RuneView)];
+                        !rune || std::ptr::eq(Retained::as_ptr(&view).cast::<RuneView>(), self)
+                    })
+                }
+            })
         }
 
         /// A long press begins only over something with a menu to open.
         #[unsafe(method(gestureRecognizerShouldBegin:))]
         fn recognizer_begins(&self, recognizer: &AnyObject) -> bool {
-            // SAFETY: `isKindOfClass:` takes a class and answers a `BOOL`.
-            let long_press: bool = unsafe { msg_send![recognizer, isKindOfClass: class!(UILongPressGestureRecognizer)] };
-            !long_press || self.long_press_begins(recognizer)
+            guarded("gestureRecognizerShouldBegin:", || {
+                // SAFETY: `isKindOfClass:` takes a class and answers a `BOOL`.
+                let long_press: bool = unsafe { msg_send![recognizer, isKindOfClass: class!(UILongPressGestureRecognizer)] };
+                !long_press || self.long_press_begins(recognizer)
+            })
         }
     }
 
@@ -171,12 +181,12 @@ define_class!(
     unsafe impl DocumentPickerDelegate for RuneView {
         #[unsafe(method(documentPicker:didPickDocumentsAtURLs:))]
         fn document_picked(&self, _picker: &AnyObject, urls: &AnyObject) {
-            self.file_picked(Some(urls));
+            guarded("documentPicker:didPickDocumentsAtURLs:", || { self.file_picked(Some(urls)); })
         }
 
         #[unsafe(method(documentPickerWasCancelled:))]
         fn document_picker_cancelled(&self, _picker: &AnyObject) {
-            self.file_picked(None);
+            guarded("documentPickerWasCancelled:", || { self.file_picked(None); })
         }
     }
 
@@ -184,7 +194,7 @@ define_class!(
     unsafe impl PhotoPickerDelegate for RuneView {
         #[unsafe(method(picker:didFinishPicking:))]
         fn photos_picked(&self, picker: &AnyObject, results: &AnyObject) {
-            self.media_picked(picker, results);
+            guarded("picker:didFinishPicking:", || { self.media_picked(picker, results); })
         }
     }
 
@@ -192,17 +202,17 @@ define_class!(
     unsafe impl EditMenuInteractionDelegate for RuneView {
         #[unsafe(method_id(editMenuInteraction:menuForConfiguration:suggestedActions:))]
         fn edit_menu(&self, _interaction: &AnyObject, _configuration: &AnyObject, _suggested: &AnyObject) -> Option<Retained<AnyObject>> {
-            self.menu_items()
+            guarded("editMenuInteraction:menuForConfiguration:suggestedActions:", || self.menu_items())
         }
 
         #[unsafe(method(editMenuInteraction:targetRectForConfiguration:))]
         fn edit_menu_target(&self, _interaction: &AnyObject, _configuration: &AnyObject) -> CGRect {
-            self.menu_target()
+            guarded("editMenuInteraction:targetRectForConfiguration:", || self.menu_target())
         }
 
         #[unsafe(method(editMenuInteraction:willDismissMenuForConfiguration:animator:))]
         fn edit_menu_dismissed(&self, _interaction: &AnyObject, _configuration: &AnyObject, _animator: &AnyObject) {
-            self.menu_dismissed();
+            guarded("editMenuInteraction:willDismissMenuForConfiguration:animator:", || { self.menu_dismissed(); })
         }
     }
 
@@ -211,224 +221,258 @@ define_class!(
         /// The mirror stays put: the runtime scrolls the app's own list.
         #[unsafe(method(scrollViewShouldScrollToTop:))]
         fn should_scroll_to_top(&self, _mirror: &AnyObject) -> bool {
-            self.status_bar_tapped();
-            false
+            guarded("scrollViewShouldScrollToTop:", || {
+                self.status_bar_tapped();
+                false
+            })
         }
     }
 
     impl RuneView {
         #[unsafe(method(layerClass))]
         fn layer_class() -> &'static AnyClass {
-            class!(CAMetalLayer)
+            guarded("layerClass", || class!(CAMetalLayer))
         }
 
         #[unsafe(method_id(hitTest:withEvent:))]
         fn hit_test(&self, point: CGPoint, event: Option<&AnyObject>) -> Option<Retained<AnyObject>> {
-            // SAFETY: `UIView` implements it with this signature, answering a nullable view that
-            // its superview keeps alive, which is retained here.
-            let hit: Option<Retained<AnyObject>> = unsafe {
-                let hit: *mut AnyObject = msg_send![super(self), hitTest: point, withEvent: event];
-                Retained::retain(hit)
-            };
-            let on_self = hit.as_ref().is_some_and(|hit| std::ptr::eq(Retained::as_ptr(hit).cast::<RuneView>(), self));
-            hit.filter(|_| !on_self || self.overlay_takes(point.x as f32, point.y as f32) != Some(false))
+            guarded("hitTest:withEvent:", || {
+                // SAFETY: `UIView` implements it with this signature, answering a nullable view that
+                // its superview keeps alive, which is retained here.
+                let hit: Option<Retained<AnyObject>> = unsafe {
+                    let hit: *mut AnyObject = msg_send![super(self), hitTest: point, withEvent: event];
+                    Retained::retain(hit)
+                };
+                let on_self = hit.as_ref().is_some_and(|hit| std::ptr::eq(Retained::as_ptr(hit).cast::<RuneView>(), self));
+                hit.filter(|_| !on_self || self.overlay_takes(point.x as f32, point.y as f32) != Some(false))
+            })
         }
 
         #[unsafe(method(layoutSubviews))]
         fn layout_subviews(&self) {
-            // SAFETY: `UIView` implements it with this signature.
-            let _: () = unsafe { msg_send![super(self), layoutSubviews] };
-            self.laid_out();
+            guarded("layoutSubviews", || {
+                // SAFETY: `UIView` implements it with this signature.
+                let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+                self.laid_out();
+            })
         }
 
         #[unsafe(method(didMoveToWindow))]
         fn did_move_to_window(&self) {
-            // SAFETY: `UIView` implements it with this signature.
-            let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
-            self.moved_to_window();
-            self.offer_mirror();
+            guarded("didMoveToWindow", || {
+                // SAFETY: `UIView` implements it with this signature.
+                let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
+                self.moved_to_window();
+                self.offer_mirror();
+            })
         }
 
         #[unsafe(method(didMoveToSuperview))]
         fn did_move_to_superview(&self) {
-            // SAFETY: `UIView` implements it with this signature.
-            let _: () = unsafe { msg_send![super(self), didMoveToSuperview] };
-            self.offer_mirror();
+            guarded("didMoveToSuperview", || {
+                // SAFETY: `UIView` implements it with this signature.
+                let _: () = unsafe { msg_send![super(self), didMoveToSuperview] };
+                self.offer_mirror();
+            })
         }
 
         #[unsafe(method(traitCollectionDidChange:))]
         fn trait_collection_did_change(&self, previous: Option<&AnyObject>) {
-            // SAFETY: `UIView` implements it with this signature.
-            let _: () = unsafe { msg_send![super(self), traitCollectionDidChange: previous] };
-            self.traits_changed();
+            guarded("traitCollectionDidChange:", || {
+                // SAFETY: `UIView` implements it with this signature.
+                let _: () = unsafe { msg_send![super(self), traitCollectionDidChange: previous] };
+                self.traits_changed();
+            })
         }
 
         #[unsafe(method(tintColorDidChange))]
         fn tint_color_did_change(&self) {
-            // SAFETY: `UIView` implements it with this signature.
-            let _: () = unsafe { msg_send![super(self), tintColorDidChange] };
-            self.tint_changed();
+            guarded("tintColorDidChange", || {
+                // SAFETY: `UIView` implements it with this signature.
+                let _: () = unsafe { msg_send![super(self), tintColorDidChange] };
+                self.tint_changed();
+            })
         }
 
         #[unsafe(method(safeAreaInsetsDidChange))]
         fn safe_area_insets_did_change(&self) {
-            // SAFETY: `UIView` implements it with this signature.
-            let _: () = unsafe { msg_send![super(self), safeAreaInsetsDidChange] };
-            self.safe_area_changed();
+            guarded("safeAreaInsetsDidChange", || {
+                // SAFETY: `UIView` implements it with this signature.
+                let _: () = unsafe { msg_send![super(self), safeAreaInsetsDidChange] };
+                self.safe_area_changed();
+            })
         }
 
         #[unsafe(method(touchesBegan:withEvent:))]
         fn touches_began(&self, touches: &AnyObject, event: Option<&AnyObject>) {
-            if !self.secondary_click(touches, event) { self.touches(touches, TouchPhase::Started); }
+            guarded("touchesBegan:withEvent:", || if !self.secondary_click(touches, event) { self.touches(touches, TouchPhase::Started); })
         }
 
         #[unsafe(method(touchesMoved:withEvent:))]
         fn touches_moved(&self, touches: &AnyObject, _event: Option<&AnyObject>) {
-            self.touches(touches, TouchPhase::Moved);
+            guarded("touchesMoved:withEvent:", || { self.touches(touches, TouchPhase::Moved); })
         }
 
         #[unsafe(method(touchesEnded:withEvent:))]
         fn touches_ended(&self, touches: &AnyObject, _event: Option<&AnyObject>) {
-            self.touches(touches, TouchPhase::Ended);
+            guarded("touchesEnded:withEvent:", || { self.touches(touches, TouchPhase::Ended); })
         }
 
         #[unsafe(method(touchesCancelled:withEvent:))]
         fn touches_cancelled(&self, touches: &AnyObject, _event: Option<&AnyObject>) {
-            self.touches(touches, TouchPhase::Cancelled);
+            guarded("touchesCancelled:withEvent:", || { self.touches(touches, TouchPhase::Cancelled); })
         }
 
         #[unsafe(method(runeHover:))]
         fn hover(&self, recognizer: &AnyObject) {
-            self.hovered(recognizer);
+            guarded("runeHover:", || { self.hovered(recognizer); })
         }
 
         #[unsafe(method(runeScroll:))]
         fn scroll(&self, recognizer: &AnyObject) {
-            self.scrolled(recognizer);
+            guarded("runeScroll:", || { self.scrolled(recognizer); })
         }
 
         #[unsafe(method(runeLongPress:))]
         fn long_press(&self, recognizer: &AnyObject) {
-            self.long_pressed(recognizer);
+            guarded("runeLongPress:", || { self.long_pressed(recognizer); })
         }
 
         /// An item of the app's own menus (`App::menu_item`), picked from the menu bar or by
         /// its shortcut: the command carries the item's id.
         #[unsafe(method(runeMenuItem:))]
         fn menu_item(&self, command: &AnyObject) {
-            // SAFETY: the commands `native_menu` makes carry an `NSString`.
-            let id: Option<Retained<NSString>> = unsafe { msg_send![command, propertyList] };
-            if let Some(id) = id && crate::native_menu::perform_ios_item(&id.to_string()) { self.pace(Event::Wake); }
+            guarded("runeMenuItem:", || {
+                // SAFETY: the commands `native_menu` makes carry an `NSString`.
+                let id: Option<Retained<NSString>> = unsafe { msg_send![command, propertyList] };
+                if let Some(id) = id && crate::native_menu::perform_ios_item(&id.to_string()) { self.pace(Event::Wake); }
+            })
         }
 
         #[unsafe(method(runeMenuPick:))]
         fn menu_pick(&self, command: &AnyObject) {
-            self.menu_picked(command);
+            guarded("runeMenuPick:", || { self.menu_picked(command); })
         }
 
         #[unsafe(method(runePinch:))]
         fn pinch(&self, recognizer: &AnyObject) {
-            self.pinched(recognizer);
+            guarded("runePinch:", || { self.pinched(recognizer); })
         }
 
         #[unsafe(method(runeRotate:))]
         fn rotate(&self, recognizer: &AnyObject) {
-            self.rotated(recognizer);
+            guarded("runeRotate:", || { self.rotated(recognizer); })
         }
 
         #[unsafe(method(runeTick:))]
         fn tick(&self, _link: &AnyObject) {
-            self.pace(Event::Tick);
+            guarded("runeTick:", || { self.pace(Event::Tick); })
         }
 
         #[unsafe(method(runeKeyboard:))]
         fn keyboard(&self, notification: &AnyObject) {
-            self.keyboard_moved(notification);
+            guarded("runeKeyboard:", || { self.keyboard_moved(notification); })
         }
 
         #[unsafe(method(runeTextSize:))]
         fn text_size(&self, _notification: &AnyObject) {
-            self.text_size_changed();
+            guarded("runeTextSize:", || { self.text_size_changed(); })
         }
 
         #[unsafe(method(runeDisplayOptions:))]
         fn display_options(&self, _notification: &AnyObject) {
-            self.display_options_changed();
+            guarded("runeDisplayOptions:", || { self.display_options_changed(); })
         }
 
         #[unsafe(method(runeReduceMotion:))]
         fn reduce_motion(&self, _notification: &AnyObject) {
-            self.reduce_motion_changed();
+            guarded("runeReduceMotion:", || { self.reduce_motion_changed(); })
         }
 
         #[unsafe(method(runeMemoryWarning:))]
         fn memory_warning(&self, _notification: &AnyObject) {
-            self.memory_warned();
+            guarded("runeMemoryWarning:", || { self.memory_warned(); })
         }
 
         #[unsafe(method(runeForeground:))]
         fn foreground(&self, _notification: &AnyObject) {
-            self.entered_foreground();
+            guarded("runeForeground:", || { self.entered_foreground(); })
         }
 
         #[unsafe(method(runeBackground:))]
         fn background(&self, _notification: &AnyObject) {
-            self.entered_background();
+            guarded("runeBackground:", || { self.entered_background(); })
         }
 
         #[unsafe(method(runeActive:))]
         fn active(&self, _notification: &AnyObject) {
-            self.became_active();
+            guarded("runeActive:", || { self.became_active(); })
         }
 
         #[unsafe(method(runeInactive:))]
         fn inactive(&self, _notification: &AnyObject) {
-            self.resigning_active();
+            guarded("runeInactive:", || { self.resigning_active(); })
+        }
+
+        #[unsafe(method(runePointerLock:))]
+        fn pointer_lock_state(&self, _notification: &AnyObject) {
+            guarded("runePointerLock:", || { self.pointer_lock_changed(); })
+        }
+
+        #[unsafe(method(runeMouse:))]
+        fn mouse(&self, _notification: &AnyObject) {
+            guarded("runeMouse:", || { self.mouse_connected(); })
         }
 
         #[unsafe(method(runeTerminate:))]
         fn terminate(&self, _notification: &AnyObject) {
-            self.terminating();
+            guarded("runeTerminate:", || { self.terminating(); })
         }
 
         /// The view is a container: a reader lands on its elements, never on it.
         #[unsafe(method(isAccessibilityElement))]
         fn is_accessibility_element(&self) -> bool {
-            false
+            guarded("isAccessibilityElement", || false)
         }
 
         #[unsafe(method_id(accessibilityElements))]
         fn accessibility_elements(&self) -> Option<Retained<AnyObject>> {
-            Some(self.overlay_elements(self.accessibility_asked()))
+            guarded("accessibilityElements", || Some(self.overlay_elements(self.accessibility_asked())))
         }
 
         /// With no text field focused the view itself hears a hardware keyboard.
         #[unsafe(method(canBecomeFirstResponder))]
         fn can_become_first_responder(&self) -> bool {
-            true
+            guarded("canBecomeFirstResponder", || true)
         }
 
         #[unsafe(method(pressesBegan:withEvent:))]
         fn presses_began(&self, presses: &AnyObject, event: Option<&AnyObject>) {
-            if !self.presses(presses, true, false) {
-                // SAFETY: `presses` and `event` are UIKit's own objects, passed unchanged to
-                // `UIView`'s method of the same signature.
-                let _: () = unsafe { msg_send![super(self), pressesBegan: presses, withEvent: event] };
-            }
+            guarded("pressesBegan:withEvent:", || {
+                if !self.presses(presses, true, false) {
+                    // SAFETY: `presses` and `event` are UIKit's own objects, passed unchanged to
+                    // `UIView`'s method of the same signature.
+                    let _: () = unsafe { msg_send![super(self), pressesBegan: presses, withEvent: event] };
+                }
+            })
         }
 
         #[unsafe(method(pressesEnded:withEvent:))]
         fn presses_ended(&self, presses: &AnyObject, event: Option<&AnyObject>) {
-            self.presses(presses, false, false);
-            // SAFETY: as in `pressesBegan:withEvent:`.
-            let _: () = unsafe { msg_send![super(self), pressesEnded: presses, withEvent: event] };
+            guarded("pressesEnded:withEvent:", || {
+                self.presses(presses, false, false);
+                // SAFETY: as in `pressesBegan:withEvent:`.
+                let _: () = unsafe { msg_send![super(self), pressesEnded: presses, withEvent: event] };
+            })
         }
 
         #[unsafe(method(pressesCancelled:withEvent:))]
         fn presses_cancelled(&self, presses: &AnyObject, event: Option<&AnyObject>) {
-            self.presses(presses, false, false);
-            // SAFETY: as in `pressesBegan:withEvent:`.
-            let _: () = unsafe { msg_send![super(self), pressesCancelled: presses, withEvent: event] };
+            guarded("pressesCancelled:withEvent:", || {
+                self.presses(presses, false, false);
+                // SAFETY: as in `pressesBegan:withEvent:`.
+                let _: () = unsafe { msg_send![super(self), pressesCancelled: presses, withEvent: event] };
+            })
         }
     }
 );
@@ -441,6 +485,7 @@ impl RuneView {
             stage: RefCell::new(Stage::Waiting(mount)),
             pacing: Cell::new(pacing::State::Detached),
             seq: Cell::new(Seq::default()),
+            loop_frame: Cell::new(LoopFrame::default()),
             link: RefCell::new(None),
             wake_queued: Arc::new(AtomicBool::new(false)),
             text: RefCell::new(None),
@@ -457,6 +502,8 @@ impl RuneView {
             mirrored_by: RefCell::default(),
             overlays: RefCell::default(),
             control: RefCell::new(None),
+            pointer_lock: Cell::new(super::pointer_lock::State::Free),
+            pointer_lock_seq: Cell::new(Seq::default()),
         });
         let frame = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0));
         // SAFETY: `initWithFrame:` is `UIView`'s designated initializer.
@@ -490,7 +537,7 @@ impl RuneView {
 
     pub(super) fn with_surface<R>(&self, f: impl FnOnce(&mut dyn Surface) -> R) -> Option<R> {
         match &mut *self.ivars().stage.borrow_mut() {
-            Stage::Live(surface) => Some(f(surface.as_mut())),
+            Stage::Live(surface) => Some(super::surface::in_turn(surface.as_mut(), f)),
             Stage::Waiting(_) | Stage::Failed => None,
         }
     }
@@ -498,7 +545,11 @@ impl RuneView {
     /// Draws the frame the display link's next refresh shows, and tells the pacing how it went.
     fn draw(&self) {
         let Some(target) = self.frame_target() else { return };
-        let drawn = self.with_surface(|surface| (surface.frame(target), surface.text(), surface.accessibility(), surface.popup(), surface.file_dialog(), surface.share(), surface.interface_style()));
+        let refresh_hz = self.frame_rate();
+        let mut loops = self.ivars().loop_frame.get();
+        let only_loops = loops.only_loops();
+        self.ivars().loop_frame.set(loops);
+        let drawn = self.with_surface(|surface| (surface.frame(target, refresh_hz, only_loops), surface.text(), surface.accessibility(), surface.popup(), surface.file_dialog(), surface.share(), surface.interface_style()));
         let Some((frame, text, tree, popup, file, share, style)) = drawn else {
             self.pace(Event::Frame { animating: false, wake_after: None });
             return;
@@ -522,11 +573,22 @@ impl RuneView {
             posts.post();
         }
         self.sync_mirror();
+        self.sync_pointer_lock();
         self.pace(Event::Frame { animating: frame.animating, wake_after: frame.wake_after_secs });
+    }
+
+    pub(super) fn touched(&self) {
+        let mut loops = self.ivars().loop_frame.get();
+        loops.touched();
+        self.ivars().loop_frame.set(loops);
     }
 
     fn pace(&self, event: Event) {
         let ivars = self.ivars();
+        if event == Event::Wake && ivars.pacing.get() == pacing::State::Detached && let Some(control) = ivars.control.borrow().as_ref() {
+            control.borrow().woke();
+        }
+        if !matches!(event, Event::Tick | Event::Timer(_) | Event::Frame { .. }) { self.touched(); }
         let (mut seq, mut state) = (ivars.seq.get(), ivars.pacing.get());
         let effects = pacing::step(&mut seq, &mut state, event);
         ivars.seq.set(seq);

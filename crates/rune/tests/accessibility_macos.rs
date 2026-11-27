@@ -97,6 +97,7 @@ mod mac {
             return;
         }
         std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(60)); eprintln!("timeout"); std::process::exit(2) });
+        rune::orderly_exit();
         let spec = AppSpec::new("Accessible", (360.0, 240.0), State::default, view);
         let (ready_tx, ready_rx) = mpsc::channel();
         let window = &WINDOW;
@@ -144,6 +145,7 @@ mod mac {
                 let tree = read(false);
                 assert_eq!(find(&tree, "count").map(|c| c.value.as_str()), Some("Pressed 1 times"));
             });
+            if run.is_err() { eprintln!("accessibility_macos: failed"); std::process::exit(1); }
             *out.lock().unwrap() = Some(run.is_ok());
             handle.quit();
         });

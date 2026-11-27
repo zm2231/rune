@@ -39,14 +39,14 @@ thread_local! {
 }
 
 pub fn open(main: &WindowHandle) {
-    MAIN.with(|w| { let _ = w.set(main.clone()); });
+    MAIN.with(|w| { w.set(main.clone()).ok(); });
     let spec = WindowSpec::new("call", AppSpec::<Call> {
         poll: Some(poll),
         ..AppSpec::new("Call", (360.0, 240.0), Call::default, view)
     })
     .options(WindowOptions { transparent: true, ..Default::default() });
     let handle = rune::open_window(spec);
-    CALL.with(|w| { let _ = w.set(handle); });
+    CALL.with(|w| { w.set(handle).ok(); });
 }
 
 fn view(s: &Call, cx: &mut Cx<Call>) -> El {

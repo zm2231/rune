@@ -4,6 +4,7 @@ use std::ffi::{CStr, c_void};
 use std::ptr::NonNull;
 
 use objc2::rc::Retained;
+use crate::platform::objc_boundary::guarded;
 use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
 use objc2::{msg_send, sel};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
@@ -39,26 +40,36 @@ unsafe fn fill_subviews(view: &AnyObject) {
 
 fn container_class() -> Option<&'static AnyClass> {
     unsafe extern "C-unwind" fn layout(this: &AnyObject, _: Sel) {
-        // SAFETY: UIKit calls this on the main thread with a live view.
-        unsafe { fill_subviews(this) }
+        guarded("layoutSubviews", || {
+            // SAFETY: UIKit calls this on the main thread with a live view.
+            unsafe { fill_subviews(this) }
+        })
     }
     unsafe extern "C-unwind" fn added(this: &AnyObject, _: Sel, _: *mut AnyObject) {
-        // SAFETY: as above.
-        unsafe { fill_subviews(this) }
+        guarded("didAddSubview:", || {
+            // SAFETY: as above.
+            unsafe { fill_subviews(this) }
+        })
     }
-    unsafe extern "C-unwind" fn run(_: &AnyObject, _: Sel, _: *mut AnyObject) { super::run_requests() }
+    unsafe extern "C-unwind" fn run(_: &AnyObject, _: Sel, _: *mut AnyObject) { guarded("runeNativeViewRun:", super::run_requests) }
     unsafe extern "C-unwind" fn commands(_: &AnyObject, _: Sel) -> *mut AnyObject {
-        TAB_COMMANDS.with(|list| list.as_deref().map_or(std::ptr::null_mut(), |l| std::ptr::from_ref(l).cast_mut()))
+        guarded("keyCommands", || TAB_COMMANDS.with(|list| list.as_deref().map_or(std::ptr::null_mut(), |l| std::ptr::from_ref(l).cast_mut())))
     }
     unsafe extern "C-unwind" fn can(this: &AnyObject, _: Sel, action: Sel, sender: *mut AnyObject) -> Bool {
-        if action == sel!(runeTab:) || action == sel!(runeBackTab:) {
-            return Bool::new(super::takes_tab_where(|slot| is(slot, this)));
-        }
-        // SAFETY: UIResponder's own answer for every other action, with UIKit's arguments.
-        unsafe { msg_send![super(this, AnyClass::get(c"UIView").expect("UIKit is loaded")), canPerformAction: action, withSender: sender] }
+        guarded("canPerformAction:withSender:", || {
+            if action == sel!(runeTab:) || action == sel!(runeBackTab:) {
+                return Bool::new(super::takes_tab_where(|slot| is(slot, this)));
+            }
+            // SAFETY: UIResponder's own answer for every other action, with UIKit's arguments.
+            unsafe { msg_send![super(this, AnyClass::get(c"UIView").expect("UIKit is loaded")), canPerformAction: action, withSender: sender] }
+        })
     }
-    unsafe extern "C-unwind" fn tab(this: &AnyObject, _: Sel, _: *mut AnyObject) { super::tab_key_where(false, |slot| is(slot, this)) }
-    unsafe extern "C-unwind" fn back_tab(this: &AnyObject, _: Sel, _: *mut AnyObject) { super::tab_key_where(true, |slot| is(slot, this)) }
+    unsafe extern "C-unwind" fn tab(this: &AnyObject, _: Sel, _: *mut AnyObject) {
+        guarded("runeTab:", || super::tab_key_where(false, |slot| is(slot, this)))
+    }
+    unsafe extern "C-unwind" fn back_tab(this: &AnyObject, _: Sel, _: *mut AnyObject) {
+        guarded("runeBackTab:", || super::tab_key_where(true, |slot| is(slot, this)))
+    }
     class(c"RuneNativeViewContainer", |b| {
         // SAFETY: the signatures match -[UIView layoutSubviews], -[UIView didAddSubview:],
         // -[UIResponder keyCommands], -[UIResponder canPerformAction:withSender:], and methods
@@ -100,17 +111,19 @@ fn tab_commands() -> Option<Retained<AnyObject>> {
 
 fn root_class() -> Option<&'static AnyClass> {
     unsafe extern "C-unwind" fn hit_test(this: &AnyObject, _: Sel, point: CGPoint, event: *mut AnyObject) -> *mut AnyObject {
-        let Some(view_class) = AnyClass::get(c"UIView") else { return std::ptr::null_mut() };
-        // SAFETY: UIView's own hit test on the main thread, then a read of the event's type.
-        unsafe {
-            let hit: *mut AnyObject = msg_send![super(this, view_class), hitTest: point, withEvent: event];
-            if hit.is_null() || std::ptr::eq(hit, this) { return std::ptr::null_mut(); }
-            let touch = event.as_ref().is_some_and(|e| { let kind: isize = msg_send![e, type]; kind == 0 });
-            if touch && let Some(hit) = hit.as_ref() {
-                super::focus_where(|slot| slot.view.contains(hit));
+        guarded("hitTest:withEvent:", || {
+            let Some(view_class) = AnyClass::get(c"UIView") else { return std::ptr::null_mut() };
+            // SAFETY: UIView's own hit test on the main thread, then a read of the event's type.
+            unsafe {
+                let hit: *mut AnyObject = msg_send![super(this, view_class), hitTest: point, withEvent: event];
+                if hit.is_null() || std::ptr::eq(hit, this) { return std::ptr::null_mut(); }
+                let touch = event.as_ref().is_some_and(|e| { let kind: isize = msg_send![e, type]; kind == 0 });
+                if touch && let Some(hit) = hit.as_ref() {
+                    super::focus_where(|slot| slot.view.contains(hit));
+                }
+                hit
             }
-            hit
-        }
+        })
     }
     class(c"RuneNativeViewRoot", |b| {
         // SAFETY: the signature matches -[UIView hitTest:withEvent:].

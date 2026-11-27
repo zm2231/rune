@@ -32,6 +32,7 @@ mod menu_submenu_keys;
 mod menu_submenu_nav;
 mod overlay_metrics;
 mod palette_seed_compat;
+mod pinch_zoom;
 mod popover_focus;
 mod popup_list;
 mod popup_list_motion;

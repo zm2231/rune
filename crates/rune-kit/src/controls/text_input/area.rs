@@ -316,8 +316,8 @@ impl TextArea {
         let TextAreaMetrics { style, padding } = k.text_area_metrics();
         let min_height = k.text_area_min_height();
         let red = self.invalid && !disabled && (k.invalid_text || self.plain);
-        let ink = if red { c.danger.fg } else { c.text_base };
-        let hint = if red { c.danger.fg } else { c.text_faint };
+        let ink = if red { k.roles.error } else { c.text_base };
+        let hint = if red { k.roles.error } else { c.text_faint };
         let field = text_input(&self.edit, style)
             .key("input")
             .w_full()

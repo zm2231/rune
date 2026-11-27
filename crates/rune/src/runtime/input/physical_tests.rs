@@ -476,7 +476,7 @@ fn focused_input_on_key_intercepts_paste_and_edit_chords_before_editor() {
                     }
                 }))
     }
-    let primary = Mods { cmd: true, ctrl: !cfg!(target_os = "macos"), logo: cfg!(target_os = "macos"), ..Mods::default() };
+    let primary = Mods { cmd: true, ctrl: !crate::edit::MAC_KEYS, logo: crate::edit::MAC_KEYS, ..Mods::default() };
     let primary_shift = Mods { shift: true, ..primary };
     let send = |rt: &mut Runtime<S>, physical: PhysicalKeyCode, c: char, mods: Mods| {
         rt.physical_with_fallback(
@@ -528,7 +528,7 @@ fn focused_input_on_key_intercepts_paste_and_edit_chords_before_editor() {
     assert_eq!(rt.state.edit.text, before_text);
     send(&mut rt, PhysicalKeyCode::KeyZ, 'z', primary_shift);
     assert_eq!(rt.state.edit.text, before_text);
-    if !cfg!(target_os = "macos") {
+    if !crate::edit::MAC_KEYS {
         send(&mut rt, PhysicalKeyCode::KeyY, 'y', primary);
         assert_eq!(rt.state.edit.text, before_text);
     }
@@ -556,7 +556,7 @@ fn focused_input_on_key_intercepts_paste_and_edit_chords_before_editor() {
     assert_eq!(rt.state.edit.text, "ab[handled]clipboard");
     send(&mut rt, PhysicalKeyCode::KeyZ, 'z', primary_shift);
     assert_eq!(rt.state.edit.text, "");
-    if !cfg!(target_os = "macos") {
+    if !crate::edit::MAC_KEYS {
         send(&mut rt, PhysicalKeyCode::KeyZ, 'z', primary);
         assert_eq!(rt.state.edit.text, "ab[handled]clipboard");
         send(&mut rt, PhysicalKeyCode::KeyY, 'y', primary);

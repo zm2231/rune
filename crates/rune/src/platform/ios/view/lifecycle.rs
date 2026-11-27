@@ -137,8 +137,9 @@ impl RuneView {
                 // SAFETY: the view's layer is the `CAMetalLayer` `layerClass` names, and the
                 // view keeps it for as long as it lives.
                 let layer: Retained<AnyObject> = unsafe { msg_send![self, layer] };
-                match mount(Retained::as_ptr(&layer) as *mut c_void, size, scale, self.dark(), self.waker()) {
+                match mount(Retained::as_ptr(&layer) as *mut c_void, size, scale, self.dark(), self.waker(), self.presents_waker()) {
                     Ok(mut surface) => {
+                        surface.enter_turn();
                         // The app hears where the scene of the view's window is.
                         if let Some((_, phase)) = self.scene() { surface.lifecycle(lifecycle::Event::Attached(phase)); }
                         surface.set_safe_area(self.safe_area());
@@ -151,6 +152,7 @@ impl RuneView {
                         // A client that asked before the app started still gets its tree.
                         if self.ivars().accessibility.borrow().asked() { let _ = surface.accessibility_wanted(); }
                         overlays = surface.take_overlays();
+                        surface.leave_turn();
                         Stage::Live(surface)
                     }
                     Err(error) => {
@@ -160,12 +162,13 @@ impl RuneView {
                 }
             }
             Stage::Live(mut surface) => {
-                surface.resize(size, scale);
+                super::super::surface::in_turn(surface.as_mut(), |surface| surface.resize(size, scale));
                 Stage::Live(surface)
             }
             Stage::Failed => Stage::Failed,
         };
         drop(stage);
+        if waiting { self.offer_pointer_lock(); }
         self.adopt_overlays(overlays);
         self.place_overlays();
         self.pace(Event::Wake);
@@ -193,6 +196,7 @@ impl RuneView {
         let released = self.with_surface(|surface| surface.lifecycle(event));
         // With no app started nothing hears a key, and the repeat stops all the same.
         if released.unwrap_or(true) { self.keys(keys::Event::Reset); }
+        self.sync_pointer_lock();
     }
 
     /// The view joined a window, or left the one it was in: in a window it draws at the
@@ -239,6 +243,7 @@ impl RuneView {
             for name in [UIAccessibilityBoldTextStatusDidChangeNotification, UIAccessibilityDarkerSystemColorsStatusDidChangeNotification] {
                 let _: () = msg_send![&*centre, addObserver: self, selector: sel!(runeDisplayOptions:), name: name, object: None::<&AnyObject>];
             }
+            self.observe_pointer_lock(&centre);
             self.lifecycle(lifecycle::Event::Attached(phase));
             self.pace(Event::Attached { foreground: phase != Phase::Background });
             // A reader already running reads the first frame.
@@ -320,6 +325,7 @@ impl RuneView {
         // SAFETY: `UIView.window` is a nullable object.
         let window: Option<Retained<AnyObject>> = unsafe { msg_send![self, window] };
         let stale = self.with_surface(|surface| surface.memory_warning(window.is_some())).unwrap_or(false);
+        self.touched();
         if stale { self.pace(Event::Wake); }
     }
 

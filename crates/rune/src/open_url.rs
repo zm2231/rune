@@ -296,7 +296,9 @@ fn open_then(url: &str, done: later::Done) {
         let Some(app) = app else { return answer(Err(OpenUrlError::Failed("no application".into()))) };
         let options: Retained<AnyObject> = msg_send![class!(NSDictionary), dictionary];
         let block = block2::RcBlock::new(move |opened: Bool| {
-            answer(if opened.as_bool() { Ok(()) } else { Err(OpenUrlError::Failed("no app opened it".into())) });
+            crate::platform::objc_boundary::guarded("openURL completion handler", || {
+                answer(if opened.as_bool() { Ok(()) } else { Err(OpenUrlError::Failed("no app opened it".into())) });
+            })
         });
         let _: () = msg_send![&*app, openURL: &*url, options: &*options, completionHandler: &*block];
     });

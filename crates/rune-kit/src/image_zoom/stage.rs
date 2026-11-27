@@ -197,6 +197,7 @@ impl StageZoom {
     }
 
     fn magnify(&mut self, e: rune::MagnifyEvent, tx: &mut Tx) -> bool {
+        if e.wheel { return self.wheel(super::math::pinch_wheel(e), tx); }
         self.zoom_at(self.zoom * (1.0 + e.delta).max(0.01), [e.x, e.y], tx);
         true
     }
@@ -220,11 +221,8 @@ impl<S: 'static> StageBind for StageHandlers<S> {
 
     fn stage(&self, e: El) -> El {
         let (wheel_lens, magnify_lens) = (self.0.clone(), self.0.clone());
-        let mut e = e.on_wheel(move |s: &mut S, ev, tx| wheel_lens(s).wheel(ev, tx));
-        if cfg!(target_os = "macos") {
-            e = e.on_magnify(move |s: &mut S, ev, tx| magnify_lens(s).magnify(ev, tx));
-        }
-        e
+        e.on_wheel(move |s: &mut S, ev, tx| wheel_lens(s).wheel(ev, tx))
+            .on_magnify(move |s: &mut S, ev, tx| magnify_lens(s).magnify(ev, tx))
     }
 
     fn action(&self, b: IconButton, f: fn(&mut StageZoom, &mut Tx)) -> IconButton {

@@ -30,7 +30,7 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 
 use rune::{Color, TextStyle, Theme};
-use rune_kit::{Elevation, Glyphs, Kit, KitEnv, KitTheme, Motion, Palette, Radius, StateColors, Type, css, glyphs};
+use rune_kit::{Elevation, Glyphs, Kit, KitEnv, KitTheme, Motion, Palette, Radius, StateColors, TextRoles, Type, css, glyphs};
 use serde_json::Value;
 
 /// The theme as data: palette, light and dark tokens, computed shadows and numbers.
@@ -221,6 +221,7 @@ fn build(dark: bool) -> Kit {
         std_icon_strong: c("icon-strong-base"),
         std_text: c("text-base"),
     };
+    let roles = TextRoles { code: v("text-text-code-accent"), ..TextRoles::from_palette(&palette) };
     let mut elevation = Elevation::default().with_input(sh("v2-elevation-input"));
     elevation.raised = sh("v2-elevation-raised");
     elevation.floating = sh("v2-elevation-floating");
@@ -266,6 +267,8 @@ fn build(dark: bool) -> Kit {
         invalid_text: true,
         forced: None,
         metrics: rune_kit::Metrics::default(),
+        text_scale: 1.0,
+        roles,
     }
 }
 

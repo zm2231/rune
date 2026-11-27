@@ -681,11 +681,13 @@ pub(crate) mod test_overrides {
     pub(super) fn contrast() -> Option<Option<SystemContrast>> { CONTRAST.with(Cell::get) }
     pub(super) fn increased_contrast() -> Option<bool> { INCREASED_CONTRAST.with(Cell::get) }
 
+    #[cfg(not(target_os = "ios"))]
     pub(crate) struct Guard {
         prev_contrast: Option<Option<SystemContrast>>,
         prev_increased: Option<bool>,
     }
 
+    #[cfg(not(target_os = "ios"))]
     impl Drop for Guard {
         fn drop(&mut self) {
             CONTRAST.with(|c| c.set(self.prev_contrast));
@@ -693,6 +695,7 @@ pub(crate) mod test_overrides {
         }
     }
 
+    #[cfg(not(target_os = "ios"))]
     pub(crate) fn set_contrast(contrast: Option<SystemContrast>, increased_contrast: bool) -> Guard {
         let prev_contrast = CONTRAST.with(|c| c.replace(Some(contrast)));
         let prev_increased = INCREASED_CONTRAST.with(|c| c.replace(Some(increased_contrast)));

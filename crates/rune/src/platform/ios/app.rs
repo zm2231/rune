@@ -21,6 +21,7 @@ use super::links::{self, Activity};
 use super::mount::Entry;
 use super::scenes;
 use super::view::UIResponder;
+use crate::platform::objc_boundary::guarded;
 use crate::app::App;
 
 // SAFETY: the function has this C signature in UIKit's headers.
@@ -65,28 +66,32 @@ define_class!(
         /// The main menu (the iPad's menu bar): the system's menus with the app's items.
         #[unsafe(method(buildMenuWithBuilder:))]
         fn build_menu(&self, builder: &AnyObject) {
-            crate::native_menu::build_ios_menus(builder);
+            guarded("buildMenuWithBuilder:", || { crate::native_menu::build_ios_menus(builder); })
         }
 
         #[unsafe(method_id(application:configurationForConnectingSceneSession:options:))]
         fn configuration(&self, _application: &AnyObject, session: &AnyObject, _options: &AnyObject) -> Retained<AnyObject> {
-            // SAFETY: a session's role is an `NSString`, and `UISceneConfiguration`'s
-            // initializer and `delegateClass` take these types.
-            unsafe {
-                let role: Retained<AnyObject> = msg_send![session, role];
-                let configuration: Allocated<AnyObject> = msg_send![class!(UISceneConfiguration), alloc];
-                let configuration: Retained<AnyObject> = msg_send![configuration, initWithName: &*NSString::from_str("Rune"), sessionRole: &*role];
-                let _: () = msg_send![&*configuration, setDelegateClass: SceneDelegate::class()];
-                configuration
-            }
+            guarded("application:configurationForConnectingSceneSession:options:", || {
+                // SAFETY: a session's role is an `NSString`, and `UISceneConfiguration`'s
+                // initializer and `delegateClass` take these types.
+                unsafe {
+                    let role: Retained<AnyObject> = msg_send![session, role];
+                    let configuration: Allocated<AnyObject> = msg_send![class!(UISceneConfiguration), alloc];
+                    let configuration: Retained<AnyObject> = msg_send![configuration, initWithName: &*NSString::from_str("Rune"), sessionRole: &*role];
+                    let _: () = msg_send![&*configuration, setDelegateClass: SceneDelegate::class()];
+                    configuration
+                }
+            })
         }
 
         #[unsafe(method(application:didDiscardSceneSessions:))]
         fn discarded(&self, _application: &AnyObject, sessions: &AnyObject) {
-            // SAFETY: `sessions` is an `NSSet<UISceneSession *>`.
-            for session in unsafe { members(sessions) } {
-                if let Some(key) = scenes::session_key(&session) { scenes::discarded(key); }
-            }
+            guarded("application:didDiscardSceneSessions:", || {
+                // SAFETY: `sessions` is an `NSSet<UISceneSession *>`.
+                for session in unsafe { members(sessions) } {
+                    if let Some(key) = scenes::session_key(&session) { scenes::discarded(key); }
+                }
+            })
         }
     }
 );
@@ -107,52 +112,58 @@ define_class!(
     impl SceneDelegate {
         #[unsafe(method(scene:willConnectToSession:options:))]
         fn will_connect(&self, scene: &AnyObject, session: &AnyObject, options: &AnyObject) {
-            // The links a launch carries arrive here, in the connection's options.
-            // SAFETY: `options` is a `UISceneConnectionOptions`, whose `URLContexts` is an
-            // `NSSet<UIOpenURLContext *>` and whose `userActivities` an `NSSet<NSUserActivity *>`.
-            let (urls, activities) = unsafe {
-                let contexts: Option<Retained<AnyObject>> = msg_send![options, URLContexts];
-                let activities: Option<Retained<AnyObject>> = msg_send![options, userActivities];
-                let activities = activities.map(|activities| members(&activities)).unwrap_or_default();
-                (contexts.map(|contexts| opened(&contexts)).unwrap_or_default(), activities)
-            };
-            let key = scenes::session_key(session).or_else(|| activities.iter().find_map(|activity| scenes::activity_key(activity)));
-            // SAFETY: each member of `userActivities` is an `NSUserActivity`.
-            receive(urls, activities.iter().map(|activity| unsafe { read(activity) }).collect());
-            // SAFETY: as above.
-            for activity in &activities { unsafe { crate::handoff::ios::continued(activity) }; }
-            scenes::connected(scene, key);
+            guarded("scene:willConnectToSession:options:", || {
+                // The links a launch carries arrive here, in the connection's options.
+                // SAFETY: `options` is a `UISceneConnectionOptions`, whose `URLContexts` is an
+                // `NSSet<UIOpenURLContext *>` and whose `userActivities` an `NSSet<NSUserActivity *>`.
+                let (urls, activities) = unsafe {
+                    let contexts: Option<Retained<AnyObject>> = msg_send![options, URLContexts];
+                    let activities: Option<Retained<AnyObject>> = msg_send![options, userActivities];
+                    let activities = activities.map(|activities| members(&activities)).unwrap_or_default();
+                    (contexts.map(|contexts| opened(&contexts)).unwrap_or_default(), activities)
+                };
+                let key = scenes::session_key(session).or_else(|| activities.iter().find_map(|activity| scenes::activity_key(activity)));
+                // SAFETY: each member of `userActivities` is an `NSUserActivity`.
+                receive(urls, activities.iter().map(|activity| unsafe { read(activity) }).collect());
+                // SAFETY: as above.
+                for activity in &activities { unsafe { crate::handoff::ios::continued(activity) }; }
+                scenes::connected(scene, key);
+            })
         }
 
         /// Links with a scheme the bundle declares, opened while the app runs.
         #[unsafe(method(scene:openURLContexts:))]
         fn open_url_contexts(&self, _scene: &AnyObject, contexts: &AnyObject) {
-            // SAFETY: `contexts` is an `NSSet<UIOpenURLContext *>`.
-            receive(unsafe { opened(contexts) }, Vec::new());
+            guarded("scene:openURLContexts:", || {
+                // SAFETY: `contexts` is an `NSSet<UIOpenURLContext *>`.
+                receive(unsafe { opened(contexts) }, Vec::new());
+            })
         }
 
         /// A universal link opened, or a Handoff activity continued, while the app runs.
         #[unsafe(method(scene:continueUserActivity:))]
         fn continue_activity(&self, _scene: &AnyObject, activity: &AnyObject) {
-            // SAFETY: `activity` is an `NSUserActivity`.
-            receive(Vec::new(), vec![unsafe { read(activity) }]);
-            // SAFETY: as above.
-            unsafe { crate::handoff::ios::continued(activity) };
+            guarded("scene:continueUserActivity:", || {
+                // SAFETY: `activity` is an `NSUserActivity`.
+                receive(Vec::new(), vec![unsafe { read(activity) }]);
+                // SAFETY: as above.
+                unsafe { crate::handoff::ios::continued(activity) };
+            })
         }
 
         #[unsafe(method(sceneDidDisconnect:))]
         fn did_disconnect(&self, scene: &AnyObject) {
-            scenes::disconnected(scene);
+            guarded("sceneDidDisconnect:", || { scenes::disconnected(scene); })
         }
 
         #[unsafe(method(sceneWillEnterForeground:))]
         fn will_enter_foreground(&self, scene: &AnyObject) {
-            scenes::foreground(scene);
+            guarded("sceneWillEnterForeground:", || { scenes::foreground(scene); })
         }
 
         #[unsafe(method(sceneDidEnterBackground:))]
         fn did_enter_background(&self, scene: &AnyObject) {
-            scenes::background(scene);
+            guarded("sceneDidEnterBackground:", || { scenes::background(scene); })
         }
     }
 );

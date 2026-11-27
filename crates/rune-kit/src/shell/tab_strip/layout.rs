@@ -108,7 +108,7 @@ pub(super) struct Strip {
 /// OpenCode's activity ring: the kit's spinner at 14 points in the muted icon colour, the
 /// base one in dark mode, where the dim cells vanish.
 fn busy_ring(k: &Kit) -> El {
-    Spinner::new().size(14.0).color(if k.dark { k.c.icon_base } else { k.c.icon_muted }).build(k)
+    Spinner::new().size(k.text_size(14.0)).color(if k.dark { k.c.icon_base } else { k.c.icon_muted }).build(k)
 }
 
 pub(super) struct TabStripCore<'a> {
@@ -121,7 +121,7 @@ pub(super) struct TabStripCore<'a> {
     pub viewport: Option<f32>,
     pub overflow: Option<TabOverflow>,
     pub gap: Option<f32>,
-    pub row_height: f32,
+    pub row_height: Option<f32>,
     pub select_on_drag_start: Option<bool>,
     pub tear: Option<TearOutSpec>,
     pub matched: Option<&'a str>,
@@ -150,7 +150,7 @@ impl<'a> TabStripCore<'a> {
             viewport: None,
             overflow: None,
             gap: None,
-            row_height: 28.0,
+            row_height: None,
             select_on_drag_start: None,
             tear: None,
             matched: None,
@@ -219,11 +219,12 @@ impl<'a> TabStripCore<'a> {
             TabOverflow::Scroll { .. } => (f32::INFINITY, f32::INFINITY),
         };
         // Each tab's length along the strip with the gap after it: its width across, its row down.
-        let two_line_height = 45.0;
+        let row_height = self.row_height.unwrap_or_else(|| k.text_size(28.0));
+        let two_line_height = k.text_size(45.0);
         let pitch = |pin: bool, two_line: bool| match (vertical, pin) {
             (false, true) => pinned_w + gap,
             (false, false) => tab_w + gap,
-            (true, _) => (if two_line { two_line_height } else { self.row_height }) + gap,
+            (true, _) => (if two_line { two_line_height } else { row_height }) + gap,
         };
         let pitches: Vec<f32> = slots.iter().map(|t| pitch(t.pinned, t.two_line)).collect();
         let auto = auto_scroll::view(&format!("{}-scroll", self.key));
@@ -237,7 +238,7 @@ impl<'a> TabStripCore<'a> {
             base: self.fill.unwrap_or(k.c.bg_deep),
             separator: if k.dark { k.c.layer_02 } else { k.c.layer_03 },
             gap,
-            row_height: self.row_height,
+            row_height,
             two_line_height,
             link_inset: 8.0,
             count,
@@ -263,7 +264,7 @@ impl<'a> TabStripCore<'a> {
         // Which tabs are built: past `BAND_PAST`, those near what the strip shows, and the ones a
         // gesture, a key or a menu is on wherever they are.
         let shown = (count > BAND_PAST).then(|| {
-            let along = if vertical { (self.row_height + gap) * 6.0 } else { (tab_w + gap) * 4.0 };
+            let along = if vertical { (row_height + gap) * 6.0 } else { (tab_w + gap) * 4.0 };
             let fallback = if vertical { 1200.0 } else { self.viewport.unwrap_or(2000.0) };
             let (lo, hi) = band(&st.list_key, &st.scroll_key, vertical, along.max(64.0), fallback);
             let mut start = 0.0;

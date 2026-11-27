@@ -1,0 +1,1 @@
+- Debug builds warn about a poll that asks `Tx::wake_after` on every run by its pattern instead of by how many wakes are pending: once a poll has asked again while its own last wake was still pending several runs in a row, it says so once. A count of pending wakes could stay under its limit in a real window while the poll still stacked its wakes.

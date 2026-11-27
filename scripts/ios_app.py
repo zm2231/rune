@@ -1,6 +1,7 @@
 """Bundle a Rune app built for iOS, then install it on a simulator or a device and launch it, or zip it as an .ipa an app could upload."""
 import argparse
 import glob
+import hashlib
 import json
 import math
 import os
@@ -42,6 +43,9 @@ def info(args):
         UILaunchScreen={},
         # Without it an iPhone holds a display link at 60 Hz on a 120 Hz display.
         CADisableMinimumFrameDurationOnPhone=True,
+        # A mouse's or trackpad's clicks reach the app as pointer touches, not as fingers, so a
+        # click can take pointer lock (`El::pointer_lock`).
+        UIApplicationSupportsIndirectInputEvents=True,
         UIApplicationSceneManifest=dict(UIApplicationSupportsMultipleScenes=args.multiple_scenes),
         UISupportedInterfaceOrientations=[
             "UIInterfaceOrientationPortrait", "UIInterfaceOrientationLandscapeLeft",
@@ -81,14 +85,43 @@ def entitlements(profile, bundle_id):
     return {**granted, "application-identifier": f"{team}.{bundle_id}"}
 
 
-def sign(stage, args, profile):
+IDENTITY_LINE = re.compile(r'^\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"(.*)"\s*$')
+
+
+def keychain_identities(listed):
+    found = (IDENTITY_LINE.match(line) for line in listed.splitlines())
+    return [(match[1].upper(), match[2]) for match in found if match]
+
+
+def profile_identity(profile, identities):
+    """The SHA-1 of the one keychain identity whose certificate the profile lists; a profile
+    signs only with a certificate it names, and a name alone can match several identities."""
+    allowed = {hashlib.sha1(certificate).hexdigest().upper() for certificate in profile.get("DeveloperCertificates", [])}
+    matching = [(sha, name) for sha, name in identities if sha in allowed]
+    if len(matching) == 1:
+        return matching[0][0]
+    listed = "\n".join(f"  {sha} {name}" for sha, name in (matching or identities)) or "  (none)"
+    if matching:
+        raise RuntimeError(f"several signing identities in the keychain match --profile; pick one with --sign SHA-1:\n{listed}")
+    raise RuntimeError(f"no signing identity in the keychain has a certificate --profile lists; the keychain has:\n{listed}")
+
+
+def signing_identity(args, profile):
+    if args.sign:
+        return args.sign
+    if not profile:
+        return "-"
+    listed = command("security", "find-identity", "-v", "-p", "codesigning", check=False)
+    return profile_identity(profile, keychain_identities(listed.stdout))
+
+
+def sign(stage, args, profile, identity):
     """Ad hoc without a profile, as a simulator takes it; with one, the profile embedded and its
     entitlements signed in by a development identity, or a distribution one for the App Store."""
     if not profile:
-        command("codesign", "--force", "--sign", "-", str(stage), timeout=SLOW)
+        command("codesign", "--force", "--sign", identity, str(stage), timeout=SLOW)
         return
     shutil.copy2(args.profile, stage / "embedded.mobileprovision")
-    identity = os.environ.get("IOS_APP_SIGN") or ("Apple Distribution" if args.distribution else "Apple Development")
     with tempfile.NamedTemporaryFile(suffix=".plist") as file:
         plistlib.dump(entitlements(profile, args.id), file)
         file.flush()
@@ -187,6 +220,7 @@ def build(stage, args):
         elif stale.exists():
             stale.unlink()
     profile = provisioning(args)
+    identity = signing_identity(args, profile)
     # Asked of the binary before anything is staged, so a refused one leaves no bundle behind.
     platform = built_for(args)
     if args.distribution and platform != "IOS":
@@ -208,7 +242,7 @@ def build(stage, args):
     # A signature covers the binary's bytes, so they change before it, not after.
     if args.distribution:
         strip(stage, args)
-    sign(stage, args, profile)
+    sign(stage, args, profile, identity)
 
 
 def install_simulator(stage, args):
@@ -253,12 +287,13 @@ def outlive(args, launched, pid, alive, crash_log):
 
 
 def devicectl(*argv, check=True):
-    """Run a `devicectl device` command, whose first two words name it: the finished process and its JSON result."""
+    """Run a `devicectl device` command, whose first two words name it; returns the run and its JSON result."""
     with tempfile.TemporaryDirectory() as tmp:
         result = Path(tmp) / "result.json"
         # devicectl's own flags go before the app's identifier, which its arguments follow.
         ran = command("xcrun", "devicectl", "device", *argv[:2], "--json-output", str(result), *argv[2:], check=check, timeout=SLOW)
-        return ran, json.loads(result.read_text()) if not ran.returncode and result.is_file() else {}
+        answer = json.loads(result.read_text()) if not ran.returncode and result.is_file() else {}
+        return ran, answer
 
 
 def install_device(stage, args):
@@ -288,6 +323,8 @@ def flags():
     parser.add_argument("--device", help="a paired device's UDID or name, instead of a simulator; needs --profile")
     parser.add_argument("--profile", type=Path,
                         help="a .mobileprovision that covers --id: a development one that lists the device, or an App Store one for --distribution")
+    parser.add_argument("--sign", metavar="IDENTITY",
+                        help="the signing identity, by name or SHA-1 (default: the keychain identity whose certificate --profile lists; ad hoc without a profile)")
     parser.add_argument("--distribution", action="store_true",
                         help="make a build an app could upload: stripped, with its dSYM, signed for distribution and zipped as an .ipa; installs nothing")
     parser.add_argument("--min-os", default=MIN_OS, metavar="X.Y",
@@ -350,16 +387,16 @@ def distribution_refusal(args):
     """Why `--distribution` can't go with the other flags, or None when it can."""
     if args.device or args.simulator:
         return "--distribution makes an .ipa and installs nothing: leave out --device and --simulator"
-    identity = os.environ.get("IOS_APP_SIGN") or "Apple Distribution"
+    identity = args.sign or ""
     if identity.startswith(("Apple Development", "iPhone Developer")):
-        return f"IOS_APP_SIGN={identity!r} is a development identity: --distribution signs with an Apple Distribution one"
+        return f"--sign {identity!r} is a development identity: --distribution signs with an Apple Distribution one"
     # Signing ad hoc tries every step without an identity, a profile or an icon, for a build no store takes.
     if identity == "-":
         return None
     if not args.profile:
-        return "--distribution needs --profile, an App Store provisioning profile (IOS_APP_SIGN=- tries the steps without one)"
+        return "--distribution needs --profile, an App Store provisioning profile (--sign - tries the steps without one)"
     if not args.icon:
-        return "--distribution needs --icon: the App Store takes no app without one (IOS_APP_SIGN=- tries the steps without one)"
+        return "--distribution needs --icon: the App Store takes no app without one (--sign - tries the steps without one)"
     return None
 
 

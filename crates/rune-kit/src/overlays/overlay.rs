@@ -378,12 +378,12 @@ impl Popover {
 
 /// Text that inherits the page's type (13 / 440 on a 24 line, `--text-base`).
 pub fn body_text(k: &Kit, s: impl Into<String>) -> El {
-    text(s).font(TextStyle { tracking: 0.0, ..k.ty.ui }.lh(24.0)).color(k.c.std_text)
+    text(s).font(TextStyle { tracking: 0.0, ..k.ty.ui }.lh(k.text_size(24.0))).color(k.c.std_text)
 }
 
 /// Text inside overlay surfaces, which inherit the document's strong text colour.
 pub fn overlay_text(k: &Kit, s: impl Into<String>) -> El {
-    text(s).font(TextStyle { tracking: 0.0, ..k.ty.ui }.lh(24.0)).color(k.c.text_strong)
+    text(s).font(TextStyle { tracking: 0.0, ..k.ty.ui }.lh(k.text_size(24.0))).color(k.c.text_strong)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -412,6 +412,7 @@ pub struct TooltipStyle {
     keys: (Color, Color),
     /// The positioner's line it sits on, for the `inline-flex` appearances (`tooltip.css`).
     line: Option<TextStyle>,
+    text_scale: f32,
 }
 
 impl TooltipStyle {
@@ -429,8 +430,9 @@ impl TooltipStyle {
             shadows: k.shadow_layers(&k.elevation.floating).collect(),
             motion: k.motion.overlay,
             keys: (c.layer_03, c.text_muted),
+            text_scale: k.text_scale,
             // The page's 13/24 line (`base.css` `html`, measured on the positioner).
-            line: Some(TextStyle { family: k.ty.small_medium.family, ..TextStyle::new(13.0, 400.0).lh(24.0) }),
+            line: Some(TextStyle { family: k.ty.small_medium.family, ..k.text(TextStyle::new(13.0, 400.0).lh(24.0)) }),
         };
         match appearance {
             TooltipAppearance::Compact => base,
@@ -442,7 +444,7 @@ impl TooltipStyle {
                 border: Some((1.0, c.border_weak)),
                 radius: k.radius.sm,
                 padding: (8.0, 2.0),
-                max_w: Some(320.0),
+                max_w: Some(k.text_size(320.0)),
                 font: k.ty.text_small_medium,
                 ink: c.text_invert_strong,
                 shadows: k.shadow_layers(&k.elevation.md).collect(),
@@ -519,7 +521,8 @@ impl TooltipStyle {
     /// `tooltip.css`), so under its element one shows 1 or 2 pt lower than the 4 pt gap puts it.
     pub fn help_look(&self) -> rune::HelpLook {
         let (ring_w, ring) = self.border.unwrap_or((0.0, Color::TRANSPARENT));
-        let key = TextStyle::new(11.0, 530.0).lh(11.0).tracking(0.05).features("'tnum' 1, 'lnum' 1");
+        let s = self.text_scale;
+        let key = TextStyle::new(11.0 * s, 530.0).lh(11.0 * s).tracking(0.05 * s).features("'tnum' 1, 'lnum' 1");
         let look = rune::HelpLook::system(false)
             .fill(self.fill)
             .ink(self.ink)
@@ -536,7 +539,7 @@ impl TooltipStyle {
             .on_focus(true)
             .fade(0.12, 0.08, 0.96)
             .keycaps(self.keys.0, self.keys.1, TextStyle { family: self.font.family, ..key }, true)
-            .keycap_shape(14.0, 4.0, 2.0, 2.0, 6.0)
+            .keycap_shape(14.0 * s, 4.0, 2.0, 2.0, 6.0)
             .row_gap(6.0);
         match self.line {
             Some(line) => look.sit_on_line(line),

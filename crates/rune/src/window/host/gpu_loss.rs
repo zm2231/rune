@@ -293,6 +293,7 @@ impl Host {
         self.app.rt_mut().cancel_timer_frame();
         self.app.popup_cancel(&mut self.popup);
         self.app.file_dialog_cancel(&mut self.file_dialog);
+        self.app.share_cancel();
         self.app.rt_mut().cancel_pointer();
         self.files = FileDrop::default();
         if let Some(w) = &mut self.win {
@@ -315,6 +316,7 @@ impl Host {
             let _ = crate::quit::send(crate::quit::Event::Start { ending: false, after });
             self.app.popup_cancel(&mut self.popup);
             self.app.file_dialog_cancel(&mut self.file_dialog);
+            self.app.share_cancel();
             event_loop.exit();
             return;
         }
@@ -569,6 +571,7 @@ pub(in crate::window) fn classify_latched_wake_event(event: &crate::window::Wake
 }
 
 /// Pure policy decision for a Windows/Linux CPU-first background GPU handover failure.
+#[cfg(any(test, target_os = "windows", all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::window) enum HandoverFailureAction {
     /// `GpuLossPolicy::Recover`: retry up to `max_tries` times on CPU, then stay on CPU.
@@ -577,6 +580,7 @@ pub(in crate::window) enum HandoverFailureAction {
     LatchTerminal,
 }
 
+#[cfg(any(test, target_os = "windows", all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))]
 pub(in crate::window) const fn decide_handover_failure(
     policy: GpuLossPolicy,
     tries: u8,

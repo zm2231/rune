@@ -116,7 +116,7 @@ pub fn text(content: impl Into<String>) -> El {
 /// glyphs and paints only selection highlights, [`El::caret_browsing`] carets,
 /// [`El::text_highlight`] / [`El::highlight_texts`], and [`Cx::mark_texts`](crate::Cx::mark_texts).
 /// Participates in [`El::selection_group`], plain and HTML copy, [`Cx::selection_rects`](crate::Cx::selection_rects),
-/// [`Runtime::text_offset_at`](crate::Runtime::text_offset_at), and inline [`Link`](crate::Link) spans.
+/// [`Runtime::text_offset_at`](crate::Runtime::text_offset_at), and inline [`Link`] spans.
 ///
 /// ```
 /// use rune::{PositionedText, col, el, positioned_text};

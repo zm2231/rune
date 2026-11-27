@@ -70,7 +70,17 @@ fn memory_mb() -> f64 {
     pages * 4096.0 / 1e6
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+fn memory_mb() -> f64 {
+    let mut info = std::mem::MaybeUninit::<libc::rusage_info_v2>::zeroed();
+    // SAFETY: `RUSAGE_INFO_V2` fills a `rusage_info_v2`, which `info` has room for.
+    if unsafe { libc::proc_pid_rusage(libc::getpid(), libc::RUSAGE_INFO_V2, info.as_mut_ptr().cast()) } != 0 { return 0.0; }
+    // SAFETY: all-zero integers are a valid `rusage_info_v2`, and the call above filled it.
+    unsafe { info.assume_init() }.ri_phys_footprint as f64 / 1e6
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 fn memory_mb() -> f64 { 0.0 }
 
 fn main() {
@@ -80,6 +90,7 @@ fn main() {
     }
     let cycles: usize = rune::env::var("RUNE_SOAK_CYCLES").and_then(|n| n.parse().ok()).unwrap_or(2000).max(WARM_UP + 1);
     std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(3600)); eprintln!("timeout"); std::process::exit(2) });
+    rune::orderly_exit();
     on_gpu(|event| if event == GpuEvent::Starting { STARTS.fetch_add(1, Ordering::SeqCst); });
     let mut app = App::new(AppSpec::new("overlay soak", (100.0, 100.0), || (), hud)).args(Vec::new()).windowless();
     let hud = app.overlay(OverlaySpec::new("soak hud", (200.0, 40.0), hud)
@@ -112,6 +123,7 @@ fn main() {
             assert_eq!(starts, 1, "every show draws on the first show's device");
             assert!(end - baseline < ALLOWED_GROWTH_MB, "memory grew {:.0} MB over {} cycles", end - baseline, cycles - WARM_UP);
         });
+        if run.is_err() { eprintln!("overlay_soak: failed"); std::process::exit(1); }
         *out.lock().unwrap() = Some(run.is_ok());
         handle.quit();
     });

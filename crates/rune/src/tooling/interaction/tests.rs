@@ -98,10 +98,12 @@ fn view(s: &App, _: &mut Cx<App>) -> El {
         .child(list)
 }
 
+const NEVER_SLOW_MS: f64 = 60_000.0;
+
 fn runtime(slow: bool) -> Runtime<App> {
     force_on();
     // A fixed threshold: the slow-click tests never read `RUNE_PERF_SLOW_MS` from the environment.
-    super::force_slow_ms(SLOW_MS);
+    super::force_slow_ms(if slow { SLOW_MS } else { NEVER_SLOW_MS });
     SENT.take();
     let mut rt = Runtime::new(App { slow, ..App::default() }, view, (400.0, 300.0), Env::new(true, 1.0));
     rt.frame(0.0);

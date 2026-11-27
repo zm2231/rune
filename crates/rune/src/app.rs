@@ -1151,7 +1151,7 @@ impl<S: 'static> App<S> {
     /// Pair them to measure real input-to-photon latency or detect missed vsyncs against
     /// [`FrameEncoded::presents_at`](crate::FrameEncoded::presents_at).
     ///
-    /// Only platforms with reliable actual presentation timestamps call it (currently macOS
+    /// Only platforms with reliable actual presentation timestamps call it (macOS and iOS
     /// Metal, via `MTLDrawable::addPresentedHandler`). Windows, Linux, the web, overlays, and
     /// headless runs never call it, matching
     /// [`FrameEncoded::presents_at`](crate::FrameEncoded::presents_at). Without it, no layer

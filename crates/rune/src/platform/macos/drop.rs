@@ -18,7 +18,7 @@ use objc2::{class, msg_send, sel};
 use objc2_app_kit::{NSPasteboard, NSPasteboardItem, NSView};
 use objc2_foundation::{NSArray, NSDictionary, NSError, NSPoint, NSString, NSURL};
 
-use crate::platform::macos::{has_subclass, kvo_observed};
+use crate::platform::objc_class::{has_subclass, kvo_observed};
 use crate::window::FileStep;
 
 struct Dest {

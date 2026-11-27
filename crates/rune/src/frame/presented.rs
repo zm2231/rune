@@ -1,6 +1,6 @@
 //! `App::on_frame_presented`: actual screen presentation timestamps for drawn frames.
 //!
-//! On macOS Metal, `CAMetalLayer` drawables report their actual `MTLDrawable.presentedTime`
+//! On macOS and iOS Metal, `CAMetalLayer` drawables report their actual `MTLDrawable.presentedTime`
 //! asynchronously after submission. This module correlates each acquired drawable sequence number
 //! with its `FrameEncoded::seq()` in a bounded FIFO queue (`MAX_PENDING = 64`), delivers
 //! `FramePresented` callbacks on the UI thread in submission order, and enables the layer log's
@@ -10,11 +10,11 @@ use std::rc::Rc;
 
 use crate::time::Instant;
 
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(test, target_vendor = "apple"))]
 use std::collections::VecDeque;
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(test, target_vendor = "apple"))]
 use std::sync::Arc;
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(test, target_vendor = "apple"))]
 use crate::machine::Effects;
 
 /// `App::on_frame_presented`'s hook.
@@ -25,7 +25,7 @@ pub(crate) type OnFramePresented = Box<dyn FnMut(&FramePresented)>;
 /// Metal presentation runs a few frames behind submission; if a drawable never reports (for
 /// example after a stalled or lost surface), the oldest entry is evicted so memory stays bounded
 /// and newer landed frames are never blocked indefinitely.
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(test, target_vendor = "apple"))]
 pub(crate) const MAX_PENDING: usize = 64;
 
 /// When a drawn frame actually reached the screen, as
@@ -83,8 +83,8 @@ impl FramePresented {
 }
 
 /// Source of drawable presentation completions (Metal's `MTLDrawable::addPresentedHandler` on
-/// macOS; fakes in headless tests).
-#[cfg(any(test, target_os = "macos"))]
+/// macOS and iOS; fakes in headless tests).
+#[cfg(any(test, target_vendor = "apple"))]
 pub(crate) trait PresentSource: Send + Sync {
     /// Drains completed `(drawable_seq, presented_at)` pairs into `out` and updates whether
     /// future completions should wake the UI thread (`watch`).
@@ -95,7 +95,7 @@ pub(crate) trait PresentSource: Send + Sync {
 }
 
 /// Whether the present source is currently asked to wake the UI thread on drawable completion.
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(test, target_vendor = "apple"))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum WatchState {
     #[default]
@@ -103,20 +103,20 @@ enum WatchState {
     Watching,
 }
 
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(test, target_vendor = "apple"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WatchEvent {
     Pending,
     Drained,
 }
 
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(test, target_vendor = "apple"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WatchEffect {
     SetWatch(bool),
 }
 
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(test, target_vendor = "apple"))]
 fn step_watch(state: &mut WatchState, event: WatchEvent) -> Effects<WatchEffect> {
     match (*state, event) {
         (WatchState::Idle, WatchEvent::Pending) => {
@@ -131,21 +131,21 @@ fn step_watch(state: &mut WatchState, event: WatchEvent) -> Effects<WatchEffect>
     }
 }
 
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(test, target_vendor = "apple"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Status {
     Waiting,
     Ready(Option<Instant>),
 }
 
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(test, target_vendor = "apple"))]
 struct Pending {
     drawable_seq: u64,
     frame_seq: u64,
     status: Status,
 }
 
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(test, target_vendor = "apple"))]
 struct Tracker {
     hook: OnFramePresented,
     window: Option<Rc<str>>,
@@ -160,11 +160,11 @@ struct Tracker {
 ///
 /// Without a hook every method is one `Option` check and does no locking, allocation, or wake
 /// management.
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(test, target_vendor = "apple"))]
 #[derive(Default)]
 pub(crate) struct FramePresentReports(Option<Tracker>);
 
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(test, target_vendor = "apple"))]
 impl FramePresentReports {
     pub(crate) fn new(hook: Option<OnFramePresented>, window: Option<&str>) -> Self {
         Self(hook.map(|hook| Tracker {

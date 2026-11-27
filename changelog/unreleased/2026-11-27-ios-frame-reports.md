@@ -1,0 +1,1 @@
+- iOS views report their frames: `App::on_frame_encoded` runs after each frame with the display link's target time and refresh rate, and `App::on_frame_presented` gives each drawn frame's real `presentedTime` from Metal, as on macOS. The last frame's present time still arrives once the view stops drawing, and `rune::marks` records `frame.first.presented` on iOS.

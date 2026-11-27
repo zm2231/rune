@@ -137,7 +137,7 @@ impl RuneView {
                 // SAFETY: the view's layer is the `CAMetalLayer` `layerClass` names, and the
                 // view keeps it for as long as it lives.
                 let layer: Retained<AnyObject> = unsafe { msg_send![self, layer] };
-                match mount(Retained::as_ptr(&layer) as *mut c_void, size, scale, self.dark(), self.waker()) {
+                match mount(Retained::as_ptr(&layer) as *mut c_void, size, scale, self.dark(), self.waker(), self.presents_waker()) {
                     Ok(mut surface) => {
                         // The app hears where the scene of the view's window is.
                         if let Some((_, phase)) = self.scene() { surface.lifecycle(lifecycle::Event::Attached(phase)); }

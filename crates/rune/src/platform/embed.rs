@@ -545,16 +545,21 @@ impl<S: 'static> LayerHost<S> {
     }
 
     fn frame_to(&mut self, target: Option<Instant>) -> EmbedFrame {
+        self.frame_summary(target).into()
+    }
+
+    #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+    pub(crate) fn frame_summary(&mut self, target: Option<Instant>) -> embed_frame::FrameSummary {
         let now = crate::time::now();
         if !self.core.suspended && self.core.backoff.waiting(now) {
-            return EmbedFrame { wake_after_secs: self.core.wake_after(self.rt.core(), now), ..EmbedFrame::default() };
+            return embed_frame::FrameSummary { wake_after_secs: self.core.wake_after(self.rt.core(), now), ..Default::default() };
         }
         let _ = self.core.backoff.step(BackoffEvent::Lapsed);
         if let Err(error) = self.remake_gpu() {
             eprintln!("rune: an embedded surface could not make its renderer again: {error}");
-            return EmbedFrame::default();
+            return embed_frame::FrameSummary::default();
         }
-        embed_frame::run_embed_frame_at(self, target).into()
+        embed_frame::run_embed_frame_at(self, target)
     }
 }
 

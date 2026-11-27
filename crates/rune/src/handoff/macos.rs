@@ -1,7 +1,6 @@
 #![allow(unsafe_code)]
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -17,11 +16,22 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 thread_local! {
     static DELEGATE: Cell<*const AnyClass> = const { Cell::new(std::ptr::null()) };
     static WINDOW_CLASSES: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
-    static INFO: RefCell<HashMap<usize, Retained<AnyObject>>> = RefCell::new(HashMap::new());
 }
+
+static INFO_KEY: u8 = 0;
+const RETAIN_NONATOMIC: usize = 1;
 
 unsafe extern "C" {
     fn class_addMethod(class: *const AnyClass, selector: Sel, implementation: *const c_void, types: *const c_char) -> Bool;
+    fn objc_setAssociatedObject(object: *const AnyObject, key: *const c_void, value: *const AnyObject, policy: usize);
+    fn objc_getAssociatedObject(object: *const AnyObject, key: *const c_void) -> *const AnyObject;
+}
+
+fn set_info(window: &AnyObject, info: Option<&AnyObject>) {
+    let info = info.map_or(std::ptr::null(), |info| info as *const AnyObject);
+    // SAFETY: the window retains the dictionary under Rune's own key until it is replaced or the
+    // window is deallocated.
+    unsafe { objc_setAssociatedObject(window, (&raw const INFO_KEY).cast(), info, RETAIN_NONATOMIC) };
 }
 
 fn add(class: &AnyClass, selector: Sel, imp: *const c_void, types: &CStr) -> bool {
@@ -96,13 +106,10 @@ extern "C" fn update_state(window: *mut AnyObject, _: Sel, activity: *mut AnyObj
     // SAFETY: AppKit passes the window's own `NSUserActivity`, which takes the dictionary Rune
     // made for this window.
     let Some(activity) = (unsafe { activity.as_ref() }) else { return };
-    INFO.with(|info| {
-        let Ok(info) = info.try_borrow() else { return };
-        if let Some(dict) = info.get(&(window as usize)) {
-            // SAFETY: as above.
-            unsafe { let _: () = msg_send![activity, addUserInfoEntriesFromDictionary: &**dict]; }
-        }
-    });
+    // SAFETY: the dictionary `set_info` attached to this window, or null, kept alive by it.
+    let Some(info) = (unsafe { objc_getAssociatedObject(window, (&raw const INFO_KEY).cast()).as_ref() }) else { return };
+    // SAFETY: as above.
+    unsafe { let _: () = msg_send![activity, addUserInfoEntriesFromDictionary: info]; }
 }
 
 fn hook_window_class(window: &AnyObject) {
@@ -119,20 +126,19 @@ fn hook_window_class(window: &AnyObject) {
 pub(crate) fn advertise(window: &winit::window::Window, activity: Option<&Activity>) {
     let Some(ns_window) = crate::platform::macos::ns_window(window) else { return };
     let ns_window: &AnyObject = &ns_window;
-    let key = ns_window as *const AnyObject as usize;
     // SAFETY: `userActivity` is an `NSUserActivity` or nil, which `invalidate` retires.
     unsafe {
         let old: Option<Retained<AnyObject>> = msg_send![ns_window, userActivity];
         if let Some(old) = old { let _: () = msg_send![&*old, invalidate]; }
     }
     let Some(activity) = activity else {
-        INFO.with(|info| info.borrow_mut().remove(&key));
+        set_info(ns_window, None);
         // SAFETY: clearing the window's activity.
         unsafe { let _: () = msg_send![ns_window, setUserActivity: None::<&AnyObject>]; }
         return;
     };
     hook_window_class(ns_window);
-    INFO.with(|info| info.borrow_mut().insert(key, apple::info_dictionary(activity)));
+    set_info(ns_window, Some(&apple::info_dictionary(activity)));
     let made = apple::make(activity);
     // SAFETY: the window keeps its `userActivity`; `isMainWindow` is a `BOOL`, and a main
     // window's activity is the one to make current.

@@ -4,7 +4,8 @@
 //! the session, write the file to the drag pasteboard, and show the drag image over the element
 //! (read with `CGWindowListCopyWindowInfo`: a card-sized window where `El::on_screen_layout`
 //! says the element is, or, where macOS draws drag images inside one window covering the
-//! display, that window). With Accessibility access the test then posts a
+//! display, a window that wasn't there before the drag and goes when it ends). With
+//! Accessibility access the test then posts a
 //! real button release where the pointer is, over the panel: the app's own windows take no
 //! drops, so the end arrives once, `Cancelled`, and the next click is an ordinary press.
 //! Without it, it checks the session start, pasteboard and image only.
@@ -181,6 +182,9 @@ mod mac {
         let [cx, cy, cw, ch] = expected.map(f64::from);
         let press = (cx + PRESS.0, cy + PRESS.1);
         let past = (press.0 + TRAVEL, press.1);
+        let display = on_main(&handle, primary_size);
+        let before = drag_windows();
+        let drag_display = move |w: &[f64; 4]| w[2] >= display.0 && w[3] >= display.1 && !before.contains(w);
         on_main(&handle, move || {
             // The polled pointer agrees with the posted drag; the session follows it.
             warp(past);
@@ -200,13 +204,12 @@ mod mac {
 
         // The image is the card's snapshot, laid exactly over the card when the session starts;
         // it then follows the pointer from the event that started it, at most `TRAVEL` away.
-        let display = on_main(&handle, primary_size);
         let mut image = None;
         for _ in 0..100 {
             let windows = drag_windows();
             image = windows.iter().copied().find(|w| (w[2] - cw).abs() <= 2.0 && (w[3] - ch).abs() <= 2.0)
                 .map(Image::Card)
-                .or_else(|| windows.iter().any(|w| w[2] >= display.0 && w[3] >= display.1).then_some(Image::Display));
+                .or_else(|| windows.iter().any(&drag_display).then_some(Image::Display));
             if image.is_some() { break; }
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -228,6 +231,9 @@ mod mac {
         wait("the drag to end", || !ENDED.lock().unwrap().is_empty());
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(*ENDED.lock().unwrap(), [DragOutcome::Cancelled], "dropped back on the panel: cancelled, reported once");
+        if let Image::Display = image {
+            wait("the drag image's window to go with the session", || !drag_windows().iter().any(&drag_display));
+        }
         on_main(&handle, move || post(number, &[(DOWN, press), (UP, press)]));
         wait("a click after the drag to press", || PRESSES.load(Ordering::SeqCst) == 1);
         println!("macos_overlay_drag_out: session ended {:?}, image {image:?}, pasteboard {url}", ENDED.lock().unwrap()[0]);

@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use crate::color::Color;
-use crate::el::{El, InputKeyFn, Outline, PressFn, RoleTag, SetValueFn, StepFn, StepLimitFn, Tx};
+use crate::el::{El, InputKeyFn, Outline, PressFn, RoleTag, SetExpandedFn, SetValueFn, StepFn, StepLimitFn, Tx};
 use crate::states::downcast;
 
 #[derive(Clone)]
@@ -58,6 +58,7 @@ pub(crate) struct FocusSpec {
     pub hover_below: bool,
     /// `on_set_value`: a range control's absolute value from assistive technology.
     pub set_value: Option<SetValueFn>,
+    pub set_expanded: Option<SetExpandedFn>,
     /// `on_step`: a slider's arrow and page keys.
     pub step: Option<StepFn>,
     /// `on_step_limit`: a slider's Home and End.
@@ -104,6 +105,7 @@ impl crate::cold::Empty for FocusSpec {
         below: false,
         hover_below: false,
         set_value: None,
+        set_expanded: None,
         step: None,
         step_limit: None,
         key_up: None,
@@ -457,6 +459,16 @@ impl El {
     /// call `on_step`.
     pub fn on_set_value<S: 'static>(mut self, f: impl Fn(&mut S, f64, &mut Tx) + 'static) -> Self {
         self.cold_mut().focus.set_value = Some(Rc::new(move |s, value, tx| f(downcast::<S>(s), value, tx)));
+        self
+    }
+    /// Opens (`true`) or closes (`false`) an element with [`El::expanded`] when assistive
+    /// technology asks to expand or collapse it: AccessKit's `Expand` and `Collapse` (UI
+    /// Automation's ExpandCollapse pattern), and `ShowContextMenu` (VoiceOver's and AppKit's
+    /// AXShowMenu) on a collapsed element with [`El::has_popup`]. `f` runs only when the request
+    /// differs from the element's built state. Without it those requests press the element
+    /// ([`El::on_press`]) as a toggle.
+    pub fn on_set_expanded<S: 'static>(mut self, f: impl Fn(&mut S, bool, &mut Tx) + 'static) -> Self {
+        self.cold_mut().focus.set_expanded = Some(Rc::new(move |s, open, tx| f(downcast::<S>(s), open, tx)));
         self
     }
     /// Return focus to this keyed trigger (or its first focusable child) when removed.

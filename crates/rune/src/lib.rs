@@ -119,6 +119,10 @@ pub use el::Cycle;
 pub use el::Direction;
 pub use el::Drag;
 pub use el::El;
+#[cfg(feature = "test-support")]
+pub use el::FocusKind;
+#[cfg(feature = "test-support")]
+pub use el::FocusRequest;
 pub use el::GridRow;
 pub use el::GrowthSpec;
 pub use el::HasPopup;
@@ -135,6 +139,10 @@ pub use el::PillStyle;
 pub use el::PointerEvent;
 pub use el::PointerPress;
 pub use el::RadialRadius;
+#[cfg(feature = "test-support")]
+pub use el::Requested;
+#[cfg(feature = "test-support")]
+pub use el::RevealRequest;
 pub use el::ScrollFade;
 pub use el::ScrollSpec;
 pub use el::SelectionStyle;
@@ -158,6 +166,7 @@ pub use el::icon;
 pub use el::layout_watch::ScrollPos;
 pub use el::layout_watch::ScrollSource;
 pub use el::motion::MotionIntent;
+pub use el::positioned_text;
 pub use el::rich;
 pub use el::row;
 pub use el::rule;
@@ -442,6 +451,7 @@ pub use size_class::SizeClasses;
 pub use system_material::MAX_NATIVE_MATERIALS;
 pub use system_material::MaterialDraw;
 pub use system_material::MaterialFrame;
+pub use system_material::MaterialParams;
 pub use system_material::SystemMaterial;
 pub use taskbar::Taskbar;
 pub use taskbar::TaskbarProgress;
@@ -451,6 +461,7 @@ pub use text::InlineAlign;
 pub use text::InlineBox;
 pub use text::Link;
 pub use text::LinkPaint;
+pub use text::PositionedText;
 pub use text::SmoothingSupport;
 pub use text::Span;
 pub use text::SpanBox;
@@ -515,6 +526,9 @@ pub use window::display_queue::DisplayQueueWatch;
 pub use window::display_queue::watch_display_queue;
 pub use window::displays::displays;
 pub use window::geometry::WindowGeometry;
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+pub use window::heap_trim_test as __heap_trim;
 pub use window::spec as windows;
 pub use window::wm_state::DecorationMode;
 pub use window::wm_state::TiledEdges;

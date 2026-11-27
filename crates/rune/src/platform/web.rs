@@ -37,8 +37,7 @@ pub(crate) fn safe_area() -> [f32; 4] { INSETS.get() }
 /// The largest viewport's height in CSS points, or 0 before the browser has reported one.
 pub(crate) fn large_viewport() -> f32 { LARGE_VIEWPORT.get() }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PrimaryPointer { Hover, NoHover, Touch }
+use web_math::platform_events::PrimaryPointer;
 
 pub(crate) fn hover_none() -> bool { PRIMARY_POINTER.get() != PrimaryPointer::Hover }
 pub(crate) fn touch_controls() -> bool { PRIMARY_POINTER.get() == PrimaryPointer::Touch }
@@ -490,6 +489,8 @@ impl ApplicationHandler<Wake> for Browser {
         };
         crate::window::displays::track(&window);
         let canvas = window.canvas().expect("winit web canvas");
+        // The app's own canvas, for pages and tests to find beside the CPU-first one (`data-rune-cpu`).
+        canvas.set_attribute("data-rune-canvas", "").ok();
         if !canvas.has_attribute("tabindex") {
             canvas.set_attribute("tabindex", "0").ok();
         }

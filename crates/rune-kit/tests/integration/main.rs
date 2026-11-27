@@ -1,5 +1,6 @@
 mod button_label;
 mod closure_builders;
+mod collapsible;
 mod combobox;
 mod context_menu;
 #[allow(deprecated)]
@@ -17,6 +18,7 @@ mod form_help_wrap;
 mod glyphs;
 mod hover_card;
 mod hover_within;
+mod icon_button_metrics;
 mod image_zoom;
 mod interactive;
 mod keybind;
@@ -55,6 +57,7 @@ mod text_area_focus_caret;
 mod text_area_grow;
 mod text_area_keys;
 mod text_input_blur;
+mod text_input_focus_change;
 mod text_input_hooks;
 mod text_input_press;
 mod text_input_read_only;

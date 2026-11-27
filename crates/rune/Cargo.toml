@@ -258,6 +258,8 @@ log = "0.4"
 naga = { version = "~30.0.1", default-features = false, features = ["wgsl-in", "glsl-out"] }
 # Experimental swash oracle in `examples/text_quality.rs`.
 swash = { workspace = true }
+# The memory breakdown `tests/overlay_soak.rs` prints on macOS.
+procwatch = { workspace = true }
 
 # A UI Automation client for `tests/accessibility_windows.rs`.
 [target.'cfg(target_os = "windows")'.dev-dependencies]

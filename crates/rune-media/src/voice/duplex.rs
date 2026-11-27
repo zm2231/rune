@@ -61,6 +61,11 @@ pub(crate) fn join(render: Render, heard: Heard) -> (Capture, Playback) {
 }
 
 impl Render {
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+    pub(crate) fn silence(&mut self, frames: u64) {
+        self.playback.meters.count_speaker_gap(frames);
+    }
+
     pub(crate) fn render(&mut self, out: &mut [f32]) {
         self.playback.render(out);
         #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -71,6 +76,11 @@ impl Render {
 }
 
 impl Heard {
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+    pub(crate) fn lost(&mut self, frames: u64) {
+        self.capture.meters.count_mic_gap(frames);
+    }
+
     pub(crate) fn capture(&mut self, heard: &[f32]) {
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         if let Some(cancel) = &mut self.cancel {

@@ -541,7 +541,7 @@ impl<S: 'static> LayerHost<S> {
     }
 
     /// Steps animations and layout to `target`, the time the frame will be on screen, and
-    /// presents one Metal frame, following the shared [`crate::frame::host_step`] order. A
+    /// presents one Metal frame, in the same order as every other host steps a frame. A
     /// display link's target time is the one to pass (`CADisplayLink.targetTimestamp`, as far
     /// ahead of now as it is of `CACurrentMediaTime()`), so motion is drawn where it will be
     /// when the frame shows, and a late frame loses no time.

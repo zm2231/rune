@@ -19,7 +19,7 @@ impl El {
     /// element without taking over the component's handlers or data. It changes nothing about
     /// layout, paint or input.
     ///
-    /// Inside a [`memo`](crate::memo), attach it in the build closure: the cached subtree keeps
+    /// Inside a [`memo`](fn@crate::memo), attach it in the build closure: the cached subtree keeps
     /// its values while the version holds. A value chained onto the element `memo` returns is a
     /// new `Arc` on every view build, so, as a closure set there does, it keeps that memo root
     /// from reusing its cached subtree.

@@ -5,12 +5,12 @@ use rune::render::{
 };
 use rune_ref::{Frame, Primitive, Scene, compare, generate, gpu::GpuRenderer};
 
-fn check(gpu: &mut GpuRenderer, scene: &Scene, tolerance: u8) {
+fn check(gpu: &mut GpuRenderer, scene: &Scene) {
     scene.validate().expect("scene must validate");
     let mut cpu = Frame::new(scene.width, scene.height, true);
     cpu.render(scene);
     let actual = gpu.render(scene);
-    let diff = compare(scene, &cpu, &actual, tolerance);
+    let diff = compare(scene, &cpu, &actual, gpu.scene_tolerance(scene));
     assert_eq!(diff.outlier_pixels, 0, "CPU vs GPU mismatch: {diff:?}");
 }
 
@@ -72,9 +72,9 @@ fn cpu_gpu_banded_rects_and_shadows() {
     let ring_bands = bands(ring, [-1.0, -1.0, 49.0, 49.0], [16.0, 16.0, 32.0, 32.0]);
     let shadow_bands = bands(shadow, [-10.0, -10.0, 46.0, 46.0], [8.0, 8.0, 28.0, 28.0]);
 
-    check(&mut gpu, &from_instances(64, 64, &ring_bands), 2);
-    check(&mut gpu, &from_instances(64, 64, &shadow_bands), 2);
-    check(&mut gpu, &from_instances(64, 64, &[shadow_bands[0], ring_bands[1]]), 2);
+    check(&mut gpu, &from_instances(64, 64, &ring_bands));
+    check(&mut gpu, &from_instances(64, 64, &shadow_bands));
+    check(&mut gpu, &from_instances(64, 64, &[shadow_bands[0], ring_bands[1]]));
 }
 
 #[test]
@@ -133,7 +133,7 @@ fn cpu_gpu_segments_and_triangles() {
             ..zero_instance()
         },
     ];
-    check(&mut gpu, &from_instances(64, 64, &instances), 2);
+    check(&mut gpu, &from_instances(64, 64, &instances));
 }
 
 #[test]
@@ -168,7 +168,7 @@ fn cpu_gpu_negative_spread_inset_shadows() {
             ..zero_instance()
         },
     ];
-    check(&mut gpu, &from_instances(64, 64, &instances), 2);
+    check(&mut gpu, &from_instances(64, 64, &instances));
 }
 
 #[test]
@@ -193,7 +193,7 @@ fn cpu_gpu_mixed_clip_radii_quantization() {
         turn: None,
         clip_radii: Some([10.3, 4.7, 0.0, 8.2]),
     }];
-    check(&mut gpu, &fine, 2);
+    check(&mut gpu, &fine);
 
     // Coarse mixed radii (> 63.5 px -> 2.0 px step) and negative continuous sign
     let mut coarse = generate::scene(&[]);
@@ -214,7 +214,7 @@ fn cpu_gpu_mixed_clip_radii_quantization() {
         turn: None,
         clip_radii: Some([-71.3, -13.1, 0.0, -40.7]),
     }];
-    check(&mut gpu, &coarse, 2);
+    check(&mut gpu, &coarse);
 }
 
 #[test]
@@ -244,7 +244,7 @@ fn cpu_gpu_layer_expansion_offscreen_turns_and_scissor_inline() {
         },
         Instance::end_layer(),
     ];
-    check(&mut gpu, &from_instances(64, 64, &expanded), 2);
+    check(&mut gpu, &from_instances(64, 64, &expanded));
 
     // 2. Uncached layer with empty initial rect [24, 24, 0, 0].
     let empty_seed = [
@@ -269,7 +269,7 @@ fn cpu_gpu_layer_expansion_offscreen_turns_and_scissor_inline() {
         },
         Instance::end_layer(),
     ];
-    check(&mut gpu, &from_instances(64, 64, &empty_seed), 2);
+    check(&mut gpu, &from_instances(64, 64, &empty_seed));
 
     // 3. Turned layer whose upright content starts at x < 0 and rotates into the viewport.
     let offscreen_turn = [
@@ -284,7 +284,7 @@ fn cpu_gpu_layer_expansion_offscreen_turns_and_scissor_inline() {
         },
         Instance::end_layer(),
     ];
-    check(&mut gpu, &from_instances(64, 64, &offscreen_turn), 2);
+    check(&mut gpu, &from_instances(64, 64, &offscreen_turn));
 
     // 4. Integer-clipped opaque layer (`Disposition::Inline` with hardware scissor) with overlapping children.
     let mut scissored_inner = Instance::begin_layer(
@@ -311,7 +311,7 @@ fn cpu_gpu_layer_expansion_offscreen_turns_and_scissor_inline() {
         Instance::end_layer(),
         Instance::end_layer(),
     ];
-    check(&mut gpu, &from_instances(64, 64, &scissored), 2);
+    check(&mut gpu, &from_instances(64, 64, &scissored));
 }
 
 #[test]
@@ -332,7 +332,7 @@ fn cpu_gpu_effect_slot_with_mark_and_legacy_glyph_radii() {
         params: [0.0, KIND_RECT, 0.0, 1.0],
         ..zero_instance()
     };
-    check(&mut gpu, &from_instances(64, 64, &[bg, slot]), 2);
+    check(&mut gpu, &from_instances(64, 64, &[bg, slot]));
 
     // A legacy glyph primitive with non-zero radii and params[2] must still render via page-0 atlas.
     let mut glyph_scene = generate::scene(&[]);
@@ -354,7 +354,7 @@ fn cpu_gpu_effect_slot_with_mark_and_legacy_glyph_radii() {
     let inst = Instance::from(&glyph_scene.primitives[0]);
     assert_eq!(inst.radii, [0.0; 4]);
     assert_eq!(inst.params[2], 0.0);
-    check(&mut gpu, &glyph_scene, 2);
+    check(&mut gpu, &glyph_scene);
 }
 
 #[test]
@@ -383,5 +383,5 @@ fn cpu_gpu_nested_cutout_circles_match_reference() {
         rune::Env::new(true, 1.0),
     );
     rt.frame(0.0);
-    check(&mut gpu, &from_instances(96, 48, &rt.instances), 2);
+    check(&mut gpu, &from_instances(96, 48, &rt.instances));
 }

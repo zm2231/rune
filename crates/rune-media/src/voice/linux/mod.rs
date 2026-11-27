@@ -14,7 +14,7 @@ pub(super) fn check() -> Result<(), VoiceError> {
     if pulse::available() || alsa::available() {
         Ok(())
     } else {
-        Err(VoiceError::OpenFailed("neither libpulse-simple.so.0 nor libasound.so.2 could be loaded".into()))
+        Err(VoiceError::OpenFailed("neither libpulse.so.0 nor libasound.so.2 could be loaded".into()))
     }
 }
 

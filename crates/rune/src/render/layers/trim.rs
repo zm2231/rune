@@ -8,7 +8,7 @@ mod tests;
 impl Renderer {
     /// After [`Runtime::trim_memory`](crate::Runtime::trim_memory) on the runtime whose glyph
     /// `atlas` (`rt.text.atlas`) and `images` (`rt.images`) these are: gives back what a
-    /// window at rest gives back ([`Renderer::give_back`]: the [`El::cache`](crate::El::cache)
+    /// window at rest gives back (`Renderer::give_back`: the [`El::cache`](crate::El::cache)
     /// textures no layer drew last frame, which `atlas` is told are gone, every spare layer
     /// target, and the backdrop copies and blur pyramid when the last frame read none), and
     /// then the textures of the glyph and image pages the runtime gave back, in the trim itself:

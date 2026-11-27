@@ -184,6 +184,7 @@ fn close_request_defer_and_poll_hidden_title_work_while_latched_without_redraw()
         turn_scope: None,
         keep_layout: None,
         kept_layout: None,
+        member: None,
     };
 
     // Simulate latch wake: window_error is set before poll_hidden runs, and Tx::set_title lands.

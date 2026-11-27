@@ -90,6 +90,7 @@ pub(crate) struct CxCore {
     pub(super) layout: layout_read::LayoutRects,
     pub(super) layout_reads: std::cell::RefCell<layout_read::LayoutReads>,
     pub(super) provided: super::provided::Stack,
+    pub(super) window: Option<std::sync::Arc<str>>,
 }
 
 /// The host's safe-area insets in points, top/right/bottom/left: the browser's on the web,
@@ -132,6 +133,7 @@ impl CxCore {
     }
 
     pub(crate) fn env(&self) -> Env { self.env }
+    pub(crate) fn window_key(&self) -> Option<&str> { self.window.as_deref() }
     pub(crate) fn system_dark(&self) -> bool { self.env.system_dark }
     pub(crate) fn titlebar_inset(&self) -> f32 { self.titlebar_inset }
     pub(crate) fn chrome_insets(&self) -> crate::ChromeInsets { self.chrome }
@@ -248,6 +250,8 @@ impl<S> Cx<S> {
 
     #[inline(always)]
     pub fn env(&self) -> Env { self.core.env() }
+    /// The key of the window this view builds, as [`Tx::window`](crate::Tx::window) gives it.
+    pub fn window(&self) -> Option<&str> { self.core.window_key() }
     #[inline(always)]
     pub fn system_dark(&self) -> bool { self.core.system_dark() }
     /// Points from the window's leading edge to the trailing edge of the macOS traffic lights

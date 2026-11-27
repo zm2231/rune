@@ -943,6 +943,20 @@ app.run();
   window entering an output at scale 1 with no resize or scale event. Unchanged samples run
   nothing and draw nothing. Opting in queries size, scale and output on every idle turn (on X11
   the size query waits on the server); headless tooling and the web don't call it.
+- Several windows over one state: `SharedState::new(state)` (or `with_placeholder(state,
+  make)` for a state with no cheap `Default`) given to each window with
+  `WindowSpec::shared(&shared)`. Each window keeps its own view, focus, layout, clocks and
+  accessibility tree. The windows take turns: Rune moves the state into a window's runtime for
+  each turn that reaches it (input, a frame, a timer, an update, a menu or accessibility action)
+  and back out when the turn ends, so views and handlers get plain `&S` and `&mut S`. A turn that
+  changed the state (a handler that isn't `Tx::live_only`, a `poll` that returns true, an
+  update) wakes the other windows, which run their views on their next frame; an idle turn wakes
+  nobody. `SharedState::on_enter(|s, key| ..)` and `on_leave` run around each turn with the
+  window's key, for fields that belong to one window (their changes wake no other window, since
+  they run every turn); `Cx::window()` and `Tx::window()` give the
+  key too. `poll` runs in each window's frames, so app-wide polling belongs in one window's
+  `poll` or checks `tx.window()`. On iOS each window is a scene (iPad) or a sheet (iPhone). See
+  `examples/shared-windows`.
 - `AppSpec::min_size` sets the smallest window (None keeps 420×400).
 - `AppHandle::set_dock_icon(bool)` switches macOS between the regular and accessory activation
   policies at runtime.

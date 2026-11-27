@@ -615,6 +615,7 @@ impl RuntimeCore {
         self.commit.reuse.built(self.env.scale, self.paint.srgb_blend(), above_fit_styles);
         self.text.end_commit();
         self.commit.dirty = false;
+        self.commit.shared_dirty = false;
         self.commit.relayout = false;
         self.clear_a11y_activation_build();
         self.tree.aspect_snap.clear();

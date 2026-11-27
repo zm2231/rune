@@ -2,11 +2,11 @@
 //! window keeps drawing. A click outside the picker (macOS shows it as a popover) dismisses it and
 //! reaches the callback exactly once, and hiding the window it shows over answers its share. Where
 //! the picker tracks as a menu instead, the test cancels the menu through AppKit and says so.
-//! With permission to post system events (Accessibility), it then presses a real Escape, a
-//! CoreGraphics key event posted to this process only, first with Rune's window key and then with
-//! the picker's window made key through AppKit, and prints where the key went and whether the
-//! picker answered; those runs only report. Opens windows, so it only runs
-//! with RUNE_GUI_TESTS=1 in a logged-in GUI session.
+//! With permission to post system events (Accessibility), it then presses a real Escape (a
+//! CoreGraphics key event posted to this process only) while a picker shows over Rune's key
+//! window: the picker closes and answers once, and the app never sees that Escape, while the next
+//! Escape, with no picker, reaches it. Opens windows, so it only runs with RUNE_GUI_TESTS=1 in a
+//! logged-in GUI session.
 
 #![allow(unsafe_code)]
 
@@ -36,6 +36,7 @@ mod mac {
     static SECOND_FRAMES: AtomicUsize = AtomicUsize::new(0);
     static TRACKING: AtomicBool = AtomicBool::new(false);
     static ANSWERS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static APP_ESCAPES: AtomicUsize = AtomicUsize::new(0);
 
     thread_local! {
         static MENU: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
@@ -56,6 +57,11 @@ mod mac {
     }
 
     fn second_view(_: &Second, _: &mut Cx<Second>) -> El { el().child(spinner()) }
+
+    fn main_key(_: &mut Main, key: &KeyEvent, _: &mut Tx) -> bool {
+        if key.key == Key::Escape { APP_ESCAPES.fetch_add(1, Ordering::SeqCst); }
+        false
+    }
 
     fn main_poll(_: &mut Main, _: f64, _: &mut Tx) -> bool {
         MAIN_FRAMES.fetch_add(1, Ordering::SeqCst);
@@ -210,31 +216,6 @@ mod mac {
         })
     }
 
-    fn make_picker_key(handle: &AppHandle<Main>) -> bool {
-        on_main(handle, |_, _| {
-            let baseline = BASELINE.with(|b| b.borrow().clone());
-            // SAFETY: main thread (an update); a live, visible window of the app.
-            unsafe {
-                let Some(picker) = windows().into_iter().filter(|w| !baseline.contains(w)).find(|&w| {
-                    let visible: bool = msg_send![w as *mut AnyObject, isVisible];
-                    visible
-                }) else { return false };
-                let _: () = msg_send![picker as *mut AnyObject, makeKeyWindow];
-                true
-            }
-        })
-    }
-
-    fn escape(handle: &AppHandle<Main>, when: &str) -> bool {
-        let before = answers().len();
-        println!("share_macos: real Escape ({when}): key window {}", key_window(handle));
-        real_escape_key();
-        let answered = wait("an answer to Escape", Duration::from_secs(2), || answers().len() > before);
-        println!("share_macos: real Escape ({when}): answered {answered}, {} picker window(s) on screen, key window now {}",
-            picker_windows(handle), key_window(handle));
-        answered
-    }
-
     fn real_escape(handle: &AppHandle<Main>) {
         // SAFETY: takes no arguments and has no preconditions.
         if !unsafe { CGPreflightPostEventAccess() } {
@@ -245,20 +226,19 @@ mod mac {
         std::thread::sleep(Duration::from_millis(300));
         open_picker(handle);
         std::thread::sleep(Duration::from_millis(300));
-        println!("share_macos: real Escape: this app frontmost {frontmost}");
-        let count = answers().len();
-        if !escape(handle, "Rune's window key") {
-            if make_picker_key(handle) {
-                std::thread::sleep(Duration::from_millis(300));
-                escape(handle, "the picker's window made key through AppKit");
-            } else {
-                println!("share_macos: no picker window to make key");
-            }
-            if answers().len() == count { click_outside(handle); }
-        }
-        assert!(wait("the picker's answer", Duration::from_secs(3), || answers().len() == count + 1), "the picker never answered");
+        let (count, escapes) = (answers().len(), APP_ESCAPES.load(Ordering::SeqCst));
+        println!("share_macos: real Escape: this app frontmost {frontmost}, key window {}", key_window(handle));
+        real_escape_key();
+        let answered = wait("an answer to Escape", Duration::from_secs(2), || answers().len() > count);
+        println!("share_macos: real Escape: answered {answered}, {} picker window(s) on screen, key window now {}", picker_windows(handle), key_window(handle));
+        assert!(answered, "Escape didn't close the share picker");
         std::thread::sleep(Duration::from_millis(300));
-        assert_eq!(answers()[count..], ["Ok(None)"], "the picker's dismissal answered once with none: {:?}", answers());
+        assert_eq!(answers()[count..], ["Ok(None)"], "Escape answers the share once with none: {:?}", answers());
+        assert!(wait("the picker to leave the screen", Duration::from_secs(2), || picker_windows(handle) == 0), "the picker stayed on screen after Escape");
+        assert_eq!(APP_ESCAPES.load(Ordering::SeqCst), escapes, "the Escape that closed the picker reached the app");
+
+        real_escape_key();
+        assert!(wait("the app's Escape", Duration::from_secs(2), || APP_ESCAPES.load(Ordering::SeqCst) == escapes + 1), "with no picker, Escape didn't reach the app");
     }
 
     fn open_picker(handle: &AppHandle<Main>) {
@@ -275,7 +255,7 @@ mod mac {
         }
         std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(90)); eprintln!("timeout"); std::process::exit(2) });
         rune::orderly_exit();
-        let spec = AppSpec { poll: Some(main_poll), ..AppSpec::new("share", (320.0, 160.0), || Main, main_view) };
+        let spec = AppSpec { poll: Some(main_poll), on_key: Some(main_key), ..AppSpec::new("share", (320.0, 160.0), || Main, main_view) };
         let (ready_tx, ready_rx) = mpsc::channel();
         let mut app = App::new(spec).args(Vec::new()).on_ready(move |_| { ready_tx.send(()).ok(); });
         let handle = app.handle();

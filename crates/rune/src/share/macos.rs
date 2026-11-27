@@ -2,8 +2,9 @@
 //! content view, which macOS shows as a popover. The picker answers when the user chooses a
 //! service, with its title, or dismisses the popover (a click outside it), with none. It opens
 //! from a run-loop block after the winit handler returns (`platform::macos::run_later`), so every
-//! window keeps drawing while it shows. A window hidden or closed under it answers its share
-//! itself (`RuntimeCore::cancel_shares`).
+//! window keeps drawing while it shows. Escape closes it, with none, though the key goes to the
+//! Rune window under it rather than to the popover; neither that press nor its release reaches the
+//! app. A window hidden or closed under it answers its share itself (`RuntimeCore::cancel_shares`).
 
 #![allow(unsafe_code)]
 
@@ -11,7 +12,7 @@ use std::cell::RefCell;
 
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyObject, NSObject};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, msg_send};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, msg_send, sel};
 use objc2_app_kit::NSWindow;
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSString, NSURL};
@@ -48,13 +49,42 @@ define_class!(
 );
 
 struct Showing {
-    _picker: Retained<AnyObject>,
+    picker: Retained<AnyObject>,
     delegate: Retained<Delegate>,
     host: Retained<NSWindow>,
 }
 
 thread_local! {
     static SHOWING: RefCell<Vec<Showing>> = const { RefCell::new(Vec::new()) };
+    static ESCAPED: RefCell<Vec<Retained<NSWindow>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Closes the share pickers open over `window` when Escape is pressed there, and holds back that
+/// press and its release: true when the key is the picker's, not the app's.
+pub(crate) fn escape(window: &winit::window::Window, pressed: bool) -> bool {
+    let Some(host) = crate::platform::macos::content_view(window).and_then(|view| view.window()) else { return false };
+    let mine = |w: &NSWindow| std::ptr::eq(w, &*host);
+    if !pressed {
+        return ESCAPED.with(|escaped| {
+            let mut escaped = escaped.borrow_mut();
+            let held = escaped.iter().any(|w| mine(w));
+            escaped.retain(|w| !mine(w));
+            held
+        });
+    }
+    let open: Vec<Retained<AnyObject>> = SHOWING.with(|showing| showing.borrow().iter()
+        .filter(|s| mine(&s.host) && s.delegate.ivars().borrow().is_some())
+        .map(|s| s.picker.clone()).collect());
+    // SAFETY: `respondsToSelector:` takes a selector and returns a `BOOL`; `close` takes no
+    // arguments and answers the delegate with no service.
+    let open: Vec<_> = open.into_iter().filter(|picker| unsafe { msg_send![&**picker, respondsToSelector: sel!(close)] }).collect();
+    if open.is_empty() { return false; }
+    for picker in &open {
+        // SAFETY: as above.
+        unsafe { let _: () = msg_send![&**picker, close]; }
+    }
+    ESCAPED.with(|escaped| escaped.borrow_mut().push(host));
+    true
 }
 
 /// Shows `shown` over `window`'s content view once the current winit handler returns. A
@@ -90,7 +120,7 @@ pub(crate) fn show(shown: Shown, window: &winit::window::Window) {
         SHOWING.with(|showing| {
             let mut showing = showing.borrow_mut();
             showing.retain(|s| s.host.isVisible());
-            showing.push(Showing { _picker: picker.clone(), delegate, host });
+            showing.push(Showing { picker: picker.clone(), delegate, host });
         });
         // SAFETY: `bounds` is a rect and `isFlipped` a `BOOL` of the view, and the picker shows
         // relative to a rect in it.

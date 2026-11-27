@@ -11,7 +11,7 @@ use std::time::Duration;
 /// app turns that off, so the window renders with the pipeline compiled here.
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
-struct Prewarmed(Gpu, WarmRenderer);
+pub(super) struct Prewarmed(Gpu, WarmRenderer);
 
 pub(crate) const PARKED: Duration = Duration::from_secs(5 * 60);
 
@@ -127,49 +127,75 @@ impl Slot {
 }
 
 static GLOBAL: Slot = Slot::new();
-static PARKED_GPU: WarmSlot<Prewarmed, SystemClock> = WarmSlot::new(SystemClock);
+
+pub(super) type Parked = WarmSlot<Prewarmed, SystemClock>;
+
+#[cfg(not(test))]
+static PARKED_GPU: Parked = WarmSlot::new(SystemClock);
+
+#[cfg(not(test))]
+fn parked() -> &'static Parked { &PARKED_GPU }
+
+#[cfg(test)]
+thread_local! {
+    static PARKED_GPU: &'static Parked = Box::leak(Box::new(WarmSlot::new(SystemClock)));
+}
+
+#[cfg(test)]
+pub(super) fn parked() -> &'static Parked { PARKED_GPU.with(|slot| *slot) }
 
 pub(super) fn start() { GLOBAL.start(); }
 
 pub(super) fn take() -> Option<(Gpu, Renderer)> {
-    take_parked().or_else(|| GLOBAL.take())
+    take_from(parked(), &GLOBAL)
 }
 
+pub(super) fn take_from(parked: &Parked, prewarm: &Slot) -> Option<(Gpu, Renderer)> {
+    match parked.take() {
+        Some(Prewarmed(gpu, renderer)) => {
+            prewarm.discard();
+            Some((gpu, Renderer::from_warm(renderer)))
+        }
+        None => prewarm.take(),
+    }
+}
+
+#[cfg(test)]
 pub(super) fn take_parked() -> Option<(Gpu, Renderer)> {
-    PARKED_GPU.take().map(|Prewarmed(gpu, renderer)| (gpu, Renderer::from_warm(renderer)))
+    parked().take().map(|Prewarmed(gpu, renderer)| (gpu, Renderer::from_warm(renderer)))
 }
 
 pub(crate) fn park(gpu: Gpu, mut renderer: Renderer, linger: Duration) {
-    if gpu.is_lost() || PARKED_GPU.is_stopped() { return; }
+    let slot = parked();
+    if gpu.is_lost() || slot.is_stopped() { return; }
     renderer.clear_for_park();
     gpu.queue.submit(std::iter::empty());
     rune_gpu::health::poll(&gpu.device, wgpu::PollType::wait_indefinitely()).ok();
     let Some(renderer) = renderer.into_warm() else { return };
-    PARKED_GPU.park(&PARKED_GPU, Prewarmed(gpu, renderer), linger);
+    slot.park(slot, Prewarmed(gpu, renderer), linger);
 }
 
 pub(super) fn restart() {
-    PARKED_GPU.discard();
+    parked().discard();
     GLOBAL.restart();
 }
 #[cfg_attr(test, allow(dead_code))]
 pub(super) fn discard() {
-    PARKED_GPU.discard();
+    parked().discard();
     GLOBAL.discard();
 }
 pub(super) fn cancel() {
-    PARKED_GPU.cancel();
+    parked().cancel();
     GLOBAL.discard();
 }
 pub(super) fn shutdown(timeout: Duration) -> ShutdownOutcome {
-    let parked = PARKED_GPU.shutdown(timeout);
-    match (parked, GLOBAL.shutdown(timeout)) {
+    match (parked().shutdown(timeout), GLOBAL.shutdown(timeout)) {
         (ShutdownOutcome::TimedOut { remaining: a }, ShutdownOutcome::TimedOut { remaining: b }) => ShutdownOutcome::TimedOut { remaining: a + b },
         (ShutdownOutcome::TimedOut { remaining }, _) | (_, ShutdownOutcome::TimedOut { remaining }) => ShutdownOutcome::TimedOut { remaining },
         _ => ShutdownOutcome::Drained,
     }
 }
 pub(super) fn reopen() {
-    PARKED_GPU.reopen();
+    parked().reopen();
     GLOBAL.reopen();
 }

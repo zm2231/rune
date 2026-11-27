@@ -26,7 +26,7 @@ use objc2::{
     sel,
 };
 use objc2_app_kit::{
-    NSApplication, NSBitmapFormat, NSBitmapImageRep, NSButton, NSCellImagePosition, NSColorSpace,
+    NSAccessibility, NSApplication, NSBitmapFormat, NSBitmapImageRep, NSButton, NSCellImagePosition, NSColorSpace,
     NSControl, NSDeviceRGBColorSpace, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType,
     NSFont, NSFontWeightRegular, NSImage, NSImageScaling, NSMenu, NSMenuDelegate, NSMenuItem,
     NSResponder, NSScreen, NSStatusBar, NSStatusBarButton, NSStatusItem, NSVariableStatusItemLength,
@@ -42,6 +42,7 @@ use super::{
 const DEFAULT_BAR_THICKNESS: f64 = 22.0;
 
 struct Model {
+    identifier: String,
     accessibility_label: String,
     title: String,
     tooltip: String,
@@ -59,6 +60,7 @@ trait StatusItemHost: 'static {
     fn set_image(&self, image: &NSImage);
     fn set_title(&self, title: &str);
     fn set_tooltip(&self, tooltip: Option<&str>);
+    fn set_accessibility(&self, identifier: &str, label: &str);
     fn set_highlighted(&self, highlighted: bool);
     fn screen_rect(&self, mtm: MainThreadMarker) -> Option<[i32; 4]>;
     fn set_menu(&self, menu: Option<&NSMenu>);
@@ -126,6 +128,12 @@ impl StatusItemHost for SystemStatusItem {
     fn set_tooltip(&self, tooltip: Option<&str>) {
         let tip = tooltip.filter(|s| !s.is_empty()).map(NSString::from_str);
         self.button.setToolTip(tip.as_deref());
+    }
+
+    fn set_accessibility(&self, identifier: &str, label: &str) {
+        self.button.setAccessibilityIdentifier(Some(&NSString::from_str(identifier)));
+        let label = non_empty(label).map(NSString::from_str);
+        self.button.setAccessibilityLabel(label.as_deref());
     }
 
     fn set_highlighted(&self, highlighted: bool) {
@@ -573,6 +581,11 @@ fn install_native(
     image: &NSImage,
 ) -> Native {
     host.set_image(image);
+    let (identifier, label) = {
+        let m = model.lock().unwrap_or_else(|e| e.into_inner());
+        (m.identifier.clone(), m.accessibility_label.clone())
+    };
+    host.set_accessibility(&identifier, &label);
     let initial_tip = model.lock().unwrap_or_else(|e| e.into_inner()).tooltip.clone();
     host.set_tooltip(non_empty(&initial_tip));
     model.lock().unwrap_or_else(|e| e.into_inner()).rect = host.screen_rect(mtm);
@@ -633,12 +646,13 @@ fn apply_title(id: u64, mtm: MainThreadMarker) {
 
 fn apply_icon(id: u64, mtm: MainThreadMarker) -> Result<(), TrayError> {
     let Some((host, model)) = live_entry(id) else { return Ok(()) };
-    let (icon, thickness, label) = {
+    let (icon, thickness, identifier, label) = {
         let m = model.lock().unwrap_or_else(|e| e.into_inner());
-        (m.icon.clone(), m.thickness, m.accessibility_label.clone())
+        (m.icon.clone(), m.thickness, m.identifier.clone(), m.accessibility_label.clone())
     };
     let image = make_image(&icon, thickness, &label)?;
     host.set_image(&image);
+    host.set_accessibility(&identifier, &label);
     reapply_highlight(id);
     model.lock().unwrap_or_else(|e| e.into_inner()).rect = host.screen_rect(mtm);
     Ok(())
@@ -693,6 +707,7 @@ impl Native {
         let image = make_image(&spec.icon, thickness, &label)?;
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let model = Arc::new(Mutex::new(Model {
+            identifier: spec.id,
             accessibility_label: label,
             title: String::new(),
             tooltip: spec.tooltip,

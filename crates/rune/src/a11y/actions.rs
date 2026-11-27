@@ -26,6 +26,7 @@ pub(crate) enum A11yAct {
     /// Pages (or, with `false`, lines) down and right.
     Scroll { x: i32, y: i32, pages: bool },
     ScrollTo(f32, f32),
+    SetExpanded(bool),
     /// Delegate an unhandled element action to the nearest ancestor `El::on_a11y_action`.
     Delegate { target_key: String, action: Ak },
 }
@@ -43,6 +44,7 @@ impl std::fmt::Debug for A11yAct {
             Self::ScrollIntoView => f.write_str("ScrollIntoView"),
             Self::Scroll { x, y, pages } => f.debug_struct("Scroll").field("x", x).field("y", y).field("pages", pages).finish(),
             Self::ScrollTo(x, y) => f.debug_tuple("ScrollTo").field(x).field(y).finish(),
+            Self::SetExpanded(open) => f.debug_tuple("SetExpanded").field(open).finish(),
             Self::Delegate { target_key, action } => f.debug_struct("Delegate").field("target_key", target_key).field("action", action).finish(),
         }
     }
@@ -81,6 +83,8 @@ impl RuntimeCore {
             enabled && n.scroll.is_some(),
         );
         let focusable = self.can_focus(i);
+        let sets_expanded = enabled && expanded.is_some() && n.focus.set_expanded.is_some();
+        let shows_popup = expanded == Some(false) && (sets_expanded || pressable) && self.opens_popup(i);
         match (request.action, link) {
             (Ak::Click, Some(k)) if enabled => self.queue_a11y_link(path, k),
             (Ak::ShowContextMenu, Some(k)) if enabled => {
@@ -92,11 +96,23 @@ impl RuntimeCore {
             (Ak::Click, None) if pressable => self.queue_a11y_press(path),
             (Ak::Click, None) if input => self.queue_a11y(path, A11yAct::Focus(None)),
             (Ak::Focus, None) if focusable => self.queue_a11y(path, A11yAct::Focus(None)),
+            (Ak::Expand | Ak::Collapse, None) if sets_expanded => {
+                let open = request.action == Ak::Expand;
+                if expanded == Some(open) { return false; }
+                self.queue_a11y(path, A11yAct::SetExpanded(open));
+            }
             (Ak::Expand | Ak::Collapse, None) if pressable && expanded.is_some() => {
                 if expanded == Some(request.action == Ak::Collapse) {
                     self.queue_a11y_press(path);
                 } else {
                     return false;
+                }
+            }
+            (Ak::ShowContextMenu, None) if shows_popup && !secondary => {
+                if sets_expanded {
+                    self.queue_a11y(path, A11yAct::SetExpanded(true));
+                } else {
+                    self.queue_a11y_press(path);
                 }
             }
             (Ak::ShowContextMenu, None) if secondary => {
@@ -196,6 +212,10 @@ impl RuntimeCore {
         true
     }
 
+    pub(crate) fn opens_popup(&self, i: usize) -> bool {
+        self.tree.nodes[i].a11y.more.as_deref().is_some_and(|m| m.has_popup.is_some())
+    }
+
     /// Nearest live, enabled, allowed strict ancestor of `i` with `El::on_a11y_action`.
     pub(crate) fn a11y_action_ancestor(&self, i: usize) -> Option<usize> {
         std::iter::successors(self.tree.nodes[i].parent, |&j| self.tree.nodes[j].parent)
@@ -292,6 +312,12 @@ impl RuntimeCore {
             }
             A11yAct::ScrollTo(x, y) => {
                 tx.scroll_to_instant(path, x, y);
+                true
+            }
+            A11yAct::SetExpanded(open) => {
+                let Some(f) = self.node(&path).and_then(|n| n.focus.set_expanded.clone()) else { return false };
+                log_event!(self, "a11y set_expanded {open} {path}");
+                f(app.states(), open, tx);
                 true
             }
             A11yAct::Delegate { target_key, action } => {

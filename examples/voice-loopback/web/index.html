@@ -15,11 +15,11 @@ button { font-size: 15px; padding: 6px 14px }
 </style>
 <h1>voice-loopback</h1>
 <p>Plays a 200 ms noise burst every 2 s through the speaker and reads the echo-cancelled microphone.
-With loopback on, the microphone also plays back 300 ms late.</p>
+With loopback on, the microphone also plays back 300 ms late, plus the devices' own latency.</p>
 <ol>
 <li>Use the computer's own speakers, not headphones, at a normal volume.</li>
 <li>Stay quiet for 10 s: <b>burst echo</b> should settle well below 0 dB re burst (−30 dB or lower means the echo is gone). Near 0 dB means none was removed.</li>
-<li>With loopback on, talk: you hear yourself once, 300 ms late. A repeating echo or a howl means echo is getting through.</li>
+<li>With loopback on, talk: you hear yourself once, 300 ms late plus the devices' latency. A repeating echo or a howl means echo is getting through.</li>
 <li><b>late</b> counts speaker frames lost because the page's main thread was busy; it should stay at or near 0.</li>
 </ol>
 <p><label><input type="checkbox" id="loopback" checked> Loop the microphone back to the speaker</label>

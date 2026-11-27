@@ -48,6 +48,9 @@ pub(crate) struct FrameState {
     poll_capped: bool,
     pub(in crate::runtime) queue: ActionQueue,
     pub(in crate::runtime) live: live_latch::LiveLane,
+    /// The fingerprint of the running loops this window's frame log last listed.
+    #[cfg(feature = "frame-profile")]
+    pub(in crate::runtime) fp_loops_seen: std::cell::Cell<u64>,
 }
 
 impl FrameState {
@@ -67,6 +70,8 @@ impl FrameState {
             #[cfg(test)]
             test_clock: None,
             live: live_latch::LiveLane::new(Arc::new(|| {})),
+            #[cfg(feature = "frame-profile")]
+            fp_loops_seen: std::cell::Cell::new(0),
             live_clock: Arc::new(()),
             live_subscriptions: HashMap::default(),
             live_only_skips: 0,

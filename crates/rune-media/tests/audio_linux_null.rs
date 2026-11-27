@@ -215,6 +215,8 @@ mod linux_null_sink {
         // Terminate the container-local PulseAudio daemon mid-playback (via libc::kill so
         // minimal containers without /bin/kill work).
         #[allow(unsafe_code)]
+        // SAFETY: `kill` takes two integers and touches no memory of this process; `pid` is the
+        // PulseAudio daemon the test environment named, not this process or its group.
         let rc = unsafe { libc::kill(pid, libc::SIGKILL) };
         assert_eq!(rc, 0, "libc::kill({pid}, SIGKILL) failed");
 

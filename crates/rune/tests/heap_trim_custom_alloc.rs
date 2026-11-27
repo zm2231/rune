@@ -27,6 +27,9 @@ mod mmap_alloc {
         ps
     }
 
+    // SAFETY: each allocation is its own anonymous mapping, aligned to at least the layout's
+    // alignment and at least its size; `dealloc` unmaps exactly the mapping `alloc` recorded, and
+    // the allocator keeps no shared state besides the cached page size.
     unsafe impl GlobalAlloc for MmapAlloc {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             let size = layout.size().max(1);
@@ -63,7 +66,8 @@ mod mmap_alloc {
         }
 
         unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-            // Anonymous `mmap` pages are already zero-initialized by the kernel.
+            // SAFETY: the caller's `layout` contract passes through to `alloc`; anonymous `mmap`
+            // pages are zero-filled by the kernel.
             unsafe { self.alloc(layout) }
         }
 
@@ -88,6 +92,7 @@ mod mmap_alloc {
             let Ok(new_layout) = Layout::from_size_align(new_size, layout.align()) else {
                 return ptr::null_mut();
             };
+            // SAFETY: `new_layout` was just validated by `Layout::from_size_align`.
             let new_ptr = unsafe { self.alloc(new_layout) };
             if new_ptr.is_null() {
                 return ptr::null_mut();

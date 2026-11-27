@@ -615,7 +615,6 @@ impl Host {
                 if rt.stale() { l.request_redraw(); }
             }
             WindowEvent::KeyboardInput { event, is_synthetic: false, .. } => {
-                if crate::share::escape_closes_picker(&l.window, &event) { return; }
                 let pressed = event.state == ElementState::Pressed;
                 if pressed { crate::marks::input_arrived(true); }
                 if pressed && let Some(text) = crate::platform::ime::take_direct_commit(&l.window) {

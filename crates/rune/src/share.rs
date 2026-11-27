@@ -337,17 +337,5 @@ pub(crate) fn show_in_window(rt: &mut crate::runtime::RuntimeCore, window: Optio
     }
 }
 
-/// True when `event` is Escape for a share picker open over `window`, which it closes; the key
-/// then goes no further.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn escape_closes_picker(window: &winit::window::Window, event: &winit::event::KeyEvent) -> bool {
-    use winit::keyboard::{Key, NamedKey};
-    if event.logical_key != Key::Named(NamedKey::Escape) { return false; }
-    #[cfg(target_os = "macos")]
-    { macos::escape(window, event.state.is_pressed(), event.repeat) }
-    #[cfg(not(target_os = "macos"))]
-    { let _ = window; false }
-}
-
 #[cfg(test)]
 mod tests;

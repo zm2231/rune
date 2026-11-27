@@ -102,6 +102,7 @@ pub use edit::Ime;
 pub use edit::Key;
 pub use edit::KeyEvent;
 pub use edit::KeySide;
+#[doc(hidden)]
 pub use edit::MAC_KEYS;
 pub use edit::MAX_LIST_LEVEL;
 pub use edit::Mark;

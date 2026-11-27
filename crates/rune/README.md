@@ -426,7 +426,7 @@ Rune's core crate: views, layout, animation, rendering, text and the native shel
   visual line edges (keeping Cmd+Home/End and Ctrl+Home/End on the document's ends) with
   `El::line_home_end(true)` or `TextEdit::set_line_home_end(true)` / `with_line_home_end(true)`.
 - **Periodic and finite loops**: `.looping(rune_motion::LoopSpec::opacity(..))`, `LoopSpec::rotation(period)`
-  (icon quads), `LoopSpec::slide(period, from, to)` (optionally bounded to `n` sweeps with `.loop_times(n)`,
+  (icon quads; `.fps(60.0)` steps it on a timer instead of every display frame), `LoopSpec::slide(period, from, to)` (optionally bounded to `n` sweeps with `.loop_times(n)`,
   resting at `to` and sleeping once finished), and `El::sequence(Sequence::new(BEATS).repeating())`.
   Tracks use animation time, preserve phase when retimed and only request frames
   while visible through ancestor clips. Removal cools smoothly via amplitude. Reduced

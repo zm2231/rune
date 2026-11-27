@@ -13,12 +13,16 @@ pub struct Cycle {
     pub fps: f32,
 }
 
+pub(crate) fn step_interval(fps: f32) -> Option<f64> {
+    (fps != Cycle::DISPLAY_RATE).then(|| f64::from(1.0 / fps.max(1.0)))
+}
+
 impl Cycle {
     /// Sample on the host's display frames, without arming an independent timer.
     pub const DISPLAY_RATE: f32 = 0.0;
 
     pub(crate) fn frame_interval(self) -> Option<f64> {
-        (self.fps != Self::DISPLAY_RATE).then(|| f64::from(1.0 / self.fps.max(1.0)))
+        step_interval(self.fps)
     }
 
     pub fn sample(&self, t: f64) -> f32 {

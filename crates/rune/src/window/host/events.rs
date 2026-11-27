@@ -380,6 +380,8 @@ impl Host {
         if matches!(event, WindowEvent::Resized(size) if size.width == 0 || size.height == 0) { self.rest_step(RestEvent::Unseen); }
         if let WindowEvent::Occluded(occluded) = event {
             crate::marks::mark(if occluded { "window.covered" } else { "window.uncovered" });
+            #[cfg(all(debug_assertions, target_os = "macos"))]
+            eprintln!("rune: AppKit says the window is {}", if occluded { "occluded" } else { "visible" });
             // Alpha-zero launcher panels remain renderable on explicit invalidation.
             // Their native occlusion transitions must not settle or redraw a reveal.
             if !(self.macos_window.launcher && cfg!(target_os = "macos")) { self.set_cover(Cover::System, occluded); }

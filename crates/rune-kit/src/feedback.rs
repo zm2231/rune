@@ -74,8 +74,8 @@ static ARC: Icon = Icon {
 };
 
 /// The v2 loader, for loading that isn't AI activity (`Loader`): a 2-unit ring at 0.2 with a
-/// third of it, round-capped from 12 o'clock, turning once every 900 ms; it stops at 12 o'clock
-/// under reduced motion. 16 points by default, in `icon_muted`.
+/// third of it, round-capped from 12 o'clock, turning once every 900 ms in 60 steps a second; it
+/// stops at 12 o'clock under reduced motion. 16 points by default, in `icon_muted`.
 pub struct Loader {
     size: f32,
     color: Option<Color>,
@@ -100,7 +100,7 @@ impl Loader {
             .label("Loading")
             .size(self.size, self.size)
             .child(icon(&RING, self.size).absolute(0.0, 0.0).color(ink).opacity(0.2))
-            .child(icon(&ARC, self.size).absolute(0.0, 0.0).color(ink).looping(rune_motion::LoopSpec::rotation(0.9)))
+            .child(icon(&ARC, self.size).absolute(0.0, 0.0).color(ink).looping(rune_motion::LoopSpec::rotation(0.9).fps(60.0)))
     }
 }
 

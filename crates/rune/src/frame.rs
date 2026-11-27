@@ -4,6 +4,8 @@ pub(crate) mod host_clock;
 pub(crate) mod host_step;
 #[cfg(feature = "frame-profile")]
 pub(crate) mod live_log;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod loop_frame;
 pub(crate) mod present_time;
 pub(crate) mod presented;
 #[cfg(target_os = "macos")]

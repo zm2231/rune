@@ -494,6 +494,7 @@ impl RuntimeCore {
         } else {
             clip
         };
+        let content_start = self.instances.len();
         self.paint_content(
             i,
             paint_content::LeafBox {
@@ -533,6 +534,9 @@ impl RuntimeCore {
             mark_ranges,
             glyph_count,
         );
+        if !isolate && !in_cache && !skip_paint && loop_vis && !turned && !gliding && cover.is_none() && scale_motion == ScaleMotion::Still {
+            self.record_turn(i, content_start);
+        }
         faded_slot
     }
 }

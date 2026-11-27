@@ -878,7 +878,13 @@ impl Renderer {
     }
 
     pub(super) fn encode_layers_timed(&self, encoder: &mut wgpu::CommandEncoder, timestamps: Option<&wgpu::RenderPassTimestampWrites<'_>>, hook: &mut EffectBackdropHook<'_>) {
-        self.flush_uploads(encoder);
+        {
+            #[cfg(feature = "frame-profile")]
+            let _part = crate::frame::encode_parts::Scope::new(crate::frame::encode_parts::Part::Prepare);
+            self.flush_uploads(encoder);
+        }
+        #[cfg(feature = "frame-profile")]
+        let _part = crate::frame::encode_parts::Scope::new(crate::frame::encode_parts::Part::Layers);
         let mut first = true;
         for (index, l) in self.layers.plan.iter().enumerate().rev() {
             let disposition = self.layers.planner.dispositions.get(index).copied().unwrap_or(Disposition::Skip);

@@ -1,4 +1,6 @@
 pub(crate) mod clock;
+#[cfg(feature = "frame-profile")]
+pub(crate) mod encode_parts;
 pub(crate) mod encoded;
 pub(crate) mod host_clock;
 pub(crate) mod host_step;

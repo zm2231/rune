@@ -722,6 +722,8 @@ impl Renderer {
     fn draw_load(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, load: wgpu::LoadOp<wgpu::Color>, timestamps: Option<wgpu::RenderPassTimestampWrites<'_>>) {
         let timestamps = timestamps.or_else(|| self.surfaces.as_ref().and_then(|s| s.timestamp_writes()));
         self.encode_layers_timed(encoder, timestamps.as_ref(), &mut |_, _| {});
+        #[cfg(feature = "frame-profile")]
+        let _part = crate::frame::encode_parts::Scope::new(crate::frame::encode_parts::Part::Pass);
         let timestamps = timestamps.map(|mut t| {
             if self.layer_stats().extra_passes > 0 { t.beginning_of_pass_write_index = None; }
             t

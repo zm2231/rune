@@ -1,5 +1,6 @@
 #![allow(unsafe_code)]
 
+use crate::platform::objc_boundary::guarded;
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyClass, AnyObject, NSObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, extern_class, msg_send};
@@ -37,19 +38,19 @@ define_class!(
 
     impl SelectionRect {
         #[unsafe(method(rect))]
-        fn rect(&self) -> CGRect { self.ivars().rect }
+        fn rect(&self) -> CGRect { guarded("rect", || { self.ivars().rect }) }
 
         #[unsafe(method(writingDirection))]
-        fn writing_direction(&self) -> isize { WRITING_NATURAL }
+        fn writing_direction(&self) -> isize { guarded("writingDirection", || { WRITING_NATURAL }) }
 
         #[unsafe(method(containsStart))]
-        fn contains_start(&self) -> bool { self.ivars().start }
+        fn contains_start(&self) -> bool { guarded("containsStart", || { self.ivars().start }) }
 
         #[unsafe(method(containsEnd))]
-        fn contains_end(&self) -> bool { self.ivars().end }
+        fn contains_end(&self) -> bool { guarded("containsEnd", || { self.ivars().end }) }
 
         #[unsafe(method(isVertical))]
-        fn is_vertical(&self) -> bool { false }
+        fn is_vertical(&self) -> bool { guarded("isVertical", || { false }) }
     }
 );
 

@@ -143,6 +143,7 @@ pub(crate) trait Surface {
 
     fn takes_touch(&self, control: &Control, x: f32, y: f32) -> bool;
     fn take_overlays(&mut self) -> Vec<OverlaySlot>;
+    fn runtime_any(&mut self) -> &mut dyn std::any::Any;
     fn set_window(&mut self, key: String);
     fn close(&mut self);
 }
@@ -150,6 +151,7 @@ pub(crate) trait Surface {
 pub(crate) struct OverlaySlot {
     pub(crate) control: Rc<RefCell<Control>>,
     pub(crate) mount: Mount,
+    pub(crate) after_hidden: crate::overlay::ios::AfterHidden,
 }
 
 pub(super) struct Hosted<S: 'static> {
@@ -529,6 +531,8 @@ impl<S: 'static> Surface for Hosted<S> {
     fn takes_touch(&self, control: &Control, x: f32, y: f32) -> bool {
         control.takes(self.host.runtime().hit_regions(), x, y)
     }
+
+    fn runtime_any(&mut self) -> &mut dyn std::any::Any { self.host.runtime_mut() }
 
     fn take_overlays(&mut self) -> Vec<OverlaySlot> {
         match &mut self.role {

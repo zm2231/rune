@@ -1,7 +1,10 @@
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+pub(crate) use super::hidden_queue::{AfterHidden, Turn};
 use super::requests::{KeyRequest, Visibility};
 use super::{Availability, OverlayHandle, Placement, Shared, SharedCore};
 use crate::compose::Compositor;
@@ -13,14 +16,17 @@ use crate::{ConfiguredOverlay, KeyPolicy, OverlayCapabilities, OverlayInput, Ove
 
 pub(crate) struct Built<T: 'static> {
     pub(crate) name: &'static str,
-    pub(crate) rt: Runtime<T>,
+    pub(crate) rt: Unmounted<T>,
     pub(crate) compositor: Option<Box<dyn Compositor<T>>>,
     pub(crate) setup: Option<fn(&mut T, Waker)>,
     pub(crate) on_availability: Option<fn(&mut T, Availability, &mut Tx)>,
     pub(crate) feed: Feed<T>,
     pub(crate) control: Control,
+    pub(crate) after_hidden: AfterHidden,
     pub(crate) inherits_font_smoothing: bool,
 }
+
+use super::hidden_queue::Unmounted;
 
 pub(crate) trait Pending {
     fn inherit_font_smoothing(&mut self, mode: crate::FontSmoothing);
@@ -29,7 +35,8 @@ pub(crate) trait Pending {
 
 impl<T: 'static> Pending for Built<T> {
     fn inherit_font_smoothing(&mut self, mode: crate::FontSmoothing) {
-        if self.inherits_font_smoothing { self.rt.set_font_smoothing(mode); }
+        if !self.inherits_font_smoothing { return; }
+        if let Some(rt) = self.rt.borrow_mut().as_mut() { rt.set_font_smoothing(mode); }
     }
 
     fn into_slot(self: Box<Self>) -> crate::platform::ios::OverlaySlot { crate::platform::ios::overlay_slot(*self) }
@@ -89,6 +96,8 @@ impl Control {
         self.core.wake();
     }
 
+    pub(crate) fn wake(&self) { self.core.wake(); }
+
     pub(crate) fn take(&mut self) -> Changes {
         let mut q = std::mem::take(&mut *self.core.requests.lock().unwrap());
         for reply in q.tokens.take() { reply(None); }
@@ -147,6 +156,8 @@ pub(crate) fn build<S, T: 'static>(configured: ConfiguredOverlay<T>, state: T, a
         level: options.level,
     };
     let feed = Feed { shared: shared.clone(), sizing: super::sizing::SizingConfig { mode: sizing, min_size, max_size }, placement: options.placement, size: spec.size };
-    let built = Built { name: spec.name, rt, compositor, setup, on_availability, feed, control, inherits_font_smoothing };
+    let rt = Rc::new(RefCell::new(Some(rt)));
+    let after_hidden = AfterHidden::new(shared.clone(), rt.clone());
+    let built = Built { name: spec.name, rt, compositor, setup, on_availability, feed, control, after_hidden, inherits_font_smoothing };
     (built, OverlayHandle { shared })
 }

@@ -56,8 +56,9 @@ pub(crate) fn mount<S: 'static>(mut app: App<S>) -> Mount {
 }
 
 pub(crate) fn overlay_slot<T: 'static>(built: Built<T>) -> OverlaySlot {
-    let Built { name, rt, compositor, setup, on_availability, feed, control, .. } = built;
+    let Built { name, rt, compositor, setup, on_availability, feed, control, after_hidden, .. } = built;
     let mount: Mount = Box::new(move |layer, size, scale, dark, wake| {
+        let rt = rt.borrow_mut().take().ok_or_else(|| format!("overlay {name} mounted twice"))?;
         // SAFETY: as in `mount`: the overlay's own view owns `layer` and calls this on the
         // main thread.
         let mut host = unsafe { LayerHost::transparent(layer, name, rt, compositor, size, scale, dark, wake.clone())? };
@@ -68,5 +69,5 @@ pub(crate) fn overlay_slot<T: 'static>(built: Built<T>) -> OverlaySlot {
         let role = Role::Overlay(Box::new(OverlayRole { feed }));
         Ok(Box::new(Hosted { host, role, accessibility: AccessibilityLink::with_wake(wake.clone()), wake, title: name, lifecycle: lifecycle::State::default(), field: field_touch::State::default(), appearance: Appearance::new(crate::ColorScheme::System), park: park::State::default() }))
     });
-    OverlaySlot { control: Rc::new(RefCell::new(control)), mount }
+    OverlaySlot { control: Rc::new(RefCell::new(control)), mount, after_hidden }
 }

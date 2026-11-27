@@ -16,7 +16,7 @@ use super::super::surface::{Mount, OverlaySlot};
 use super::RuneView;
 use super::link::MainOnly;
 use crate::machine::{Attempt, Seq};
-use crate::overlay::ios::Control;
+use crate::overlay::ios::{AfterHidden, Control, Turn};
 use crate::platform::main_queue::on_main;
 
 pub(crate) struct Overlay {
@@ -25,6 +25,7 @@ pub(crate) struct Overlay {
     view: Option<Retained<RuneView>>,
     seq: Seq,
     state: overlay::State,
+    after_hidden: AfterHidden,
 }
 
 impl MainOnly {
@@ -49,7 +50,7 @@ impl RuneView {
                 });
             }));
         }
-        let overlays = slots.into_iter().map(|slot| Overlay { control: slot.control, mount: Some(slot.mount), view: None, seq: Seq::default(), state: overlay::State::default() });
+        let overlays = slots.into_iter().map(|slot| Overlay { control: slot.control, mount: Some(slot.mount), view: None, seq: Seq::default(), state: overlay::State::default(), after_hidden: slot.after_hidden });
         self.ivars().overlays.borrow_mut().extend(overlays);
         self.pump_overlays();
     }
@@ -57,6 +58,14 @@ impl RuneView {
     pub(super) fn pump_overlays(&self) {
         let count = self.ivars().overlays.borrow().len();
         for at in 0..count {
+            let turn = self.ivars().overlays.borrow_mut()[at].after_hidden.new_turn();
+            self.after_hidden_turn(at, turn);
+            let turn = {
+                let mut overlays = self.ivars().overlays.borrow_mut();
+                let hidden = overlays[at].state == overlay::State::Hidden;
+                overlays[at].after_hidden.queued(hidden)
+            };
+            self.after_hidden_turn(at, turn);
             let changes = self.ivars().overlays.borrow()[at].control.borrow_mut().take();
             if changes.moved { self.place_overlay(at); }
             if let Some((show, fade)) = changes.visibility {
@@ -70,7 +79,23 @@ impl RuneView {
                 Some(false) => self.take_keys(),
                 None => {}
             }
+            let turn = {
+                let mut overlays = self.ivars().overlays.borrow_mut();
+                let hidden = overlays[at].state == overlay::State::Hidden;
+                if hidden { overlays[at].after_hidden.end_of_turn() } else { Turn::default() }
+            };
+            self.after_hidden_turn(at, turn);
         }
+    }
+
+    fn after_hidden_turn(&self, at: usize, turn: Turn) {
+        if turn.wake { self.ivars().overlays.borrow()[at].control.borrow().wake(); }
+        if !turn.run { return; }
+        let view = self.ivars().overlays.borrow()[at].view.clone();
+        let mut overlays = self.ivars().overlays.borrow_mut();
+        let after_hidden = &mut overlays[at].after_hidden;
+        let ran = view.and_then(|view| view.with_surface(|surface| after_hidden.run(Some(surface.runtime_any()))));
+        if ran.is_none() { after_hidden.run(None); }
     }
 
     fn step_overlay(&self, at: usize, event: Event) {
@@ -80,6 +105,11 @@ impl RuneView {
             overlay::step(&mut overlay.seq, &mut overlay.state, event)
         };
         for effect in effects {
+            let turn = match effect {
+                Effect::Attach { .. } => self.ivars().overlays.borrow_mut()[at].after_hidden.shown(),
+                Effect::Detach => self.ivars().overlays.borrow_mut()[at].after_hidden.hidden(),
+                Effect::Fade { .. } => Turn::default(),
+            };
             match effect {
                 Effect::Attach { alpha } => self.attach_overlay(at, alpha),
                 Effect::Fade { alpha, duration, attempt } => self.fade_overlay(at, alpha, duration.as_secs_f64(), attempt),
@@ -88,6 +118,7 @@ impl RuneView {
                     let _: () = unsafe { msg_send![&*view, removeFromSuperview] };
                 },
             }
+            self.after_hidden_turn(at, turn);
         }
     }
 

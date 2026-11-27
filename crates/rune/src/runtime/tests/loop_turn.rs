@@ -37,35 +37,28 @@ fn loader(spin: &Spin, _: &mut Cx<Spin>) -> El {
     el().size(40.0, 40.0).child(icon(&ARC, 16.0).key("arc").looping(rune_motion::LoopSpec::rotation(0.9).fps(spin.fps)))
 }
 
-fn turning(fps: f32, frames: usize) -> Runtime<Spin> {
-    let mut rt = Runtime::new(Spin { fps, ..Spin::default() }, loader, (40.0, 40.0), Env::new(true, 2.0));
-    rt.wall_start = Some(crate::time::now());
-    rt.frame(0.0);
-    for _ in 0..frames {
-        rt.frame(1.0 / 120.0);
-    }
-    rt
-}
-
 fn turns(rt: &Runtime<Spin>) -> Vec<f32> {
     rt.instances.iter().filter(|q| q.params[1] == KIND_GLYPH).map(|q| q.params[0]).collect()
 }
 
 #[test]
 fn a_turning_icon_steps_without_a_paint_and_lands_where_a_frame_would() {
-    let display = rune_motion::Cycle::DISPLAY_RATE;
-    let mut stepped = turning(display, 3);
-    let mut framed = turning(display, 3);
-    let paints = stepped.paint_count();
-    let patched = stepped.core_mut().loop_step(1.0 / 120.0).expect("a rotation takes a loop-only step");
-    framed.frame(1.0 / 120.0);
+    let display = Spin { fps: rune_motion::Cycle::DISPLAY_RATE, ..Spin::default() };
+    let (mut framed, mut stepped) = (Host::with_poll(Spin { ..display }, None), Host::with_poll(Spin { ..display }, None));
+    for host in [&mut framed, &mut stepped] {
+        for _ in 0..3 {
+            host.frame();
+        }
+    }
+    let (paints, before) = (stepped.rt.paint_count(), turns(&stepped.rt));
+    framed.frame();
+    let patched = stepped.step().expect("a rotation takes a loop-only step");
     assert_eq!(patched.len(), 1, "only the turning glyph changes");
-    assert_eq!(stepped.paint_count(), paints, "the step paints nothing");
-    let (step, frame) = (turns(&stepped), turns(&framed));
-    assert_eq!(step.len(), 1);
-    assert_eq!(step.len(), frame.len());
+    assert_eq!(stepped.rt.paint_count(), paints, "the step paints nothing");
+    let (step, frame) = (turns(&stepped.rt), turns(&framed.rt));
+    assert_eq!((step.len(), frame.len()), (1, 1));
     assert!((step[0] - frame[0]).abs() < 1e-4, "step turned to {}, a frame to {}", step[0], frame[0]);
-    assert_ne!(step[0], turns(&turning(display, 3))[0], "the step moved the turn on");
+    assert_ne!(step, before, "the step moved the turn on");
 }
 
 struct Host {

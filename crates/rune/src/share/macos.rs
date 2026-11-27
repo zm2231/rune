@@ -5,8 +5,9 @@
 //! window keeps drawing while it shows. Escape closes it, with none: the popover never becomes key,
 //! so a local event monitor, installed while a picker shows, takes Escape in the window under it
 //! before AppKit dispatches it, and neither that press, its repeats nor its release reach the app.
-//! Should `close` not answer, the popover's window is closed and the share answers none anyway. A
-//! window hidden or closed under it answers its share itself (`RuntimeCore::cancel_shares`).
+//! Should `close` not answer, the share answers none anyway, and the popover's window is closed
+//! when it is the only picker's. A window hidden or closed under it answers its share itself
+//! (`RuntimeCore::cancel_shares`), which then closes and forgets that window's pickers.
 //! `RUNE_SHARE_LOG=1` logs each step to stderr.
 
 #![allow(unsafe_code)]
@@ -81,7 +82,7 @@ struct Showing {
 
 thread_local! {
     static SHOWING: RefCell<Vec<Showing>> = const { RefCell::new(Vec::new()) };
-    static ESCAPED: RefCell<Vec<*const AnyObject>> = const { RefCell::new(Vec::new()) };
+    static ESCAPED: RefCell<Vec<Retained<NSWindow>>> = const { RefCell::new(Vec::new()) };
     static MONITOR: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
 }
 
@@ -94,10 +95,12 @@ fn watch_escape() {
             let kind: usize = msg_send![event, type];
             let code: u16 = msg_send![event, keyCode];
             let repeat: bool = if kind == KEY_DOWN { msg_send![event, isARepeat] } else { false };
-            let window: *const AnyObject = msg_send![event, window];
+            let window: *mut NSWindow = msg_send![event, window];
             (kind, code, repeat, window)
         };
         if code != ESCAPE || !(kind == KEY_DOWN || kind == KEY_UP) { return event; }
+        // SAFETY: `window` is the live event's window or null; retaining it keeps it for the hold.
+        let Some(window) = (unsafe { Retained::retain(window) }) else { return event };
         if escape(window, kind == KEY_DOWN, repeat) { std::ptr::null_mut() } else { event }
     });
     // SAFETY: the monitor copies the handler; `unwatch_if_idle` removes it with its token.
@@ -117,14 +120,42 @@ fn unwatch_if_idle() {
     }
 }
 
-fn class_name(object: &AnyObject) -> String { object.class().name().to_string_lossy().into_owned() }
+fn class_name(object: &NSWindow) -> String {
+    let object: &AnyObject = object;
+    object.class().name().to_string_lossy().into_owned()
+}
 
-fn escape(window: *const AnyObject, pressed: bool, repeat: bool) -> bool {
-    let mine = |w: &NSWindow| std::ptr::eq((w as *const NSWindow).cast::<AnyObject>(), window);
+/// Closes and forgets, a run-loop pass later, the pickers over windows no longer on screen, whose
+/// shares their runtimes have answered (`RuntimeCore::cancel_shares`).
+pub(crate) fn forget_hidden() {
+    crate::platform::macos::run_later("share picker", || {
+        let gone: Vec<Showing> = SHOWING.with(|showing| {
+            let mut showing = showing.borrow_mut();
+            let (gone, kept) = std::mem::take(&mut *showing).into_iter().partition(|s| !s.host.isVisible());
+            *showing = kept;
+            gone
+        });
+        ESCAPED.with(|escaped| escaped.borrow_mut().retain(|w| w.isVisible()));
+        for Showing { picker, delegate, .. } in gone {
+            if delegate.open() {
+                // SAFETY: as in `escape`.
+                unsafe {
+                    let closes: bool = msg_send![&*picker, respondsToSelector: sel!(close)];
+                    if closes { let _: () = msg_send![&*picker, close]; }
+                }
+            }
+            drop(delegate.ivars().borrow_mut().take());
+        }
+        unwatch_if_idle();
+    });
+}
+
+fn escape(window: Retained<NSWindow>, pressed: bool, repeat: bool) -> bool {
+    let mine = |w: &NSWindow| std::ptr::eq(w, &*window);
     let held = ESCAPED.with(|escaped| {
         let mut escaped = escaped.borrow_mut();
-        let held = escaped.contains(&window);
-        if !pressed || !repeat { escaped.retain(|w| *w != window); }
+        let held = escaped.iter().any(|w| mine(w));
+        if !pressed || !repeat { escaped.retain(|w| !mine(w)); }
         held
     });
     if !pressed || repeat {
@@ -133,11 +164,7 @@ fn escape(window: *const AnyObject, pressed: bool, repeat: bool) -> bool {
     }
     let open: Vec<Showing> = SHOWING.with(|showing| showing.borrow().iter()
         .filter(|s| mine(&s.host) && s.delegate.open()).cloned().collect());
-    if log() {
-        // SAFETY: `window` is the live event's window or null, checked.
-        let class = if window.is_null() { "none".to_owned() } else { class_name(unsafe { &*window }) };
-        eprintln!("rune: share picker Escape keyDown in window {class}: {} open picker(s) over it", open.len());
-    }
+    if log() { eprintln!("rune: share picker Escape keyDown in window {}: {} open picker(s) over it", class_name(&window), open.len()); }
     if open.is_empty() { return false; }
     for Showing { picker, delegate, before, .. } in open {
         // SAFETY: `respondsToSelector:` takes a selector and returns a `BOOL`; `close` takes no
@@ -151,11 +178,13 @@ fn escape(window: *const AnyObject, pressed: bool, repeat: bool) -> bool {
         crate::platform::macos::run_later("share picker", move || {
             if !delegate.open() { return; }
             let Some(mtm) = MainThreadMarker::new() else { return };
+            let alone = SHOWING.with(|showing| showing.borrow().iter().filter(|s| s.delegate.open()).count() == 1);
             let popovers: Vec<Retained<NSWindow>> = NSApplication::sharedApplication(mtm).windows().iter()
-                .filter(|w| w.isVisible() && !before.iter().any(|b| std::ptr::eq(&**b, &**w)) && class_name(&**w as &NSWindow as &AnyObject).contains("Popover"))
+                .filter(|w| w.isVisible() && !before.iter().any(|b| std::ptr::eq(&**b, &**w)) && class_name(w).contains("Popover"))
                 .collect();
-            if log() { eprintln!("rune: share picker still open after close; closing {} popover window(s) and answering none", popovers.len()); }
-            for w in &popovers { w.close(); }
+            let close = alone && popovers.len() == 1;
+            if log() { eprintln!("rune: share picker still open after close; {} popover window(s) new since it showed; closing it: {close}; answering none", popovers.len()); }
+            if close { popovers[0].close(); }
             delegate.answer(None);
         });
     }

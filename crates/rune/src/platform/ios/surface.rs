@@ -106,8 +106,9 @@ pub(crate) trait Surface {
     fn text_geometry(&self) -> Option<Geometry>;
 
     // Accessibility.
-    /// An assistive client asked for the view's elements: the runtime builds its tree.
-    fn accessibility_wanted(&mut self);
+    /// An assistive client asked for the view's elements: the runtime builds its tree, which
+    /// comes back at once when a frame has drawn the view.
+    fn accessibility_wanted(&mut self) -> Option<Reading>;
     /// What a client did to an element, for the next frame.
     fn accessibility_act(&mut self, request: ActionRequest);
     /// The accessibility tree's changes since the last frame, while a client listens.
@@ -438,7 +439,11 @@ impl<S: 'static> Surface for Hosted<S> {
     }
 
     // Accessibility.
-    fn accessibility_wanted(&mut self) { self.accessibility.activate(); }
+    fn accessibility_wanted(&mut self) -> Option<Reading> {
+        self.accessibility.activate();
+        self.accessibility.receive(self.host.runtime_mut().core_mut(), self.title);
+        self.accessibility()
+    }
 
     fn accessibility_act(&mut self, request: ActionRequest) { self.accessibility.act(request); }
 

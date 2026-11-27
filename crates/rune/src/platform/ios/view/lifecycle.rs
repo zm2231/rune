@@ -149,7 +149,7 @@ impl RuneView {
                         surface.set_increased_contrast(increased_contrast());
                         surface.set_size_classes(self.size_classes());
                         // A client that asked before the app started still gets its tree.
-                        if self.ivars().accessibility.borrow().asked() { surface.accessibility_wanted(); }
+                        if self.ivars().accessibility.borrow().asked() { let _ = surface.accessibility_wanted(); }
                         overlays = surface.take_overlays();
                         Stage::Live(surface)
                     }

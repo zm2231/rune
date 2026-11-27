@@ -29,6 +29,7 @@ pollster = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wgpu = { workspace = true, features = ["webgpu"] }
 js-sys = { workspace = true }
+rubato = { version = "5.1", default-features = false }
 wasm-bindgen = { workspace = true }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]

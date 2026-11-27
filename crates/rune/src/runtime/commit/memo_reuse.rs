@@ -163,7 +163,7 @@ fn opt_box_eq<T: PartialEq>(a: &Option<Box<T>>, b: &Option<Box<T>>) -> bool {
 
 fn same_visual_cold(a: &crate::el::VisualCold, b: &crate::el::VisualCold) -> bool {
     let crate::el::VisualCold {
-        surface, surface_place, border_bottom, border_sides, border_layout, border_dash, border_dash_phase, shadows, blur_motion,
+        surface, surface_place, border_bottom, border_sides, border_layout, border_dash, border_dash_phase, border_dash_cap, shadows, blur_motion,
         clip, clip_radius, clip_corners, cutouts, icon, icon_inked, icon_one_color, gradient, radial, outline, shape,
         grid, pixels, pixels_fit, pixels_wrap, pixels_tint, image_filter, image_menu, effect, backdrop_blur, hover_motion, hover_within, press_motion,
         group_opacity, group_color, hover_alone, hover_share, hover_pointer_only, group_focus, group_motion, icon_turn, cache_key, offset_motion, scale_motion,
@@ -175,7 +175,7 @@ fn same_visual_cold(a: &crate::el::VisualCold, b: &crate::el::VisualCold) -> boo
         (Some((sa, fa)), Some((sb, fb))) => sa.key() == sb.key() && fa == fb,
         _ => false,
     }) && a.surface_place == *surface_place && a.border_bottom == *border_bottom && a.border_sides == *border_sides && a.border_layout == *border_layout && a.border_dash == *border_dash
-        && a.border_dash_phase == *border_dash_phase && a.shadows == *shadows
+        && a.border_dash_phase == *border_dash_phase && a.border_dash_cap == *border_dash_cap && a.shadows == *shadows
         && opt_box_eq(&a.blur_motion, blur_motion) && a.clip == *clip
         && a.clip_radius == *clip_radius && a.clip_corners == *clip_corners && a.cutouts == *cutouts
         && match (&a.icon, icon) {

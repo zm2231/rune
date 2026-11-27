@@ -1,0 +1,10 @@
+<!doctype html>
+<meta charset="utf-8">
+<script type="module">
+import init, { start, tick, report } from './app.js';
+const send = (text) => text && fetch('/log', { method: 'POST', body: text });
+await init();
+send(start(new URLSearchParams(location.search).get('loop') === '1'));
+setInterval(() => send(tick()), 5);
+setInterval(() => send(report()), 1000);
+</script>

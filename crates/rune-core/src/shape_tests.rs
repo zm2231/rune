@@ -369,3 +369,38 @@ fn curved_bezier_ring_and_touching_hole_triangulate_without_overlap() {
     let hole_area = 0.5 * 50.0 * 75.0;
     assert!((area(&vt, &tt) - (10_000.0 - hole_area)).abs() < 1e-1, "got {}", area(&vt, &tt));
 }
+
+fn dashes(shape: &Shape) -> Vec<(Vec<[f32; 2]>, LineCap)> {
+    shape.ops.iter().filter_map(|op| match op {
+        Op::Stroke { points, closed: false, cap, .. } => Some((points.clone(), *cap)),
+        _ => None,
+    }).collect()
+}
+
+#[test]
+fn a_dashed_stroke_is_its_dashes_along_the_line() {
+    let line = Shape::new().stroke_dashed(vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0]], false, 1.0, Dash::new(4.0, 2.0), Color::WHITE);
+    let got = dashes(&line);
+    let spans: Vec<[[f32; 2]; 2]> = got.iter().map(|(p, _)| [p[0], *p.last().unwrap()]).collect();
+    assert_eq!(spans, [
+        [[0.0, 0.0], [4.0, 0.0]], [[6.0, 0.0], [10.0, 0.0]], [[12.0, 0.0], [16.0, 0.0]],
+        [[18.0, 0.0], [20.0, 2.0]], [[20.0, 4.0], [20.0, 8.0]],
+    ]);
+    assert_eq!(got[3].0, [[18.0, 0.0], [20.0, 0.0], [20.0, 2.0]], "a dash keeps the corner it runs round");
+    assert!(got.iter().all(|(_, cap)| *cap == LineCap::Butt));
+    let shifted = dashes(&Shape::new().stroke_dashed(vec![[0.0, 0.0], [20.0, 0.0]], false, 1.0, Dash::new(4.0, 2.0).phase(3.0), Color::WHITE));
+    assert_eq!(shifted[0].0, [[0.0, 0.0], [1.0, 0.0]], "phase starts the pattern into itself");
+}
+
+#[test]
+fn a_closed_dash_runs_over_the_join_and_round_dots_are_points() {
+    let square = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+    let got = dashes(&Shape::new().stroke_dashed(square.clone(), true, 1.0, Dash::new(6.0, 4.0).phase(2.0), Color::WHITE));
+    assert_eq!(got.len(), 4, "{got:?}");
+    assert_eq!(got[3].0, [[0.0, 2.0], [0.0, 0.0], [4.0, 0.0]], "the last dash carries on past the start");
+    let dots = dashes(&Shape::new().stroke_dashed(square, true, 2.0, Dash::new(0.0, 5.0).cap(LineCap::Round), Color::WHITE));
+    assert_eq!(dots.len(), 8, "one dot every 5 round 40, none doubled at the join");
+    assert!(dots.iter().all(|(p, cap)| p.len() == 2 && p[0] == p[1] && *cap == LineCap::Round));
+    let solid = Shape::new().stroke_dashed(vec![[0.0, 0.0], [9.0, 0.0]], false, 1.0, Dash::new(0.0, 3.0), Color::WHITE);
+    assert_eq!(dashes(&solid), [(vec![[0.0, 0.0], [9.0, 0.0]], LineCap::Butt)], "a zero butt dash strokes solid");
+}

@@ -110,27 +110,38 @@ impl El {
         self
     }
     /// Dashes the border (`border` or `border_gradient`): `dash` points on, `gap` points off,
-    /// with butt ends, along the ring's centre line, round the corners too. The pattern starts
-    /// with a dash where the top edge leaves the top-left corner and runs clockwise. The period
-    /// stretches or shrinks a little so a whole number of dashes fits, and the last gap meets the
-    /// first dash cleanly. The fill shows through the gaps, and the dashes draw over it as a
-    /// solid border does. A zero `dash` or `gap` keeps the border solid.
+    /// along the ring's centre line, round the corners too. A dash is centred on the middle of
+    /// every corner, and each side runs the pattern out from both of its corners to meet in its
+    /// middle, so dashes keep their places while the box changes size: a side that grows or
+    /// shrinks moves only the dash or gap where its two runs meet. The fill shows through the
+    /// gaps, and the dashes draw over it as a solid border does. Ends are butt unless
+    /// [`Self::border_dash_cap`] rounds them; a zero `dash` with round caps draws dots. A zero
+    /// `gap`, or a zero `dash` with butt ends, keeps the border solid.
     pub fn border_dash(mut self, dash: f32, gap: f32) -> Self {
-        let valid = dash.is_finite() && gap.is_finite() && dash > 0.0 && gap > 0.0;
+        let valid = dash.is_finite() && gap.is_finite() && dash >= 0.0 && gap > 0.0;
         let v = valid.then_some([dash, gap]);
         if v.is_some() || !self.vis.cold.is_empty() {
             self.vis.cold_mut().border_dash = v;
         }
         self
     }
-    /// Starts the dash pattern `phase` points into itself (SwiftUI's `dashPhase`), so growing it
-    /// marches the dashes anticlockwise. A phase of `dash + gap` is one whole period. It is
-    /// applied as given every frame and never springs (a spring would run a wrapped phase
-    /// backwards), so drive it from a clock for marching ants.
+    /// Moves every corner `phase` points into the dash pattern, along both sides that meet
+    /// there: `0` centres a dash on each corner, `(dash + gap) / 2` a gap. A phase of
+    /// `dash + gap` is one whole period. It is applied as given every frame and never springs.
     pub fn border_dash_phase(mut self, phase: f32) -> Self {
         let p = if phase.is_finite() { phase } else { 0.0 };
         if p != 0.0 || !self.vis.cold.is_empty() {
             self.vis.cold_mut().border_dash_phase = p;
+        }
+        self
+    }
+    /// How a dashed border's dashes end: [`LineCap::Butt`](crate::LineCap::Butt) (the default)
+    /// cuts them square across the ring, [`LineCap::Round`](crate::LineCap::Round) adds a
+    /// half-disc as wide as the border to each end, as Core Graphics and SVG round a dash, so
+    /// round dashes reach half a border width into the gaps on both sides.
+    pub fn border_dash_cap(mut self, cap: crate::LineCap) -> Self {
+        if cap != crate::LineCap::Butt || !self.vis.cold.is_empty() {
+            self.vis.cold_mut().border_dash_cap = cap;
         }
         self
     }

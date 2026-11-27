@@ -148,9 +148,17 @@ pub struct TraySpec {
     pub(crate) menu_on_primary_click: bool,
 }
 impl TraySpec {
+    /// A tray item named `title`, which screen readers announce until
+    /// [`Tray::set_accessibility_label`] replaces it. `id` is a stable application id
+    /// (`"dev.rune.app"`): the StatusNotifierItem `Id` on Linux, and on macOS the status item
+    /// button's accessibility identifier (`AXIdentifier`), so automation finds the item by it in
+    /// the app's status item menu bar (`AXExtrasMenuBar`).
     pub fn new(id: impl Into<String>, title: impl Into<String>, icon: TrayIcon) -> Self {
         Self { id: id.into(), title: title.into(), tooltip: String::new(), icon_name: String::new(), icon, menu: Vec::new(), menu_on_primary_click: false }
     }
+    /// Text shown when the pointer rests on the icon. On Windows it is also what Narrator
+    /// reads, replacing the accessibility label ([`Tray::set_accessibility_label`]) while it
+    /// isn't empty.
     pub fn tooltip(mut self, tooltip: impl Into<String>) -> Self { self.tooltip = tooltip.into(); self }
     /// A freedesktop icon theme name (Linux `IconName`) a host may draw instead of the pixels.
     pub fn icon_name(mut self, name: impl Into<String>) -> Self { self.icon_name = name.into(); self }
@@ -236,6 +244,9 @@ impl Tray {
         #[cfg(not(any(all(target_os = "linux", feature = "dbus"), target_os = "macos", target_os = "windows")))]
         let _ = menu;
     }
+    /// Replaces the icon's tooltip; an empty string removes it. On Windows it is also what
+    /// Narrator reads, replacing the accessibility label ([`Tray::set_accessibility_label`])
+    /// while it isn't empty.
     pub fn set_tooltip(&self, tooltip: impl Into<String>) {
         #[cfg(any(all(target_os = "linux", feature = "dbus"), target_os = "macos", target_os = "windows"))]
         self.native.set_tooltip(tooltip.into());
@@ -307,8 +318,9 @@ impl Tray {
     /// [`TraySpec::new`] title. Use it when the icon changes to show a different state, so
     /// VoiceOver reads "App unavailable" rather than the name it launched with.
     ///
-    /// - macOS: the status item image's accessibility description, which VoiceOver reads; it
-    ///   carries over to icons set later with [`Tray::set_icon`].
+    /// - macOS: the status item button's accessibility label (`AXDescription`) and its image's
+    ///   accessibility description, which VoiceOver reads; both carry over to icons set later
+    ///   with [`Tray::set_icon`].
     /// - Linux: the StatusNotifierItem `Title` property (the one [`Tray::set_title`] sets), with
     ///   `NewTitle` emitted.
     /// - Windows: Narrator reads the icon's tooltip text, the one string Windows keeps for it. The

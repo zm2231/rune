@@ -151,3 +151,23 @@ fn uneven_device_callbacks_reach_the_mic_in_ten_millisecond_blocks() {
     let ten_ms = RATE as usize / 100;
     assert_eq!(room.mic.available(), fed / ten_ms * ten_ms);
 }
+
+#[test]
+fn the_canceller_reports_where_it_found_the_echo() {
+    let mut room = Room::new(EchoPath::InProcess, 200);
+    assert_eq!(room.meters.stats().echo_canceller, None);
+    room.run(RATE as usize * 6, 160, true, false);
+    let canceller = room.meters.stats().echo_canceller.expect("the in-app canceller reports once a second");
+    let aligned = canceller.alignment.as_millis();
+    assert!((180..=210).contains(&aligned), "aligned at {aligned} ms for a 200 ms echo");
+    assert!(canceller.erle_db >= 10.0, "ERLE {:.1} dB", canceller.erle_db);
+    let (low, high) = canceller.reference_lead_frames;
+    assert!(high - low <= 160, "lead ranged {low}..{high} with render and capture in step");
+}
+
+#[test]
+fn a_system_canceller_leaves_no_in_app_canceller_stats() {
+    let mut room = Room::new(EchoPath::System, 80);
+    room.run(RATE as usize * 2, 160, true, false);
+    assert_eq!(room.meters.stats().echo_canceller, None);
+}

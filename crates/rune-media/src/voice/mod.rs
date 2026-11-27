@@ -258,7 +258,7 @@ pub enum VoiceEvent {
 }
 
 /// Counters from a [`Voice`]'s audio thread.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[non_exhaustive]
 pub struct VoiceStats {
     pub captured_frames: u64,
@@ -278,6 +278,32 @@ pub struct VoiceStats {
     pub mic_gap_frames: u64,
     /// From the last [`Voice::start`] to the device's first callback.
     pub start_to_audio: Option<Duration>,
+    /// What Rune's own echo canceller reports, refreshed once a second while it runs (Linux, and
+    /// Windows without the system's canceller); `None` when the system cancels the echo.
+    pub echo_canceller: Option<EchoCancellerStats>,
+}
+
+/// The in-app echo canceller's view of the echo, from [`VoiceStats::echo_canceller`]. For
+/// diagnosing a leak: a fall in `erle_db` with a jump in `alignment` means the canceller lost and
+/// re-found the echo; a steady trend in `reference_lead_frames` means the speaker's and
+/// microphone's clocks drift apart; a wider range than usual means speaker and microphone audio
+/// reached the canceller unevenly that second. It doesn't say why delivery was uneven (device
+/// packet sizes or thread scheduling).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct EchoCancellerStats {
+    /// How much the canceller estimates it removes from the echo, in dB (echo return loss
+    /// enhancement).
+    pub erle_db: f32,
+    /// How much quieter than the speaker the canceller estimates the echo is, in dB (echo
+    /// return loss).
+    pub erl_db: f32,
+    /// How far back in the speaker's signal the canceller lines up the echo. It holds a fixed
+    /// starting value until the canceller has found the echo.
+    pub alignment: Duration,
+    /// Speaker frames given to the canceller minus microphone frames, lowest and highest over the
+    /// last second.
+    pub reference_lead_frames: (i64, i64),
 }
 
 /// An echo-cancelled, full-duplex voice stream. Dropping it stops the stream and releases the

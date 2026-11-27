@@ -65,30 +65,83 @@ pub(in crate::runtime) fn is_in_clean_spans(spans: &[CleanApplySpan], i: usize) 
     }
 }
 
+/// Why a reused memo span's nodes went through `apply`'s per-node diff, counted in the frame log.
+#[derive(Clone, Copy)]
+pub(crate) enum Unclean {
+    Off,
+    Path,
+    Gone,
+    Root,
+    Id,
+    Moved,
+    Animating,
+    NotPresent,
+    GroupFade,
+    MatchedOrLooping,
+    Flying,
+    AspectSnap,
+    Revealing,
+}
+
+#[cfg(feature = "frame-profile")]
+impl Unclean {
+    pub(crate) const NAMES: [&'static str; 13] =
+        ["off", "path", "gone", "root", "id", "moved", "animating", "not_present", "group_fade", "matched_or_looping", "flying", "aspect_snap", "revealing"];
+}
+
 impl CommitState {
-    fn node_clean_for_apply(tree: &types::TreeState, scene: &Scene, motion: &tracks::MotionState, new_n: &Node, old_n: &Node, any_animating: bool) -> bool {
-        new_n.id == old_n.id
-            && new_n.local == old_n.local
-            && (!any_animating || !scene.store().is_node_animating(new_n.id))
-            && scene.phase(new_n.id) == Some(PresencePhase::Present)
-            && !old_n.group_fade
-            && new_n.cold.get().is_none_or(|c| c.matched.is_none() && c.looping.is_none())
-            && (motion.flying.is_empty() || !motion.flying.iter().any(|f| f.0 == new_n.id))
-            && (tree.aspect_snap.is_empty() || !tree.aspect_snap.contains(&new_n.id))
-            && new_n.text.as_ref().is_none_or(|t| t.reveal < 0.0 || motion.reveal_caught_up(new_n.id, t.content.len()))
+    fn node_unclean_for_apply(tree: &types::TreeState, scene: &Scene, motion: &tracks::MotionState, new_n: &Node, old_n: &Node, any_animating: bool) -> Option<Unclean> {
+        let why = if new_n.id != old_n.id {
+            Unclean::Id
+        } else if new_n.local != old_n.local {
+            Unclean::Moved
+        } else if any_animating && scene.store().is_node_animating(new_n.id) {
+            Unclean::Animating
+        } else if scene.phase(new_n.id) != Some(PresencePhase::Present) {
+            Unclean::NotPresent
+        } else if old_n.group_fade {
+            Unclean::GroupFade
+        } else if new_n.cold.get().is_some_and(|c| c.matched.is_some() || c.looping.is_some()) {
+            Unclean::MatchedOrLooping
+        } else if !motion.flying.is_empty() && motion.flying.iter().any(|f| f.0 == new_n.id) {
+            Unclean::Flying
+        } else if !tree.aspect_snap.is_empty() && tree.aspect_snap.contains(&new_n.id) {
+            Unclean::AspectSnap
+        } else if new_n.text.as_ref().is_some_and(|t| t.reveal >= 0.0 && !motion.reveal_caught_up(new_n.id, t.content.len())) {
+            Unclean::Revealing
+        } else {
+            return None;
+        };
+        Some(why)
     }
 
     /// Fills `out` with the reused memo slices that can skip `apply`'s per-node diff loop.
     #[allow(clippy::too_many_arguments)]
     pub(in crate::runtime) fn clean_apply_spans(&self, tree: &types::TreeState, scene: &Scene, motion: &tracks::MotionState, nodes: &[Node], reused: &[ReusedSpan], can_skip: bool, reorder_jump: impl Fn(usize) -> f32, out: &mut Vec<CleanApplySpan>) {
         out.clear();
-        if !can_skip || reused.is_empty() { return; }
+        #[cfg(feature = "frame-profile")]
+        let mut why = [0u32; Unclean::NAMES.len()];
+        #[cfg(feature = "frame-profile")]
+        let mut note = |u: Unclean| why[u as usize] += 1;
+        #[cfg(not(feature = "frame-profile"))]
+        let note = |_: Unclean| {};
+        if !can_skip {
+            reused.iter().for_each(|_| note(Unclean::Off));
+        } else {
+            self.find_clean_apply_spans(tree, scene, motion, nodes, reused, reorder_jump, out, note);
+        }
+        #[cfg(feature = "frame-profile")]
+        crate::frame::live_log::apply_skips(nodes.len(), out.iter().map(|s| s.len).sum(), &why);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn find_clean_apply_spans(&self, tree: &types::TreeState, scene: &Scene, motion: &tracks::MotionState, nodes: &[Node], reused: &[ReusedSpan], reorder_jump: impl Fn(usize) -> f32, out: &mut Vec<CleanApplySpan>, mut note: impl FnMut(Unclean)) {
         out.reserve(reused.len());
         let any_animating = scene.store().active_len() > 0;
         for span in reused {
-            if !span.same_path || span.len == 0 || span.old_start + span.len > tree.nodes.len() || span.new_start + span.len > nodes.len() { continue; }
+            if !span.same_path || span.len == 0 || span.old_start + span.len > tree.nodes.len() || span.new_start + span.len > nodes.len() { note(Unclean::Path); continue; }
             let (r_new, r_old) = (&nodes[span.new_start], &tree.nodes[span.old_start]);
-            if !scene.contains(r_new.id) || matches!(scene.phase(r_new.id), Some(PresencePhase::Exiting { .. })) { continue; }
+            if !scene.contains(r_new.id) || matches!(scene.phase(r_new.id), Some(PresencePhase::Exiting { .. })) { note(Unclean::Gone); continue; }
             let mut scene_rect = r_new.local;
             if !self.virtuals.is_empty() && let Some(v) = r_new.parent.and_then(|p| self.virtuals.get(&nodes[p].path)) { scene_rect.y -= v.before; }
             let parent_top_clean = r_new.in_row != RowLayout::Snaps
@@ -99,7 +152,7 @@ impl CommitState {
                         scene.get(first_sib.id, prop::FRAME) == Some(sr)
                     })
                 });
-            let root_clean = Self::node_clean_for_apply(tree, scene, motion, r_new, r_old, any_animating)
+            let root_clean = Self::node_unclean_for_apply(tree, scene, motion, r_new, r_old, any_animating).is_none()
                 && parent_top_clean
                 && r_new.parent.map(|p| nodes[p].id) == r_old.parent.map(|p| tree.nodes[p].id)
                 && (self.virtuals.is_empty() || !self.virtuals.contains_key(&r_new.path))
@@ -107,19 +160,21 @@ impl CommitState {
                 && (motion.stacks.is_empty() || reorder_jump(span.new_start) == 0.0)
                 && (self.virtuals.is_empty()
                     || !r_new.parent.and_then(|p| self.virtuals.get(&nodes[p].path)).is_some_and(crate::el::virtual_list::VirtualList::replaced_view));
-            if !root_clean && !motion.flying.is_empty() { continue; }
+            if !root_clean && !motion.flying.is_empty() { note(Unclean::Root); continue; }
             let offset = if root_clean { 0 } else { 1 };
             if offset >= span.len { continue; }
-            let interior_clean = (offset..span.len).all(|k| {
-                Self::node_clean_for_apply(tree, scene, motion, &nodes[span.new_start + k], &tree.nodes[span.old_start + k], any_animating)
+            let unclean = (offset..span.len).find_map(|k| {
+                Self::node_unclean_for_apply(tree, scene, motion, &nodes[span.new_start + k], &tree.nodes[span.old_start + k], any_animating)
             });
-            if interior_clean {
-                let (new_start, old_start, len) = (span.new_start + offset, span.old_start + offset, span.len - offset);
-                if let Some(last) = out.last_mut() && last.new_start + last.len == new_start && last.old_start + last.len == old_start {
-                    last.len += len;
-                } else {
-                    out.push(CleanApplySpan { new_start, old_start, len });
-                }
+            if let Some(why) = unclean {
+                note(why);
+                continue;
+            }
+            let (new_start, old_start, len) = (span.new_start + offset, span.old_start + offset, span.len - offset);
+            if let Some(last) = out.last_mut() && last.new_start + last.len == new_start && last.old_start + last.len == old_start {
+                last.len += len;
+            } else {
+                out.push(CleanApplySpan { new_start, old_start, len });
             }
         }
     }
@@ -838,3 +893,6 @@ mod tests;
 #[cfg(test)]
 #[path = "../memo_reuse_live_text_tests.rs"]
 mod live_text_tests;
+#[cfg(test)]
+#[path = "../memo_reuse_flatten_tests.rs"]
+mod flatten_tests;

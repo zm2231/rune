@@ -67,15 +67,16 @@ impl El {
 fn el_flatten_reusable(e: &El) -> bool {
     let c = &*e.cold;
     // A list whose rows `virtual_rows` builds is reused with them while it mounts the same rows
-    // (`Measurement::keeps_windows`); one built from children isn't.
+    // (`Measurement::keeps_windows`); one built from children isn't. An overlay fitted to the
+    // window has its layout style clamped as it is placed, so it isn't reused; any other anchored
+    // overlay is placed again from its anchor every commit.
     let indexed = c.virtual_rows.is_some();
     (c.virtual_estimate.is_none() || indexed)
         && c.virtual_items.is_none()
         && (c.growth.is_none() || indexed)
         && c.aspect_fit <= 0.0
-        && c.above.is_none()
+        && c.above.as_ref().is_none_or(|a| !a.fit)
         && c.input.is_none()
-        && e.handlers.get().is_none_or(|h| h.modal.is_none())
         && e.text.as_ref().is_none_or(|t| !t.redacted)
         && e.memo_children().is_none_or(|m| m.reusable && !m.duplicate_keys)
         && e.children.iter().all(el_flatten_reusable)

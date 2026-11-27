@@ -14,7 +14,7 @@ use crate::{
     ScrollSpec, SystemAccent, TextEdit, TextStyle, col, el, memo, rich, row, text, text_input,
 };
 
-fn maybe_memo(use_memo: bool, id: impl Into<String>, ver: impl std::hash::Hash, build: impl FnOnce() -> El) -> El {
+pub(super) fn maybe_memo(use_memo: bool, id: impl Into<String>, ver: impl std::hash::Hash, build: impl FnOnce() -> El) -> El {
     let key = id.into();
     if use_memo {
         memo(key, ver, build)
@@ -23,7 +23,7 @@ fn maybe_memo(use_memo: bool, id: impl Into<String>, ver: impl std::hash::Hash, 
     }
 }
 
-fn assert_same_state<S: 'static>(memo_rt: &Runtime<S>, fresh_rt: &Runtime<S>, step: &str) {
+pub(super) fn assert_same_state<S: 'static>(memo_rt: &Runtime<S>, fresh_rt: &Runtime<S>, step: &str) {
     assert_eq!(memo_rt.tree.nodes.len(), fresh_rt.tree.nodes.len(), "{step}: node count");
     for (idx, (a, b)) in memo_rt.tree.nodes.iter().zip(&fresh_rt.tree.nodes).enumerate() {
         assert_eq!(a.id, b.id, "{step}: node[{idx}] ({}) id", a.path);

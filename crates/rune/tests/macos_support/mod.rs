@@ -22,7 +22,6 @@ unsafe extern "C" {
     ) -> *mut std::ffi::c_void;
     fn CGEventPost(tap: u32, event: *mut std::ffi::c_void);
     fn CGPreflightPostEventAccess() -> bool;
-    fn CGEventSourceButtonState(state: i32, button: u32) -> bool;
     fn CFRelease(object: *mut std::ffi::c_void);
 }
 
@@ -64,31 +63,6 @@ pub fn release_real_button() {
         CFRelease(here);
         let up = CGEventCreateMouseEvent(std::ptr::null(), 2, at, 0);
         CGEventPost(0, up);
-        CFRelease(up);
-    }
-}
-
-/// Whether the window server holds the left button down.
-pub fn button_down() -> bool {
-    // SAFETY: reads the HID system state's left button; no preconditions.
-    unsafe { CGEventSourceButtonState(1, 0) }
-}
-
-/// Posts a left-button release where the pointer is to event tap `tap` (0 HID, 1 session),
-/// after a left drag there when `drag_first`.
-pub fn release_button_at(tap: u32, drag_first: bool) {
-    // SAFETY: creates temporary CoreGraphics events with null source, reads/posts them, and releases each once.
-    unsafe {
-        let here = CGEventCreate(std::ptr::null());
-        let at = CGEventGetLocation(here);
-        CFRelease(here);
-        if drag_first {
-            let drag = CGEventCreateMouseEvent(std::ptr::null(), 6, at, 0);
-            CGEventPost(tap, drag);
-            CFRelease(drag);
-        }
-        let up = CGEventCreateMouseEvent(std::ptr::null(), 2, at, 0);
-        CGEventPost(tap, up);
         CFRelease(up);
     }
 }

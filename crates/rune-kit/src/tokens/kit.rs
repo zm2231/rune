@@ -192,10 +192,10 @@ pub struct Type {
 
 impl Type {
     /// Secondary text under a control or row (a setting's explanation, a file's size): `small`
-    /// on a 16 line, so 11 / 16 in the built-in themes. A method rather than a field, so a
-    /// theme's own `Type` gets it from its `small`.
+    /// on a line 16/11 of its size, so 11 / 16 in the built-in themes at their own text size. A
+    /// method rather than a field, so a theme's own `Type` gets it from its `small`.
     pub fn caption(&self) -> TextStyle {
-        self.small.lh(16.0)
+        self.small.lh(self.small.size * 16.0 / 11.0)
     }
 }
 

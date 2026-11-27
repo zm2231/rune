@@ -127,7 +127,7 @@ impl TextField {
 
     pub fn build(self, k: &Kit) -> El {
         let c = &k.c;
-        let body = TextStyle::new(14.0, 400.0).lh(21.0);
+        let body = k.text(TextStyle::new(14.0, 400.0).lh(21.0));
         let field = text_input(&self.edit, body)
             .key("input")
             .grow(1.0)

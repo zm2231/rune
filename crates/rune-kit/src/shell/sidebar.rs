@@ -655,7 +655,7 @@ impl SidebarRow {
                 row()
                     .a11y_hidden()
                     .key("badge")
-                    .h(16.0)
+                    .h(k.text_size(16.0))
                     .px(5.0)
                     .center()
                     .radius(8.0)
@@ -669,7 +669,7 @@ impl SidebarRow {
         if self.status.is_some() || self.close.is_some() {
             let dot = |color| el().size(7.0, 7.0).radius(3.5).fill(color);
             let status = self.status.map(|s| match s {
-                RowStatus::Busy => Spinner::new().size(12.0).color(c.icon_muted).build(k),
+                RowStatus::Busy => Spinner::new().size(k.text_size(12.0)).color(c.icon_muted).build(k),
                 RowStatus::Attention => dot(c.warning.icon),
                 RowStatus::Unread => dot(c.bg_accent),
                 RowStatus::Other(e) => e,

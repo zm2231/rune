@@ -350,7 +350,7 @@ impl Button {
         let small = if self.variant == ButtonVariant::GhostMuted { k.ty.small } else { k.ty.small_medium };
         match control {
             Some(ControlSize::Small) => font = small,
-            Some(ControlSize::Mini) => font = TextStyle { size: 9.0, ..small },
+            Some(ControlSize::Mini) => font = TextStyle { size: k.text_size(9.0), ..small },
             _ => {}
         }
         let (ink, icon_c) = (s.ink, s.icon);

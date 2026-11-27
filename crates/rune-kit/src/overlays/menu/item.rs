@@ -301,7 +301,7 @@ impl MenuItem {
         }
         e = e.child(content);
         if let Some(s) = self.shortcut {
-            let st = TextStyle { line_height: 11.0, ..k.ty.small_medium };
+            let st = TextStyle { line_height: k.text_size(11.0), ..k.ty.small_medium };
             e = e.child(text(s).key("shortcut").font(st).color(c.text_faint).a11y_hidden());
         }
         if let Some(b) = self.badge {
@@ -309,13 +309,13 @@ impl MenuItem {
                 row()
                     .a11y_hidden()
                     .key("badge")
-                    .h(16.0)
+                    .h(k.text_size(16.0))
                     .px(4.0)
                     .center()
                     .radius(2.0)
                     .fill(c.layer_02)
                     .border(0.5, c.border_base)
-                    .child(text(b).font(TextStyle { line_height: 11.0, ..k.ty.small_medium }).color(c.text_muted)),
+                    .child(text(b).font(TextStyle { line_height: k.text_size(11.0), ..k.ty.small_medium }).color(c.text_muted)),
             );
         }
         if let Some(on) = self.checked {

@@ -1,7 +1,7 @@
 use rune::{Cx, El, Env, Key, KeyEvent, Mods, Runtime, col, el, row};
 
 use super::*;
-use crate::{Button, KitCx, KitTheme};
+use crate::{Badge, Button, Checkbox, Field, Keybind, KitCx, KitTheme, RadioItem, SegmentedControl, SidebarRow};
 
 struct App {
     theme: KitTheme,
@@ -81,4 +81,67 @@ fn command_equals_minus_and_zero_are_the_text_size_keys() {
     assert_eq!(TextStep::from_key(&ev('s')), None);
     assert_eq!(TextStep::from_key(&KeyEvent { key: Key::Text("=".into()), mods: Mods::default() }), None);
     let _ = TextScale::menu_items::<App>(|s| &mut s.scale);
+}
+
+const CONTROLS: [&str; 7] = ["badge", "keybind", "segmented", "checkbox", "radio", "field", "sidebar_row"];
+
+struct Controls(TextScale);
+
+fn controls(s: &Controls, cx: &mut Cx<Controls>) -> El {
+    let theme = KitTheme::neutral();
+    cx.with_text_scale(&s.0, |cx| {
+        cx.with_kit(&theme, |cx| {
+            let k = cx.kit();
+            let one = |e: El, key: &str| row().child(e.key(key));
+            col()
+                .items_start()
+                .child(one(Badge::new("New").build(&k), "badge"))
+                .child(one(Keybind::new(&["cmd", "K"]).build(&k), "keybind"))
+                .child(one(SegmentedControl::new(&["Day", "Week"], Some(0)).build(&k), "segmented"))
+                .child(one(Checkbox::new(true).label("Wrap lines").build(&k), "checkbox"))
+                .child(one(RadioItem::new("Compact", true).build(&k), "radio"))
+                .child(one(Field::new().label("Name").info().prefix("Shown to others").build(&k), "field"))
+                .child(el().w(240.0).child(SidebarRow::new("Inbox").build(&k).key("sidebar_row")))
+        })
+    })
+}
+
+fn rendered(scale: f32) -> Vec<rune::ElementInfo> {
+    let mut rt = Runtime::new(Controls(TextScale::new(scale)), controls, (600.0, 900.0), Env::new(true, 1.0));
+    rt.frame(0.0);
+    rt.settle_all();
+    rt.frame(0.0);
+    rt.elements()
+}
+
+fn control<'a>(els: &'a [rune::ElementInfo], key: &str) -> &'a rune::ElementInfo {
+    els.iter().find(|e| e.key.as_deref() == Some(key)).unwrap_or_else(|| panic!("{key} is rendered"))
+}
+
+fn line_boxes<'a>(els: &'a [rune::ElementInfo], of: &'a rune::ElementInfo) -> impl Iterator<Item = &'a rune::ElementInfo> {
+    els.iter().filter(move |e| e.text.is_some() && e.path.starts_with(&of.path) && e.path[of.path.len()..].starts_with('/'))
+}
+
+#[test]
+fn at_twice_the_text_size_every_control_holds_its_text_and_grows_only_by_it() {
+    let (plain, big) = (rendered(1.0), rendered(2.0));
+    for key in CONTROLS {
+        let (a, b) = (control(&plain, key), control(&big, key));
+        let [x, y, w, h] = b.rect;
+        let mut texts = 0;
+        for t in line_boxes(&big, b) {
+            texts += 1;
+            let [tx, ty, tw, th] = t.rect;
+            let line = t.text_size.expect("laid-out text")[1];
+            assert!(line <= th + 0.5, "{key}: {:?}'s line box ({line}) fits its element ({th})", t.text);
+            assert!(tx >= x - 0.5 && ty >= y - 0.5 && tx + tw <= x + w + 0.5 && ty + th <= y + h + 0.5, "{key}: {:?} at {:?} lies inside {:?}", t.text, t.rect, b.rect);
+            let size = t.text_style.as_ref().expect("text style").size;
+            let before = line_boxes(&plain, a).find(|p| p.text == t.text).expect("the same text at 1x");
+            assert_eq!(size, before.text_style.as_ref().unwrap().size * 2.0, "{key}: {:?} doubles", t.text);
+        }
+        assert!(texts > 0, "{key} shows text");
+        assert!(h > a.rect[3] * 1.5, "{key}'s height ({} to {h}) follows its text", a.rect[3]);
+        assert_eq!(b.radius, a.radius, "{key}'s radius stays");
+        assert_eq!(b.inset, a.inset, "{key}'s padding stays");
+    }
 }

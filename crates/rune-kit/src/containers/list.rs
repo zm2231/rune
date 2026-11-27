@@ -111,10 +111,10 @@ impl List {
 
     pub fn build(self, k: &Kit) -> El {
         let c = &k.c;
-        let item_font = TextStyle::new(14.0, 500.0).lh(21.0);
+        let item_font = k.text(TextStyle::new(14.0, 500.0).lh(21.0));
         let mut root = col().w_full().gap(12.0);
         if let Some((edit, placeholder)) = &self.search {
-            let mut input = text_input(edit, TextStyle::new(14.0, 400.0).lh(20.0))
+            let mut input = text_input(edit, k.text(TextStyle::new(14.0, 400.0).lh(20.0)))
                 .single_line()
                 .key("input")
                 .label(placeholder.clone())
@@ -154,7 +154,7 @@ impl List {
                     .px(48.0)
                     .py(32.0)
                     .center()
-                    .child(text(self.empty).font(TextStyle::new(14.0, 400.0).lh(21.0)).color(c.text_weak)),
+                    .child(text(self.empty).font(k.text(TextStyle::new(14.0, 400.0).lh(21.0))).color(c.text_weak)),
             );
         }
         let n = self.items.len();
@@ -182,7 +182,7 @@ impl List {
                     g =
                         g.child(
                             row().key("header").w_full().pt(8.0).pb(8.0).pl(8.0).pr(12.0).fill(c.surface_raised).child(
-                                text(name.clone()).font(TextStyle::new(14.0, 500.0).lh(21.0)).color(c.text_weak),
+                                text(name.clone()).font(k.text(TextStyle::new(14.0, 500.0).lh(21.0))).color(c.text_weak),
                             ).a11y_hidden(),
                         );
                 }

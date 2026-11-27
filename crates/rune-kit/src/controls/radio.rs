@@ -115,11 +115,11 @@ impl RadioItem {
         control = k.disabled_dim(control, disabled);
         let label_color = if disabled { c.text_muted } else { c.text_base };
         let mut words = col().key("text").shrink().gap(6.0).child(
-            text(self.label.clone()).key("label").font(TextStyle { line_height: 20.0, ..k.ty.ui }).color(label_color),
+            text(self.label.clone()).key("label").font(TextStyle { line_height: k.text_size(20.0), ..k.ty.ui }).color(label_color),
         );
         if let Some(d) = &self.description {
             let color = if disabled { c.text_faint } else { c.text_muted };
-            words = words.child(text(d.clone()).key("description").font(k.ty.small.lh(11.0)).color(color).wrap());
+            words = words.child(text(d.clone()).key("description").font(k.ty.small.lh(k.text_size(11.0))).color(color).wrap());
         }
         // Checked follows `focus_selected`; the label and description say what the words do.
         let root = row()
@@ -180,12 +180,12 @@ impl RadioGroup {
         if let Some(l) = &self.label {
             root = root
                 .label(l.clone())
-                .child(text(l.clone()).key("label").font(k.ty.small.lh(11.0)).color(c.text_faint).a11y_hidden());
+                .child(text(l.clone()).key("label").font(k.ty.small.lh(k.text_size(11.0))).color(c.text_faint).a11y_hidden());
         }
         if let Some(d) = &self.description {
             root = root
                 .description(d.clone())
-                .child(text(d.clone()).key("description").font(k.ty.small.lh(13.2)).color(c.text_faint).wrap().a11y_hidden());
+                .child(text(d.clone()).key("description").font(k.ty.small.lh(k.text_size(13.2))).color(c.text_faint).wrap().a11y_hidden());
         }
         let mut items = col().key("items").gap(12.0);
         let n = self.items.len();

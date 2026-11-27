@@ -398,13 +398,13 @@ impl Select {
         }
         trigger = match self.appearance {
             SelectAppearance::Inline => {
-                let font = TextStyle { line_height: 16.0, ..k.ty.ui_medium };
+                let font = TextStyle { line_height: k.text_size(16.0), ..k.ty.ui_medium };
                 let hover = self.state == State::Hover || self.open;
                 // select.css: the inline trigger takes the default ring, 2 out, while closed
                 // (opencode#64909).
                 let t = if self.open { trigger.no_focus_ring() } else { k.focus_ring_state(trigger, 2.0, 2.0, self.state == State::Focus) };
                 let t = t
-                    .h(24.0)
+                    .h(k.text_size(24.0))
                     .pl(8.0)
                     .pr(4.0)
                     .py(4.0)
@@ -417,7 +417,7 @@ impl Select {
             SelectAppearance::Field => {
                 let t = if self.fill { trigger.w_full().shrink() } else { trigger.w_full().max_w(self.width).shrink() };
                 let mut t = t
-                    .h(28.0)
+                    .h(k.text_size(28.0))
                     .pr(6.0)
                     .gap(8.0)
                     .radius(k.radius.md)

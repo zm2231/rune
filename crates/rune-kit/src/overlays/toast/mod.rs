@@ -64,7 +64,7 @@ impl Toast {
         let mut content = col().key("content").grow(1.0).shrink().gap(4.0).a11y_hidden().child(
             text(self.title.clone())
                 .key("title")
-                .font(TextStyle { line_height: 20.0, ..k.ty.ui_medium })
+                .font(TextStyle { line_height: k.text_size(20.0), ..k.ty.ui_medium })
                 .color(c.text_base)
                 .truncate(),
         );

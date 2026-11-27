@@ -128,12 +128,12 @@ impl Look {
             bar: hue,
             count: fg,
         };
-        let font = spec.code_font.map_or(TextStyle { size: 13.0, line_height: LINE_H, ..k.ty.mono }, resolve_line_height);
+        let font = spec.code_font.map_or(TextStyle { size: k.text_size(13.0), line_height: LINE_H, ..k.ty.mono }, resolve_line_height);
         let info = c.info.icon;
         let mut look = Look {
             font,
-            label: TextStyle { size: 13.0, line_height: 20.0, ..k.ty.ui_medium },
-            small: TextStyle { size: 12.0, line_height: 16.0, ..k.ty.mono },
+            label: TextStyle { size: k.text_size(13.0), line_height: k.text_size(20.0), ..k.ty.ui_medium },
+            small: TextStyle { size: k.text_size(12.0), line_height: k.text_size(16.0), ..k.ty.mono },
             separator_text: TextStyle { size: font.size, line_height: GAP_H, ..k.ty.ui },
             separator: tint(bg, if dark { c.white } else { Color::BLACK }, if dark { 0.05 } else { 0.02 }),
             adv: 0.6 * font.size,

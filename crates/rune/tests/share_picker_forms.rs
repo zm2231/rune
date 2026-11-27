@@ -40,6 +40,7 @@ mod mac {
         static CONTEXT: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
         static BASELINE: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
         static KEEP: RefCell<Vec<Retained<AnyObject>>> = const { RefCell::new(Vec::new()) };
+        static SHOW_ON_BEGIN: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
     }
 
     fn record_choice(service: Option<&AnyObject>) {
@@ -121,10 +122,29 @@ mod mac {
         }
     }
 
-    fn on_main<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    fn on_main<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
         let (tx, rx) = mpsc::channel();
         on_main_async(move || { tx.send(f()).ok(); });
-        rx.recv_timeout(Duration::from_secs(5)).expect("the main run loop ran the block")
+        rx.recv_timeout(Duration::from_secs(3)).ok()
+    }
+
+    fn unstick(can_post: bool) -> bool {
+        for _ in 0..3 {
+            if on_main(|| ()).is_some() { return true; }
+            if can_post { escape_key(); }
+        }
+        on_main(|| ()).is_some()
+    }
+
+    fn after(delay: f64, modes: &[&str], f: impl Fn() + 'static) {
+        let block = RcBlock::new(move |_timer: *mut AnyObject| f());
+        // SAFETY: main thread; a one-shot timer added to the main run loop in each mode, which
+        // keeps it until it fires.
+        unsafe {
+            let timer: Retained<AnyObject> = msg_send![class!(NSTimer), timerWithTimeInterval: delay, repeats: false, block: &*block];
+            let run_loop: *mut AnyObject = msg_send![class!(NSRunLoop), mainRunLoop];
+            for mode in modes { let _: () = msg_send![run_loop, addTimer: &*timer, forMode: &*NSString::from_str(mode)]; }
+        }
     }
 
     fn wait(limit: Duration, f: impl Fn() -> bool) -> bool {
@@ -154,7 +174,7 @@ mod mac {
         }
     }
 
-    fn new_windows() -> Vec<String> {
+    fn new_windows() -> Option<Vec<String>> {
         on_main(|| {
             let baseline = BASELINE.with(|b| b.borrow().clone());
             // SAFETY: main thread; each address is a live window of `NSApp.windows`.
@@ -181,6 +201,7 @@ mod mac {
                         let title = if title.is_null() { String::new() } else { (*title).to_string() };
                         MENUS.lock().unwrap().push(format!("{} '{title}' {items} items", class_name(menu)));
                         TRACKED.with(|t| t.borrow_mut().extend(Retained::retain(menu)));
+                        if let Some(picker) = SHOW_ON_BEGIN.with(|s| s.borrow_mut().take()) { show_relative(&picker); }
                     } else {
                         ENDED.fetch_add(1, Ordering::SeqCst);
                         TRACKED.with(|t| t.borrow_mut().retain(|m| !std::ptr::eq(&**m, menu)));
@@ -194,7 +215,7 @@ mod mac {
     }
 
     #[derive(Clone, Copy, PartialEq)]
-    enum Setup { Plain, Proposed, OneService, DuringMenu, Inactive, ShareMenuItem }
+    enum Setup { Plain, Proposed, OneService, DuringMenuTimer, DuringMenuBegin, Inactive, ShareMenuItem }
 
     fn delegate(setup: Setup) -> Retained<AnyObject> {
         let mtm = MainThreadMarker::new().unwrap();
@@ -266,9 +287,9 @@ mod mac {
                     }
                     show_relative(&picker);
                 }
-                Setup::DuringMenu => {
-                    // SAFETY: a context menu with one item, popped up; the picker opens from a
-                    // block while it tracks.
+                Setup::DuringMenuTimer | Setup::DuringMenuBegin => {
+                    // SAFETY: a context menu with one item, popped up from a default-mode timer
+                    // so it tracks outside this block.
                     let menu: Retained<AnyObject> = unsafe {
                         let menu: Allocated<AnyObject> = msg_send![class!(NSMenu), alloc];
                         let menu: Retained<AnyObject> = msg_send![menu, initWithTitle: &*NSString::from_str("context")];
@@ -276,14 +297,13 @@ mod mac {
                         menu
                     };
                     CONTEXT.with(|c| *c.borrow_mut() = Some(menu.clone()));
-                    std::thread::spawn(move || {
-                        std::thread::sleep(Duration::from_millis(400));
-                        on_main_async(move || {
-                            let picker = PICKER.with(|p| p.borrow().as_ref().map(|(p, _)| p.clone())).unwrap();
-                            show_relative(&picker);
-                        });
-                    });
-                    pop_up(menu);
+                    if setup == Setup::DuringMenuTimer {
+                        let picker = picker.clone();
+                        after(0.4, &["kCFRunLoopCommonModes", "NSEventTrackingRunLoopMode"], move || show_relative(&picker));
+                    } else {
+                        SHOW_ON_BEGIN.with(|s| *s.borrow_mut() = Some(picker.clone()));
+                    }
+                    after(0.0, &["kCFRunLoopDefaultMode"], move || pop_up(menu.clone()));
                 }
                 Setup::ShareMenuItem => {
                     // SAFETY: `standardShareMenuItem` (macOS 13) returns an item that shows this
@@ -320,8 +340,8 @@ mod mac {
         }
     }
 
-    fn tidy() {
-        on_main(|| {
+    fn tidy(can_post: bool) -> bool {
+        let first = on_main(|| {
             for menu in TRACKED.with(|t| t.borrow().clone()) {
                 // SAFETY: a menu that is tracking; this ends its tracking.
                 unsafe { let _: () = msg_send![&*menu, cancelTrackingWithoutAnimation]; }
@@ -334,13 +354,15 @@ mod mac {
                 }
             }
         });
+        if first.is_none() && !unstick(can_post) { return false; }
         std::thread::sleep(Duration::from_millis(500));
-        on_main(|| {
+        let second = on_main(|| {
             if let Some(menu) = CONTEXT.with(|c| c.borrow_mut().take()) {
                 // SAFETY: as above.
                 unsafe { let _: () = msg_send![&*menu, cancelTrackingWithoutAnimation]; }
             }
             PICKER.with(|p| p.borrow_mut().take());
+            SHOW_ON_BEGIN.with(|s| s.borrow_mut().take());
             // SAFETY: main thread; brings this app back to the front for the next setup.
             unsafe {
                 let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
@@ -348,18 +370,25 @@ mod mac {
             }
         });
         std::thread::sleep(Duration::from_millis(500));
+        second.is_some() || unstick(can_post)
     }
 
-    fn probe(setup: Setup, name: &str, can_post: bool) {
+    fn probe(setup: Setup, name: &str, can_post: bool) -> bool {
         CHOSE.lock().unwrap().clear();
         MENUS.lock().unwrap().clear();
         let (begun, ended) = (BEGUN.load(Ordering::SeqCst), ENDED.load(Ordering::SeqCst));
-        let expected_menus = if setup == Setup::DuringMenu { 2 } else { 1 };
+        let expected_menus = if matches!(setup, Setup::DuringMenuTimer | Setup::DuringMenuBegin) { 2 } else { 1 };
         open(setup);
-        let shown = wait(Duration::from_secs(3), || BEGUN.load(Ordering::SeqCst) >= begun + expected_menus || !new_windows().is_empty());
+        let shown = wait(Duration::from_secs(3), || BEGUN.load(Ordering::SeqCst) >= begun + expected_menus || new_windows().is_some_and(|w| !w.is_empty()));
         std::thread::sleep(Duration::from_millis(300));
-        let windows = new_windows();
         let menus = MENUS.lock().unwrap().clone();
+        let Some(windows) = new_windows() else {
+            let freed = unstick(can_post) && tidy(can_post);
+            let chose = CHOSE.lock().unwrap().clone();
+            println!("share_picker_forms: {name}: the main run loop stopped answering after the show; menus begun {menus:?}; answers {chose:?}; {}",
+                if freed { "Escape freed it" } else { "still blocked, stopping" });
+            return freed;
+        };
         let tracking = BEGUN.load(Ordering::SeqCst) - begun > ENDED.load(Ordering::SeqCst) - ended;
         let form = if !shown { "nothing".to_owned() } else if !windows.is_empty() { format!("window {windows:?}") } else { "menu".to_owned() };
         let escape = if !can_post {
@@ -370,11 +399,14 @@ mod mac {
             let (count, ended_before) = (CHOSE.lock().unwrap().len(), ENDED.load(Ordering::SeqCst));
             escape_key();
             std::thread::sleep(Duration::from_millis(800));
-            format!("{} menu(s) ended, {} answer(s), {} new window(s) left", ENDED.load(Ordering::SeqCst) - ended_before, CHOSE.lock().unwrap().len() - count, new_windows().len())
+            let left = new_windows().map_or("unknown (main run loop busy)".to_owned(), |w| w.len().to_string());
+            format!("{} menu(s) ended, {} answer(s), {left} new window(s) left", ENDED.load(Ordering::SeqCst) - ended_before, CHOSE.lock().unwrap().len() - count)
         };
-        tidy();
+        let freed = tidy(can_post);
         let chose = CHOSE.lock().unwrap().clone();
-        println!("share_picker_forms: {name}: form {form}; menus begun {menus:?}; tracking after show {tracking}; Escape: {escape}; answers {chose:?}");
+        println!("share_picker_forms: {name}: form {form}; menus begun {menus:?}; tracking after show {tracking}; Escape: {escape}; answers {chose:?}{}",
+            if freed { "" } else { "; main run loop still blocked after tidying, stopping" });
+        freed
     }
 
     pub fn main() {
@@ -382,7 +414,7 @@ mod mac {
             println!("share_picker_forms: skipped (set RUNE_GUI_TESTS=1 in a GUI session)");
             return;
         }
-        std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(120)); eprintln!("timeout"); std::process::exit(2) });
+        std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(300)); eprintln!("timeout"); std::process::exit(2) });
         rune::orderly_exit();
         let spec = AppSpec::new("share forms", (320.0, 200.0), || Main, |_: &Main, _: &mut Cx<Main>| el());
         let (ready_tx, ready_rx) = mpsc::channel();
@@ -396,7 +428,7 @@ mod mac {
                 // SAFETY: main thread.
                 let now = unsafe { windows() };
                 BASELINE.with(|b| *b.borrow_mut() = now);
-            });
+            }).expect("the main run loop ran the block");
             // SAFETY: takes no arguments.
             let can_post = unsafe { CGPreflightPostEventAccess() };
             let os = on_main(|| {
@@ -406,17 +438,18 @@ mod mac {
                     let v: *const NSString = msg_send![info, operatingSystemVersionString];
                     (*v).to_string()
                 }
-            });
+            }).expect("the main run loop ran the block");
             println!("share_picker_forms: {os}");
             for (setup, name) in [
                 (Setup::Plain, "plain delegate"),
                 (Setup::Proposed, "delegate returns the proposed services"),
                 (Setup::OneService, "delegate returns one service"),
-                (Setup::DuringMenu, "shown while a context menu tracks"),
+                (Setup::DuringMenuTimer, "shown from a tracking-mode timer while a context menu tracks"),
+                (Setup::DuringMenuBegin, "shown when a context menu begins tracking"),
                 (Setup::Inactive, "shown while the app is inactive"),
                 (Setup::ShareMenuItem, "standardShareMenuItem in a popped-up menu"),
             ] {
-                probe(setup, name, can_post);
+                if !probe(setup, name, can_post) { break; }
             }
             handle.quit();
         });

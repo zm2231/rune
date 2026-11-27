@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use objc2_core_foundation::CGSize;
-use objc2_quartz_core::{CALayer, CAMetalDrawable, CAMetalLayer};
+use objc2_quartz_core::{CALayer, CAMetalDrawable, CAMetalLayer, CATransaction};
 use objc2::rc::{Retained, autoreleasepool};
 use parking_lot::Mutex;
 use raw_window_metal::Layer;
@@ -58,6 +58,7 @@ impl Drop for MetalSurface {
     fn drop(&mut self) {
         if self.owned {
             self.layer.removeFromSuperlayer();
+            CATransaction::flush();
         }
     }
 }

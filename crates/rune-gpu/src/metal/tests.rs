@@ -754,10 +754,11 @@ fn metal_surface_configure_sets_maximum_drawable_count_from_frame_latency() {
 #[allow(unsafe_code)]
 #[test]
 fn dropping_a_surface_removes_the_layer_it_added_and_its_observers() {
+    use objc2::rc::autoreleasepool;
     use objc2_quartz_core::{CALayer, CAMetalLayer};
     let root = CALayer::new();
     // SAFETY: reads the sublayers of a layer this thread alone touches.
-    let sublayers = || unsafe { root.sublayers() }.map_or(0, |layers| layers.len());
+    let sublayers = || autoreleasepool(|_| unsafe { root.sublayers() }.map_or(0, |layers| layers.len()));
     let instance = super::instance();
     for _ in 0..3 {
         let target = wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(Retained::as_ptr(&root) as *mut std::ffi::c_void);

@@ -28,6 +28,8 @@ pub(crate) enum State {
     Running { held: u32, stale: bool, timer: Option<Attempt> },
 }
 
+const RESTART_LATENCY: f64 = 2.0 / 60.0;
+
 impl State {
     /// A link that has just started: its first tick draws.
     const STARTED: State = State::Running { held: 0, stale: true, timer: None };
@@ -142,8 +144,9 @@ pub(crate) fn step(seq: &mut Seq, state: &mut State, event: Event) -> Effects<Ef
         (State::Running { held, .. }, Event::Frame { animating: false, wake_after }) => {
             let timer = wake_after.map(|seconds| (seq.next(), seconds.max(0.0)));
             let attempt = timer.map(|(attempt, _)| attempt);
+            let soon = wake_after.is_some_and(|seconds| seconds < RESTART_LATENCY);
             let mut effects = Effects::none();
-            if held == 0 {
+            if held == 0 && !soon {
                 *state = State::Resting { timer: attempt };
                 effects.push(Effect::Pause);
             } else {

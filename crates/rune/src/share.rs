@@ -223,6 +223,9 @@ impl Reply {
         self.answered.borrow_mut().push((self.id, result));
         (self.wake)();
     }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn of(&self, sharing: &Sharing) -> bool { Rc::ptr_eq(&self.answered, &sharing.answered) }
 }
 
 /// What a host shows: the share, where its anchor is in window points (none when its element
@@ -274,6 +277,10 @@ impl crate::runtime::RuntimeCore {
     pub(crate) fn refuse_share(&mut self, why: &str) {
         if !matches!(self.host.sharing.state, State::Idle) { self.share_step(Event::Refused(why.into())); }
     }
+
+    /// Closes the native pickers showing this runtime's shares, which it answers itself.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn forget_native_shares(&self) { macos::forget(&self.host.sharing); }
 
     #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn dismiss_share(&mut self) {

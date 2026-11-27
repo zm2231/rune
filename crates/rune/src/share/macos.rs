@@ -6,8 +6,8 @@
 //! so a local event monitor, installed while a picker shows, takes Escape in the window under it
 //! before AppKit dispatches it, and neither that press, its repeats nor its release reach the app.
 //! Should `close` not answer, the share answers none anyway, and the popover's window is closed
-//! when it is the only picker's. A window hidden or closed under it answers its share itself
-//! (`RuntimeCore::cancel_shares`), which then closes and forgets that window's pickers.
+//! when it is the only picker's. A runtime that answers its share itself, as when its window hides,
+//! closes or loses its GPU surface (`RuntimeCore::cancel_shares`), closes and forgets its pickers.
 //! `RUNE_SHARE_LOG=1` logs each step to stderr.
 
 #![allow(unsafe_code)]
@@ -125,27 +125,28 @@ fn class_name(object: &NSWindow) -> String {
     object.class().name().to_string_lossy().into_owned()
 }
 
-/// Closes and forgets, a run-loop pass later, the pickers over windows no longer on screen, whose
-/// shares their runtimes have answered (`RuntimeCore::cancel_shares`).
-pub(crate) fn forget_hidden() {
-    crate::platform::macos::run_later("share picker", || {
-        let gone: Vec<Showing> = SHOWING.with(|showing| {
-            let mut showing = showing.borrow_mut();
-            let (gone, kept) = std::mem::take(&mut *showing).into_iter().partition(|s| !s.host.isVisible());
-            *showing = kept;
-            gone
-        });
-        ESCAPED.with(|escaped| escaped.borrow_mut().retain(|w| w.isVisible()));
-        for Showing { picker, delegate, .. } in gone {
-            if delegate.open() {
-                // SAFETY: as in `escape`.
-                unsafe {
-                    let closes: bool = msg_send![&*picker, respondsToSelector: sel!(close)];
-                    if closes { let _: () = msg_send![&*picker, close]; }
-                }
+/// Takes out the pickers showing `sharing`'s shares and drops their replies, so they answer
+/// nothing more, then closes them a run-loop pass later.
+pub(crate) fn forget(sharing: &super::Sharing) {
+    let ours = |s: &Showing| s.delegate.ivars().borrow().as_ref().is_some_and(|r| r.of(sharing));
+    let gone: Vec<Showing> = SHOWING.with(|showing| {
+        let mut showing = showing.borrow_mut();
+        let (gone, kept) = std::mem::take(&mut *showing).into_iter().partition(ours);
+        *showing = kept;
+        gone
+    });
+    if gone.is_empty() { return; }
+    for s in &gone { drop(s.delegate.ivars().borrow_mut().take()); }
+    if log() { eprintln!("rune: share picker forgetting {} picker(s) whose shares were cancelled", gone.len()); }
+    crate::platform::macos::run_later("share picker", move || {
+        for Showing { picker, .. } in gone {
+            // SAFETY: as in `escape`.
+            unsafe {
+                let closes: bool = msg_send![&*picker, respondsToSelector: sel!(close)];
+                if closes { let _: () = msg_send![&*picker, close]; }
             }
-            drop(delegate.ivars().borrow_mut().take());
         }
+        ESCAPED.with(|escaped| escaped.borrow_mut().retain(|w| w.isVisible()));
         unwatch_if_idle();
     });
 }
@@ -224,9 +225,7 @@ pub(crate) fn show(shown: Shown, window: &winit::window::Window) {
         };
         let before = NSApplication::sharedApplication(mtm).windows().iter().collect();
         SHOWING.with(|showing| {
-            let mut showing = showing.borrow_mut();
-            showing.retain(|s| s.host.isVisible());
-            showing.push(Showing { picker: picker.clone(), delegate, host, before });
+            showing.borrow_mut().push(Showing { picker: picker.clone(), delegate, host, before });
         });
         watch_escape();
         // SAFETY: `bounds` is a rect and `isFlipped` a `BOOL` of the view, and the picker shows

@@ -407,7 +407,7 @@ impl PreviewCore {
         .build(k)
         .key("image-preview-zoom-level")
         // Three tabular digits, so the bar holds still as the level passes 100%.
-        .min_w(58.0);
+        .min_w(k.text_size(58.0));
         bar.child(bind.zoom_out(IconButton::new(glyphs[0]).variant(IconButtonVariant::Ghost).label(out)).build(k).key("image-preview-zoom-out"))
             .child(level)
             .child(bind.zoom_in(IconButton::new(glyphs[1]).variant(IconButtonVariant::Ghost).label(into)).build(k).key("image-preview-zoom-in"))

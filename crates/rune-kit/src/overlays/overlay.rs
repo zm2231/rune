@@ -444,7 +444,7 @@ impl TooltipStyle {
                 border: Some((1.0, c.border_weak)),
                 radius: k.radius.sm,
                 padding: (8.0, 2.0),
-                max_w: Some(320.0),
+                max_w: Some(k.text_size(320.0)),
                 font: k.ty.text_small_medium,
                 ink: c.text_invert_strong,
                 shadows: k.shadow_layers(&k.elevation.md).collect(),

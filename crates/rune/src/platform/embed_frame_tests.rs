@@ -464,4 +464,3 @@ fn a_frame_only_loops_asked_for_steps_them_without_the_app_or_a_paint() {
     assert!(surface.log.contains(&"step".to_owned()), "a stale runtime takes an ordinary frame: {:?}", surface.log);
     assert!(!surface.log.iter().any(|l| l.starts_with("looped")));
 }
-

@@ -85,6 +85,8 @@
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 mod aec;
+#[cfg(any(target_os = "windows", test))]
+mod capture_position;
 mod control;
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 mod duplex;
@@ -276,6 +278,14 @@ pub struct VoiceStats {
     /// Frames the microphone device lost in a glitch, as the device reports it. They are
     /// replaced with silence, so later audio keeps its timing. Linux and Windows count these.
     pub mic_gap_frames: u64,
+    /// The microphone device's own position minus the frames it delivered (reported gaps
+    /// included), taken together on the audio thread. It holds steady; a step means the device
+    /// skipped audio without reporting a gap. Windows reports it; `None` elsewhere.
+    pub mic_device_ahead_frames: Option<i64>,
+    /// The speaker device's own clock minus the frames it has taken from its buffer, taken
+    /// together on the audio thread. It holds steady near zero; a step means the device played
+    /// more or less than it was given. Windows reports it; `None` elsewhere.
+    pub speaker_device_ahead_frames: Option<i64>,
     /// From the last [`Voice::start`] to the device's first callback.
     pub start_to_audio: Option<Duration>,
     /// What Rune's own echo canceller reports, refreshed once a second while it runs (Linux, and

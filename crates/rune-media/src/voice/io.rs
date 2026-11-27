@@ -4,6 +4,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
+const UNKNOWN: i64 = i64::MIN;
+
 pub(crate) struct Meters {
     origin: Instant,
     pub(crate) muted: AtomicBool,
@@ -15,6 +17,8 @@ pub(crate) struct Meters {
     late: AtomicU64,
     speaker_gap: AtomicU64,
     mic_gap: AtomicU64,
+    mic_device_ahead: AtomicI64,
+    speaker_device_ahead: AtomicI64,
     started_at: AtomicU64,
     first_audio_at: AtomicU64,
     pub(crate) canceller: CancellerMeter,
@@ -72,6 +76,8 @@ impl Meters {
             late: AtomicU64::new(0),
             speaker_gap: AtomicU64::new(0),
             mic_gap: AtomicU64::new(0),
+            mic_device_ahead: AtomicI64::new(UNKNOWN),
+            speaker_device_ahead: AtomicI64::new(UNKNOWN),
             started_at: AtomicU64::new(0),
             first_audio_at: AtomicU64::new(0),
             canceller: CancellerMeter::default(),
@@ -114,6 +120,20 @@ impl Meters {
     }
 
     #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+    pub(crate) fn mark_mic_device(&self, ahead: Option<i64>) {
+        if let Some(ahead) = ahead {
+            self.mic_device_ahead.store(ahead.max(UNKNOWN + 1), Ordering::Relaxed);
+        }
+    }
+
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+    pub(crate) fn mark_speaker_device(&self, ahead: Option<i64>) {
+        if let Some(ahead) = ahead {
+            self.speaker_device_ahead.store(ahead.max(UNKNOWN + 1), Ordering::Relaxed);
+        }
+    }
+
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
     pub(crate) fn count_mic_gap(&self, frames: u64) {
         if frames > 0 {
             self.mic_gap.fetch_add(frames, Ordering::Relaxed);
@@ -131,6 +151,8 @@ impl Meters {
             late_frames: self.late.load(Ordering::Relaxed),
             speaker_gap_frames: self.speaker_gap.load(Ordering::Relaxed),
             mic_gap_frames: self.mic_gap.load(Ordering::Relaxed),
+            mic_device_ahead_frames: Some(self.mic_device_ahead.load(Ordering::Relaxed)).filter(|&f| f != UNKNOWN),
+            speaker_device_ahead_frames: Some(self.speaker_device_ahead.load(Ordering::Relaxed)).filter(|&f| f != UNKNOWN),
             start_to_audio: (started != 0 && first >= started).then(|| Duration::from_nanos(first - started)),
             echo_canceller: self.canceller.stats(),
         }

@@ -1,4 +1,5 @@
 use super::thread::Entered;
+use crate::voice::capture_position::{CapturePosition, Packet};
 use crate::voice::echo_path::{self, EchoPath, SystemAec};
 use crate::voice::machine::Fault;
 use crate::voice::streams::{MicLink, Opened, SpeakerLink};
@@ -90,8 +91,7 @@ pub(super) struct Mic {
     client: Client,
     capture: IAudioCaptureClient,
     pending: VecDeque<f32>,
-    rate: u32,
-    next: Option<u64>,
+    position: CapturePosition,
     lost: u64,
     entered: Option<Entered>,
 }
@@ -104,6 +104,7 @@ pub(super) struct Speaker {
     rate: u32,
     low: u32,
     given: u64,
+    ahead: Option<i64>,
     underrun: underrun::State,
     entered: Option<Entered>,
 }
@@ -133,6 +134,10 @@ impl MicLink for Mic {
     fn take_lost(&mut self) -> u64 {
         std::mem::take(&mut self.lost)
     }
+
+    fn device_ahead(&self) -> Option<i64> {
+        self.position.ahead()
+    }
 }
 
 impl Mic {
@@ -149,16 +154,14 @@ impl Mic {
             while self.capture.GetNextPacketSize().map_err(|e| fault(&e, "microphone"))? > 0 {
                 let (mut data, mut frames, mut flags, mut position) = (std::ptr::null_mut(), 0u32, 0u32, 0u64);
                 self.capture.GetBuffer(&mut data, &mut frames, &mut flags, Some(&mut position), None).map_err(|e| fault(&e, "microphone"))?;
-                let timed = flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 == 0;
-                if flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0
-                    && timed
-                    && let Some(next) = self.next
-                {
-                    let gap = position.saturating_sub(next).min(u64::from(self.rate));
-                    self.lost += gap;
-                    self.push(std::iter::repeat_n(0.0, gap as usize));
-                }
-                self.next = timed.then(|| position + u64::from(frames));
+                let gap = self.position.packet(&Packet {
+                    position,
+                    frames: u64::from(frames),
+                    discontinuity: flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0,
+                    timed: flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 == 0,
+                });
+                self.lost += gap;
+                self.push(std::iter::repeat_n(0.0, gap as usize));
                 if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 || data.is_null() {
                     self.push(std::iter::repeat_n(0.0, frames as usize));
                 } else {
@@ -211,7 +214,12 @@ impl SpeakerLink for Speaker {
         let played = u128::from(position) * u128::from(self.rate) / u128::from(self.frequency);
         let taken = self.given.saturating_sub(u64::from(padding));
         let lead = i64::try_from(played).unwrap_or(i64::MAX).saturating_sub(i64::try_from(taken).unwrap_or(i64::MAX));
+        self.ahead = Some(lead);
         underrun::step(&mut self.underrun, Reading { lead, low: padding < self.low })
+    }
+
+    fn device_ahead(&self) -> Option<i64> {
+        self.ahead
     }
 }
 
@@ -279,7 +287,7 @@ pub(super) fn open(rate: u32, _block: usize) -> Result<Opened, Fault> {
         mic.client.Start().map_err(|e| fault(&e, "microphone"))?;
         let pending = VecDeque::with_capacity(rate as usize);
         Ok(Opened {
-            mic: Box::new(Mic { client: mic, capture, pending, rate, next: None, lost: 0, entered: None }),
+            mic: Box::new(Mic { client: mic, capture, pending, position: CapturePosition::new(rate), lost: 0, entered: None }),
             speaker: Box::new(Speaker {
                 client: speaker,
                 render,
@@ -288,6 +296,7 @@ pub(super) fn open(rate: u32, _block: usize) -> Result<Opened, Fault> {
                 rate,
                 low,
                 given,
+                ahead: None,
                 underrun: underrun::State::Waiting,
                 entered: None,
             }),

@@ -314,3 +314,55 @@ fn a_thread_that_fails_to_start_is_retried_with_the_queued_audio_kept() {
         quickly("playing the queued audio", || speaker.played_frames() >= queued.len() as u64);
     }
 }
+
+struct Positioned {
+    link: Room,
+    delivered: u64,
+    ahead: i64,
+    skip_at: Option<u64>,
+}
+
+impl MicLink for Positioned {
+    fn read(&mut self, out: &mut [f32]) -> Result<(), Fault> {
+        self.link.read(out)?;
+        self.delivered += out.len() as u64;
+        if Some(self.delivered) == self.skip_at {
+            self.ahead += 480;
+        }
+        Ok(())
+    }
+
+    fn device_ahead(&self) -> Option<i64> {
+        Some(self.ahead)
+    }
+}
+
+impl SpeakerLink for Positioned {
+    fn write(&mut self, frames: &[f32]) -> Result<(), Fault> {
+        self.link.write(frames)
+    }
+
+    fn device_ahead(&self) -> Option<i64> {
+        Some(self.ahead)
+    }
+}
+
+#[test]
+fn a_microphone_that_skips_audio_without_a_gap_shows_in_the_stats() {
+    let air = Arc::new(Mutex::new(Air::default()));
+    let (voice, mut mic, mut speaker) = open(Box::new(move |_, _| {
+        let line = Line::new();
+        let mic = Positioned { link: Room { air: air.clone(), line: line.clone() }, delivered: 0, ahead: 0, skip_at: Some(u64::from(RATE)) };
+        let speaker = Positioned { link: Room { air: air.clone(), line }, delivered: 0, ahead: 0, skip_at: None };
+        Ok(Opened { mic: Box::new(mic), speaker: Box::new(speaker), echo: EchoPath::InProcess })
+    }));
+    speaker.write(&vec![0.0; RATE as usize * 3]);
+    voice.start();
+    until(&voice, VoiceState::Running);
+    let mut sink = vec![0.0; RATE as usize];
+    quickly("the skip to show", || {
+        mic.read(&mut sink);
+        voice.stats().mic_device_ahead_frames == Some(480)
+    });
+    assert_eq!(voice.stats().speaker_device_ahead_frames, Some(0));
+}

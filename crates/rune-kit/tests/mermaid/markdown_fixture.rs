@@ -107,7 +107,7 @@ struct S {
 }
 
 fn view(s: &S, _: &mut Cx<S>) -> El {
-    let kit = rune_theme_opencode::kit(s.dark);
+    let kit = &rune_theme_opencode::kit(&rune_kit::KitEnv::new(s.dark));
     col().w_full().padding(16.0).child(
         Markdown::new(s.src).style(MarkdownStyle::from_kit(kit)).streaming(s.streaming).build(kit),
     )

@@ -3,6 +3,7 @@
 use super::*;
 
 pub(super) mod content_slide;
+pub(crate) mod deadlines;
 pub(super) mod flights;
 pub(super) mod fold_hold;
 pub(super) mod growth_rows;

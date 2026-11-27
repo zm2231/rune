@@ -107,6 +107,7 @@ pub struct Cursed {
     /// Demo recordings draw a pointer (`--cursor`).
     pub show_cursor: bool,
     pub cursor: Option<[f32; 2]>,
+    pub theme: rune_kit::KitTheme,
 }
 
 impl Cursed {
@@ -123,6 +124,7 @@ impl Cursed {
             now: 0.0,
             show_cursor: rune::extra_args().iter().any(|a| a == "--cursor"),
             cursor: None,
+            theme: rune_theme_opencode::kit_theme(),
         }
     }
 

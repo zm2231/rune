@@ -743,6 +743,25 @@ declare_class!(
             .unwrap_or(false)
         }
 
+        #[method(accessibilityPerformShowMenu)]
+        fn show_menu(&self) -> bool {
+            self.resolve_with_context(|node, tree, context| {
+                let supported = node.supports_action(Action::ShowContextMenu, &filter);
+                if supported {
+                    if let Some((target_node, target_tree)) = tree.state().locate_node(node.id()) {
+                        context.do_action(ActionRequest {
+                            action: Action::ShowContextMenu,
+                            target_tree,
+                            target_node,
+                            data: None,
+                        });
+                    }
+                }
+                supported
+            })
+            .unwrap_or(false)
+        }
+
         #[method(accessibilityPerformIncrement)]
         fn increment(&self) -> bool {
             self.resolve_with_context(|node, tree, context| {
@@ -1345,6 +1364,9 @@ declare_class!(
                 }
                 if selector == sel!(accessibilityPerformPress) {
                     return node.is_clickable(&filter);
+                }
+                if selector == sel!(accessibilityPerformShowMenu) {
+                    return node.supports_action(Action::ShowContextMenu, &filter);
                 }
                 if selector == sel!(accessibilityPerformIncrement) {
                     return node.supports_increment(&filter);

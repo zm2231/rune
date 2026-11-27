@@ -460,18 +460,23 @@ fn overlay_idle_rest_after_24_resizes_retires_metal_submissions_and_releases_spa
     let retired = Arc::new(AtomicBool::new(false));
     let done = retired.clone();
     gpu.queue.on_submitted_work_done(move || done.store(true, Ordering::Release));
-    // Give the GPU plenty of time to finish the tiny offscreen pass without polling.
-    std::thread::sleep(Duration::from_millis(80));
 
-    let t0 = crate::time::now();
-    overlay.dirty = false;
-    overlay.idle = true;
-    overlay.note_presented_with(t0, false);
-    overlay.wake_due(t0 + REST_AFTER);
-    assert_eq!(overlay.rest, Rest::Idle);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let t0 = crate::time::now();
+        overlay.dirty = false;
+        overlay.idle = true;
+        overlay.note_presented_with(t0, false);
+        overlay.wake_due(t0 + REST_AFTER);
+        assert_eq!(overlay.rest, Rest::Idle);
+        if !cfg!(target_os = "macos") || retired.load(Ordering::Acquire) || std::time::Instant::now() > deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
     assert_eq!(overlay.core.renderer.as_ref().unwrap().spare_layers(), 0, "rest trims all spare layer targets");
     #[cfg(target_os = "macos")]
-    assert!(retired.load(Ordering::Acquire), "macOS idle rest must poll and retire completed Metal command buffers");
+    assert!(retired.load(Ordering::Acquire), "macOS idle rest must poll and retire completed Metal command buffers within 5 s");
     #[cfg(all(target_os = "macos", feature = "test-gpu-counters"))]
     assert_eq!(
         gpu.device.get_internal_counters().hal.textures.read(),

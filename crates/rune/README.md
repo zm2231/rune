@@ -3559,17 +3559,24 @@ let heard = speaker.played_frames();
   on the default devices, falling back to ALSA, both loaded at run time. Echo cancellation and
   noise suppression run in the app (WebRTC's AEC3 through `sonora`) with the samples Rune plays
   as the reference, so no system echo-cancel module is needed. Only Rune's own output is
-  cancelled, and the microphone level isn't adjusted. `scripts/voice-pulse-e2e.sh` measures
-  echo against a real PulseAudio server in Docker.
+  cancelled, and the microphone level isn't adjusted. The canceller finds echoes that come back
+  up to at least 700 ms after they're played (a 1 s loop isn't found). `scripts/voice-pulse-e2e.sh [--loop-ms N]` measures echo against a
+  real PulseAudio server in Docker, directly or through an N ms loop.
 - **Windows**: WASAPI on the default communications microphone and speaker, tagged as
   communications audio. The system's echo canceller is used when the microphone's driver
   offers one (Windows 11 lists it among the stream's effects); otherwise, as on Windows 10, the
   in-app canceller from Linux runs. Never both. Not yet run on real Windows audio hardware.
 - **The web**: the browser's own echo cancellation, noise suppression and gain control on
-  `getUserMedia`, with both directions through one AudioWorklet. Audio crosses the page's main
-  thread in 10 ms blocks, so a busy main thread counts `VoiceStats::late_frames`. Call
-  `Voice::start` from a click or key handler. Needs HTTPS or `localhost`. Not yet run in a
-  browser with real speakers.
+  `getUserMedia`, with both directions through one AudioWorklet in an `AudioContext` at the
+  device's own rate (Firefox cancels only what plays in the microphone's audio graph, and a
+  context at another rate gets its own), converted to and from the stream's rate in Rune. Audio
+  crosses the page's main thread in 10 ms blocks, so a busy main thread counts
+  `VoiceStats::late_frames`. The state stays `Starting` until the first microphone audio
+  arrives, so not while the permission prompt is open. A refused microphone, or none at all,
+  fails the stream with a message saying which; it isn't retried. Call `Voice::start` from a click or key
+  handler. Needs HTTPS or `localhost`. `scripts/voice-web-e2e.sh` measures echo in headless
+  Firefox or Chromium against a real PulseAudio server in Docker. Not yet run in a browser with
+  real speakers.
 - **Tests**: `Voice::open_fake(spec, &FakeVoice)` runs on every platform without hardware.
   `FakeVoice::tick(frames)` runs one device callback. The fake microphone hears what
   `FakeVoice::say` queued plus the speaker's output at the `echo(gain, delay)` you set.

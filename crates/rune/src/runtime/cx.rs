@@ -88,6 +88,7 @@ pub(crate) struct CxCore {
     pub(super) wm_state_read: std::cell::Cell<bool>,
     pub(super) layout: layout_read::LayoutRects,
     pub(super) layout_reads: std::cell::RefCell<layout_read::LayoutReads>,
+    pub(super) provided: super::provided::Stack,
 }
 
 /// The host's safe-area insets in points, top/right/bottom/left: the browser's on the web,

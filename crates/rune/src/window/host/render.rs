@@ -184,10 +184,25 @@ impl FrameProfile {
                     looped: looped.map(Vec::len),
                     loop_why: self.loop_why,
                     loop_check: self.loop_check.take(),
+                    painter: "gpu",
                 })
             }
             _ => None,
         };
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    #[inline]
+    pub(in crate::window) fn build_cpu_frame(&mut self, rt: &mut crate::runtime::RuntimeCore, animating: bool, rects: &[[u32; 4]], whole: Option<&'static str>) {
+        #[cfg(feature = "frame-profile")]
+        {
+            self.whole_why = whole;
+            let damage = whole.is_none().then(|| rects.iter().map(|r| r.map(|v| v as i32)).collect());
+            self.build_frame_core(rt, None, animating, None, damage);
+            if let Some(f) = self.frame.as_mut() { f.painter = "cpu"; }
+        }
+        #[cfg(not(feature = "frame-profile"))]
+        let _ = (rt, animating, rects, whole);
     }
 
     #[inline]

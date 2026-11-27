@@ -703,7 +703,9 @@ the same Apple Account, with apps from the same team; a simulator can't hand off
 **Spotlight.** `tx.index_search_items([SearchItem::new("note-7").with_title("Groceries")])` adds
 items to the device's search, and `App::on_open_search_item` gets the id of a result the user
 opens, the one that launched the app before the first frame. It needs nothing in the bundle and
-works on a simulator: index, swipe down on the home screen, search, and open the result.
+works on a simulator: index, swipe down on the home screen, search, and open the result. The
+home-screen search finds an item by the words of its title, not its details or keywords, and may
+not match a search of three letters or fewer.
 `examples/ios-system` does both:
 
 ```sh

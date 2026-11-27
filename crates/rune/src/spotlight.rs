@@ -22,8 +22,10 @@ pub const SEARCH_THUMBNAIL_BYTES: u64 = 1 << 20;
 #[cfg_attr(not(target_vendor = "apple"), allow(dead_code))]
 pub(crate) const SPOTLIGHT_ACTIVITY: &str = "com.apple.corespotlightitem";
 
-/// An item for the system's search (Spotlight on macOS and iOS): found by its title, details
-/// and keywords, and opened in the app with [`App::on_open_search_item`], which gets its `id`.
+/// An item for the system's search (Spotlight on macOS and iOS), opened in the app with
+/// [`App::on_open_search_item`], which gets its `id`. macOS finds it by its title, details and
+/// keywords. iOS's home-screen search finds it by the words of its title only, and may not
+/// match a search of three letters or fewer, so give an item a title worth searching for.
 ///
 /// ```
 /// # use rune::SearchItem;
@@ -59,8 +61,9 @@ impl SearchItem {
         self
     }
 
-    /// A word the item is found by, besides its title and details. Give each word its own
-    /// keyword: a phrase is one keyword, which a search for one of its words may not match.
+    /// A word macOS finds the item by, besides its title and details; iOS's home-screen search
+    /// doesn't match keywords. Give each word its own keyword: a phrase is one keyword, which a
+    /// search for one of its words may not match.
     pub fn with_keyword(mut self, keyword: impl Into<String>) -> Self {
         self.keywords.push(keyword.into());
         self

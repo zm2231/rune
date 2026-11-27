@@ -137,9 +137,9 @@ fn system_search(t: &tok::Theme) -> El {
         button("index", "Index three notes in Spotlight", t, |s, tx| {
             tx.index_search_items(NOTES.iter().enumerate().map(|(i, title)| {
                 SearchItem::new(format!("note-{}", i + 1)).with_domain("notes").with_title(*title)
-                    .with_details("A note from the Rune system example").with_keyword("rune").with_keyword("system")
+                    .with_details("A note from the Rune system example")
             }));
-            s.say("Indexed 3 notes: search for \"Groceries\" or \"rune\" from the home screen");
+            s.say("Indexed 3 notes: search for \"Groceries\" or \"Packing\" from the home screen");
         }),
         button("unindex", "Remove them from Spotlight", t, |s, tx| {
             tx.remove_search_domain("notes");

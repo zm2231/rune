@@ -98,7 +98,10 @@ fn searchable(item: &SearchItem) -> Retained<AnyObject> {
         let content: Option<Retained<AnyObject>> = msg_send![class!(UTType), typeWithIdentifier: &*kind];
         let attributes: Allocated<AnyObject> = msg_send![class!(CSSearchableItemAttributeSet), alloc];
         let attributes: Retained<AnyObject> = msg_send![attributes, initWithContentType: content.as_deref()];
-        if let Some(title) = item.title() { let _: () = msg_send![&*attributes, setTitle: &*NSString::from_str(title)]; }
+        if let Some(title) = item.title().map(NSString::from_str) {
+            let _: () = msg_send![&*attributes, setTitle: &*title];
+            let _: () = msg_send![&*attributes, setDisplayName: &*title];
+        }
         if let Some(details) = item.details() { let _: () = msg_send![&*attributes, setContentDescription: &*NSString::from_str(details)]; }
         if !item.keywords().is_empty() { let _: () = msg_send![&*attributes, setKeywords: &*strings(item.keywords())]; }
         if let Some(url) = thumbnail(item) { let _: () = msg_send![&*attributes, setThumbnailURL: &*url]; }

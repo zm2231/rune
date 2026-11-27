@@ -188,7 +188,7 @@ impl MarkdownStyle {
     pub fn from_kit(k: &Kit) -> MarkdownStyle {
         let c = &k.c;
         let body = TextStyle { line_height: k.text_size(22.4), ..k.ty.body };
-        let heading = |size, lh| TextStyle { size, weight: 600.0, line_height: lh, ..body };
+        let heading = |size: f32, lh: f32| TextStyle { size: k.text_size(size), weight: 600.0, line_height: k.text_size(lh), ..body };
         MarkdownStyle {
             text: c.text_base,
             muted: c.text_muted,

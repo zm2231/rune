@@ -1,0 +1,1 @@
+- **Markdown headings follow the text size.** `MarkdownStyle::from_kit` sizes its heading type and line heights with the kit's text scale, as it already did body and code, so `cx.with_text_scale` grows a markdown view's headings with the rest of its text. The tab strip's busy spinner grows with the tab's label too.

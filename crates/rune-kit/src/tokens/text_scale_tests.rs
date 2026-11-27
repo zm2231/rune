@@ -170,7 +170,7 @@ fn scene(s: &Scene, cx: &mut Cx<Scene>) -> El {
                 .build(k, &mut layer);
             let select = Select::new("select", &["One", "Two"]).current(Some("One")).open(true).build(k, &mut layer);
             let tabs = TabStrip::new("tabs", TabOrientation::Horizontal)
-                .tabs([TabItem::new("a", "Alpha").icon(&STAR).closable(true)])
+                .tabs([TabItem::new("a", "Alpha").icon(&STAR).closable(true), TabItem::new("b", "Beta").status(Some(crate::shell::TabItemStatus::Busy))])
                 .viewport_width(Some(400.0))
                 .on_close(|_: &mut Scene, _, _| {})
                 .build(k);
@@ -178,9 +178,14 @@ fn scene(s: &Scene, cx: &mut Cx<Scene>) -> El {
             let tree = TreeItem::new("src").icon(&STAR).build(k, &TreeRow::new("src", 0), &TreeStyle::from_kit(k));
             let folder = TreeItem::new("lib").build(k, &TreeRow::new("lib", 0).expanded(Some(true)), &TreeStyle::from_kit(k));
             let diff = crate::diff::DiffView::new(|s: &Scene| &s.diff, |s: &mut Scene| &mut s.diff).on_comment(|_: &mut Scene, _, _| {}).build(s, k);
+            #[cfg(feature = "markdown")]
+            let markdown = crate::Markdown::new("# One\n\n## Two\n\n### Three\n\n#### Four\n\nBody with `code`.\n\n```\nlet x = 1;\n```\n").build(k);
+            #[cfg(not(feature = "markdown"))]
+            let markdown = el();
             col()
                 .w(900.0)
                 .items_start()
+                .child(el().w(600.0).child(markdown.key("markdown")))
                 .child(row().child(tabs.key("tab_strip")))
                 .child(row().child(list.key("list")))
                 .child(row().child(menu))
@@ -220,7 +225,7 @@ fn at_twice_the_text_size_kit_text_and_the_glyphs_beside_it_double() {
                 stuck.push(format!("{} {:?}: {} / {} to {} / {}", b.path, b.text, sa.size, sa.line_height, sb.size, sb.line_height));
             }
         }
-        if b.role == "icon" {
+        if b.role == "icon" || b.role == "progressbar" {
             glyphs += 1;
             if [b.target[2], b.target[3]] != [a.target[2] * 2.0, a.target[3] * 2.0] {
                 stuck.push(format!("{} glyph: {:?} to {:?}", b.path, &a.target[2..], &b.target[2..]));
@@ -228,7 +233,9 @@ fn at_twice_the_text_size_kit_text_and_the_glyphs_beside_it_double() {
         }
     }
     assert!(stuck.is_empty(), "text and glyphs that kept their size:\n{}", stuck.join("\n"));
-    for key in ["tab_strip", "list", "menu-menu", "select-content", "toast", "sidebar_header", "sidebar_icon_row", "tree_row", "tree_folder", "diff"] {
+    for key in ["tab_strip", "list", "menu-menu", "select-content", "toast", "sidebar_header", "sidebar_icon_row", "tree_row", "tree_folder", "diff"]
+        .into_iter()
+        .chain(cfg!(feature = "markdown").then_some("markdown")) {
         let inside = |els: &[rune::ElementInfo]| {
             let root = els.iter().find(|e| e.key.as_deref() == Some(key) || e.path.ends_with(&format!("/{key}"))).map(|e| e.path.clone());
             root.map_or(0, |r| els.iter().filter(|e| e.path.starts_with(&r) && (e.text_style.is_some() || e.role == "icon")).count())

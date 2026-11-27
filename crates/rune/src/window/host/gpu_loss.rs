@@ -569,6 +569,7 @@ pub(in crate::window) fn classify_latched_wake_event(event: &crate::window::Wake
 }
 
 /// Pure policy decision for a Windows/Linux CPU-first background GPU handover failure.
+#[cfg(any(test, target_os = "windows", all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::window) enum HandoverFailureAction {
     /// `GpuLossPolicy::Recover`: retry up to `max_tries` times on CPU, then stay on CPU.
@@ -577,6 +578,7 @@ pub(in crate::window) enum HandoverFailureAction {
     LatchTerminal,
 }
 
+#[cfg(any(test, target_os = "windows", all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))]
 pub(in crate::window) const fn decide_handover_failure(
     policy: GpuLossPolicy,
     tries: u8,

@@ -843,7 +843,7 @@ fn gpu_memory_policy_child() {
             [128 * MIB, 64 * MIB]
         }
         "parked-invalidation" => {
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(any(target_os = "macos", target_os = "ios")))]
             {
                 let Some(gpu) = Gpu::test_headless_or_noop() else { return };
                 let renderer = super::super::Renderer::new(&gpu.device, wgpu::TextureFormat::Bgra8Unorm);

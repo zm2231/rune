@@ -584,7 +584,7 @@ impl RuntimeCore {
 
     /// The last committed root element's target `(width, height)` in window points from Taffy
     /// layout (not interpolated spring rects).
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(all(test, not(any(target_arch = "wasm32", target_os = "ios"))))]
     pub(crate) fn committed_content_size(&self) -> Option<(f32, f32)> {
         let root = self.tree.nodes.first()?;
         Some((root.local.w * self.host.zoom.k, root.local.h * self.host.zoom.k))

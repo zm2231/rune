@@ -101,7 +101,7 @@ impl RuntimeCore {
     /// Drops uploaded image atlas pages and every `Pixels` reference kept in the last committed
     /// tree and memo cache, marking the view dirty so the next frame rebuilds and re-uploads any
     /// image the view still shows.
-    #[cfg_attr(not(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))), allow(dead_code))]
+    #[cfg_attr(not(any(all(test, not(target_os = "ios")), all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))), allow(dead_code))]
     pub(crate) fn drop_images(&mut self) {
         let mut dropped = self.images.clear();
         let has_tree_pixels = self.tree.nodes.iter().any(|n| {

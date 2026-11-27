@@ -66,6 +66,11 @@ impl Render {
         self.playback.meters.count_speaker_gap(frames);
     }
 
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+    pub(crate) fn device(&mut self, ahead: Option<i64>) {
+        self.playback.meters.mark_speaker_device(ahead);
+    }
+
     pub(crate) fn render(&mut self, out: &mut [f32]) {
         self.playback.render(out);
         #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -79,6 +84,11 @@ impl Heard {
     #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
     pub(crate) fn lost(&mut self, frames: u64) {
         self.capture.meters.count_mic_gap(frames);
+    }
+
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+    pub(crate) fn device(&mut self, ahead: Option<i64>) {
+        self.capture.meters.mark_mic_device(ahead);
     }
 
     pub(crate) fn capture(&mut self, heard: &[f32]) {

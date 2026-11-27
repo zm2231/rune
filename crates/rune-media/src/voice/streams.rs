@@ -16,6 +16,9 @@ pub(crate) trait MicLink: Send {
     fn take_lost(&mut self) -> u64 {
         0
     }
+    fn device_ahead(&self) -> Option<i64> {
+        None
+    }
 }
 
 pub(crate) trait SpeakerLink: Send {
@@ -23,6 +26,9 @@ pub(crate) trait SpeakerLink: Send {
     fn write(&mut self, frames: &[f32]) -> Result<(), Fault>;
     fn take_silence(&mut self) -> u64 {
         0
+    }
+    fn device_ahead(&self) -> Option<i64> {
+        None
     }
 }
 
@@ -193,6 +199,7 @@ fn listen(mut link: Box<dyn MicLink>, slot: &Mutex<Option<Heard>>, block: usize,
                 Some(heard) if !stop.load(Ordering::Relaxed) => {
                     heard.lost(lost);
                     heard.capture(&frames);
+                    heard.device(link.device_ahead());
                 }
                 _ => break,
             }
@@ -211,6 +218,7 @@ fn play(mut link: Box<dyn SpeakerLink>, slot: &Mutex<Option<Render>>, block: usi
             match lock(slot).as_mut() {
                 Some(render) if !stop.load(Ordering::Relaxed) => {
                     render.silence(silence);
+                    render.device(link.device_ahead());
                     render.render(&mut frames);
                 }
                 _ => break,

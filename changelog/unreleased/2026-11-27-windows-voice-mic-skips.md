@@ -1,0 +1,1 @@
+- On Windows, `rune::Voice` fills a microphone skip with silence (at most a second per skip) whenever the device's position jumps ahead, not only when the device flags the glitch, and counts it in `VoiceStats::mic_gap_frames`. An unflagged skip of 10 to 40 ms used to put the microphone behind the speaker, so the echo canceller lost the echo and a burst came back.

@@ -174,8 +174,10 @@ impl Session {
             })
             .unwrap_or_else(|| "aec -".into());
         let skew = i128::from(stats.captured_frames) - i128::from(stats.played_frames);
+        let ahead = |frames: Option<i64>| frames.map(|f| f.to_string()).unwrap_or_else(|| "-".into());
+        let devices = format!("mic device ahead {} speaker device ahead {}", ahead(stats.mic_device_ahead_frames), ahead(stats.speaker_device_ahead_frames));
         format!(
-            "[{:>7.3}s] {:?} | open->running {} | start->audio {} | captured {} played {} (captured-played {skew}) dropped {} oversized {} late {} speaker gaps {} mic gaps {} | mic {level:.1} dBFS | {canceller} | {residual}",
+            "[{:>7.3}s] {:?} | open->running {} | start->audio {} | captured {} played {} (captured-played {skew}) dropped {} oversized {} late {} speaker gaps {} mic gaps {} | {devices} | mic {level:.1} dBFS | {canceller} | {residual}",
             self.elapsed().as_secs_f64(),
             self.state,
             ms(self.running_at),

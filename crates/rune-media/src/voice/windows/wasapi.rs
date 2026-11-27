@@ -1,13 +1,13 @@
 use super::thread::Entered;
+use crate::voice::capture_queue::{Audio, CaptureQueue, Packet};
 use crate::voice::echo_path::{self, EchoPath, SystemAec};
 use crate::voice::machine::Fault;
 use crate::voice::streams::{MicLink, Opened, SpeakerLink};
 use crate::voice::underrun::{self, Reading};
-use std::collections::VecDeque;
 use std::time::Duration;
 use windows::Win32::Foundation::{CloseHandle, E_ACCESSDENIED, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Media::Audio::{
-    AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+    AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
     AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, AUDCLNT_STREAMOPTIONS_NONE, AUDIO_EFFECT, AUDIO_EFFECT_STATE_ON, AudioCategory_Communications,
     AudioClientProperties, IAcousticEchoCancellationControl, IAudioCaptureClient, IAudioClient, IAudioClient2, IAudioClock, IAudioEffectsManager,
     IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX, eCapture, eCommunications, eRender,
@@ -89,10 +89,7 @@ impl Drop for Client {
 pub(super) struct Mic {
     client: Client,
     capture: IAudioCaptureClient,
-    pending: VecDeque<f32>,
-    rate: u32,
-    next: Option<u64>,
-    lost: u64,
+    queue: CaptureQueue,
     entered: Option<Entered>,
 }
 
@@ -104,6 +101,7 @@ pub(super) struct Speaker {
     rate: u32,
     low: u32,
     given: u64,
+    ahead: Option<i64>,
     underrun: underrun::State,
     entered: Option<Entered>,
 }
@@ -119,51 +117,35 @@ impl MicLink for Mic {
     }
 
     fn read(&mut self, out: &mut [f32]) -> Result<(), Fault> {
-        while self.pending.len() < out.len() {
+        while !self.queue.read(out) {
             self.client.wait("microphone")?;
             self.drain()?;
-        }
-        let len = out.len();
-        for (slot, sample) in out.iter_mut().zip(self.pending.drain(..len)) {
-            *slot = sample;
         }
         Ok(())
     }
 
     fn take_lost(&mut self) -> u64 {
-        std::mem::take(&mut self.lost)
+        self.queue.take_lost()
+    }
+
+    fn device_ahead(&self) -> Option<i64> {
+        self.queue.ahead()
     }
 }
 
 impl Mic {
-    fn push(&mut self, samples: impl ExactSizeIterator<Item = f32>) {
-        let room = self.pending.capacity() - self.pending.len();
-        let overflow = samples.len().saturating_sub(room);
-        self.pending.drain(..overflow.min(self.pending.len()));
-        self.pending.extend(samples);
-    }
-
     fn drain(&mut self) -> Result<(), Fault> {
         // SAFETY: capture calls on this stream; each buffer holds `frames` mono floats until it is released.
         unsafe {
             while self.capture.GetNextPacketSize().map_err(|e| fault(&e, "microphone"))? > 0 {
                 let (mut data, mut frames, mut flags, mut position) = (std::ptr::null_mut(), 0u32, 0u32, 0u64);
                 self.capture.GetBuffer(&mut data, &mut frames, &mut flags, Some(&mut position), None).map_err(|e| fault(&e, "microphone"))?;
-                let timed = flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 == 0;
-                if flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0
-                    && timed
-                    && let Some(next) = self.next
-                {
-                    let gap = position.saturating_sub(next).min(u64::from(self.rate));
-                    self.lost += gap;
-                    self.push(std::iter::repeat_n(0.0, gap as usize));
-                }
-                self.next = timed.then(|| position + u64::from(frames));
-                if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 || data.is_null() {
-                    self.push(std::iter::repeat_n(0.0, frames as usize));
+                let audio = if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 || data.is_null() {
+                    Audio::Silent(frames as usize)
                 } else {
-                    self.push(std::slice::from_raw_parts(data.cast::<f32>(), frames as usize).iter().copied());
-                }
+                    Audio::Samples(std::slice::from_raw_parts(data.cast::<f32>(), frames as usize))
+                };
+                self.queue.packet(&Packet { position, timed: flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 == 0, audio });
                 self.capture.ReleaseBuffer(frames).map_err(|e| fault(&e, "microphone"))?;
             }
         }
@@ -211,7 +193,12 @@ impl SpeakerLink for Speaker {
         let played = u128::from(position) * u128::from(self.rate) / u128::from(self.frequency);
         let taken = self.given.saturating_sub(u64::from(padding));
         let lead = i64::try_from(played).unwrap_or(i64::MAX).saturating_sub(i64::try_from(taken).unwrap_or(i64::MAX));
+        self.ahead = Some(lead);
         underrun::step(&mut self.underrun, Reading { lead, low: padding < self.low })
+    }
+
+    fn device_ahead(&self) -> Option<i64> {
+        self.ahead
     }
 }
 
@@ -277,9 +264,8 @@ pub(super) fn open(rate: u32, _block: usize) -> Result<Opened, Fault> {
         let echo = echo(&mic.client);
         speaker.client.Start().map_err(|e| fault(&e, "speaker"))?;
         mic.client.Start().map_err(|e| fault(&e, "microphone"))?;
-        let pending = VecDeque::with_capacity(rate as usize);
         Ok(Opened {
-            mic: Box::new(Mic { client: mic, capture, pending, rate, next: None, lost: 0, entered: None }),
+            mic: Box::new(Mic { client: mic, capture, queue: CaptureQueue::new(rate), entered: None }),
             speaker: Box::new(Speaker {
                 client: speaker,
                 render,
@@ -288,6 +274,7 @@ pub(super) fn open(rate: u32, _block: usize) -> Result<Opened, Fault> {
                 rate,
                 low,
                 given,
+                ahead: None,
                 underrun: underrun::State::Waiting,
                 entered: None,
             }),

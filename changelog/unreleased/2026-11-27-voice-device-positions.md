@@ -1,0 +1,1 @@
+- `VoiceStats::mic_device_ahead_frames` and `VoiceStats::speaker_device_ahead_frames` report, on Windows (`None` elsewhere), each device's own position minus the audio it delivered or took, taken together on the audio thread. They hold steady, so a step shows audio a device skipped or played without reporting a gap. `voice-loopback` prints both each second.

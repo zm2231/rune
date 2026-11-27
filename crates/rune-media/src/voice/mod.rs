@@ -51,10 +51,12 @@
 //! [`Voice::permission`] reads the system's microphone privacy setting for desktop apps; when it
 //! is off the stream fails with a message saying where to turn it on. Windows may lower other
 //! apps' sound during a call, following the Communications setting in the Sound control panel.
-//! When the speaker runs dry and plays silence, or the microphone drops frames, the stream
-//! measures the gap from the device's clock and positions and counts it in
+//! When the speaker runs dry and plays silence, or the microphone drops frames (its position
+//! skips, whether or not it flags the glitch), the stream measures the gap from the device's
+//! clock and positions and counts it in
 //! [`VoiceStats::speaker_gap_frames`] and [`VoiceStats::mic_gap_frames`]. A microphone gap is
-//! filled with silence, so later audio keeps its timing. Echo cancellation on real Windows
+//! filled with silence, up to a second at a time, so later audio keeps its timing after any gap
+//! up to that long. Echo cancellation on real Windows
 //! hardware hasn't been verified yet; the code is checked by compiling it and by tests that
 //! run without audio devices.
 //!
@@ -85,6 +87,8 @@
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 mod aec;
+#[cfg(any(target_os = "windows", test))]
+mod capture_queue;
 mod control;
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 mod duplex;
@@ -273,9 +277,18 @@ pub struct VoiceStats {
     /// Silence the speaker device played because the audio thread fed it late (an underrun),
     /// as the device reports it. Linux and Windows count these.
     pub speaker_gap_frames: u64,
-    /// Frames the microphone device lost in a glitch, as the device reports it. They are
-    /// replaced with silence, so later audio keeps its timing. Linux and Windows count these.
+    /// Frames the microphone device lost in a glitch, as the device reports it (on Windows, as
+    /// its position shows, flagged or not). They are replaced with silence, up to a second at a
+    /// time, so later audio keeps its timing. Linux and Windows count these.
     pub mic_gap_frames: u64,
+    /// The microphone device's own position minus the frames it delivered (skips included),
+    /// taken together on the audio thread. It holds steady; a step means the device's position
+    /// went back, repeating audio. Windows reports it; `None` elsewhere.
+    pub mic_device_ahead_frames: Option<i64>,
+    /// The speaker device's own clock minus the frames it has taken from its buffer, taken
+    /// together on the audio thread. It holds steady near zero; a step means the device played
+    /// more or less than it was given. Windows reports it; `None` elsewhere.
+    pub speaker_device_ahead_frames: Option<i64>,
     /// From the last [`Voice::start`] to the device's first callback.
     pub start_to_audio: Option<Duration>,
     /// What Rune's own echo canceller reports, refreshed once a second while it runs (Linux, and

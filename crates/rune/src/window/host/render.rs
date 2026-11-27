@@ -53,6 +53,9 @@ pub(in crate::window) struct FrameProfile {
     pub(super) submitted: Option<crate::frame::live_log::Stamp>,
     #[cfg(feature = "frame-profile")]
     pub(super) frame: Option<crate::frame::live_log::Frame>,
+    /// The fingerprint of the running loops the log last listed (`Frame::loops`).
+    #[cfg(feature = "frame-profile")]
+    pub(super) loops_seen: u64,
     #[cfg(feature = "frame-profile")]
     pub(super) encode_parts: [u64; crate::frame::encode_parts::PARTS],
 }
@@ -186,7 +189,7 @@ impl FrameProfile {
                     next: 0,
                     poll_due: None,
                     loop_due: None,
-                    loops: Vec::new(),
+                    loops: None,
                     damage,
                     whole: self.whole_why,
                     change: damage_seen,
@@ -233,7 +236,7 @@ impl FrameProfile {
             .fold(0u16, |bits, (i, on)| bits | (u16::from(*on) << i));
             f.poll_due = rt.poll_wake_deadline().map(|d| d - rt.polled_at());
             f.loop_due = rt.motion_wake_deadline().map(|d| d - rt.polled_at());
-            if f.loop_due.is_some() { f.loops = rt.fp_loops(); }
+            f.loops = rt.fp_loops_since(&mut self.loops_seen, f.loop_due.is_some());
             crate::frame::live_log::frame(f);
         }
         #[cfg(not(feature = "frame-profile"))]

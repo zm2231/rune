@@ -176,10 +176,6 @@ impl<S: 'static> Runtime<S> {
         self.core_mut().trace_event_dyn(&event);
     }
 
-    #[cfg(feature = "frame-profile")]
-    #[inline(always)]
-    pub(crate) fn fp_loops(&self) -> Vec<String> { self.core().fp_loops() }
-
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     #[inline(always)]
     pub(crate) fn loops_shown(&self) -> bool { self.core().loops_shown() }

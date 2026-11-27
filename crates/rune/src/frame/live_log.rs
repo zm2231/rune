@@ -193,8 +193,9 @@ pub(crate) struct Frame {
     /// The poll's and motion's next timers, in seconds after the last poll.
     pub(crate) poll_due: Option<f64>,
     pub(crate) loop_due: Option<f64>,
-    /// The drawn nodes with a running loop, while one wakes the window.
-    pub(crate) loops: Vec<String>,
+    /// The drawn nodes with a running loop while one wakes the window, when they aren't the
+    /// ones the last line listed: empty once none do.
+    pub(crate) loops: Option<Vec<String>>,
     /// The rectangle the frame presented (`[x0, y0, x1, y1]`), or None for all of it.
     pub(crate) damage: Option<Vec<[i32; 4]>>,
     /// Why it drew all of the window (an effect, a layer, a changed image, or most of it changed).
@@ -229,7 +230,7 @@ pub(crate) fn frame(f: Frame) {
         "cpu": cpu_delta(f.entry, f.presented), "build_cpu": cpu_delta(f.acquired, f.built), "acquire_cpu": cpu_delta(f.start, f.acquired), "encode_cpu": cpu_delta(f.uploaded, f.encoded), "submit_cpu": cpu_delta(f.encoded, f.submitted), "present_cpu": cpu_delta(f.submitted, f.presented),
         "nodes": f.nodes, "shaped": f.shaped, "instances": f.instances, "animating": f.animating,
         "why": crate::runtime::CommitWhy::names(f.why),
-        "next": next, "poll_due": f.poll_due, "loop_due": f.loop_due, "loops": f.loops, "damage": f.damage, "whole": f.whole, "change": f.change,
+        "next": next, "poll_due": f.poll_due, "loop_due": f.loop_due, "damage": f.damage, "whole": f.whole, "change": f.change,
     });
     // Apart from the rest: one more key there passes `json!`'s recursion limit.
     let mut line = line;
@@ -237,6 +238,7 @@ pub(crate) fn frame(f: Frame) {
     line["place"] = serde_json::json!(ns(p[7]));
     line["focus"] = serde_json::json!(ns(p[8]));
     line["looped"] = serde_json::json!(f.looped);
+    if let Some(loops) = f.loops { line["loops"] = serde_json::json!(loops); }
     let [prepare, layers, pass, compositor] = f.encode_parts;
     line["encode_parts"] = serde_json::json!({ "prepare": prepare, "layers": layers, "pass": pass, "compositor": compositor });
     line["loop_why"] = serde_json::json!(f.loop_why);

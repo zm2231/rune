@@ -1,0 +1,1 @@
+- With `frame-profile`, a window's `RUNE_FRAME_LOG` lines list the running loops (`loops`) only when they change from the last listed set, with an empty list once none run, instead of repeating every looping node's path on every frame; a window animating dozens of loops wrote about 17 KB a frame, most of the log's cost on the UI thread.

@@ -2,12 +2,20 @@
 use super::*;
 
 impl RuntimeCore {
-    /// frame-profile: the paths of drawn nodes whose loop is running, which wake the window.
+    /// frame-profile: the paths of drawn nodes whose loop is running while their loops wake the
+    /// window (`waking`), when that set isn't the one `seen` holds the fingerprint of. Updates
+    /// `seen`, so a window animating the same loops frame after frame lists them once.
     #[cfg(feature = "frame-profile")]
-    pub(crate) fn fp_loops(&self) -> Vec<String> {
-        self.tree.nodes.iter().enumerate()
-            .filter(|(i, n)| n.looping.is_some() && self.paint.was_seen(*i, false) && self.motion.has_loop(n.id))
-            .map(|(_, n)| n.path.clone()).collect()
+    pub(crate) fn fp_loops_since(&self, seen: &mut u64, waking: bool) -> Option<Vec<String>> {
+        use std::hash::{Hash, Hasher};
+        let running = || self.tree.nodes.iter().enumerate()
+            .filter(move |(i, n)| waking && n.looping.is_some() && self.paint.was_seen(*i, false) && self.motion.has_loop(n.id));
+        let mut print = rustc_hash::FxHasher::default();
+        for (_, n) in running() { n.id.hash(&mut print); }
+        let print = print.finish();
+        if print == *seen { return None; }
+        *seen = print;
+        Some(running().map(|(_, n)| n.path.clone()).collect())
     }
 
     /// Whether a drawn node's loop runs (a spinner or animated SVG icon): what a window shows
@@ -196,3 +204,7 @@ impl RuntimeCore {
         );
     }
 }
+
+#[cfg(all(test, feature = "frame-profile"))]
+#[path = "motion_tests.rs"]
+mod tests;

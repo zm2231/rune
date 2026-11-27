@@ -743,5 +743,9 @@ mod tests;
 mod gesture_tests;
 
 #[cfg(test)]
+#[path = "touch_pan_tests.rs"]
+mod touch_pan_tests;
+
+#[cfg(test)]
 #[path = "modal_wheel_tests.rs"]
 mod modal_wheel_tests;

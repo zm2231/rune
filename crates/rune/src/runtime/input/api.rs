@@ -166,6 +166,9 @@ impl<S: 'static> Runtime<S> {
     pub fn wheel_event(&mut self, ev: WheelEvent) { self.core_mut().wheel_event(ev); }
     #[inline(always)]
     pub fn magnify_event(&mut self, ev: MagnifyEvent) { self.core_mut().magnify_event(ev); }
+    #[cfg(any(target_os = "ios", test))]
+    #[inline(always)]
+    pub(crate) fn touch_pan_event(&mut self, ev: WheelEvent) { self.core_mut().touch_wheel_event_at(ev, (ev.x, ev.y)); }
     #[inline(always)]
     pub fn rotate_event(&mut self, ev: RotateEvent) { self.core_mut().rotate_event(ev); }
     #[inline(always)]

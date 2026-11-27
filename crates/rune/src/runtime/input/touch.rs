@@ -218,6 +218,7 @@ pub(in crate::runtime) struct Touch {
     pub(in crate::runtime) active_edge: Option<edge_drag::ActiveEdge>,
     /// Fallback handlers for cancelled `Action::EdgeDrag` `Phase::Up` events whose element left.
     edge_gone: Vec<(String, crate::el::DragFn)>,
+    two_fingers_in_host: bool,
 }
 
 impl Touch {
@@ -287,6 +288,12 @@ impl RuntimeCore {
     #[inline]
     pub(crate) fn set_touch_hold_policy(&mut self, policy: TouchHoldPolicy) {
         self.pointer.touch.policy = policy;
+    }
+
+    #[cfg(any(target_os = "ios", test))]
+    #[inline]
+    pub(crate) fn recognize_two_fingers_in_host(&mut self) {
+        self.pointer.touch.two_fingers_in_host = true;
     }
 
     /// Takes the latest host-side confirmation command produced by the touch hold state machine.
@@ -431,7 +438,7 @@ impl RuntimeCore {
     fn touch_down_inner(&mut self, app: &mut dyn AppDriver, id: u64, x: f32, y: f32, time: f64) {
         if self.pointer.touch.state.is_active() {
             if let Some(mid) = self.pointer.touch.state.second_down_midpoint(id, (x, y)) {
-                let targets = self.two_finger_targets(mid);
+                let targets = TwoFingerTargets { in_host: self.pointer.touch.two_fingers_in_host, ..self.two_finger_targets(mid) };
                 let effects = step_touch(
                     &mut self.pointer.touch.state,
                     TouchInput::SecondDown { id, pos: (x, y), targets },

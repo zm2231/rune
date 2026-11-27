@@ -48,7 +48,10 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             .pl(left + 16.0)
             .gap(12.0)
             .fill(k.c.bg_base)
-            .child(caption(k, format!("Canvas: {:.0}%", s.pan.scale() * 100.0)))
+            .child(caption(k, {
+                let [x, y] = s.pan.to_content([PANE[0] / 2.0, PANE[1] / 2.0]);
+                format!("Canvas: {:.0}%, centred on ({x:.0}, {y:.0})", s.pan.scale() * 100.0)
+            }))
             .child(el().key("canvas").size(PANE[0], PANE[1]).child(canvas))
             .child(caption(k, format!("Stage: {}", if s.stage.zoomed() { "zoomed in" } else { "fitted" })))
             .child(el().key("stage").size(PANE[0], PANE[1]).child(stage))

@@ -356,6 +356,11 @@ define_class!(
             guarded("runePinch:", || { self.pinched(recognizer); })
         }
 
+        #[unsafe(method(runeTouchPan:))]
+        fn touch_pan(&self, recognizer: &AnyObject) {
+            guarded("runeTouchPan:", || { self.touch_panned(recognizer); })
+        }
+
         #[unsafe(method(runeRotate:))]
         fn rotate(&self, recognizer: &AnyObject) {
             guarded("runeRotate:", || { self.rotated(recognizer); })
@@ -502,6 +507,7 @@ impl RuneView {
         view.mirror_main_scroll(mtm);
         view.recognize(class!(UIPinchGestureRecognizer), sel!(runePinch:));
         view.recognize(class!(UIRotationGestureRecognizer), sel!(runeRotate:));
+        view.recognize_touch_pan();
         view.recognize(class!(UILongPressGestureRecognizer), sel!(runeLongPress:));
         view.recognize_pointer();
         view

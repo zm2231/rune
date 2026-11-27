@@ -291,6 +291,7 @@ pub(super) fn prepare_window_render(
     let part = {
         let rt = host.app.rt();
         let whole = if l.alpha.is_some() { Some("alpha") } else if images_changed { Some("image") }
+            else if host.app.compositor_draws_own() { Some("compositor") }
             else if !l.config.usage.contains(wgpu::TextureUsages::COPY_DST) { Some("no copies") } else { None };
         // A new swap chain (`rebind_alpha`, a replaced surface, any configure: a resize, a blend
         // switch, `acquire` retrying an outdated surface) draws its first frame whole, through

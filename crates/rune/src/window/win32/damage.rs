@@ -150,7 +150,7 @@ impl Damage {
         let glyph_refill = atlas.pending_fills && atlas.rasterized == prev_rasterized;
         let (now, why) = match (
             in_place && !whole_frames(),
-            clear[3] == 1.0,
+            crate::render::clears_in_place(clear),
             prev_shape.is_some_and(|s| s.size == size && s.clear == clear && s.swap == swap),
             prev_shape.is_some_and(|s| s.atlas_resets == atlas.resets),
             !glyph_refill,

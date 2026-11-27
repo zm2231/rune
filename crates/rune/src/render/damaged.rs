@@ -16,6 +16,13 @@ use super::*;
 /// Rectangles a frame redraws at most.
 pub(crate) const MAX_RECTS: usize = 4;
 
+const ZERO_ROW: u32 = 4096;
+const ZERO_ROWS: u32 = 64;
+
+pub(crate) fn clears_in_place(clear: [f32; 4]) -> bool {
+    clear[3] == 1.0 || clear == [0.0; 4]
+}
+
 /// How `draw_armed` updated the kept frame.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +63,7 @@ pub(super) struct DamageState {
     /// Whether a run of the armed rectangles holds a layer's scope.
     layers_reached: bool,
     clear: [f32; 4],
+    zeros: Option<wgpu::Buffer>,
     drawn: Option<Drawn>,
     /// The armed rectangles are a loop-only frame's (`arm_loop`), for `RUNE_LOOP_CHECK=2`.
     #[cfg(target_os = "windows")]
@@ -69,8 +77,7 @@ impl Renderer {
     /// most `MAX_RECTS`) of a `size` drawable of `format`, cleared to `clear`.
     pub(crate) fn arm_damage(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, rects: &[[u32; 4]], clear: [f32; 4], size: (u32, u32), format: wgpu::TextureFormat) {
         let mut d = self.damage.lock().unwrap();
-        // The clearing quad blends: only an opaque clear stands for `LoadOp::Clear`.
-        if clear[3] != 1.0 {
+        if !clears_in_place(clear) {
             d.armed.clear();
             d.drawn = Some(Err("clear"));
             return;
@@ -83,11 +90,19 @@ impl Renderer {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[self.format],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor { format: Some(self.format), ..Default::default() });
             d.retained = Some(Retained { texture, view, current: false });
+        }
+        if clear[3] != 1.0 && d.zeros.is_none() {
+            d.zeros = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("damage zeros"),
+                size: u64::from(ZERO_ROW * ZERO_ROWS),
+                usage: wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }));
         }
         let fills: Vec<Instance> = rects.iter().take(MAX_RECTS).map(|&[x, y, w, h]| Instance {
             rect: [x as f32, y as f32, w as f32, h as f32],
@@ -119,8 +134,7 @@ impl Renderer {
     /// drawn). `Err` says why this frame draws whole.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub(crate) fn arm_cycle(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, paint: u64, instances: &[Instance], slots: &[u32], clear: [f32; 4], size: (u32, u32), format: wgpu::TextureFormat) -> Result<(), &'static str> {
-        // The clearing quad blends: only an opaque clear stands for `LoadOp::Clear`.
-        if clear[3] != 1.0 { return Err("clear"); }
+        if !clears_in_place(clear) { return Err("clear"); }
         if slots.is_empty() { return Err("no slots"); }
         self.redraws_in_place()?;
         let key = (paint, size);
@@ -148,8 +162,7 @@ impl Renderer {
     #[cfg(target_os = "windows")]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn arm_loop(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, paint: u64, instances: &[Instance], patched: &[u32], clear: [f32; 4], size: (u32, u32), format: wgpu::TextureFormat) -> Result<Vec<[i32; 4]>, &'static str> {
-        // The clearing quad blends: only an opaque clear stands for `LoadOp::Clear`.
-        if clear[3] != 1.0 { return Err("clear"); }
+        if !clears_in_place(clear) { return Err("clear"); }
         self.redraws_in_place()?;
         let held = self.held_instances(paint, instances.len()).ok_or("buffer")?;
         let at = |i: &u32| *i as usize;
@@ -227,7 +240,7 @@ impl Renderer {
         #[cfg(target_os = "windows")]
         let looped = std::mem::take(&mut d.looped);
         if d.armed.is_empty() { return false; }
-        if d.clear[3] != 1.0 {
+        if !clears_in_place(d.clear) {
             d.armed.clear();
             d.drawn = Some(Err("clear"));
             return false;
@@ -253,6 +266,17 @@ impl Renderer {
             // much as the rest of a loop-only frame.
             if runs.is_empty() || layers_reached { self.encode_layers_timed(encoder, None, &mut |_, _| {}); } else { self.flush_uploads(encoder); }
             self.submit_uploads();
+            // frame-profile, `RUNE_LOOP_CHECK_SPOIL=1`: a loop-only frame skips its redraw, so the kept
+            // picture goes stale and `RUNE_LOOP_CHECK=2` must find it (its failing row).
+            #[cfg(all(target_os = "windows", feature = "frame-profile"))]
+            let spoil = looped && super::pixel_check::spoiled();
+            #[cfg(not(all(target_os = "windows", feature = "frame-profile")))]
+            let spoil = false;
+            let opaque = clear[3] == 1.0;
+            if !opaque && !spoil {
+                let Some(zeros) = &d.zeros else { return false };
+                zero_rects(encoder, zeros, &kept.texture, &rects);
+            }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("frame (damage)"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -267,19 +291,15 @@ impl Renderer {
                 multiview_mask: None,
             });
             let size = [dst.width(), dst.height()];
-            // frame-profile, `RUNE_LOOP_CHECK_SPOIL=1`: a loop-only frame skips its redraw, so the kept
-            // picture goes stale and `RUNE_LOOP_CHECK=2` must find it (its failing row).
-            #[cfg(all(target_os = "windows", feature = "frame-profile"))]
-            let spoil = looped && super::pixel_check::spoiled();
-            #[cfg(not(all(target_os = "windows", feature = "frame-profile")))]
-            let spoil = false;
             for (n, &rect) in rects.iter().enumerate().filter(|_| !spoil) {
                 let [x, y, w, h] = rect;
                 pass.set_scissor_rect(x, y, w, h);
-                pass.set_pipeline(self.draw_pipeline(self.format, None));
-                pass.set_bind_group(0, &self.bind_group, &[]);
-                pass.set_vertex_buffer(0, quads.slice(..));
-                pass.draw(0..4, n as u32..n as u32 + 1);
+                if opaque {
+                    pass.set_pipeline(self.draw_pipeline(self.format, None));
+                    pass.set_bind_group(0, &self.bind_group, &[]);
+                    pass.set_vertex_buffer(0, quads.slice(..));
+                    pass.draw(0..4, n as u32..n as u32 + 1);
+                }
                 let mut active = ActivePass::borrowed_within(&mut pass, rect);
                 active.set_scissor(None, size);
                 match runs.get(n) {
@@ -300,6 +320,21 @@ impl Renderer {
         encoder.copy_texture_to_texture(kept.texture.as_image_copy(), dst.as_image_copy(), whole);
         d.drawn = Some(Ok(if partial { KeptDraw::Partial } else { KeptDraw::Whole }));
         true
+    }
+}
+
+fn zero_rects(encoder: &mut wgpu::CommandEncoder, zeros: &wgpu::Buffer, texture: &wgpu::Texture, rects: &[[u32; 4]]) {
+    let tile = ZERO_ROW / texture.format().block_copy_size(None).unwrap_or(4);
+    for &[x, y, w, h] in rects {
+        for ty in (y..y + h).step_by(ZERO_ROWS as usize) {
+            for tx in (x..x + w).step_by(tile as usize) {
+                encoder.copy_buffer_to_texture(
+                    wgpu::TexelCopyBufferInfo { buffer: zeros, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(ZERO_ROW), rows_per_image: Some(ZERO_ROWS) } },
+                    wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d { x: tx, y: ty, z: 0 }, aspect: wgpu::TextureAspect::All },
+                    wgpu::Extent3d { width: tile.min(x + w - tx), height: ZERO_ROWS.min(y + h - ty), depth_or_array_layers: 1 },
+                );
+            }
+        }
     }
 }
 

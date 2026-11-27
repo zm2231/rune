@@ -478,21 +478,33 @@ pub(crate) mod metal {
             let drawable = objc_call("nextDrawable", || -> *mut AnyObject { unsafe { msg_send![super(this, base), nextDrawable] } });
             let drawable = drawable.unwrap_or(std::ptr::null_mut());
             if let (Some((_, log)), Some(raw)) = (hooked, NonNull::new(drawable)) {
-                let seq = log.next.fetch_add(1, Ordering::Relaxed) + 1;
-                log.acquired.store(seq, Ordering::Release);
+                // SAFETY: `raw` is the live drawable nextDrawable returned; respondsToSelector:
+                // takes any selector.
+                let timed: bool = unsafe { msg_send![raw.as_ref(), respondsToSelector: sel!(addPresentedHandler:)] };
+                if !timed {
+                    static UNTIMED: std::sync::Once = std::sync::Once::new();
+                    UNTIMED.call_once(|| eprintln!("rune: this system's Metal drawables have no addPresentedHandler:, so frames report no present times"));
+                    return drawable;
+                }
+                let seq = log.next.load(Ordering::Acquire) + 1;
+                let presented = log.clone();
                 let handler = block2::RcBlock::new(move |d: NonNull<ProtocolObject<dyn MTLDrawable>>| {
                     crate::platform::objc_boundary::guarded("presented handler", || {
                         // SAFETY: Metal passes the presented drawable for the handler's duration.
                         let at = unsafe { d.as_ref() }.presentedTime();
-                        if log.record_presented(seq, at) { log.wake(); }
+                        if presented.record_presented(seq, at) { presented.wake(); }
                     })
                 });
                 // SAFETY: nextDrawable returns a CAMetalDrawable, which conforms to MTLDrawable;
                 // Metal copies the block.
-                let _ = objc_call("addPresentedHandler:", || unsafe {
+                let added = objc_call("addPresentedHandler:", || unsafe {
                     let drawable = raw.cast::<ProtocolObject<dyn MTLDrawable>>().as_ref();
                     drawable.addPresentedHandler(block2::RcBlock::as_ptr(&handler));
                 });
+                if added.is_some() {
+                    log.next.store(seq, Ordering::Release);
+                    log.acquired.store(seq, Ordering::Release);
+                }
             }
             drawable
         })
@@ -508,8 +520,8 @@ pub(crate) mod metal {
         if !reported.contains(&selector) {
             reported.push(selector);
             match exception {
-                Some(exception) => eprintln!("rune: -[CAMetalLayer {selector}] threw {exception:?}; Rune carries on without it"),
-                None => eprintln!("rune: -[CAMetalLayer {selector}] threw nil; Rune carries on without it"),
+                Some(exception) => eprintln!("rune: Metal's {selector} threw {exception:?}; Rune carries on without it"),
+                None => eprintln!("rune: Metal's {selector} threw nil; Rune carries on without it"),
             }
         }
         None

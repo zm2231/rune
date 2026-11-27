@@ -219,3 +219,72 @@ fn kvo_observed_layer_hook_in_both_orders() {
         let _: () = msg_send![&*above, removeObserver: &*observer, forKeyPath: &*key];
     }
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+#[allow(unsafe_code)]
+fn a_drawable_that_cannot_report_its_present_time_is_not_published() {
+    use objc2::rc::{Retained, autoreleasepool};
+    use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, NSObject, Sel};
+    use objc2::{ClassType, msg_send, sel};
+    use objc2_metal::MTLDrawablePresentedHandler;
+
+    fn class(name: &std::ffi::CStr, build: impl FnOnce(&mut ClassBuilder)) -> &'static AnyClass {
+        match ClassBuilder::new(name, NSObject::class()) {
+            Some(mut builder) => {
+                build(&mut builder);
+                builder.register()
+            }
+            None => AnyClass::get(name).expect("a class of this name exists"),
+        }
+    }
+
+    unsafe extern "C-unwind" fn refuse(this: &AnyObject, _: Sel, _: MTLDrawablePresentedHandler) {
+        // SAFETY: `this` is a live object; this raises NSInvalidArgumentException, as a drawable
+        // without the method does.
+        let _: () = unsafe { msg_send![this, doesNotRecognizeSelector: sel!(addPresentedHandler:)] };
+    }
+    class(c"RuneTestRefusingDrawable", |b| {
+        // SAFETY: the signature matches -[MTLDrawable addPresentedHandler:].
+        unsafe { b.add_method(sel!(addPresentedHandler:), refuse as unsafe extern "C-unwind" fn(_, _, _)) };
+    });
+
+    unsafe extern "C-unwind" fn untimed(_: &AnyObject, _: Sel) -> *mut AnyObject {
+        // SAFETY: `NSObject` has `new`.
+        let drawable: Retained<AnyObject> = unsafe { msg_send![NSObject::class(), new] };
+        Retained::autorelease_return(drawable)
+    }
+    unsafe extern "C-unwind" fn throwing(_: &AnyObject, _: Sel) -> *mut AnyObject {
+        let class = AnyClass::get(c"RuneTestRefusingDrawable").expect("registered above");
+        // SAFETY: the class is an `NSObject` subclass.
+        let drawable: Retained<AnyObject> = unsafe { msg_send![class, new] };
+        Retained::autorelease_return(drawable)
+    }
+    let layers = [
+        class(c"RuneTestUntimedLayer", |b| {
+            // SAFETY: the signature matches -[CAMetalLayer nextDrawable].
+            unsafe { b.add_method(sel!(nextDrawable), untimed as unsafe extern "C-unwind" fn(_, _) -> _) };
+        }),
+        class(c"RuneTestThrowingLayer", |b| {
+            // SAFETY: the signature matches -[CAMetalLayer nextDrawable].
+            unsafe { b.add_method(sel!(nextDrawable), throwing as unsafe extern "C-unwind" fn(_, _) -> _) };
+        }),
+    ];
+
+    for layer_class in layers {
+        // SAFETY: the class is an `NSObject` subclass.
+        let layer: Retained<AnyObject> = unsafe { msg_send![layer_class, new] };
+        let log = Arc::new(metal::Log::new(false, true));
+        let hook = metal::LayerHook::hook_instance(layer.clone(), log.clone()).expect("hook a plain object");
+        for _ in 0..2 {
+            autoreleasepool(|_| {
+                // SAFETY: the hooked class implements `nextDrawable`.
+                let drawable: *mut AnyObject = unsafe { msg_send![&*layer, nextDrawable] };
+                assert!(!drawable.is_null(), "{}: the drawable still reaches the caller", layer_class.name().to_string_lossy());
+            });
+            assert_eq!(log.acquired(), None, "{}: a drawable with no present time to come is not published", layer_class.name().to_string_lossy());
+            assert_eq!(log.last_acquired(), 0);
+        }
+        drop(hook);
+    }
+}

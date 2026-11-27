@@ -102,6 +102,9 @@ fn breakdown() -> String {
 fn breakdown() -> String { String::new() }
 
 #[cfg(target_os = "macos")]
+const TRACKED: [&str; 8] = ["Layer", "View", "Window", "Panel", "Drawable", "IOSurface", "KeyValue", "MTL"];
+
+#[cfg(target_os = "macos")]
 fn census(when: &str) {
     if std::env::var_os("RUNE_SOAK_CENSUS").is_none() { return; }
     let pid = std::process::id().to_string();
@@ -109,7 +112,12 @@ fn census(when: &str) {
         match std::process::Command::new(tool).args(&args).output() {
             Ok(out) => {
                 println!("--- {tool} {when} ---");
-                for line in String::from_utf8_lossy(&out.stdout).lines().take(lines) { println!("{line}"); }
+                let text = String::from_utf8_lossy(&out.stdout);
+                for line in text.lines().take(lines) { println!("{line}"); }
+                if tool == "heap" {
+                    println!("--- heap {when}: layers, views, windows, drawables, observers ---");
+                    for line in text.lines().filter(|line| TRACKED.iter().any(|class| line.contains(class))) { println!("{line}"); }
+                }
             }
             Err(error) => println!("--- {tool} {when}: {error} ---"),
         }

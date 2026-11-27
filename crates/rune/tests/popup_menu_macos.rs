@@ -183,6 +183,7 @@ mod mac {
             return;
         }
         std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(150)); eprintln!("timeout"); std::process::exit(2) });
+        rune::orderly_exit();
         assert!(popup_menu_supported());
         let spec = AppSpec { poll: Some(poll), ..AppSpec::new("popup menu", (320.0, 160.0), || State { theme: "system".into() }, view) };
         let (ready_tx, ready_rx) = mpsc::channel();
@@ -196,6 +197,7 @@ mod mac {
                 std::thread::sleep(Duration::from_millis(300));
                 run(&handle);
             });
+            if run.is_err() { eprintln!("popup_menu_macos: failed"); std::process::exit(1); }
             handle.quit();
             run.is_ok()
         });

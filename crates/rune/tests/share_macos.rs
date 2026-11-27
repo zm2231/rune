@@ -144,6 +144,7 @@ mod mac {
             return;
         }
         std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(90)); eprintln!("timeout"); std::process::exit(2) });
+        rune::orderly_exit();
         let spec = AppSpec { poll: Some(main_poll), ..AppSpec::new("share", (320.0, 160.0), || Main, main_view) };
         let (ready_tx, ready_rx) = mpsc::channel();
         let mut app = App::new(spec).args(Vec::new()).on_ready(move |_| { ready_tx.send(()).ok(); });
@@ -157,6 +158,7 @@ mod mac {
                 std::thread::sleep(Duration::from_millis(300));
                 run(&handle);
             });
+            if run.is_err() { eprintln!("share_macos: failed"); std::process::exit(1); }
             handle.quit();
             run.is_ok()
         });

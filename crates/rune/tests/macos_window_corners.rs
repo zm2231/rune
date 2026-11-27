@@ -96,6 +96,7 @@ mod mac {
             return;
         }
         std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(60)); eprintln!("timeout"); std::process::exit(2) });
+        rune::orderly_exit();
         count_invalidations();
         let spec = AppSpec::new("corners", (240.0, 160.0), || State { frame: 0 }, view);
         let options = WindowOptions { transparent: true, borderless: true, min_size: Some((0.0, 0.0)), ..Default::default() }
@@ -140,6 +141,7 @@ mod mac {
                 println!("macos_window_corners: hide, show -> frame: {reshown} invalidateShadow");
                 assert_eq!(reshown, hidden + 1, "one resample per show");
             });
+            if run.is_err() { eprintln!("macos_window_corners: failed"); std::process::exit(1); }
             *out.lock().unwrap() = Some(run.is_ok());
             handle.quit();
         });

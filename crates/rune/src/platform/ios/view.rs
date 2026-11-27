@@ -519,7 +519,7 @@ impl RuneView {
 
     pub(super) fn with_surface<R>(&self, f: impl FnOnce(&mut dyn Surface) -> R) -> Option<R> {
         match &mut *self.ivars().stage.borrow_mut() {
-            Stage::Live(surface) => Some(f(surface.as_mut())),
+            Stage::Live(surface) => Some(super::surface::in_turn(surface.as_mut(), f)),
             Stage::Waiting(_) | Stage::Failed => None,
         }
     }

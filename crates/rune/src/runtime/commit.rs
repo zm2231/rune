@@ -29,6 +29,8 @@ pub(super) mod why;
 #[repr(C)]
 pub(crate) struct CommitState {
     pub(crate) dirty: bool,
+    pub(crate) shared_dirty: bool,
+    pub(crate) state_changes: u64,
     pub(in crate::runtime) relayout: bool,
     /// Every viewport change since the last commit came from the window's own resize
     /// animation (`step_viewport`), not the user or the system.
@@ -99,6 +101,8 @@ impl CommitState {
             non_virtual_commits: 0,
             commit_gen: 0,
             dirty: true,
+            shared_dirty: false,
+            state_changes: 0,
             relayout: false,
             viewport_stepped: false,
             settle: false,
@@ -426,6 +430,7 @@ impl Pass {
 /// type has no Scene, growth tracks, reveal tracks, draw instances, or mutable app state.
 pub(super) struct Measurement<'a> {
     pub(super) app: &'a dyn ViewDriver,
+    pub(super) window: Option<std::sync::Arc<str>>,
     pub(super) env: Env,
     pub(super) viewport: (f32, f32),
     pub(super) content_sizing: crate::ContentSizing,

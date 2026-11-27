@@ -139,6 +139,7 @@ impl RuneView {
                 let layer: Retained<AnyObject> = unsafe { msg_send![self, layer] };
                 match mount(Retained::as_ptr(&layer) as *mut c_void, size, scale, self.dark(), self.waker()) {
                     Ok(mut surface) => {
+                        surface.enter_turn();
                         // The app hears where the scene of the view's window is.
                         if let Some((_, phase)) = self.scene() { surface.lifecycle(lifecycle::Event::Attached(phase)); }
                         surface.set_safe_area(self.safe_area());
@@ -151,6 +152,7 @@ impl RuneView {
                         // A client that asked before the app started still gets its tree.
                         if self.ivars().accessibility.borrow().asked() { let _ = surface.accessibility_wanted(); }
                         overlays = surface.take_overlays();
+                        surface.leave_turn();
                         Stage::Live(surface)
                     }
                     Err(error) => {
@@ -160,7 +162,7 @@ impl RuneView {
                 }
             }
             Stage::Live(mut surface) => {
-                surface.resize(size, scale);
+                super::super::surface::in_turn(surface.as_mut(), |surface| surface.resize(size, scale));
                 Stage::Live(surface)
             }
             Stage::Failed => Stage::Failed,

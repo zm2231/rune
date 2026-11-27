@@ -50,7 +50,7 @@ pub(crate) use surface::OverlaySlot;
 #[cfg(target_os = "ios")]
 pub fn view<S: 'static>(app: crate::App<S>) -> *mut std::ffi::c_void {
     let Some(mtm) = objc2::MainThreadMarker::new() else { return std::ptr::null_mut() };
-    let mount = mount::mount(app);
+    let mount = mount::mount(app, None);
     // No event loop of Rune's says when the host has made its views, so each one settles the
     // links: one handed over before the first view was made has reached its hook by now, and
     // from here a link goes to a view that listens or is dropped, never kept.

@@ -42,6 +42,7 @@ impl RuntimeCore {
             one.wakes.push(Wake::After(std::time::Duration::ZERO));
         }
         self.cancel_timer_frame();
+        if changed && !one.live_only { self.note_state_change(); }
         merge(&mut self.frame.pending, one);
         self.commit.dirty |= changed;
         (stale, minimize)
@@ -184,7 +185,8 @@ impl RuntimeCore {
         Tx { trace: self.tracing().then(crate::el::TraceCalls::default), mods: self.kbd.held_mods, selection: self.selection_snapshot(app),
             input_time: crate::input::time::current(), clock: self.polled_at(), scale: self.env.scale, focus_visible: self.kbd.focus.keyboard(),
             focused: self.focused_key(), focused_path: self.kbd.focus.owned(), focused_link,
-            assistive: self.host.a11y.is_some() || cfg!(target_arch = "wasm32"), window_hidden: !self.live_visible(), ..Tx::default() }
+            assistive: self.host.a11y.is_some() || cfg!(target_arch = "wasm32"), window_hidden: !self.live_visible(),
+            window: self.host.window_key.clone(), ..Tx::default() }
     }
 
     /// A scalar from the actual draw path (e.g. `shell.width`). Values hold until resampled.

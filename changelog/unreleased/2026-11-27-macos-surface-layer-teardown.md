@@ -1,0 +1,1 @@
+- macOS: dropping a window's GPU surface takes out the Metal layer it added to the view and stops observing the view's scale and bounds, so an overlay with `release_gpu_when_hidden` no longer leaves two key-value observers behind on every show, and a window that recreates its surface no longer stacks layers.

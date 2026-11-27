@@ -1,6 +1,7 @@
 //! The share picker opens without stopping Rune: while it is on screen, a spinner in a second
-//! window keeps drawing. A click outside the picker dismisses it and reaches the callback exactly
-//! once, and hiding the window it shows over answers its share. Opens windows, so it only runs
+//! window keeps drawing. A click outside the picker (macOS shows it as a popover) dismisses it and
+//! reaches the callback exactly once, and hiding the window it shows over answers its share. Where
+//! the picker tracks as a menu instead, the test cancels the menu through AppKit and says so. Opens windows, so it only runs
 //! with RUNE_GUI_TESTS=1 in a logged-in GUI session.
 
 #![allow(unsafe_code)]
@@ -128,6 +129,7 @@ mod mac {
             // autoreleased NSEvents that postEvent:atStart: retains.
             unsafe {
                 if let Some(menu) = MENU.with(|slot| slot.borrow().clone()) {
+                    println!("share_macos: the picker tracks as a menu; cancelling its tracking through AppKit");
                     let _: () = msg_send![&*menu, cancelTracking];
                     return;
                 }
@@ -217,7 +219,7 @@ mod mac {
         assert!(wait("the dismissal's answer", Duration::from_secs(3), || !answers().is_empty()), "a click outside the picker never answered");
         std::thread::sleep(Duration::from_millis(300));
         assert_eq!(answers(), ["Ok(None)"], "the dismissal reaches the callback once");
-        assert_eq!(picker_windows(handle), 0, "the picker left the screen");
+        assert!(wait("the picker to leave the screen", Duration::from_secs(2), || !TRACKING.load(Ordering::SeqCst) && picker_windows(handle) == 0), "the picker stayed on screen");
         let before = SECOND_FRAMES.load(Ordering::SeqCst);
         std::thread::sleep(Duration::from_millis(200));
         assert!(SECOND_FRAMES.load(Ordering::SeqCst) > before, "frames keep running after the picker");

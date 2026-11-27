@@ -3,8 +3,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use super::heap_trim::{
-    PROBE_SIZE, TRIM_MIN_GAP, TrimEffect, TrimEvent, TrimState, env_allows_trim,
-    probe_glibc_used, set_trim_enabled, step, trim_enabled, uses_glibc_allocator,
+    Allocator, PROBE_MISSES, PROBE_SIZE, TRIM_MIN_GAP, TrimEffect, TrimEvent, TrimState,
+    env_allows_trim, probe_glibc_used, record_probe, set_trim_enabled, step, trim_enabled,
+    uses_glibc_allocator,
 };
 use super::rest::{self, REST_AFTER, Rest, RestEffect, RestEvent};
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -192,7 +193,7 @@ fn platform_guard_matches_target_abi_and_coalesces_live_trim() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     {
         assert!(
-            uses_glibc_allocator(),
+            (0..PROBE_MISSES).any(|_| uses_glibc_allocator()),
             "default Linux/glibc unit test binary should detect glibc allocator"
         );
         let trimmer: &'static Trimmer = Box::leak(Box::new(Trimmer::new()));
@@ -216,4 +217,96 @@ fn platform_guard_matches_target_abi_and_coalesces_live_trim() {
         assert_eq!(trimmer.calls(), 1);
         set_trim_enabled(true);
     }
+}
+
+#[test]
+fn one_hit_settles_glibc_and_only_consecutive_missed_rests_settle_foreign() {
+    let mut state = Allocator::Unknown { misses: 0 };
+    for n in 1..PROBE_MISSES {
+        record_probe(&mut state, false);
+        assert_eq!(state, Allocator::Unknown { misses: n });
+    }
+    record_probe(&mut state, true);
+    assert_eq!(state, Allocator::Glibc, "a hit after misses still settles glibc");
+    record_probe(&mut state, false);
+    assert_eq!(state, Allocator::Glibc);
+
+    let mut state = Allocator::Unknown { misses: 0 };
+    for _ in 0..PROBE_MISSES {
+        record_probe(&mut state, false);
+    }
+    assert_eq!(state, Allocator::Foreign);
+    record_probe(&mut state, true);
+    assert_eq!(state, Allocator::Foreign);
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[test]
+#[allow(unsafe_code)]
+fn another_threads_free_inside_every_attempt_misses_a_rest_and_the_next_rest_hits() {
+    use std::alloc::Layout;
+    use std::sync::mpsc;
+
+    let symbols = super::heap_trim::glibc::symbols().expect("glibc exports malloc_trim and mallinfo");
+    let big = Layout::from_size_align(2 * PROBE_SIZE, 8).unwrap();
+    let (cue, cued) = mpsc::channel::<()>();
+    let (freed, wait_freed) = mpsc::channel::<()>();
+    let attempts = super::heap_trim::PROBE_ATTEMPTS;
+    let other = std::thread::spawn(move || {
+        let held: Vec<usize> = (0..attempts)
+            .map(|_| {
+                // SAFETY: `big` has non-zero size and valid alignment.
+                let p = unsafe { std::alloc::alloc(big) };
+                // SAFETY: `p` is a live `big`-sized allocation.
+                unsafe { std::ptr::write_volatile(p, 1) };
+                p as usize
+            })
+            .collect();
+        freed.send(()).unwrap();
+        for p in held {
+            cued.recv().unwrap();
+            // SAFETY: `p` came from `std::alloc::alloc(big)` above and is freed once.
+            unsafe { std::alloc::dealloc(p as *mut u8, big) };
+            freed.send(()).unwrap();
+        }
+    });
+    wait_freed.recv().unwrap();
+
+    let alloc = |l: Layout| {
+        // SAFETY: the probe layout has non-zero size and valid alignment.
+        unsafe { std::alloc::alloc(l) }
+    };
+    let dealloc = |p: *mut u8, l: Layout| {
+        // SAFETY: `p` came from `alloc(l)`.
+        unsafe { std::alloc::dealloc(p, l) }
+    };
+    let samples = Cell::new(0usize);
+    let spoiled = probe_glibc_used(
+        symbols.mask(),
+        || {
+            let n = samples.get();
+            samples.set(n + 1);
+            if n % 3 == 1 {
+                cue.send(()).unwrap();
+                wait_freed.recv().unwrap();
+            }
+            symbols.used()
+        },
+        alloc,
+        dealloc,
+    );
+    other.join().unwrap();
+    assert!(!spoiled, "a {} KiB free on another thread hides the probe's growth", big.size() / 1024);
+    assert_eq!(samples.get(), 3 * attempts);
+
+    let mut state = Allocator::Unknown { misses: 0 };
+    record_probe(&mut state, spoiled);
+    assert_eq!(state, Allocator::Unknown { misses: 1 }, "a missed rest settles nothing");
+    for _ in 1..PROBE_MISSES {
+        if state == Allocator::Glibc {
+            break;
+        }
+        record_probe(&mut state, probe_glibc_used(symbols.mask(), || symbols.used(), alloc, dealloc));
+    }
+    assert_eq!(state, Allocator::Glibc, "a later rest without the other thread's free settles glibc");
 }

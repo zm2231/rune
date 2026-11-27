@@ -127,3 +127,15 @@ fn custom_global_allocator_skips_glibc_malloc_trim() {
         "malloc_trim(0) must never run under a custom global allocator"
     );
 }
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[test]
+fn a_custom_allocator_stops_being_probed_after_the_missed_rests() {
+    for _ in 0..rune::__heap_trim::PROBE_MISSES {
+        rune::__heap_trim::reset_cooldown();
+        rune::__heap_trim::on_rest();
+        rune::__heap_trim::wait_idle();
+    }
+    assert!(rune::__heap_trim::settled_foreign());
+    assert_eq!(rune::__heap_trim::trim_calls(), 0);
+}

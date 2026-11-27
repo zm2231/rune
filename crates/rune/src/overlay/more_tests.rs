@@ -404,7 +404,7 @@ fn a_hidden_prewarmed_overlay_commits_at_most_every_refresh() {
     let hidden = BUILDS.get() - builds;
     let bound = 1 + (Duration::from_secs(1).as_millis() / HIDDEN_REFRESH.as_millis()) as u32;
     assert!((2..=bound).contains(&hidden), "{hidden} builds in a hidden second, want at most {bound}; paced wakes at {pace_wakes:?}");
-    assert_eq!(overlay.rt.state, 10);
+    assert_eq!(*overlay.rt.state, 10);
     assert_ne!(counter_text(&overlay).as_deref(), Some("10"), "the last change waits for the pace or the reveal");
     let before = BUILDS.get();
     overlay.refresh_for_reveal_at(start + Duration::from_millis(1005));

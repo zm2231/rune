@@ -58,7 +58,7 @@ fn a_typed_window_survives_a_panicking_view_and_its_memos_rebuild() {
     rt.pointer_down(x, y);
     rt.pointer_up(x, y);
     rt.frame(0.0);
-    assert_eq!(rt.state, 6);
+    assert_eq!(*rt.state, 6);
     assert_eq!(CALLS.get(), 3, "the memo cache works again: a new version builds once");
     rt.update(|_, _| {});
     rt.frame(0.0);
@@ -102,17 +102,17 @@ fn panicking_poll_and_on_key_patches_fall_back_to_the_startup_callbacks() {
     rt.frame(0.0);
     rt.key(KeyEvent { key: Key::Function(5), mods: Default::default() });
     rt.frame(0.0);
-    assert_eq!((rt.state, CALLS.get()), (1, 2));
+    assert_eq!((*rt.state, CALLS.get()), (1, 2));
     CALLS.set(0);
     rt.poll = Some(|s, _, _| { panics_once(); *s += 10; true });
     rt.frame(0.0);
-    assert_eq!((rt.state, CALLS.get()), (11, 2));
+    assert_eq!((*rt.state, CALLS.get()), (11, 2));
     rt.poll = None;
     CALLS.set(0);
     rt.hooks.on_ime = Some(|s, _, _| { panics_once(); *s += 100; true });
     rt.ime(crate::Ime::Commit("x".into()));
     rt.frame(0.0);
-    assert_eq!((rt.state, CALLS.get()), (111, 2));
+    assert_eq!((*rt.state, CALLS.get()), (111, 2));
 }
 
 #[test]
@@ -174,15 +174,15 @@ fn panicking_patch_falls_back_without_losing_state_or_context() {
         el().key(key).on_press(|s: &mut usize| *s += 1)
     }
     let mut rt = runtime(view);
-    rt.state = 7;
-    let address = &rt.state as *const usize;
+    *rt.state = 7;
+    let address = &*rt.state as *const usize;
     rt.frame(0.0);
     assert!(rt.find("count-7").is_some());
     assert_eq!(rt.time_scale, 1.0, "failed view's context writes must be discarded");
     control_input(&mut rt, &json!({"tap": "count-7"}));
     rt.frame(0.0);
-    assert_eq!(rt.state, 8, "original handlers still operate on retained state");
-    assert_eq!(&rt.state as *const usize, address);
+    assert_eq!(*rt.state, 8, "original handlers still operate on retained state");
+    assert_eq!(&*rt.state as *const usize, address);
     // A later healthy patch is still attempted rather than latching the failure.
     assert!(rt.find("recovered-8").is_some());
 }
@@ -200,10 +200,10 @@ fn invalid_control_input_is_skipped_and_later_requests_still_work() {
         control_input(&mut rt, &command);
         rt.frame(0.0);
     }
-    assert_eq!(rt.state, 0);
+    assert_eq!(*rt.state, 0);
     control_input(&mut rt, &json!({"tap": "button", "scroll": [10, 10, 20]}));
     rt.frame(0.0);
-    assert_eq!(rt.state, 1);
+    assert_eq!(*rt.state, 1);
 }
 
 #[test]

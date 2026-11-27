@@ -145,7 +145,7 @@ fn idle_window_asks_for_zero_frames_and_stops_when_poll_finishes() {
     let grid = VSyncGrid { timebase: finite.wall_start, interval: period };
     let ticks = finite.run_for(Duration::from_secs(1), Some(grid), Duration::from_micros(500));
     assert_eq!(ticks.len(), 4, "4 ticks after initial poll bring count to 5 then stop");
-    assert_eq!(finite.rt.state, 5);
+    assert_eq!(*finite.rt.state, 5);
     assert_eq!(finite.wake_deadline(), None, "stopped poll must leave no timer armed");
 }
 

@@ -80,16 +80,16 @@ fn a_retained_overlay_moved_while_hidden_reports_its_screen_rect_on_show() {
     let (mut overlay, _) = Overlay::new(OverlaySpec::new("moved hidden", app.size, view).options(options), None, &app);
     overlay.rt.wall_start = None;
     overlay.warm();
-    assert_eq!(overlay.rt.state, Some([10.0, 5.0, 20.0, 8.0]));
+    assert_eq!(*overlay.rt.state, Some([10.0, 5.0, 20.0, 8.0]));
     overlay.dirty = false;
     overlay.idle = true;
 
     overlay.origin_moved((300.0, 200.0));
     assert!(overlay.dirty, "the moved rect waits for the next step");
     assert!(overlay.idle, "a hidden overlay doesn't turn the loop for it");
-    assert_eq!(overlay.rt.state, Some([10.0, 5.0, 20.0, 8.0]));
+    assert_eq!(*overlay.rt.state, Some([10.0, 5.0, 20.0, 8.0]));
     overlay.refresh_for_reveal_at(crate::time::now());
-    assert_eq!(overlay.rt.state, Some([310.0, 205.0, 20.0, 8.0]), "the reveal delivers it");
+    assert_eq!(*overlay.rt.state, Some([310.0, 205.0, 20.0, 8.0]), "the reveal delivers it");
 }
 
 /// `Tx::wake_after(Duration::ZERO)` asks for the next frame. With no display link to take

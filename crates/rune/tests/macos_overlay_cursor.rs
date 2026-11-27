@@ -5,7 +5,8 @@
 //! test warps it (which moves the cursor but posts no events) and reads the window server's
 //! cursor with `[NSCursor currentSystemCursor]`. Off the hit region it is the arrow again.
 //! Fading out, the panel clicks through at once, for the whole fade.
-//! Opens windows, so it only runs with RUNE_GUI_TESTS=1 in a logged-in GUI session.
+//! Opens windows, so it only runs with RUNE_GUI_TESTS=1 in a logged-in GUI session:
+//! `RUNE_GUI_TESTS=1 cargo test -p rune --features macos-background-cursor --test macos_overlay_cursor`.
 
 #[cfg(not(target_os = "macos"))]
 fn main() {}

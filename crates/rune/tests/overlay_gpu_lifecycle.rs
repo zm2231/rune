@@ -4,10 +4,13 @@
 //! stayed hidden that long. The device waits for the next show, which takes it rather than
 //! making another (hex#1268). Prints
 //! how long each show waits for its first present, and the process's private memory along the
-//! way. Opens overlays, so it only runs with RUNE_GUI_TESTS=1 in a desktop session.
+//! way. Opens overlays, so it only runs with RUNE_GUI_TESTS=1 in a desktop session, on Windows and
+//! Linux.
 
 #[cfg(target_os = "macos")]
-fn main() {}
+fn main() {
+    println!("overlay_gpu_lifecycle: skipped on macOS, where release_gpu_after keeps a panel's surface; overlay_soak checks that every show draws on one device");
+}
 
 #[cfg(not(target_os = "macos"))]
 fn main() { lazy::main() }

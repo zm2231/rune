@@ -278,8 +278,7 @@ fn caret_browsing_across_lines_and_pages() {
     let (sel_path, _) = rt.text_selection().expect("caret crossed onto Page 2");
     assert!(sel_path.ends_with("p2"), "expected caret on p2, got {sel_path}");
 
-    // Line Home / Shift+Line End: Cmd+Left / Shift+Cmd+Right on macOS, Home / Shift+End elsewhere.
-    let (line_home, shift_line_end) = if cfg!(target_os = "macos") {
+    let (line_home, shift_line_end) = if crate::edit::MAC_KEYS {
         (
             KeyEvent { key: Key::Left, mods: Mods { cmd: true, logo: true, ..Mods::default() } },
             KeyEvent { key: Key::Right, mods: Mods { cmd: true, logo: true, shift: true, ..Mods::default() } },

@@ -321,7 +321,7 @@ fn gpu_pixels_fit_letterboxes_and_fill_crops() {
     assert!(out.as_chunks::<4>().0.iter().all(|p| p[0] < 200), "red and white columns are cropped");
 }
 
-#[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_arch = "wasm32")))]
 #[test]
 fn clear_for_park_drops_image_textures_and_reuploads_cleanly() {
     use crate::el::{El, el};

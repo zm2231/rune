@@ -77,7 +77,7 @@ fn command_chord_reaches_on_key() {
     assert_eq!(rt.state.keys, [Key::Text(" ".into())]);
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 #[test]
 fn alt_chord_reaches_on_key_without_typing_off_macos() {
     struct Form { edit: TextEdit, keys: Vec<Key> }

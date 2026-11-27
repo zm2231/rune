@@ -36,7 +36,7 @@ mod warm_renderer {
         let renderer = Renderer::from_warm(warm);
         assert_eq!(renderer.format(), wgpu::TextureFormat::Bgra8Unorm);
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
         {
             let warm = renderer.into_warm().expect("new renderer has no native surface renderer");
             let mut renderer = std::thread::spawn(move || Renderer::from_warm(warm))
@@ -60,7 +60,7 @@ mod warm_renderer {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod shutdown_machine {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Condvar, Mutex};
     use std::time::Duration;
 
@@ -433,8 +433,10 @@ mod shutdown_machine {
         assert_eq!(slot.wait_until_zero_workers(Duration::from_secs(10)), 0);
     }
 
+    #[cfg(not(target_os = "ios"))]
     #[test]
     fn shutdown_drains_parked_linger_thread_and_drops_payload_and_normal_launch_works() {
+        use std::sync::atomic::AtomicUsize;
         let drops = Arc::new(AtomicUsize::new(0));
         struct Tracked(Arc<AtomicUsize>);
         impl Drop for Tracked {

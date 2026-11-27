@@ -318,7 +318,7 @@ impl FrameHost for WindowFrame<'_> {
         // decides that before starting the display link, which would draw it at once anyway.
         #[cfg(target_os = "macos")]
         let deferred = l.timer_frame.quiet() && !hidden && !self.resizing && !l.native.prime.presumes()
-            && l.native.pacing.as_ref().is_some_and(|p| p.defers_start(crate::time::now()));
+            && l.native.pacing.as_ref().is_some_and(|p| p.defers_start(crate::time::now()) || (l.loop_frame.untouched() && !p.paced()));
         #[cfg(not(target_os = "macos"))]
         let deferred = false;
         #[cfg(target_os = "macos")]
@@ -494,9 +494,10 @@ impl FrameHost for WindowFrame<'_> {
     }
 
     fn on_quiet_will_draw(&mut self) {
-        // It draws: the link starts, and still says draw at once.
+        // It draws: the link starts, and still says draw at once. A frame only its loops stepped
+        // leaves it stopped: their next wake paces the one after.
         #[cfg(target_os = "macos")]
-        if self.state.deferred && let Some(l) = self.host.win.as_mut() && let Some(pacing) = &mut l.native.pacing {
+        if self.state.deferred && self.state.looped.is_none() && let Some(l) = self.host.win.as_mut() && let Some(pacing) = &mut l.native.pacing {
             let _ = pacing.next_frame();
         }
         crate::marks::mark_once(&FIRST_BUILD, "frame.first.build");
@@ -832,7 +833,11 @@ impl FrameHost for WindowFrame<'_> {
             l.stop_pacing();
             self.host.meter.set_pacing(l.pacing_state(false));
         } else {
-            l.coast_pacing();
+            #[cfg(target_os = "macos")]
+            let coast = self.state.looped.is_none() || l.native.pacing.as_ref().is_some_and(|p| p.paced());
+            #[cfg(not(target_os = "macos"))]
+            let coast = true;
+            if coast { l.coast_pacing(); }
             self.host.meter.set_pacing(l.pacing_state(false));
         }
         self.state.profile.flush(self.host, info.animating, next_tick);

@@ -21,6 +21,9 @@ impl LoopFrame {
 
     /// A frame begins: whether only its loops asked for it since the last. Counts afresh.
     pub(crate) fn only_loops(&mut self) -> bool { !std::mem::replace(&mut self.touched, false) }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn untouched(&self) -> bool { !self.touched }
 }
 
 /// A loop-only step for the frame presented at `at` (`Runtime::loop_step`): the instances it

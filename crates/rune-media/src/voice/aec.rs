@@ -1,5 +1,8 @@
 use sonora::config::{EchoCanceller, NoiseSuppression};
+use sonora::config::EchoCanceller3Config;
 use sonora::{AudioProcessing, Config, StreamConfig};
+
+const DELAY_FILTERS: usize = 10;
 
 pub(crate) struct Aec {
     apm: AudioProcessing,
@@ -26,6 +29,12 @@ impl Block {
     }
 }
 
+fn canceller() -> EchoCanceller3Config {
+    let mut config = EchoCanceller3Config::default();
+    config.delay.num_filters = DELAY_FILTERS;
+    config
+}
+
 impl Aec {
     pub(crate) fn new(rate: u32) -> Self {
         let config = Config {
@@ -37,7 +46,7 @@ impl Aec {
         let stream = StreamConfig::new(rate, 1);
         let frames = stream.num_frames();
         Self {
-            apm: AudioProcessing::builder().config(config).capture_config(stream).render_config(stream).build(),
+            apm: AudioProcessing::builder().config(config).echo_canceller3_config(canceller()).capture_config(stream).render_config(stream).build(),
             render: Block::new(frames),
             capture: Block::new(frames),
             out: vec![0.0; frames].into_boxed_slice(),

@@ -247,13 +247,15 @@ impl RuntimeCore {
         // `sd_rounded` shade a one-pixel line at up to half strength on fractional device pixels.
         let has_area = w > 0.0 && h > 0.0;
         // A dashed ring is its own instance over the fill, which then draws without a ring.
-        let dashed = n.vis.border_dash.filter(|_| has_area && bw > 0.0 && border_a > 0.0005).map(|[dash, gap]| Instance {
+        let round = n.vis.border_dash_cap == crate::LineCap::Round;
+        let dash = n.vis.border_dash.filter(|[dash, _]| *dash > 0.0 || round);
+        let dashed = dash.filter(|_| has_area && bw > 0.0 && border_a > 0.0005).map(|[dash, gap]| Instance {
             rect: [r[0], r[1], w, h],
             radii,
             fill: border,
             border: border_bottom.unwrap_or(border),
             params: [bw, KIND_DASHED, blur * s, 1.0],
-            uv: [dash * k_px, gap * k_px, n.vis.border_dash_phase * k_px, 0.0],
+            uv: [dash * k_px, gap * k_px, n.vis.border_dash_phase * k_px, if round { 1.0 } else { 0.0 }],
             clip,
             fade: crate::render::pack_fade(fade, clip, clip),
         });
@@ -261,7 +263,7 @@ impl RuntimeCore {
         let sides = n.vis.border_sides.filter(|_| bw > 0.0).map(|ws| ws.map(|v| pixel_snap::line_width(v * s) * sc));
         let padding = sides.unwrap_or([bw; 4]);
         let (bw, border, border_kind, border_uv, border_a) =
-            if n.vis.border_dash.is_some() { (0.0, [0.0; 4], KIND_RECT, [0.0; 4], 0.0) } else { (bw, border, border_kind, border_uv, border_a) };
+            if dash.is_some() { (0.0, [0.0; 4], KIND_RECT, [0.0; 4], 0.0) } else { (bw, border, border_kind, border_uv, border_a) };
         // The border's own instance, `o` in `params.w` so the shader knows how much it
         // hides the fill under it (shader.wgsl `border_over`). With inset shadows it draws
         // apart, over them, as CSS layers an inset box-shadow between background and border.

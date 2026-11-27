@@ -499,7 +499,7 @@ fn motion_stagger_list(s: &G, k: &Kit, _: &mut Vec<El>) -> El {
         .child(col().key("rows").gap(4.0).children(rows))
 }
 
-pub fn render(s: &G, k: &'static Kit, overlays: &mut Vec<El>) -> El {
+pub fn render(s: &G, k: &std::rc::Rc<Kit>, overlays: &mut Vec<El>) -> El {
     match STORIES.iter().find(|(id, _)| *id == s.story) {
         Some((_, f)) => f(s, k, overlays),
         None => index::index(s, k, overlays),

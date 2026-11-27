@@ -6,6 +6,7 @@
           "actions": [
             "click",
             "focus",
+            "context-menu",
             "expand"
           ],
           "hasPopup": "listbox",

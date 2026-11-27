@@ -12,6 +12,7 @@ const MARGIN: u64 = RATE as u64 / 20;
 const QUIET_FROM: u64 = BURST + RATE as u64 / 2;
 const QUIET_TO: u64 = PERIOD - RATE as u64 / 5;
 const TARGET_QUEUED: usize = RATE as usize / 25;
+const LINE_SLACK: usize = RATE as usize * 3 / 100;
 
 fn noise(s: u64) -> f32 {
     let mut x = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -151,6 +152,8 @@ impl Session {
             self.written += 1;
         }
         self.speaker.write(&self.out[..need]);
+        let excess = self.line.len().saturating_sub(self.delay + LINE_SLACK);
+        self.line.drain(..excess);
     }
 
     pub fn report(&mut self) -> String {

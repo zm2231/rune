@@ -354,6 +354,7 @@ pub(crate) type A11yActionFn = Rc<dyn Fn(crate::states::States<'_>, &str, access
 pub(crate) type PressFn = Rc<dyn Fn(crate::states::States<'_>, &mut Tx)>;
 pub(crate) type InputKeyFn = Rc<dyn Fn(crate::states::States<'_>, &crate::KeyEvent, &mut Tx) -> bool>;
 pub(crate) type SetValueFn = Rc<dyn Fn(crate::states::States<'_>, f64, &mut Tx)>;
+pub(crate) type SetExpandedFn = Rc<dyn Fn(crate::states::States<'_>, bool, &mut Tx)>;
 pub(crate) type StepFn = Rc<dyn Fn(crate::states::States<'_>, i32, &mut Tx)>;
 pub(crate) type StepLimitFn = Rc<dyn Fn(crate::states::States<'_>, bool, &mut Tx)>;
 

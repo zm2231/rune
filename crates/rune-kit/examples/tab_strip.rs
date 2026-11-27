@@ -239,7 +239,7 @@ fn card(s: &App, k: &Kit) -> El {
 }
 
 fn view(s: &App, cx: &mut Cx<App>) -> El {
-    let k = rune_theme_opencode::kit(cx.system_dark());
+    let k = &rune_theme_opencode::kit(&rune_kit::KitEnv::of(cx));
     let mut layer = Vec::new();
     let bar = titlebar(s, cx, k, &mut layer);
     rune_kit::root(

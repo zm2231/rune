@@ -80,7 +80,7 @@ impl RuntimeCore {
             }
             end_of_frame.extend_from(&mut round_tx);
             self.latch_requests(app, &mut round_tx);
-            self.schedule_wakes(round_tx.wakes.drain(..));
+            self.schedule_tx_wakes(round_tx.wakes.drain(..));
 
             let needs_commit = dirty
                 || self.commit.dirty

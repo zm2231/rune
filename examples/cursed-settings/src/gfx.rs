@@ -410,7 +410,7 @@ impl Compositor<Cursed> for Gfx {
             sel: rect("nav-sel"),
         };
         let dark_theme = crate::ui::dark_theme(&rt.state, rt.env.system_dark);
-        let tint = rune_theme_opencode::kit(dark_theme).c.layer_03;
+        let tint = rt.state.theme.kit(&rune_kit::KitEnv::new(dark_theme)).c.layer_03;
         let out = self.gags.frame(&In {
             s: &rt.state,
             t,

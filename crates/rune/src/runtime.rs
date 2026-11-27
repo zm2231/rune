@@ -88,6 +88,7 @@ mod paint;
 mod paint_probe;
 mod pick;
 mod playground;
+mod provided;
 mod rest;
 pub use rest::register_thread_rest_hook;
 mod scroll;
@@ -166,6 +167,7 @@ use paint::soft_edges::{in_fade, inherit_fade};
 
 pub(crate) use scroll::offset::{ScrollAnchor, ScrollRequest};
 pub(crate) use scroll::reveal::ScrollReveal;
+pub(crate) use motion::deadlines::Wake;
 #[doc(hidden)]
 pub use commit::path::{child_path, path_segment};
 #[doc(hidden)]
@@ -202,6 +204,7 @@ pub(crate) use web::traits as web_traits;
 pub(crate) use anchor::anchor_position;
 use anchor::{anchor_ancestors, anchor_index, anchor_index_live, step_up};
 pub use cx::{Cx, Env, Waker, commit_generation};
+pub use provided::Provided;
 pub(crate) use cx::caret_of;
 use cx::COMMITS;
 pub use elements::{ElementInfo, MatchedHandover, Pose, ResolvedTextStyle};

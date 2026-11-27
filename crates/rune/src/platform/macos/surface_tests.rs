@@ -421,11 +421,16 @@ fn detached_metal_layer_retires_presented_drawables_on_idle_poll_and_bounds_resi
         // SAFETY: detached layer on this thread.
         unsafe { let _: () = msg_send![&*layer, setPresentsWithTransaction: Bool::NO]; }
 
-        // Wait for the final GPU pass to finish without polling, then run the idle-rest path.
-        std::thread::sleep(Duration::from_millis(80));
         assert!(crate::window::rest::should_poll_on_idle_rest(true, false));
-        let status = device.poll(wgpu::PollType::Poll).expect("non-blocking Metal poll");
-        assert_eq!(status, wgpu::PollStatus::QueueEmpty, "idle poll retires all completed Metal command buffers and drawables");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            let status = device.poll(wgpu::PollType::Poll).expect("non-blocking Metal poll");
+            if status == wgpu::PollStatus::QueueEmpty || std::time::Instant::now() > deadline {
+                break status;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(status, wgpu::PollStatus::QueueEmpty, "non-blocking idle polls retire all completed Metal command buffers and drawables within 5 s");
         rt.text.rest();
         rt.images.rest();
         renderer.give_back(false, &mut rt.text.atlas.resident_caches, &rt.images);

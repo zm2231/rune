@@ -402,6 +402,19 @@ pub(crate) fn poll_round_cap(rounds: usize) {
 #[inline(always)]
 pub(crate) fn poll_round_cap(_rounds: usize) {}
 
+#[cfg(debug_assertions)]
+pub(crate) fn poll_wakes_pile_up(pending: usize) {
+    warn_once("poll_wakes_pile_up".into(), || {
+        format!(
+            "{pending} wakes the app asked for are pending in one window: poll asked for a wake on every run; ask when arming a timer or use wake_at on a fixed schedule"
+        )
+    });
+}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+pub(crate) fn poll_wakes_pile_up(_pending: usize) {}
+
 #[cfg(all(test, debug_assertions))]
 mod commits_tests;
 #[cfg(all(test, debug_assertions))]

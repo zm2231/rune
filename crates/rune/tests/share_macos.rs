@@ -142,7 +142,16 @@ mod mac {
                 for &w in &added {
                     let class: *const AnyObject = msg_send![w as *mut AnyObject, className];
                     let class = &*(class as *const NSString);
-                    println!("share_macos: picker window class {class}");
+                    let parent: *mut AnyObject = msg_send![w as *mut AnyObject, parentWindow];
+                    let sheet_parent: *mut AnyObject = msg_send![w as *mut AnyObject, sheetParent];
+                    let level: isize = msg_send![w as *mut AnyObject, level];
+                    let controller: *mut AnyObject = msg_send![w as *mut AnyObject, contentViewController];
+                    let controller = if controller.is_null() { "none".to_owned() } else {
+                        let name: *const AnyObject = msg_send![controller, className];
+                        (*(name as *const NSString)).to_string()
+                    };
+                    println!("share_macos: picker window class {class}, child of a Rune window {}, sheet {}, level {level}, controller {controller}",
+                        baseline.contains(&(parent as usize)), !sheet_parent.is_null());
                 }
                 match how {
                     Dismiss::Escape => {

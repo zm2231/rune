@@ -3,8 +3,9 @@
 //! dismisses the picker, with none. It opens from a run-loop block after the winit handler
 //! returns (`platform::macos::run_later`), so every window keeps drawing while its menu tracks.
 //! Where it shows as a window of its own, that window going off screen without a choice answers
-//! none too, however it went: a timer checks the picker's windows while it shows. A window is a
-//! picker's when it opens, on screen, after that picker shows and before any later one does.
+//! none too, however it went: a timer checks the picker's windows while it shows. A window is the
+//! picker's when it opens on screen after the picker shows, as a child window of the window it
+//! shows over (each window shows one share at a time).
 
 #![allow(unsafe_code)]
 
@@ -60,8 +61,8 @@ impl Delegate {
 struct Showing {
     _picker: Retained<AnyObject>,
     delegate: Retained<Delegate>,
+    host: Retained<NSWindow>,
     before: Vec<Retained<NSWindow>>,
-    until: Option<Vec<Retained<NSWindow>>>,
     watched: Vec<Retained<NSWindow>>,
     timer: Option<Retained<AnyObject>>,
 }
@@ -86,10 +87,10 @@ pub(crate) fn show(shown: Shown, window: &winit::window::Window) {
         return;
     };
     crate::platform::macos::run_later("share picker", move || {
-        if !view.window().is_some_and(|w| w.isVisible()) {
+        let Some(host) = view.window().filter(|w| w.isVisible()) else {
             reply.send(Ok(None));
             return;
-        }
+        };
         // SAFETY: `init` is `NSObject`'s designated initializer, sent to an allocated `Delegate`
         // whose ivars are set.
         let delegate: Retained<Delegate> = unsafe { msg_send![super(mtm.alloc::<Delegate>().set_ivars(RefCell::new(Some(reply)))), init] };
@@ -108,11 +109,7 @@ pub(crate) fn show(shown: Shown, window: &winit::window::Window) {
             picker
         };
         let before = windows(mtm);
-        SHOWING.with(|showing| {
-            let mut showing = showing.borrow_mut();
-            for earlier in showing.iter_mut().filter(|s| s.until.is_none()) { earlier.until = Some(before.clone()); }
-            showing.push(Showing { _picker: picker.clone(), delegate: delegate.clone(), before, until: None, watched: Vec::new(), timer: None });
-        });
+        SHOWING.with(|showing| showing.borrow_mut().push(Showing { _picker: picker.clone(), delegate: delegate.clone(), host, before, watched: Vec::new(), timer: None }));
         // SAFETY: `bounds` is a rect and `isFlipped` a `BOOL` of the view, and the picker shows
         // relative to a rect in it.
         unsafe {
@@ -152,17 +149,17 @@ fn check(mtm: MainThreadMarker, delegate: &Retained<Delegate>) {
     let gone = SHOWING.with(|showing| {
         let mut showing = showing.borrow_mut();
         let Some(at) = showing.iter().position(|s| std::ptr::eq(&*s.delegate, &**delegate)) else { return false };
+        let entry = &mut showing[at];
         let has = |list: &[Retained<NSWindow>], window: &NSWindow| list.iter().any(|w| std::ptr::eq(&**w, window));
         let opened: Vec<Retained<NSWindow>> = now.into_iter().filter(|window| {
             let object: &AnyObject = window;
             window.isVisible()
-                && !has(&showing[at].before, window)
-                && showing[at].until.as_deref().is_none_or(|until| has(until, window))
-                && !showing.iter().any(|s| has(&s.watched, window))
+                && window.parentWindow().is_some_and(|parent| std::ptr::eq(&*parent, &*entry.host))
+                && !has(&entry.before, window)
+                && !has(&entry.watched, window)
                 && !crate::platform::macos::has_subclass(object, b"Winit")
                 && !crate::platform::macos::has_subclass(object, b"Rune")
         }).collect();
-        let entry = &mut showing[at];
         entry.watched.extend(opened);
         !entry.watched.is_empty() && entry.watched.iter().all(|w| !w.isVisible())
     });

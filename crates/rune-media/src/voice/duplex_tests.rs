@@ -73,6 +73,18 @@ fn in_process_cancelling_removes_a_delayed_speaker_echo() {
 }
 
 #[test]
+fn a_speaker_underrun_the_device_reports_keeps_the_echo_cancelled() {
+    let mut room = Room::new(EchoPath::InProcess, 80);
+    room.run(RATE as usize * 4, 160, true, false);
+    let silence = RATE as usize / 50;
+    room.air.extend(std::iter::repeat_n(0.0, silence));
+    room.render.silence(silence as u64);
+    let (heard, kept) = room.run(RATE as usize / 4, 160, true, false);
+    let reduction = db(heard / kept);
+    assert!(reduction >= 38.0, "echo reduced by only {reduction:.1} dB just after the underrun");
+}
+
+#[test]
 fn in_process_cancelling_keeps_the_near_talker() {
     let mut room = Room::new(EchoPath::InProcess, 80);
     room.run(RATE as usize * 2, 160, true, false);

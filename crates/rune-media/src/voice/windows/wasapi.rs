@@ -2,13 +2,14 @@ use super::thread::Entered;
 use crate::voice::echo_path::{self, EchoPath, SystemAec};
 use crate::voice::machine::Fault;
 use crate::voice::streams::{MicLink, Opened, SpeakerLink};
+use crate::voice::underrun::{self, Reading};
 use std::collections::VecDeque;
 use std::time::Duration;
 use windows::Win32::Foundation::{CloseHandle, E_ACCESSDENIED, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Media::Audio::{
-    AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+    AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
     AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, AUDCLNT_STREAMOPTIONS_NONE, AUDIO_EFFECT, AUDIO_EFFECT_STATE_ON, AudioCategory_Communications,
-    AudioClientProperties, IAcousticEchoCancellationControl, IAudioCaptureClient, IAudioClient, IAudioClient2, IAudioEffectsManager,
+    AudioClientProperties, IAcousticEchoCancellationControl, IAudioCaptureClient, IAudioClient, IAudioClient2, IAudioClock, IAudioEffectsManager,
     IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX, eCapture, eCommunications, eRender,
 };
 use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance, CoTaskMemFree};
@@ -89,12 +90,21 @@ pub(super) struct Mic {
     client: Client,
     capture: IAudioCaptureClient,
     pending: VecDeque<f32>,
+    rate: u32,
+    next: Option<u64>,
+    lost: u64,
     entered: Option<Entered>,
 }
 
 pub(super) struct Speaker {
     client: Client,
     render: IAudioRenderClient,
+    clock: IAudioClock,
+    frequency: u64,
+    rate: u32,
+    low: u32,
+    given: u64,
+    underrun: underrun::State,
     entered: Option<Entered>,
 }
 
@@ -119,22 +129,40 @@ impl MicLink for Mic {
         }
         Ok(())
     }
+
+    fn take_lost(&mut self) -> u64 {
+        std::mem::take(&mut self.lost)
+    }
 }
 
 impl Mic {
+    fn push(&mut self, samples: impl ExactSizeIterator<Item = f32>) {
+        let room = self.pending.capacity() - self.pending.len();
+        let overflow = samples.len().saturating_sub(room);
+        self.pending.drain(..overflow.min(self.pending.len()));
+        self.pending.extend(samples);
+    }
+
     fn drain(&mut self) -> Result<(), Fault> {
         // SAFETY: capture calls on this stream; each buffer holds `frames` mono floats until it is released.
         unsafe {
             while self.capture.GetNextPacketSize().map_err(|e| fault(&e, "microphone"))? > 0 {
-                let (mut data, mut frames, mut flags) = (std::ptr::null_mut(), 0u32, 0u32);
-                self.capture.GetBuffer(&mut data, &mut frames, &mut flags, None, None).map_err(|e| fault(&e, "microphone"))?;
-                let room = self.pending.capacity() - self.pending.len();
-                let overflow = (frames as usize).saturating_sub(room);
-                self.pending.drain(..overflow.min(self.pending.len()));
+                let (mut data, mut frames, mut flags, mut position) = (std::ptr::null_mut(), 0u32, 0u32, 0u64);
+                self.capture.GetBuffer(&mut data, &mut frames, &mut flags, Some(&mut position), None).map_err(|e| fault(&e, "microphone"))?;
+                let timed = flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 == 0;
+                if flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0
+                    && timed
+                    && let Some(next) = self.next
+                {
+                    let gap = position.saturating_sub(next).min(u64::from(self.rate));
+                    self.lost += gap;
+                    self.push(std::iter::repeat_n(0.0, gap as usize));
+                }
+                self.next = timed.then(|| position + u64::from(frames));
                 if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 || data.is_null() {
-                    self.pending.extend(std::iter::repeat_n(0.0, frames as usize));
+                    self.push(std::iter::repeat_n(0.0, frames as usize));
                 } else {
-                    self.pending.extend(std::slice::from_raw_parts(data.cast::<f32>(), frames as usize));
+                    self.push(std::slice::from_raw_parts(data.cast::<f32>(), frames as usize).iter().copied());
                 }
                 self.capture.ReleaseBuffer(frames).map_err(|e| fault(&e, "microphone"))?;
             }
@@ -158,6 +186,7 @@ impl SpeakerLink for Speaker {
                     let data = self.render.GetBuffer(len).map_err(|e| fault(&e, "speaker"))?;
                     std::slice::from_raw_parts_mut(data.cast::<f32>(), len as usize).copy_from_slice(&frames[..len as usize]);
                     self.render.ReleaseBuffer(len, 0).map_err(|e| fault(&e, "speaker"))?;
+                    self.given += u64::from(len);
                     true
                 } else {
                     false
@@ -168,6 +197,21 @@ impl SpeakerLink for Speaker {
             }
             self.client.wait("speaker")?;
         }
+    }
+
+    fn take_silence(&mut self) -> u64 {
+        let mut position = 0u64;
+        // SAFETY: reads of this stream's own clock and padding.
+        let Ok(padding) = (unsafe { self.clock.GetPosition(&mut position, None).and_then(|()| self.client.client.GetCurrentPadding()) }) else {
+            return 0;
+        };
+        if position == 0 || self.frequency == 0 {
+            return 0;
+        }
+        let played = u128::from(position) * u128::from(self.rate) / u128::from(self.frequency);
+        let taken = self.given.saturating_sub(u64::from(padding));
+        let lead = i64::try_from(played).unwrap_or(i64::MAX).saturating_sub(i64::try_from(taken).unwrap_or(i64::MAX));
+        underrun::step(&mut self.underrun, Reading { lead, low: padding < self.low })
     }
 }
 
@@ -221,6 +265,12 @@ pub(super) fn open(rate: u32, _block: usize) -> Result<Opened, Fault> {
         let render: IAudioRenderClient = speaker.client.GetService().map_err(|e| fault(&e, "speaker"))?;
         render.GetBuffer(speaker.frames).map_err(|e| fault(&e, "speaker"))?;
         render.ReleaseBuffer(speaker.frames, AUDCLNT_BUFFERFLAGS_SILENT.0 as u32).map_err(|e| fault(&e, "speaker"))?;
+        let clock: IAudioClock = speaker.client.GetService().map_err(|e| fault(&e, "speaker"))?;
+        let frequency = clock.GetFrequency().map_err(|e| fault(&e, "speaker"))?;
+        let mut period = 0i64;
+        speaker.client.GetDevicePeriod(Some(&mut period), None).map_err(|e| fault(&e, "speaker"))?;
+        let low = u32::try_from(i64::from(rate) * period / 10_000_000).unwrap_or(0);
+        let given = u64::from(speaker.frames);
         let mic = Client::open(&mic_device, rate, MIC_BUFFER, "microphone")?;
         let capture: IAudioCaptureClient = mic.client.GetService().map_err(|e| fault(&e, "microphone"))?;
         reference(&mic.client, &speaker_device);
@@ -229,8 +279,18 @@ pub(super) fn open(rate: u32, _block: usize) -> Result<Opened, Fault> {
         mic.client.Start().map_err(|e| fault(&e, "microphone"))?;
         let pending = VecDeque::with_capacity(rate as usize);
         Ok(Opened {
-            mic: Box::new(Mic { client: mic, capture, pending, entered: None }),
-            speaker: Box::new(Speaker { client: speaker, render, entered: None }),
+            mic: Box::new(Mic { client: mic, capture, pending, rate, next: None, lost: 0, entered: None }),
+            speaker: Box::new(Speaker {
+                client: speaker,
+                render,
+                clock,
+                frequency,
+                rate,
+                low,
+                given,
+                underrun: underrun::State::Waiting,
+                entered: None,
+            }),
             echo,
         })
     }

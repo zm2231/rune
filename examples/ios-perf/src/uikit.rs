@@ -155,11 +155,16 @@ fn root_view() -> Option<Retained<AnyObject>> {
 
 pub fn show_table(count: usize) -> bool {
     let Some(root) = root_view() else { return false };
+    show_table_in(&root, count);
+    true
+}
+
+pub fn show_table_in(root: &AnyObject, count: usize) {
     ROWS.set(count);
     // SAFETY: `UITableView` and `UIView` properties of these types, on the main thread. The
     // table holds its data source weakly, so `KEEP` keeps it.
     unsafe {
-        let bounds: CGRect = msg_send![&*root, bounds];
+        let bounds: CGRect = msg_send![root, bounds];
         WIDTH.set(bounds.size.width);
         let alloc: Allocated<AnyObject> = msg_send![class!(UITableView), alloc];
         let table: Retained<AnyObject> = msg_send![alloc, initWithFrame: bounds, style: 0isize];
@@ -170,11 +175,10 @@ pub fn show_table(count: usize) -> bool {
         let _: () = msg_send![&*table, setBackgroundColor: &*color(rows::BACKGROUND_RGB)];
         let source: Retained<Rows> = msg_send![Rows::class(), new];
         let _: () = msg_send![&*table, setDataSource: &*source];
-        let _: () = msg_send![&*root, addSubview: &*table];
+        let _: () = msg_send![root, addSubview: &*table];
         KEEP.with(|keep| keep.borrow_mut().push(Retained::into_super(source)));
         TABLE.with(|t| *t.borrow_mut() = Some(table));
     }
-    true
 }
 
 pub fn table_offset() -> Option<f64> {

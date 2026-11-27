@@ -19,6 +19,7 @@ Modes:
 
 - `--mode rune` (default): a Rune list of `virtual_rows`, each a coloured circle and two lines of text. `--drive curve` (default) moves it each frame from `poll` along the same curve UIKit mode uses; `--drive glide` hands Rune three scroll glides to animate itself.
 - `--mode uikit`: the same rows in a `UITableView` that reuses its cells, laid over the idle Rune view, moved along the same curve from a `CADisplayLink`.
+- `--mode native`: the baseline Rune never starts in. The binary links Rune but runs its own `UIApplicationMain`, configures its window scene in code as a Rune app does, and puts the same `UITableView` in the window, moved the same way. Rune's runtime, renderer and Metal device never start, so `idle_footprint_mib` and the scroll numbers are UIKit's alone. Its `first_frame_ms` is the target time of the first `CADisplayLink` refresh after the window is made visible, the refresh its first commit can reach the screen on; Rune's comes from Metal's `presentedTime`, so read it as an estimate of the same moment.
 
 `--exit` quits after the scroll summary; `--rows N` changes the list's length.
 
@@ -32,6 +33,8 @@ xcrun devicectl device process launch --console --terminate-existing --device <d
   --mode rune --auto-scroll --exit
 xcrun devicectl device process launch --console --terminate-existing --device <device> com.example.iosperf \
   --mode uikit --auto-scroll --exit
+xcrun devicectl device process launch --console --terminate-existing --device <device> com.example.iosperf \
+  --mode native --auto-scroll --exit
 ```
 
 Launch each mode several times and compare medians. `first_frame_ms` is a cold number only on the first launch after an install or reboot.

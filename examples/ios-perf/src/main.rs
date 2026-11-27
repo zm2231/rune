@@ -1,4 +1,6 @@
 mod drive;
+#[cfg(target_os = "ios")]
+mod native;
 mod probe;
 mod rows;
 mod stats;
@@ -19,6 +21,7 @@ use stats::say;
 enum Mode {
     Rune,
     Uikit,
+    Native,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -37,7 +40,7 @@ struct Args {
     exit: bool,
 }
 
-const USAGE: &str = "ios-perf [--mode rune|uikit] [--auto-scroll] [--drive curve|glide] [--rows N] [--idle SECONDS] [--exit]";
+const USAGE: &str = "ios-perf [--mode rune|uikit|native] [--auto-scroll] [--drive curve|glide] [--rows N] [--idle SECONDS] [--exit]";
 
 impl Args {
     fn parse(argv: impl IntoIterator<Item = String>) -> Result<Args, String> {
@@ -46,7 +49,7 @@ impl Args {
         while let Some(flag) = it.next() {
             let mut value = || it.next().ok_or_else(|| format!("{flag} needs a value"));
             match flag.as_str() {
-                "--mode" => args.mode = match value()?.as_str() { "rune" => Mode::Rune, "uikit" => Mode::Uikit, other => return Err(format!("unknown mode {other}")) },
+                "--mode" => args.mode = match value()?.as_str() { "rune" => Mode::Rune, "uikit" => Mode::Uikit, "native" => Mode::Native, other => return Err(format!("unknown mode {other}")) },
                 "--drive" => args.drive = match value()?.as_str() { "curve" => DriveKind::Curve, "glide" => DriveKind::Glide, other => return Err(format!("unknown drive {other}")) },
                 "--rows" => args.rows = value()?.parse().map_err(|e| format!("--rows: {e}"))?,
                 "--idle" => args.idle = value()?.parse().map_err(|e| format!("--idle: {e}"))?,
@@ -195,13 +198,16 @@ fn on_presented(p: &FramePresented, started: &mut Option<std::sync::mpsc::Sender
         first.then(|| (p.presented_at(), r.main_wall))
     });
     let Some((Some(at), main_wall)) = first else { return };
-    let first_ms = probe::since_start_ms(probe::wall_of(at));
-    let main_ms = main_wall.and_then(probe::since_start_ms);
-    say(format!("PERF first_frame_ms={} main_ms={} mode={:?}", ms(first_ms), ms(main_ms), args().mode).to_lowercase());
+    say_first_frame(probe::wall_of(at), main_wall);
     let marks: String = rune::marks::marks().into_iter()
         .map(|(name, at)| format!(" {name}={}", ms(probe::since_start_ms(probe::wall_of(at))))).collect();
     say(format!("PERF marks{marks}"));
     if let Some(started) = started.take() { started.send(()).ok(); }
+}
+
+fn say_first_frame(at: SystemTime, main_wall: Option<SystemTime>) {
+    let main_ms = main_wall.and_then(probe::since_start_ms);
+    say(format!("PERF first_frame_ms={} main_ms={} mode={:?}", ms(probe::since_start_ms(at)), ms(main_ms), args().mode).to_lowercase());
 }
 
 fn ms(v: Option<f64>) -> String { v.map_or_else(|| "nan".into(), |v| format!("{v:.1}")) }
@@ -273,19 +279,40 @@ fn start_drive(s: &mut State) {
     match args().mode {
         Mode::Rune => s.drive = Drive::Requested,
         #[cfg(target_os = "ios")]
-        Mode::Uikit => drive_uikit(),
+        Mode::Uikit | Mode::Native => drive_uikit(),
         #[cfg(not(target_os = "ios"))]
-        Mode::Uikit => say("PERF error=uikit mode runs on iOS only"),
+        Mode::Uikit | Mode::Native => say("PERF error=uikit and native modes run on iOS only"),
     }
+}
+
+#[cfg(target_os = "ios")]
+fn say_display() {
+    let (max_fps, plist) = uikit::display();
+    say(format!("PERF display max_fps={max_fps} disable_min_frame_duration={plist}"));
 }
 
 fn on_ready() {
     #[cfg(target_os = "ios")]
     {
-        let (max_fps, plist) = uikit::display();
-        say(format!("PERF display max_fps={max_fps} disable_min_frame_duration={plist}"));
+        say_display();
         if args().mode == Mode::Uikit && !uikit::show_table(args().rows) { say("PERF error=no window to show the table in"); }
     }
+}
+
+#[cfg(target_os = "ios")]
+fn run_native() -> ! {
+    native::run(|root| {
+        say_display();
+        uikit::show_table_in(root, args().rows);
+        uikit::start_link(Box::new(|_, target, link| {
+            uikit::stop_link(link);
+            say_first_frame(native::wall_of_media(target), REC.with(|r| r.borrow().main_wall));
+            native::after(args().idle, || {
+                say(format!("PERF idle_footprint_mib={:.2} idle_s={}", probe::footprint_mib(), args().idle));
+                if args().auto_scroll { drive_uikit(); }
+            });
+        }));
+    })
 }
 
 fn main() {
@@ -301,6 +328,9 @@ fn main() {
         r.base = Some(base);
         r.main_wall = Some(probe::wall_of(base));
     });
+
+    #[cfg(target_os = "ios")]
+    if args().mode == Mode::Native { run_native(); }
 
     let app = App::new(AppSpec { poll: Some(poll), ..AppSpec::new("Perf", (390.0, 844.0), init, view) });
     let handle = app.handle();

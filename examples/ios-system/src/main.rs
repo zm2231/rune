@@ -126,7 +126,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
     let (horizontal, vertical) = (cx.horizontal_size_class(), cx.vertical_size_class());
     let [width, height] = cx.layout_size("root").unwrap_or_default();
     let header = col().w_full().gap(4.0)
-        .child(text("System").font(type_::TITLE).color(t.text))
+        .child(text("System").role("heading").level(1).font(type_::TITLE).color(t.text))
         .child(text(format!("Size classes: {horizontal:?} across, {vertical:?} down; {width:.0}×{height:.0} pt")).key("size-class")
             .font(type_::LABEL).color(t.text_secondary).wrap().w_full())
         .child(text(format!("Status: {}", state.status)).key("status").font(type_::LABEL).color(t.text_secondary).wrap().w_full());

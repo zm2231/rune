@@ -29,18 +29,20 @@ struct Worker {
     ready: Condvar,
 }
 
-fn worker() -> &'static Worker {
-    static WORKER: OnceLock<&'static Worker> = OnceLock::new();
+fn worker() -> Result<&'static Worker, String> {
+    static WORKER: OnceLock<Result<&'static Worker, String>> = OnceLock::new();
     WORKER.get_or_init(|| {
         let worker: &'static Worker = Box::leak(Box::new(Worker { queue: Mutex::default(), ready: Condvar::new() }));
         let spawned = std::thread::Builder::new().name("rune-search-index".into()).spawn(move || run(worker));
-        if let Err(e) = spawned { eprintln!("rune: could not start the search indexer: {e}"); }
-        worker
-    })
+        spawned.map(|_| worker).map_err(|e| format!("could not start the search indexer: {e}"))
+    }).clone()
 }
 
 pub(super) fn submit(ops: Vec<IndexOp>) {
-    let worker = worker();
+    let worker = match worker() {
+        Ok(worker) => worker,
+        Err(why) => return super::failed(SearchIndexError::Failed(why)),
+    };
     let dropped = match worker.queue.lock() {
         Ok(mut queue) => queue.admit(ops),
         Err(_) => return,

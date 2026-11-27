@@ -22,7 +22,7 @@ Options:
   --strict      Run strict web lints (cargo lint-wasm and cargo lint-webgl, warnings denied)
   --hot         Also run cargo check-hot (rune with --features hot)
   --features    Also check optional/no-default feature sets (gpu counters, Linux noop, rune optional features, rune-kit --all-features)
-  --docs        Also run cargo doc on rune, denying broken, private and redundant doc links
+  --docs        Also run cargo doc on rune, rune-kit and rune-core, denying broken, private and redundant doc links
   --all         Check and lint --workspace --all-targets instead of default members (includes --hot, --features and --docs)
   --tests       Also run cargo test-fast
   -h, --help    Show this help message and exit
@@ -178,8 +178,8 @@ if [ "$run_features" -eq 1 ] || [ "$run_all" -eq 1 ]; then
 fi
 
 if [ "$run_docs" -eq 1 ] || [ "$run_all" -eq 1 ]; then
-  run_step "rune doc links" env RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::redundant_explicit_links" \
-    cargo doc --no-deps -p rune
+  run_step "doc links" env RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::redundant_explicit_links" \
+    cargo doc --no-deps -p rune -p rune-kit -p rune-core
 fi
 
 if [ "$run_tests" -eq 1 ]; then

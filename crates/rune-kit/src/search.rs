@@ -8,7 +8,7 @@
 //! text as given, whatever folding changed in length.
 //!
 //! The decomposition is `icu_normalizer`'s NFD, which Parley already links; the rest is the few
-//! tables below. No other data. [`markdown::Case::Folded`](crate::markdown::Case::Folded) finds
+//! tables below. No other data. `markdown::Case::Folded` finds
 //! the same way in rendered Markdown.
 
 use std::ops::Range;

@@ -103,7 +103,9 @@ impl paint_state::PaintState {
                 let ac = active_cache.take().unwrap();
                 self.close_cached_layer(nodes, instances, surfaces, marks, track_marks, text, commit_gen, ac, start, surface_start, glyph_count);
             } else {
+                let (before, opacity) = (instances.len(), instances[start].fill[3]);
                 crate::render::end_layer(instances, surfaces, marks, start, surface_start);
+                if instances.len() < before { self.keep.cycles.folded(start, opacity); }
             }
         }
     }
@@ -132,7 +134,9 @@ impl paint_state::PaintState {
                 let ac = active_cache.take().unwrap();
                 self.close_cached_layer(nodes, instances, surfaces, marks, track_marks, text, commit_gen, ac, start, surface_start, glyph_count);
             } else {
+                let (before, opacity) = (instances.len(), instances[start].fill[3]);
                 crate::render::end_layer(instances, surfaces, marks, start, surface_start);
+                if instances.len() < before { self.keep.cycles.folded(start, opacity); }
             }
             layers.pop();
         }

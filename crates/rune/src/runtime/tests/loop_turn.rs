@@ -11,6 +11,8 @@ static ARC: Icon = Icon {
 struct Spin {
     fps: f32,
     dots: bool,
+    scrolled: bool,
+    faded: bool,
     polls: usize,
     next: f64,
 }
@@ -20,6 +22,16 @@ fn loader(spin: &Spin, _: &mut Cx<Spin>) -> El {
         let stops: &'static [(f32, f32)] = &[(0.0, 0.2), (0.5, 1.0), (1.0, 0.2)];
         let dot = |k: usize| el().key(format!("dot{k}")).size(4.0, 4.0).fill(crate::Color::WHITE).a11y_hidden()
             .cycle(rune_motion::Cycle { period: 1.8, phase: k as f32 / 3.0, stops, still: 0.5, fps: spin.fps });
+        if spin.faded {
+            return crate::col().size(40.0, 40.0).child(el().key("row").size(40.0, 10.0).opacity(0.5).child(dot(0)))
+                .child(el().key("dim").size(40.0, 10.0).opacity(0.5).child(el().size(20.0, 8.0).fill(crate::Color::WHITE)).child(dot(1)));
+        }
+        if spin.scrolled {
+            return crate::col().size(40.0, 40.0).scroll(crate::ScrollSpec { stick_bottom: false })
+                .child(el().size(40.0, 10.0).child(dot(0)))
+                .child(el().size(40.0, 400.0))
+                .child(el().size(40.0, 10.0).child(dot(1)));
+        }
         return el().size(40.0, 40.0).child(dot(0)).child(dot(1)).child(dot(2));
     }
     el().size(40.0, 40.0).child(icon(&ARC, 16.0).key("arc").looping(rune_motion::LoopSpec::rotation(0.9).fps(spin.fps)))
@@ -65,12 +77,12 @@ struct Host {
 
 impl Host {
     fn new(fps: f32) -> Host {
-        Host::with_poll(fps, false, None)
+        Host::with_poll(Spin { fps, ..Spin::default() }, None)
     }
 
-    fn with_poll(fps: f32, dots: bool, poll: Option<fn(&mut Spin, f64, &mut crate::Tx) -> bool>) -> Host {
+    fn with_poll(spin: Spin, poll: Option<fn(&mut Spin, f64, &mut crate::Tx) -> bool>) -> Host {
         let start = crate::time::now();
-        let mut rt = Runtime::new(Spin { fps, dots, ..Spin::default() }, loader, (40.0, 40.0), Env::new(true, 2.0));
+        let mut rt = Runtime::new(spin, loader, (40.0, 40.0), Env::new(true, 2.0));
         rt.wall_start = Some(start);
         rt.frame.set_test_clock(crate::ManualClock::new(120.0));
         rt.poll = poll;
@@ -132,7 +144,7 @@ fn a_spinner_beside_an_idle_poll_runs_the_poll_only_at_its_own_wakes() {
         false
     }
     for dots in [false, true] {
-        let mut host = Host::with_poll(60.0, dots, Some(poll));
+        let mut host = Host::with_poll(Spin { fps: 60.0, dots, ..Spin::default() }, Some(poll));
         host.rt.state.polls = 0;
         let (mut steps, mut refused) = (0, Vec::new());
         for _ in 0..120 {
@@ -149,4 +161,34 @@ fn a_spinner_beside_an_idle_poll_runs_the_poll_only_at_its_own_wakes() {
         assert!(polls <= 9, "two seconds of {what} at 60 fps ran the app's 4-a-second poll {polls} times; refusals: {refused:?}");
         assert!(steps >= 110, "{what}: {steps} of 120 frames were loop-only; refusals: {refused:?}");
     }
+}
+
+#[test]
+fn a_spinner_scrolled_out_of_sight_leaves_the_one_in_sight_stepping() {
+    let spin = || Spin { fps: 60.0, dots: true, scrolled: true, ..Spin::default() };
+    let (mut framed, mut stepped) = (Host::with_poll(spin(), None), Host::with_poll(spin(), None));
+    for host in [&mut framed, &mut stepped] {
+        for _ in 0..3 {
+            host.frame();
+        }
+    }
+    framed.frame();
+    let patched = stepped.step().expect("the dot out of sight draws nothing, so the one in sight steps alone");
+    assert_eq!(patched.len(), 1);
+    assert_eq!(bytemuck::cast_slice::<_, u8>(&stepped.rt.instances), bytemuck::cast_slice::<_, u8>(&framed.rt.instances), "the step draws what a frame would");
+}
+
+#[test]
+fn a_spinner_under_a_faded_row_steps_and_keeps_the_row_s_opacity() {
+    let spin = || Spin { fps: 60.0, dots: true, faded: true, ..Spin::default() };
+    let (mut framed, mut stepped) = (Host::with_poll(spin(), None), Host::with_poll(spin(), None));
+    for host in [&mut framed, &mut stepped] {
+        for _ in 0..3 {
+            host.frame();
+        }
+    }
+    framed.frame();
+    let patched = stepped.step().expect("a dot alone in a faded row and one beside a label in another both step");
+    assert_eq!(patched.len(), 2);
+    assert_eq!(bytemuck::cast_slice::<_, u8>(&stepped.rt.instances), bytemuck::cast_slice::<_, u8>(&framed.rt.instances), "the step draws what a frame would");
 }

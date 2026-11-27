@@ -583,15 +583,19 @@ impl RuntimeCore {
                     let ac = active_cache.take().unwrap();
                     self.paint.close_cached_layer(&self.tree.nodes, &mut self.instances, &mut self.surfaces, &mut self.marks, self.track_marks, &mut self.text, self.commit.commit_gen(), ac, start, surface_start, glyph_count);
                 } else {
+                    let opacity = self.instances[start].fill[3];
                     crate::render::end_layer(&mut self.instances, &mut self.surfaces, &mut self.marks, start, surface_start);
+                    if self.instances.len() < before { self.paint.keep.cycles.folded(start, opacity); }
                 }
                 // A scope folded into its one primitive took its marker out: what its subtree
-                // recorded after the marker moved down one.
+                // recorded after the marker moved down one, and took the scope's opacity, which
+                // holds only while the scope folds.
                 if self.instances.len() < before {
                     for rec in &mut self.paint.keep.recs[owner + 1..] {
                         for v in rec.inst.iter_mut() {
                             if *v as usize > start { *v -= 1; }
                         }
+                        rec.keep = false;
                     }
                 } else if self.instances.len() != before + 1 {
                     // A cached scope elided or replaced what it drew.

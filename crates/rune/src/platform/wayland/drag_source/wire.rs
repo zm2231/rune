@@ -326,7 +326,7 @@ impl DragSourceWire {
                 let Some(fd) = self.pending_fds.remove(&fd_id) else { return };
                 let Some(cancel) = WriteCancel::new() else {
                     drop(fd);
-                    let _ = self.writer_done_tx.send(drag_id);
+                    self.writer_done_tx.send(drag_id).ok();
                     wakers.wake();
                     return;
                 };
@@ -346,7 +346,7 @@ impl DragSourceWire {
                             MAX_PIPE_WRITE_BYTES,
                             PIPE_WRITE_TIMEOUT,
                         );
-                        let _ = done_tx.send(drag_id);
+                        done_tx.send(drag_id).ok();
                         wake_pool.wake();
                     })
                 {
@@ -359,7 +359,7 @@ impl DragSourceWire {
                         }
                     }
                     Err(_) => {
-                        let _ = self.writer_done_tx.send(drag_id);
+                        self.writer_done_tx.send(drag_id).ok();
                         wakers.wake();
                     }
                 }

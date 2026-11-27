@@ -366,7 +366,7 @@ fn right_goes_into_the_side_column_and_tab_or_left_comes_back() {
 #[test]
 fn the_shortcut_opens_and_closes_it_without_a_menu() {
     let mut rt = runtime_in(Some(None), false);
-    let chord = Mods { cmd: true, shift: true, ctrl: cfg!(not(target_os = "macos")), ..Mods::default() };
+    let chord = Mods { cmd: true, shift: true, ctrl: !crate::edit::MAC_KEYS, ..Mods::default() };
     assert!(is_open(&rt));
     press_with(&mut rt, Key::Command('d'), chord);
     assert!(!is_open(&rt));

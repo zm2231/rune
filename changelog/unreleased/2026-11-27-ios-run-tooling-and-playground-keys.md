@@ -1,0 +1,1 @@
+- iOS: `App::run` and `App::try_run` honour agent-tooling arguments (`--snap`, `--tree`, `--html`, ...) and render headless, as `run_windows` already did, instead of always launching the UI. The playground treats ⌘ as its own modifier on iOS with a hardware keyboard and shows its shortcut as "⇧⌘D", as on macOS.

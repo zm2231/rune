@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Cx, Env, OpenUrlError, Runtime, el::{El, el}};
+use crate::{Cx, Env, Runtime, el::{El, el}};
 
 #[test]
 fn validates_path_syntax_without_touching_filesystem() {
@@ -86,6 +86,7 @@ fn windows_shell_wide_strips_verbatim_prefixes_and_normalizes_slashes() {
     );
 }
 
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 #[test]
 fn headless_runtime_records_open_and_reveal_requests_and_keeps_open_url_strict() {
     fn view(_: &Vec<&'static str>, _: &mut Cx<Vec<&'static str>>) -> El {
@@ -114,7 +115,7 @@ fn headless_runtime_records_open_and_reveal_requests_and_keeps_open_url_strict()
     });
 
     assert_eq!(results, [Ok(()), Err(OpenPathError::Empty), Err(OpenPathError::Invalid), Ok(())]);
-    assert_eq!(file_url_result, Some(Err(OpenUrlError::UnsupportedScheme("file".into()))));
+    assert_eq!(file_url_result, Some(Err(crate::OpenUrlError::UnsupportedScheme("file".into()))));
 
     let open_at = rt.find("open").expect("open button");
     rt.pointer_down(open_at.0, open_at.1);

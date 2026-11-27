@@ -1315,9 +1315,9 @@ impl<S: 'static> App<S> {
     /// tooling run (`--snap`, `--tree`, ...) fails (panics on wasm32); use [`App::try_run`] to
     /// receive the error instead of exiting. See `keep_running`.
     pub fn run(self) {
-        #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
+        #[cfg(target_arch = "wasm32")]
         crate::tooling::started(self.try_run());
-        #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+        #[cfg(not(target_arch = "wasm32"))]
         crate::tooling::finish_start(self.try_run_start());
     }
 
@@ -1331,18 +1331,13 @@ impl<S: 'static> App<S> {
         crate::platform::web::run(self)
     }
 
-    /// On iOS the app is the screen: this returns only when it can't start.
-    #[cfg(target_os = "ios")]
-    pub fn try_run(self) -> Result<(), String> {
-        crate::platform::ios::run(self)
-    }
-
-    #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+    /// On iOS the app is the screen: this returns only when it can't start or runs headless.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn try_run(self) -> Result<(), String> {
         self.try_run_start().map_err(crate::tooling::StartError::message)
     }
 
-    #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn try_run_start(mut self) -> Result<(), crate::tooling::StartError> {
         // Windows' word dictionaries start loading now, on their own thread (`rune_text::segmenter`).
         #[cfg(all(target_os = "windows", not(feature = "segmenter-dictionaries")))]
@@ -1360,7 +1355,11 @@ impl<S: 'static> App<S> {
             #[cfg(not(any(feature = "tooling", debug_assertions)))]
             Err(crate::tooling::StartError::Window(crate::tooling::WITHOUT_TOOLING.into()))
         } else {
-            crate::window::run(self, args).map_err(crate::tooling::StartError::Window)
+            #[cfg(target_os = "ios")]
+            let ran = crate::platform::ios::run(self);
+            #[cfg(not(target_os = "ios"))]
+            let ran = crate::window::run(self, args);
+            ran.map_err(crate::tooling::StartError::Window)
         }
     }
 }

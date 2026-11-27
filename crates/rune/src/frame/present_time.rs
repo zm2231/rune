@@ -339,8 +339,11 @@ pub(crate) mod metal {
         /// `(seq, presentedTime)` for `App::on_frame_presented`, independent of tracing and shadow.
         callback_presented: Mutex<CallbackBuffer>,
         callbacks: bool,
-        /// The newest drawable that reached the screen.
+        /// The newest drawable whose presented handler ran, or that was presented in a
+        /// transaction that has committed.
         on_screen: AtomicU64,
+        /// The newest drawable acquired while the layer presents with Core Animation transactions.
+        transacted: AtomicU64,
         /// Wake the main run loop when a drawable reaches the screen (`Shadow`).
         watch: AtomicBool,
         wake: Option<Box<dyn Fn() + Send + Sync>>,
@@ -362,6 +365,7 @@ pub(crate) mod metal {
                 callback_presented: Mutex::new(CallbackBuffer::default()),
                 callbacks,
                 on_screen: AtomicU64::new(0),
+                transacted: AtomicU64::new(0),
                 watch: AtomicBool::new(false),
                 wake: None,
             }
@@ -398,11 +402,24 @@ pub(crate) mod metal {
                 buf.entries.push_back((seq, at));
                 wake |= buf.watch;
             }
-            if at > 0.0 {
-                self.on_screen.fetch_max(seq, Ordering::AcqRel);
-                wake |= self.watch.load(Ordering::Acquire);
-            }
-            wake
+            self.on_screen.fetch_max(seq, Ordering::AcqRel);
+            wake | self.watch.load(Ordering::Acquire)
+        }
+
+        /// `nextDrawable` returned drawable `seq`, presented in a Core Animation transaction
+        /// when `transaction`.
+        pub(crate) fn acquire(&self, seq: u64, transaction: bool) {
+            if transaction { self.transacted.store(seq, Ordering::Release); }
+            self.next.store(seq, Ordering::Release);
+            self.acquired.store(seq, Ordering::Release);
+        }
+
+        /// Drawable `seq` was presented. Metal runs no presented handler for a drawable presented
+        /// in a Core Animation transaction; it reaches the window server with the commit at the
+        /// end of this run loop turn, so it counts as on screen for every later turn.
+        #[cfg_attr(target_os = "ios", allow(dead_code))]
+        pub(crate) fn presented(&self, seq: u64) {
+            if seq != 0 && self.transacted.load(Ordering::Acquire) == seq { self.on_screen.fetch_max(seq, Ordering::AcqRel); }
         }
 
         /// The drawable the last `nextDrawable` returned, once.
@@ -414,7 +431,7 @@ pub(crate) mod metal {
         #[cfg_attr(target_os = "ios", allow(dead_code))]
         pub(crate) fn last_acquired(&self) -> u64 { self.next.load(Ordering::Acquire) }
 
-        /// The newest drawable Metal reported on screen (0 before the first).
+        /// The newest drawable on screen (0 before the first).
         #[cfg_attr(target_os = "ios", allow(dead_code))]
         pub(crate) fn on_screen(&self) -> u64 { self.on_screen.load(Ordering::Acquire) }
 
@@ -502,8 +519,9 @@ pub(crate) mod metal {
                     drawable.addPresentedHandler(block2::RcBlock::as_ptr(&handler));
                 });
                 if added.is_some() {
-                    log.next.store(seq, Ordering::Release);
-                    log.acquired.store(seq, Ordering::Release);
+                    // SAFETY: `this` is a live CAMetalLayer; the getter takes no arguments.
+                    let transaction: bool = unsafe { msg_send![this, presentsWithTransaction] };
+                    log.acquire(seq, transaction);
                 }
             }
             drawable

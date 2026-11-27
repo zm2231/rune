@@ -2,15 +2,16 @@
 //! input only on its hit regions (`OverlayInput::Regions`), never activates the app, and sits
 //! at window level 3 (`.floating`). A press in the region and a drag past the threshold start
 //! the session, write the file to the drag pasteboard, and show the drag image over the element
-//! (its window-server window, read with `CGWindowListCopyWindowInfo`, where
-//! `El::on_screen_layout` says the element is). With Accessibility access the test then posts a
-//! real button release where the pointer is, over the panel: the app's own windows take no
-//! drops, so the end arrives once, `Cancelled`, and the next click is an ordinary press.
-//! Without it, it checks the session start, pasteboard and image only.
+//! (read with `CGWindowListCopyWindowInfo`: a card-sized window where `El::on_screen_layout`
+//! says the element is, or, where macOS draws drag images inside one window covering the
+//! display, a window that wasn't there before the drag and goes when it ends). The test then
+//! posts the button release over the panel: the app's own windows take no drops, so the end
+//! arrives once, `Cancelled`, and the next click is an ordinary press.
 //!
-//! The press and drag are `postEvent:` NSEvents. The overlay also polls the real pointer, so the
-//! test warps it to where the drag goes; that moves the cursor but posts no events. Opens
-//! windows, so it only runs with RUNE_GUI_TESTS=1 in a logged-in GUI session.
+//! The press, drag and release are `postEvent:` NSEvents, so the test needs no Accessibility
+//! access. The overlay also polls the real pointer, so the test warps it to where the drag
+//! goes; that moves the cursor but posts no events. Opens windows, so it only runs with
+//! RUNE_GUI_TESTS=1 in a logged-in GUI session.
 
 #[cfg(not(target_os = "macos"))]
 fn main() {}
@@ -29,7 +30,7 @@ mod mac {
     use objc2::{class, msg_send, rc::Retained, runtime::{AnyObject, Bool}};
     use objc2_foundation::{NSArray, NSPoint, NSRect, NSString};
     use rune::*;
-    use crate::macos_support::{can_post_events, drag_pasteboard, on_main, release_real_button, wait, warp};
+    use crate::macos_support::{drag_pasteboard, on_main, wait, warp};
 
     static PRESSES: AtomicUsize = AtomicUsize::new(0);
     static STARTED: AtomicUsize = AtomicUsize::new(0);
@@ -92,6 +93,21 @@ mod mac {
         }
     }
 
+    #[derive(Clone, Copy, Debug)]
+    enum Image {
+        Card([f64; 4]),
+        Display,
+    }
+
+    fn primary_size() -> (f64, f64) {
+        // SAFETY: called on the AppKit main thread; queries `NSScreen.screens` and the first screen's `frame`.
+        unsafe {
+            let screens: Retained<NSArray<AnyObject>> = msg_send![class!(NSScreen), screens];
+            let frame: NSRect = msg_send![&*screens.iter().next().expect("a screen"), frame];
+            (frame.size.width, frame.size.height)
+        }
+    }
+
     fn primary_height() -> f64 {
         // SAFETY: called on the AppKit main thread; queries `NSScreen.screens` and the first screen's `frame`.
         unsafe {
@@ -150,8 +166,7 @@ mod mac {
         }
     }
 
-    /// Whether the session ended (it can't without Accessibility access to post a release).
-    fn drive(handle: AppHandle<()>, overlay: OverlayHandle<()>, file: std::path::PathBuf) -> bool {
+    fn drive(handle: AppHandle<()>, overlay: OverlayHandle<()>, file: std::path::PathBuf) {
         wait("the overlay's panel", || overlay.window_number().is_some());
         let number = overlay.window_number().unwrap();
         let expected = [PANEL[0] + CARD_LOCAL[0], PANEL[1] + CARD_LOCAL[1], CARD_LOCAL[2], CARD_LOCAL[3]];
@@ -165,6 +180,9 @@ mod mac {
         let [cx, cy, cw, ch] = expected.map(f64::from);
         let press = (cx + PRESS.0, cy + PRESS.1);
         let past = (press.0 + TRAVEL, press.1);
+        let display = on_main(&handle, primary_size);
+        let before = drag_windows();
+        let drag_display = move |w: &[f64; 4]| w[2] >= display.0 && w[3] >= display.1 && !before.contains(w);
         on_main(&handle, move || {
             // The polled pointer agrees with the posted drag; the session follows it.
             warp(past);
@@ -187,30 +205,32 @@ mod mac {
         let mut image = None;
         for _ in 0..100 {
             let windows = drag_windows();
-            image = windows.into_iter().find(|w| (w[2] - cw).abs() <= 2.0 && (w[3] - ch).abs() <= 2.0);
+            image = windows.iter().copied().find(|w| (w[2] - cw).abs() <= 2.0 && (w[3] - ch).abs() <= 2.0)
+                .map(Image::Card)
+                .or_else(|| windows.iter().any(&drag_display).then_some(Image::Display));
             if image.is_some() { break; }
             std::thread::sleep(Duration::from_millis(20));
         }
-        let image = image.unwrap_or_else(|| panic!("no card-sized window at the dragging level: {:?}", drag_windows()));
-        assert!((image[0] - cx).abs() <= TRAVEL + 1.0 && (image[1] - cy).abs() <= 1.0,
-            "the drag image {image:?} sits over the card {expected:?}");
+        let image = image.unwrap_or_else(|| panic!("no drag image window at the dragging level: {:?}", drag_windows()));
+        if let Image::Card(image) = image {
+            assert!((image[0] - cx).abs() <= TRAVEL + 1.0 && (image[1] - cy).abs() <= 1.0,
+                "the drag image {image:?} sits over the card {expected:?}");
+        }
         assert_eq!(PRESSES.load(Ordering::SeqCst), 0, "a drag-out isn't a press");
 
         if ENDED.lock().unwrap().is_empty() {
-            if !can_post_events() {
-                println!("macos_overlay_drag_out: session started, image {image:?}, pasteboard {url}; ending it needs a real button release, which this process may not post (no Accessibility access)");
-                return false;
-            }
-            release_real_button();
+            on_main(&handle, move || post(number, &[(UP, past)]));
         }
         // A drop the app refuses slides the image back before the session ends.
         wait("the drag to end", || !ENDED.lock().unwrap().is_empty());
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(*ENDED.lock().unwrap(), [DragOutcome::Cancelled], "dropped back on the panel: cancelled, reported once");
+        if let Image::Display = image {
+            wait("the drag image's window to go with the session", || !drag_windows().iter().any(&drag_display));
+        }
         on_main(&handle, move || post(number, &[(DOWN, press), (UP, press)]));
         wait("a click after the drag to press", || PRESSES.load(Ordering::SeqCst) == 1);
         println!("macos_overlay_drag_out: session ended {:?}, image {image:?}, pasteboard {url}", ENDED.lock().unwrap()[0]);
-        true
     }
 
     pub fn main() {
@@ -242,12 +262,7 @@ mod mac {
         std::thread::spawn(move || {
             let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 ready_rx.recv_timeout(Duration::from_secs(30)).expect("window ready");
-                if !drive(handle.clone(), overlay.clone(), f.clone()) {
-                    // The live session's tracking loop holds the event loop, so quit can't land.
-                    std::fs::remove_file(&f).ok();
-                    println!("macos_overlay_drag_out: ok (session start, image and pasteboard only)");
-                    std::process::exit(0);
-                }
+                drive(handle.clone(), overlay.clone(), f.clone());
             }));
             if run.is_err() { eprintln!("macos_overlay_drag_out: failed"); std::process::exit(1); }
             *out.lock().unwrap() = Some(run.is_ok());

@@ -9,8 +9,10 @@
 //! has landed, and keeps the outline of an empty or older frame. `-[NSWindow invalidateShadow]`
 //! asks it to sample again. [`Resample`] decides when: once, after the first frame presented
 //! since a show, resize, scale change or launcher prewarm has reached the screen, as Metal's
-//! presented handler reports it (`present_time::metal`). Calling earlier would sample the old
-//! pixels again; ordinary frames never call it.
+//! presented handler reports it (`present_time::metal`), or, for a frame presented in a Core
+//! Animation transaction (a moving window frame, a live resize, native materials), once that
+//! transaction has committed. Calling earlier would sample the old pixels again; ordinary
+//! frames never call it.
 
 use crate::frame::present_time::metal::{wake_main, Log};
 use objc2::msg_send;
@@ -111,6 +113,7 @@ impl Shadow {
 
     pub(crate) fn presented(&self) {
         let n = self.log.last_acquired();
+        self.log.presented(n);
         self.last.set(n);
         self.update(|r| r.presented(n));
     }

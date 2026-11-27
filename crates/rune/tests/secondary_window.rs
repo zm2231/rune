@@ -46,7 +46,7 @@ fn main() {
     let settings = App::new(AppSpec::new("secondary settings", (240.0, 120.0), || Settings { label: "initial".into() }, settings_view))
         .on_close(|_, _| { CLOSES.fetch_add(1, Ordering::SeqCst); });
     let (settings, window) = app.window(WindowSpec::from_app("settings", settings)
-        .options(WindowOptions { visible: false, ..Default::default() }));
+        .options(WindowOptions { visible: false, always_on_top: true, ..Default::default() }));
     let result = std::sync::Arc::new(Mutex::new(None));
     let out = result.clone();
     std::thread::spawn(move || {
@@ -70,7 +70,7 @@ fn main() {
             settings.open();
             wait("settings reopen", || settings.is_visible());
             assert_eq!(state(&settings, |s| s.label.clone()), "opened", "reopening keeps the state");
-            assert!(window.is_ready());
+            wait("settings ready", || window.is_ready());
         });
         if run.is_err() { eprintln!("secondary_window: failed"); std::process::exit(1); }
         *out.lock().unwrap() = Some(run.is_ok());

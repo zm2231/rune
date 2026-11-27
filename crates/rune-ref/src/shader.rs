@@ -216,16 +216,31 @@ fn ring_arc(p: [f32; 2], size: [f32; 2], radii: [f32; 4], bw: f32) -> (f32, f32)
         if v[0] < 0.0 && v[1] < 0.0 { s_tl + atan2f(-v[1], -v[0]) * rc[0] }
         else if p[0] < p[1] { left } else { top }
     };
-    (s, s_tl + arc[0])
+    let b = [-arc[0] * 0.5, s_tr + arc[1] * 0.5, s_br + arc[2] * 0.5, s_bl + arc[3] * 0.5, s_tl + arc[0] * 0.5];
+    let (lo, hi) = if s >= b[4] {
+        (b[4], b[4] + b[1] - b[0])
+    } else if s >= b[3] {
+        (b[3], b[4])
+    } else if s >= b[2] {
+        (b[2], b[3])
+    } else if s >= b[1] {
+        (b[1], b[2])
+    } else {
+        (b[0], b[1])
+    };
+    (s - lo, hi - lo)
 }
-fn dash_cov(s: f32, total: f32, d: [f32; 3]) -> f32 {
-    let nominal = d[0] + d[1];
-    let k = total.max(0.001) / ((floorf(total / nominal + 0.5)).max(1.0) * nominal);
-    let period = nominal * k;
-    let dash = d[0] * k;
-    let a = s + d[2] * k - dash * 0.5;
-    let m = a - period * floorf(a / period + 0.5);
-    clamp(dash * 0.5 - m.abs() + 0.5)
+fn dash_cov(side: (f32, f32), d: [f32; 4], ring: f32, n: f32, h: f32, soft: f32) -> f32 {
+    let (s, len) = side;
+    let a = if s < len * 0.5 { s } else { len - s } + d[2];
+    let period = (d[0] + d[1]).max(0.001);
+    let m = (a - period * (a / period + 0.5).floor()).abs();
+    if d[3] > 0.5 {
+        let along = (m - d[0] * 0.5).max(0.0);
+        let reach = sqrtf(along * along + n * n);
+        return ring.min(clamp(0.5 + (h - reach) / (soft * 2.0)));
+    }
+    ring * clamp(d[0] * 0.5 - m + 0.5)
 }
 
 /// A border over its own background, as CSS paints one (shader.wgsl `border_over`).
@@ -406,8 +421,9 @@ pub(crate) fn fragment(i: &Primitive, atlas: &Atlas, screen: [f32; 2]) -> [f32; 
             let ring = clamp(0.5 - d / (soft * 2.0)) - clamp(0.5 - (d + i.params[0]) / (soft * 2.0));
             let t = clamp((p[1] - i.rect[1]) / i.rect[3].max(1.0));
             let local = [p[0] - i.rect[0], p[1] - i.rect[1]];
-            let (s, total) = ring_arc(local, [i.rect[2], i.rect[3]], i.radii, i.params[0]);
-            let cov = ring * dash_cov(s, total, [i.uv[0], i.uv[1], i.uv[2]]);
+            let bw = i.params[0];
+            let side = ring_arc(local, [i.rect[2], i.rect[3]], i.radii, bw);
+            let cov = dash_cov(side, i.uv, ring, d + bw * 0.5, bw * 0.5, soft);
             col = std::array::from_fn(|c| mix(i.fill[c], i.border[c], t) * cov);
         }
         11 => {
@@ -531,10 +547,8 @@ mod tests {
         assert_eq!(ramp(8.0, 16.0), ramp(8.0, -16.0), "both are half way at the middle");
     }
 
-    // Walking the ring's centre line clockwise, arc length grows by the distance walked and
-    // comes back round to zero after exactly the line's length.
     #[test]
-    fn ring_arc_walks_the_centre_line() {
+    fn ring_arc_walks_each_side_from_corner_middle_to_corner_middle() {
         for (size, radii, bw) in [
             ([40.0f32, 20.0], [10.0f32; 4], 2.0f32),
             ([30.0, 30.0], [0.0, 6.0, 15.0, 3.0], 1.0),
@@ -543,17 +557,13 @@ mod tests {
         ] {
             let h = bw * 0.5;
             let rc = radii.map(|r: f32| (r.min(size[0].min(size[1]) * 0.5) - h).max(0.0));
-            let (_, total) = ring_arc([size[0] * 0.5, h], size, radii, bw);
             let expected = 2.0 * (size[0] + size[1] - 2.0 * bw)
                 - (2.0 - std::f32::consts::FRAC_PI_2) * rc.iter().sum::<f32>();
-            assert!((total - expected).abs() < 1e-3, "{total} vs {expected}");
-            // Sample the centre line by marching a point round the inset rounded rect.
             let mut points = Vec::new();
             let steps = 400;
             for n in 0..steps {
                 let angle = n as f32 / steps as f32 * std::f32::consts::TAU;
                 let dir = [libm::sinf(angle), -libm::cosf(angle)];
-                // Ray from the centre to the centre line: bisect on the ring's centre distance.
                 let (mut lo, mut hi) = (0.0, size[0] + size[1]);
                 for _ in 0..60 {
                     let mid = (lo + hi) * 0.5;
@@ -562,39 +572,51 @@ mod tests {
                 }
                 points.push([size[0] * 0.5 + dir[0] * lo, size[1] * 0.5 + dir[1] * lo]);
             }
-            // Each step advances s by the chord, or up to a corner's detour where the line turns
-            // sharply, and the steps add up to one trip round.
             let mut trip = 0.0;
+            let mut sides = 0.0;
             for n in 1..=steps {
-                let (a, b) = (points[n - 1], points[n % steps]);
-                let chord = sqrtf((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2));
-                let ds = (ring_arc(b, size, radii, bw).0 - ring_arc(a, size, radii, bw).0).rem_euclid(total);
+                let (a, b) = (ring_arc(points[n - 1], size, radii, bw), ring_arc(points[n % steps], size, radii, bw));
+                let ds = if b.0 >= a.0 && (b.1 - a.1).abs() < 1e-3 {
+                    b.0 - a.0
+                } else {
+                    sides += a.1;
+                    a.1 - a.0 + b.0
+                };
+                let (pa, pb) = (points[n - 1], points[n % steps]);
+                let chord = sqrtf((pb[0] - pa[0]).powi(2) + (pb[1] - pa[1]).powi(2));
                 assert!(ds > chord - 1e-3 && ds < chord * 1.5 + 1e-3, "{size:?} {radii:?} step {n}: {ds} vs {chord}");
                 trip += ds;
             }
-            assert!((trip - total).abs() < 1e-2, "{trip} vs {total}");
+            assert!((trip - expected).abs() < 1e-2, "{trip} vs {expected}");
+            assert!((sides - expected).abs() < 1e-2, "four sides add up to the line: {sides} vs {expected}");
         }
     }
 
     #[test]
-    fn dash_pattern_closes_at_the_seam() {
-        for total in [37.3, 100.0, 251.9, 3.0] {
-            for d in [[4.0, 3.0, 0.0], [6.0, 2.5, 1.7], [10.0, 10.0, -4.0]] {
-                for n in 0..50 {
+    fn dashes_centre_on_corners_and_mirror_about_each_side() {
+        let butt = [4.0, 3.0, 0.0, 0.0];
+        assert_eq!(dash_cov((0.0, 50.0), butt, 1.0, 0.0, 1.0, 0.5), 1.0, "a dash on the corner");
+        assert_eq!(dash_cov((50.0, 50.0), butt, 1.0, 0.0, 1.0, 0.5), 1.0, "and on the next");
+        assert!((dash_cov((2.0, 50.0), butt, 1.0, 0.0, 1.0, 0.5) - 0.5).abs() < 1e-4, "half a dash either side");
+        assert_eq!(dash_cov((3.5, 50.0), butt, 1.0, 0.0, 1.0, 0.5), 0.0, "then a gap");
+        for len in [13.0, 37.3, 50.0, 251.9] {
+            for d in [butt, [6.0, 2.5, 1.7, 0.0], [0.0, 3.0, -1.0, 1.0], [5.0, 4.0, 2.0, 1.0]] {
+                for n in 0..60 {
                     let s = n as f32 * 0.37;
-                    assert!((dash_cov(s, total, d) - dash_cov(s + total, total, d)).abs() < 1e-3);
-                    assert!((dash_cov(s, total, d) - dash_cov(s - total, total, d)).abs() < 1e-3);
+                    let mirror = |s: f32| dash_cov((s, len), d, 1.0, 0.2, 1.0, 0.5);
+                    assert!((mirror(s) - mirror(len - s)).abs() < 1e-4, "{len} {d:?} {s}");
                 }
+                let middle = |l: f32| dash_cov((l * 0.5, l), d, 1.0, 0.2, 1.0, 0.5);
+                assert!((middle(len) - middle(len + 0.01)).abs() < 0.02, "the middle changes smoothly with length");
             }
         }
-        // With no phase the pattern starts on a dash: half covered at s = 0, full just after.
-        assert!((dash_cov(0.0, 100.0, [4.0, 3.0, 0.0]) - 0.5).abs() < 1e-4);
-        assert_eq!(dash_cov(1.0, 100.0, [4.0, 3.0, 0.0]), 1.0);
-        // One nominal period of phase is one whole stretched period.
-        for n in 0..50 {
-            let s = n as f32 * 1.3;
-            assert!((dash_cov(s, 100.0, [4.0, 3.0, 7.0]) - dash_cov(s, 100.0, [4.0, 3.0, 0.0])).abs() < 1e-3);
+        for n in 0..20 {
+            let s = n as f32 * 0.7;
+            assert_eq!(dash_cov((s, 80.0), butt, 1.0, 0.0, 1.0, 0.5), dash_cov((s, 81.5), butt, 1.0, 0.0, 1.0, 0.5), "a longer side keeps its corner dashes");
         }
+        let round = [0.0, 4.0, 0.0, 1.0];
+        assert_eq!(dash_cov((0.0, 40.0), round, 1.0, 0.0, 1.0, 0.5), 1.0, "a zero dash with round caps is a dot");
+        assert_eq!(dash_cov((1.6, 40.0), round, 1.0, 0.0, 1.0, 0.5), 0.0, "one ring wide");
     }
 
     #[test]

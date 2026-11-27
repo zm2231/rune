@@ -93,6 +93,8 @@ impl WindowHandle {
 
     /// The first frame has completed for the current native lifetime. For a launcher
     /// this confirms GPU completion of an alpha-zero frame before reveal. False after destruction.
+    /// A window other windows cover entirely draws nothing on macOS, so it becomes ready once
+    /// it is uncovered; a test that waits for it keeps the window on top.
     pub fn is_ready(&self) -> bool { self.window().is_ok() && self.native.ready.load(Ordering::Acquire) }
     pub fn key(&self) -> &str { &self.key }
     /// The window's frame counts: redraws, presents, failed drawable acquisitions, loop turns

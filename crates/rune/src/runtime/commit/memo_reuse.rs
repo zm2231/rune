@@ -609,7 +609,10 @@ pub(in crate::runtime) fn try_reuse_memo(
             taffy.reuse_slot(slot.taffy, new_idx as u32);
             let stub = Node::moved_stub(slot);
             let mut n = std::mem::replace(slot, stub);
-            if !n.text.as_ref().is_some_and(|t| t.cold.live.is_some()) { n.text_layout = None; n.elided = None; n.clear_tabular_layout(); }
+            if !n.text.as_ref().is_some_and(|t| t.cold.live.is_some()) {
+                if n.input.is_some() || !matches!(n.text_layout, Some(TextLayout::Single(_))) { n.text_layout = None; n.elided = None; }
+                n.clear_tabular_layout();
+            }
             n.clear_run_layout();
             n.scale_track = false;
             n.group_fade = false;

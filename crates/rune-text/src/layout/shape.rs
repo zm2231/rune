@@ -67,6 +67,7 @@ impl TextSystem {
         keep: Keep,
         base: parley::BaseDirection,
     ) -> Rc<Layout<Ink>> {
+        self.laid += 1;
         self.follow_language();
         let cache = keep == Keep::Cached;
         let shared = (keep == Keep::Secret).then(|| std::mem::replace(&mut self.layout_cx, LayoutContext::new()));

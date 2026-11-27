@@ -107,6 +107,15 @@ impl TextSystem {
         true
     }
 
+    /// Changes whenever what this system shaped is dropped (new families or a new language),
+    /// taking up a language chosen since it last looked first. A layout made in another epoch
+    /// is stale.
+    #[doc(hidden)]
+    pub fn shaped_epoch(&mut self) -> u64 {
+        self.follow_language();
+        self.shaped_epoch
+    }
+
     /// Takes up the language [`set_language`] chose since this text system last looked.
     pub(crate) fn follow_language(&mut self) {
         let epoch = EPOCH.load(Ordering::Relaxed);

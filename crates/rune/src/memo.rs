@@ -122,6 +122,7 @@ pub(crate) struct MemoCache {
     pure_counts: HashMap<(u64, u64, u64), u32>,
     nested_scratch: Vec<(Rc<str>, u64)>,
     pub(crate) present_len: usize,
+    pub(crate) laid_epoch: u64,
     pass: u64,
     provided: u64,
     #[cfg(test)]
@@ -431,6 +432,9 @@ pub fn as_next_build<R>(f: impl FnOnce() -> R) -> R {
 /// # }
 /// ```
 ///
+/// `id` is the item's stable identity (`m.id` above), never its position: an index-keyed row
+/// is renamed when one is inserted above it, so one insert misses every memo below.
+///
 /// Anything the closure reads that can change belongs in `version`, apart from `Cx::layout`,
 /// `Cx::layout_with`, `Cx::layout_size` and `Cx::caret`, which are tracked; see the
 /// [module docs](mod@crate::memo) for handlers, live values and what else invalidates. Outside a view (a test calling a view function directly)
@@ -499,6 +503,10 @@ fn memo_inner(key: String, version: u64, region: bool, build: &mut dyn FnMut() -
                 s.cache.nested_scratch.extend(e.nested.iter().map(|id| (id.clone(), s.virtual_row)));
                 reused = Some((has_parent.then(|| e.id.clone()), e.built.clone(), parent_reads));
             }
+        }
+        #[cfg(feature = "frame-profile")]
+        if store {
+            crate::frame::live_log::memo(if reused.is_some() { 0 } else if s.cache.entries.contains_key(name) { 1 } else { 2 });
         }
         if let Some((parent_id, built, reads)) = reused {
             if !s.cache.nested_scratch.is_empty() {

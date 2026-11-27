@@ -1,7 +1,8 @@
 //! `frame-profile` diagnostics for a live window: with `RUNE_FRAME_LOG=FILE`, each frame a
 //! window draws is written to FILE as one JSON line, split by stage in nanoseconds: the input
 //! handled since the last frame, the drawable wait, the build (view, commit, layout, text,
-//! paint, apply), the upload, encode, submit and present, and the thread's CPU. Headless runs
+//! paint, apply), the upload, encode, submit and present, the thread's CPU, and how many memos
+//! the view reused (`memo.hit`), built again (`memo.miss`) and built new (`memo.new`). Headless runs
 //! write their own log (`profile::Log`). Ordinary builds compile none of this.
 
 use std::cell::{Cell, RefCell};
@@ -23,6 +24,8 @@ thread_local! {
     /// Frames missed since the last drawn one (occluded, timeout, outdated, unconfigured), and
     /// surfaces `acquire` reconfigured and got a drawable from.
     static MISSED: Cell<([u32; 4], u32)> = const { Cell::new(([0; 4], 0)) };
+    /// Memos and regions since the last logged frame: reused, built again, built for the first time.
+    static MEMOS: Cell<[u32; 3]> = const { Cell::new([0; 3]) };
     /// Test-only in-memory capture sink for asserting logged frame records without touching disk.
     #[cfg(all(test, target_os = "windows"))]
     static CAPTURED: RefCell<Option<Vec<serde_json::Value>>> = const { RefCell::new(None) };
@@ -100,6 +103,13 @@ pub(crate) fn waker(at: &'static std::panic::Location<'static>, wait: std::time:
         Some(e) => e.1 = e.1.min(wait),
         None => w.push((at, wait)),
     });
+}
+
+/// A memo or region the view asked for: 0 reused, 1 built again, 2 built for the first time.
+pub(crate) fn memo(kind: usize) {
+    let mut m = MEMOS.get();
+    m[kind.min(2)] += 1;
+    MEMOS.set(m);
 }
 
 pub(crate) fn link(event: &'static str, at: &'static std::panic::Location<'static>) {
@@ -198,6 +208,8 @@ pub(crate) fn frame(f: Frame) {
     line["loop_why"] = serde_json::json!(f.loop_why);
     let (missed, reconfigured) = MISSED.replace(([0; 4], 0));
     if missed != [0; 4] || reconfigured > 0 { line["missed"] = serde_json::json!({ "occluded": missed[0], "timeout": missed[1], "outdated": missed[2], "unconfigured": missed[3], "reconfigured": reconfigured }); }
+    let memos = MEMOS.replace([0; 3]);
+    if memos != [0; 3] { line["memo"] = serde_json::json!({ "hit": memos[0], "miss": memos[1], "new": memos[2] }); }
     line["loop_check"] = serde_json::json!(f.loop_check.map(|(n, d)| [n as f64, if d.is_finite() { f64::from(d) } else { -1.0 }]));
     #[cfg(all(test, target_os = "windows"))]
     CAPTURED.with_borrow_mut(|slot| {

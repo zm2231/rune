@@ -482,3 +482,33 @@ fn memo_build_time() {
         }
     }
 }
+
+fn row_cells(i: usize, v: u32) -> El {
+    let cells = (0..9).map(|j| crate::row().child(el().size(8.0, 8.0)).child(text(format!("{i}.{j} v{v}"))).child(el().size(4.0, 4.0)));
+    col().children(cells).child(text(format!("row {i}")))
+}
+
+fn rows_view(s: &Vec<u32>, _: &mut Cx<Vec<u32>>) -> El {
+    col().w_full().children(s.iter().enumerate().map(|(i, &v)| memo(format!("row-{i}"), v, move || row_cells(i, v))))
+}
+
+/// The text layouts a change to one memoized row asks for, among `rows` rows, and the elements.
+fn laid_for_one_row_change(rows: usize) -> (u32, usize) {
+    let mut rt = Runtime::new(vec![0u32; rows], rows_view, (600.0, 800.0), Env::new(true, 1.0));
+    rt.frame(0.0);
+    rt.frame(1.0 / 60.0);
+    let laid = rt.text.laid;
+    rt.update(|s, _| s[rows / 3] += 1);
+    rt.frame(1.0 / 60.0);
+    (rt.text.laid - laid, rt.tree.nodes.len())
+}
+
+/// A change to one of 106 memoized rows (about 4,000 elements) lays out that row's text as it
+/// would among 26: the rows it didn't touch cost no text layout.
+#[test]
+fn a_one_row_change_lays_out_only_that_rows_text() {
+    let (few, _) = laid_for_one_row_change(26);
+    let (many, nodes) = laid_for_one_row_change(106);
+    assert!(nodes >= 4000, "{nodes} elements");
+    assert_eq!(many, few, "text layouts asked for by one row's change among 106 rows, and among 26");
+}

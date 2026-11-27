@@ -199,6 +199,22 @@ fn stale_layouts_stay_within_their_budget_newest_kept() {
     assert!(!text.layouts.contains_key(&key(&labels[0])));
 }
 
+/// Layouts their callers still hold count against the stale budget like any other: a rest keeps
+/// them, and the next commits evict them to the budget.
+#[test]
+fn held_stale_layouts_stay_within_their_budget() {
+    let mut text = TextSystem::default();
+    let style = TextStyle::new(13.0, 400.0);
+    let held: Vec<_> = (0..1200).map(|i| text.layout_rich(&format!("label {i:04}"), &[], style, 2.0, None)).collect();
+    for _ in 0..3 { text.end_commit(); }
+    let cost: usize = text.layouts.values().map(|e| e.cost as usize).sum();
+    assert!(cost <= STALE_BYTES, "{cost}");
+    let kept = text.layouts.len();
+    text.rest();
+    assert_eq!(text.layouts.len(), kept, "a rest keeps what callers hold");
+    drop(held);
+}
+
 /// A view's labels all share the commit it was last shown in.
 #[test]
 fn a_view_over_the_budget_keeps_a_budget_of_its_layouts() {

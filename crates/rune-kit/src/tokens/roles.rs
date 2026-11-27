@@ -8,6 +8,7 @@ use super::theme::KitEnv;
 pub enum TextRole {
     /// Timestamps, counts and other details beside the content.
     Meta,
+    /// Links in running text.
     Link,
     /// Inline code and paths in running text.
     Code,
@@ -21,11 +22,14 @@ pub enum TextRole {
     Peer,
     /// Something waiting on the reader.
     NeedsAttention,
+    /// Finished work.
     Done,
+    /// Failures and invalid input.
     Error,
 }
 
 impl TextRole {
+    /// Every role, in declaration order.
     pub const ALL: [TextRole; 10] = [
         TextRole::Meta,
         TextRole::Link,
@@ -67,28 +71,38 @@ impl TextRole {
 /// from here; an app colours its own timestamps, live work or peers' messages from the rest.
 #[derive(Clone, Copy, Debug, PartialEq, Hash)]
 pub struct TextRoles {
+    /// [`TextRole::Meta`].
     pub meta: Color,
+    /// [`TextRole::Link`].
     pub link: Color,
+    /// [`TextRole::Code`].
     pub code: Color,
+    /// [`TextRole::Working`].
     pub working: Color,
+    /// [`TextRole::Added`].
     pub added: Color,
+    /// [`TextRole::Removed`].
     pub removed: Color,
+    /// [`TextRole::Peer`].
     pub peer: Color,
+    /// [`TextRole::NeedsAttention`].
     pub needs_attention: Color,
+    /// [`TextRole::Done`].
     pub done: Color,
+    /// [`TextRole::Error`].
     pub error: Color,
 }
 
 impl TextRoles {
-    /// Roles from a palette's own tokens: `text_faint` for meta, `text_accent` for links and
-    /// work in progress, `text_base` for code and peers, the success and danger icon hues for
+    /// Roles from a palette's own tokens: `text_faint` for meta, `text_accent` for links,
+    /// `info` text for work in progress, `text_base` for code and peers, the success and danger icon hues for
     /// added and removed, and the warning, success and danger text for the states.
     pub fn from_palette(c: &Palette) -> TextRoles {
         TextRoles {
             meta: c.text_faint,
             link: c.text_accent,
             code: c.text_base,
-            working: c.text_accent,
+            working: c.info.fg,
             added: c.success.icon,
             removed: c.danger.icon,
             peer: c.text_base,
@@ -98,10 +112,12 @@ impl TextRoles {
         }
     }
 
+    /// The colour of `role`.
     pub fn get(&self, role: TextRole) -> Color {
         *self.slot(role)
     }
 
+    /// Give `role` the colour `color`.
     pub fn set(&mut self, role: TextRole, color: Color) {
         *self.slot_mut(role) = color;
     }
@@ -141,13 +157,16 @@ impl TextRoles {
 /// for more contrast, as an app's settings give them. [`Self::pick`] chooses for a window.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RoleColor {
+    /// In dark appearance.
     pub dark: Color,
+    /// In light appearance.
     pub light: Color,
     /// (dark, light) under increased contrast; `dark` and `light` when None.
     pub increased: Option<(Color, Color)>,
 }
 
 impl RoleColor {
+    /// A role's colour in dark and in light appearance, the same under increased contrast.
     pub fn new(dark: Color, light: Color) -> RoleColor {
         RoleColor { dark, light, increased: None }
     }

@@ -776,7 +776,11 @@ fn links_and_diffs_take_the_kit_text_roles() {
     k.roles.link = link;
     k.roles.added = added;
     k.roles.removed = removed;
+    let code = rune::Color { r: 0.4, g: 0.5, b: 0.5, a: 1.0 };
+    k.roles.code = code;
     let style = MarkdownStyle::from_kit(&k);
     assert_eq!(style.accent, link);
     assert_eq!(style.diff_hues, [added, removed]);
+    assert_eq!(style.inline_code_text, Some(code));
+    assert_eq!(MarkdownStyle::from_kit(&crate::Kit::neutral(true)).inline_code_text, None, "code at body ink inherits the run's colour");
 }

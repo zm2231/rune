@@ -5,10 +5,10 @@ use rune::{Color, El, Icon, RichStyle, Span, TextEdit, TextStyle, Tx, el, icon, 
 
 use crate::{Acts, Kit, State};
 
-fn kit_rich_style(k: &Kit) -> RichStyle {
+pub(crate) fn kit_rich_style(k: &Kit) -> RichStyle {
     RichStyle {
-        link: k.c.text_accent,
-        code_fg: None,
+        link: k.roles.link,
+        code_fg: (k.roles.code != k.c.text_base).then_some(k.roles.code),
         code_bg: k.c.layer_03,
         code_block_bg: k.c.layer_02,
         quote_bar: k.c.border_strong,
@@ -632,8 +632,8 @@ impl TextInput {
         let c = &k.c;
         let disabled = self.state == State::Disabled;
         let red = self.invalid && !disabled && (k.invalid_text || self.plain);
-        let ink = if red { c.danger.fg } else { c.text_base };
-        let hint = if red { c.danger.fg } else { c.text_faint };
+        let ink = if red { k.roles.error } else { c.text_base };
+        let hint = if red { k.roles.error } else { c.text_faint };
         let style = self.style.unwrap_or(k.ty.ui_compact);
         let m = k.field_metrics();
         let base: f32 = if self.large { m.large_height } else { m.height };

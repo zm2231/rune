@@ -290,13 +290,13 @@ fn status_color(status: &str, k: &Kit) -> Color {
     let lower = status.to_ascii_lowercase();
     let c = &k.c;
     if matches!(lower.as_str(), "built" | "done" | "shipped" | "merged" | "verified" | "green" | "good") {
-        c.success.fg
+        k.roles.done
     } else if matches!(lower.as_str(), "risk" | "blocked" | "failed" | "red" | "bad" | "error") {
-        c.danger.fg
+        k.roles.error
     } else if matches!(lower.as_str(), "proposal" | "proposed" | "warn" | "warning" | "hold") {
-        c.warning.fg
+        k.roles.needs_attention
     } else if matches!(lower.as_str(), "working" | "on a branch" | "in flight") {
-        c.info.fg
+        k.roles.working
     } else {
         c.text_muted
     }
@@ -519,9 +519,9 @@ fn draw_code(key: &str, title: Option<&str>, marks: &[RangeInclusive<usize>], li
         let added = raw.starts_with('+');
         let removed = raw.starts_with('-');
         let (bar, bg, ink) = if added {
-            (c.success.fg, c.success.fg.alpha(0.12), c.success.fg)
+            (k.roles.added, k.roles.added.alpha(0.12), k.roles.added)
         } else if removed {
-            (c.danger.fg, c.danger.fg.alpha(0.12), c.danger.fg)
+            (k.roles.removed, k.roles.removed.alpha(0.12), k.roles.removed)
         } else if marked {
             (c.info.fg, c.info.fg.alpha(0.12), c.text_base)
         } else {

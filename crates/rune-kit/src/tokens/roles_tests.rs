@@ -36,9 +36,40 @@ fn a_role_colour_follows_appearance_and_increased_contrast() {
 }
 
 #[test]
-fn increased_contrast_lifts_meta_text_as_it_does_faint_text() {
+fn increased_contrast_lifts_palette_roles_and_keeps_ones_a_theme_chose() {
     let k = Kit::neutral(true);
     let more = k.increased_contrast();
-    assert_eq!(more.roles.meta, k.roles.meta.mix(k.c.text_base, 0.5));
+    assert_eq!(more.roles.meta, more.c.text_faint, "meta lifts with faint text");
+    assert_ne!(more.roles.meta, k.roles.meta);
     assert_eq!(more.roles.link, k.roles.link);
+
+    let meta = RoleColor::new(A, B).increased(C, D);
+    let theme = crate::KitTheme::new(move |env| {
+        let mut kit = Kit::neutral(env.dark);
+        kit.roles.meta = meta.pick(env);
+        if env.increased_contrast { kit.increased_contrast() } else { kit }
+    });
+    let env = KitEnv::new(true).increased_contrast(true);
+    assert_eq!(theme.kit(&env).roles.meta, C, "an increased-contrast colour the app picked is used as given");
+    assert_eq!(theme.kit(&KitEnv::new(false)).roles.meta, B);
+}
+
+#[test]
+fn kit_text_takes_the_code_link_and_error_roles() {
+    let mut k = Kit::neutral(true);
+    k.roles.code = A;
+    k.roles.link = B;
+    k.roles.error = C;
+    let rich = crate::controls::text_input::kit_rich_style(&k);
+    assert_eq!((rich.link, rich.code_fg), (B, Some(A)));
+    assert_eq!(crate::controls::text_input::kit_rich_style(&Kit::neutral(true)).code_fg, None, "code at body ink inherits the run's colour");
+
+    struct App(rune::TextEdit, Kit);
+    fn view(s: &App, _: &mut rune::Cx<App>) -> rune::El {
+        rune::col().w(300.0).child(crate::TextInput::new(&s.0).invalid(true).plain().build(&s.1))
+    }
+    let mut rt = rune::Runtime::new(App(rune::TextEdit::new("wrong"), k), view, (300.0, 100.0), rune::Env::new(true, 1.0));
+    rt.frame(0.0);
+    let input = rt.elements().into_iter().find(|e| e.key.as_deref() == Some("input")).expect("the field's text");
+    assert_eq!(input.text_color, Some(C), "invalid text takes the error role");
 }

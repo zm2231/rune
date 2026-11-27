@@ -382,8 +382,8 @@ impl Select {
         let anchor_key = trigger_key(&self.key);
         let red = self.invalid && !disabled && k.invalid_text;
         let (label, ink) = match &self.current {
-            Some(v) => (v.clone(), if red { c.danger.fg } else { c.text_base }),
-            None => (self.placeholder.clone(), if red { c.danger.fg } else { c.text_faint }),
+            Some(v) => (v.clone(), if red { k.roles.error } else { c.text_base }),
+            None => (self.placeholder.clone(), if red { k.roles.error } else { c.text_faint }),
         };
         let sm = k.select_metrics();
         let chevron: &'static Icon = if self.open { k.glyph.chevron_up } else { k.glyph.chevron_down };

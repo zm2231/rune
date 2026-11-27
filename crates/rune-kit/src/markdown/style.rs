@@ -195,7 +195,7 @@ impl MarkdownStyle {
             accent: k.roles.link,
             link_underline: k.alpha(k.roles.link, 0.4),
             code_bg: k.alpha(c.text_base, 0.08),
-            inline_code_text: None,
+            inline_code_text: (k.roles.code != c.text_base).then_some(k.roles.code),
             code_block_fill: c.layer_01,
             code_block_border: c.border_muted,
             quote_rule: c.layer_03,

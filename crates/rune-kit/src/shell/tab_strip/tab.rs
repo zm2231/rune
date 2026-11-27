@@ -489,8 +489,8 @@ fn grounded(e: El, ground: [Color; 2], radius: f32) -> El {
 
 fn dot_color(status: Option<TabItemStatus>, k: &Kit) -> Color {
     match status {
-        Some(TabItemStatus::Attention) => k.c.warning.fg,
-        Some(TabItemStatus::Failed) => k.c.danger.fg,
+        Some(TabItemStatus::Attention) => k.roles.needs_attention,
+        Some(TabItemStatus::Failed) => k.roles.error,
         _ => k.c.bg_accent,
     }
 }

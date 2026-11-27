@@ -53,6 +53,8 @@ pub(in crate::window) struct FrameProfile {
     pub(super) submitted: Option<crate::frame::live_log::Stamp>,
     #[cfg(feature = "frame-profile")]
     pub(super) frame: Option<crate::frame::live_log::Frame>,
+    #[cfg(feature = "frame-profile")]
+    pub(super) encode_parts: [u64; crate::frame::encode_parts::PARTS],
 }
 
 impl FrameProfile {
@@ -87,13 +89,19 @@ impl FrameProfile {
     #[inline]
     pub(in crate::window) fn mark_uploaded(&mut self) {
         #[cfg(feature = "frame-profile")]
-        { self.uploaded = self.start.map(|_| crate::frame::live_log::Stamp::now()); }
+        {
+            self.uploaded = self.start.map(|_| crate::frame::live_log::Stamp::now());
+            crate::frame::encode_parts::take();
+        }
     }
 
     #[inline]
     pub(in crate::window) fn mark_encoded(&mut self) {
         #[cfg(feature = "frame-profile")]
-        { self.encoded = self.start.map(|_| crate::frame::live_log::Stamp::now()); }
+        {
+            self.encoded = self.start.map(|_| crate::frame::live_log::Stamp::now());
+            self.encode_parts = crate::frame::encode_parts::take();
+        }
     }
 
     #[inline]
@@ -169,6 +177,7 @@ impl FrameProfile {
                     start, acquired, built, uploaded, encoded, submitted,
                     presented: crate::frame::live_log::Stamp::now(),
                     phases: crate::frame::profile::take(),
+                    encode_parts: self.encode_parts,
                     nodes: rt.tree.nodes.len(),
                     shaped: rt.stats.shaped,
                     instances: rt.instances.len(),
@@ -344,6 +353,8 @@ pub(super) fn render_window_frame(
     let (Some(l), Some((gpu, renderer))) = (host.win.as_mut(), host.gpu.as_mut()) else { return false };
     let target = l.alpha.as_ref().map_or(&prepared.view, |a| &a.view);
     let comp_animating = if host.app.has_compositor() {
+        #[cfg(feature = "frame-profile")]
+        let _part = crate::frame::encode_parts::Scope::new(crate::frame::encode_parts::Part::Compositor);
         host.app.render_compositor(CompositorFrame {
             device: &gpu.device,
             queue: &gpu.queue,

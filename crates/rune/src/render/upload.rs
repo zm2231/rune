@@ -306,6 +306,8 @@ impl Renderer {
 
     fn prepare_with_precision(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, atlas: &mut Atlas,
         instances: &[Instance], viewport: (u32, u32), byte_source: bool) {
+        #[cfg(feature = "frame-profile")]
+        let _part = crate::frame::encode_parts::Scope::new(crate::frame::encode_parts::Part::Prepare);
         if self.springs.is_some() { assert_eq!(instances.len(), self.spring_instances); }
         // The pinned pipelines (`variant::start_pinned`): asked for at the first prepare, taken once their thread has them.
         if self.pinned.is_none() && self.pinned_building.is_none() { self.start_pinned(device); }

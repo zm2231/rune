@@ -143,6 +143,7 @@ pub(crate) struct Frame {
     pub(crate) presented: Stamp,
     /// Wall ms per `profile::Phase` (view, commit, layout, text, paint, apply), then CPU ms.
     pub(crate) phases: [f64; 2 * PHASES],
+    pub(crate) encode_parts: [u64; crate::frame::encode_parts::PARTS],
     pub(crate) nodes: usize,
     pub(crate) shaped: u32,
     pub(crate) instances: usize,
@@ -195,6 +196,8 @@ pub(crate) fn frame(f: Frame) {
     // Apart from the rest: one more key there passes `json!`'s recursion limit.
     let mut line = line;
     line["looped"] = serde_json::json!(f.looped);
+    let [prepare, layers, pass, compositor] = f.encode_parts;
+    line["encode_parts"] = serde_json::json!({ "prepare": prepare, "layers": layers, "pass": pass, "compositor": compositor });
     line["loop_why"] = serde_json::json!(f.loop_why);
     let (missed, reconfigured) = MISSED.replace(([0; 4], 0));
     if missed != [0; 4] || reconfigured > 0 { line["missed"] = serde_json::json!({ "occluded": missed[0], "timeout": missed[1], "outdated": missed[2], "unconfigured": missed[3], "reconfigured": reconfigured }); }

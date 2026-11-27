@@ -1,6 +1,7 @@
 use super::*;
 
 impl RuntimeCore {
+    #[cfg(any(not(target_arch = "wasm32"), test))]
     pub(crate) fn cancel_shares(&mut self, app: &mut dyn AppDriver) {
         for _ in 0..64 {
             self.dismiss_share();

@@ -2,8 +2,9 @@
 //! content view. The picker answers when the user chooses a service, with its title, or
 //! dismisses the picker, with none. It opens from a run-loop block after the winit handler
 //! returns (`platform::macos::run_later`), so every window keeps drawing while its menu tracks.
-//! Where it shows as a window of its own, that window closing without a choice answers none too;
-//! a window is a picker's when it opens after that picker shows and before any later one does.
+//! Where it shows as a window of its own, that window going off screen without a choice answers
+//! none too, however it went: a timer checks the picker's windows while it shows. A window is a
+//! picker's when it opens, on screen, after that picker shows and before any later one does.
 
 #![allow(unsafe_code)]
 
@@ -21,6 +22,8 @@ use super::{Reply, Shown};
 
 /// `NSRectEdgeMinY`: below the anchor in a flipped view, above it otherwise.
 const MIN_Y_EDGE: usize = 1;
+
+const CHECK_EVERY_SECS: f64 = 0.1;
 
 define_class!(
     // SAFETY: `NSObject` has no subclassing requirements, and the class has no `Drop`.
@@ -60,16 +63,13 @@ struct Showing {
     before: Vec<Retained<NSWindow>>,
     until: Option<Vec<Retained<NSWindow>>>,
     watched: Vec<Retained<NSWindow>>,
-    observers: Vec<Retained<AnyObject>>,
+    timer: Option<Retained<AnyObject>>,
 }
 
 impl Drop for Showing {
     fn drop(&mut self) {
-        // SAFETY: each token came from this center's `addObserverForName:...`.
-        unsafe {
-            let center: Retained<AnyObject> = msg_send![class!(NSNotificationCenter), defaultCenter];
-            for token in &self.observers { let _: () = msg_send![&*center, removeObserver: &**token]; }
-        }
+        // SAFETY: `invalidate` takes no arguments; it stops the timer and releases its block.
+        if let Some(timer) = &self.timer { unsafe { let _: () = msg_send![&**timer, invalidate]; } }
     }
 }
 
@@ -111,7 +111,7 @@ pub(crate) fn show(shown: Shown, window: &winit::window::Window) {
         SHOWING.with(|showing| {
             let mut showing = showing.borrow_mut();
             for earlier in showing.iter_mut().filter(|s| s.until.is_none()) { earlier.until = Some(before.clone()); }
-            showing.push(Showing { _picker: picker.clone(), delegate: delegate.clone(), before, until: None, watched: Vec::new(), observers: Vec::new() });
+            showing.push(Showing { _picker: picker.clone(), delegate: delegate.clone(), before, until: None, watched: Vec::new(), timer: None });
         });
         // SAFETY: `bounds` is a rect and `isFlipped` a `BOOL` of the view, and the picker shows
         // relative to a rect in it.
@@ -123,8 +123,23 @@ pub(crate) fn show(shown: Shown, window: &winit::window::Window) {
             let rect = CGRect::new(CGPoint::new(x, y), CGSize::new(w.max(1.0), h.max(1.0)));
             let _: () = msg_send![&*picker, showRelativeToRect: rect, ofView: &*view, preferredEdge: MIN_Y_EDGE];
         }
-        watch_picker_windows(mtm, &delegate);
-        crate::platform::macos::run_later("share picker", move || watch_picker_windows(mtm, &delegate));
+        check(mtm, &delegate);
+        let ticking = delegate.clone();
+        let tick = RcBlock::new(move |_timer: *mut AnyObject| check(mtm, &ticking));
+        // SAFETY: `timerWithTimeInterval:repeats:block:` copies the block and returns a retained
+        // timer, which the main run loop runs in its common modes (those of menu tracking too).
+        // `Showing::drop` invalidates it.
+        let timer: Retained<AnyObject> = unsafe {
+            let timer: Retained<AnyObject> = msg_send![class!(NSTimer), timerWithTimeInterval: CHECK_EVERY_SECS, repeats: true, block: &*tick];
+            let run_loop: Retained<AnyObject> = msg_send![class!(NSRunLoop), mainRunLoop];
+            let _: () = msg_send![&*run_loop, addTimer: &*timer, forMode: &*NSString::from_str("kCFRunLoopCommonModes")];
+            timer
+        };
+        SHOWING.with(|showing| match showing.borrow_mut().iter_mut().find(|s| std::ptr::eq(&*s.delegate, &*delegate)) {
+            Some(entry) => entry.timer = Some(timer),
+            // SAFETY: as in `Showing::drop`.
+            None => unsafe { let _: () = msg_send![&*timer, invalidate]; },
+        });
     });
 }
 
@@ -132,34 +147,24 @@ fn windows(mtm: MainThreadMarker) -> Vec<Retained<NSWindow>> {
     NSApplication::sharedApplication(mtm).windows().iter().collect()
 }
 
-fn watch_picker_windows(mtm: MainThreadMarker, delegate: &Retained<Delegate>) {
+fn check(mtm: MainThreadMarker, delegate: &Retained<Delegate>) {
     let now = windows(mtm);
-    SHOWING.with(|showing| {
+    let gone = SHOWING.with(|showing| {
         let mut showing = showing.borrow_mut();
-        let Some(at) = showing.iter().position(|s| std::ptr::eq(&*s.delegate, &**delegate)) else { return };
+        let Some(at) = showing.iter().position(|s| std::ptr::eq(&*s.delegate, &**delegate)) else { return false };
         let has = |list: &[Retained<NSWindow>], window: &NSWindow| list.iter().any(|w| std::ptr::eq(&**w, window));
         let opened: Vec<Retained<NSWindow>> = now.into_iter().filter(|window| {
             let object: &AnyObject = window;
-            !has(&showing[at].before, window)
+            window.isVisible()
+                && !has(&showing[at].before, window)
                 && showing[at].until.as_deref().is_none_or(|until| has(until, window))
                 && !showing.iter().any(|s| has(&s.watched, window))
                 && !crate::platform::macos::has_subclass(object, b"Winit")
                 && !crate::platform::macos::has_subclass(object, b"Rune")
         }).collect();
         let entry = &mut showing[at];
-        for window in opened {
-            let delegate = delegate.clone();
-            let closed = RcBlock::new(move |_note: *mut AnyObject| delegate.answer(None));
-            // SAFETY: the center copies the block and calls it on the posting (main) thread; the
-            // name is AppKit's window-will-close notification and the object a live window. The
-            // token is removed when the entry goes (`Showing::drop`).
-            let token: Option<Retained<AnyObject>> = unsafe {
-                let center: Retained<AnyObject> = msg_send![class!(NSNotificationCenter), defaultCenter];
-                msg_send![&*center, addObserverForName: &*NSString::from_str("NSWindowWillCloseNotification"),
-                    object: &*window, queue: std::ptr::null::<AnyObject>(), usingBlock: &*closed]
-            };
-            entry.observers.extend(token);
-            entry.watched.push(window);
-        }
+        entry.watched.extend(opened);
+        !entry.watched.is_empty() && entry.watched.iter().all(|w| !w.isVisible())
     });
+    if gone { delegate.answer(None); }
 }

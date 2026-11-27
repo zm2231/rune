@@ -171,3 +171,38 @@ fn a_system_canceller_leaves_no_in_app_canceller_stats() {
     room.run(RATE as usize * 2, 160, true, false);
     assert_eq!(room.meters.stats().echo_canceller, None);
 }
+
+fn bursts_through_a_microphone_skip(skipped: std::ops::Range<usize>, filled: bool) -> (f64, f64) {
+    let mut room = Room::new(EchoPath::InProcess, 80);
+    let (block, period, burst) = (160, RATE as usize * 2, RATE as usize / 5);
+    let talk: Vec<f32> = (0..period * 6).map(|i| if i % period < burst { room.speech(i) } else { 0.0 }).collect();
+    room.speaker.write(&talk);
+    let mut out = vec![0.0; block];
+    let mut cleaned = Vec::new();
+    let mut read = vec![0.0; RATE as usize];
+    for tick in 0..talk.len() / block {
+        room.render.render(&mut out);
+        let input: Vec<f32> = out.iter().map(|&sample| {
+            room.air.push_back(sample);
+            0.5 * room.air.pop_front().unwrap_or(0.0) + 0.0005 * room.noise()
+        }).collect();
+        if !skipped.contains(&tick) {
+            if filled && tick == skipped.end {
+                room.heard.lost(skipped.len() as u64 * block as u64);
+                room.heard.capture(&vec![0.0; skipped.len() * block]);
+            }
+            room.heard.capture(&input);
+        }
+        let n = room.mic.read(&mut read);
+        cleaned.extend_from_slice(&read[..n]);
+    }
+    let burst_energy: f64 = talk[..burst].iter().map(|&s| f64::from(s * s)).sum();
+    let echo = |p: usize| db(cleaned[p * period..(p + 1) * period].iter().map(|&s| f64::from(s * s)).sum::<f64>() / burst_energy);
+    (echo(2), echo(4).max(echo(3)))
+}
+
+#[test]
+fn a_microphone_skip_filled_with_silence_leaves_the_echo_cancelled() {
+    let (before, after) = bursts_through_a_microphone_skip(650..654, true);
+    assert!(after <= -40.0, "the bursts after the skip came back at {after:.1} dB (before it, {before:.1} dB)");
+}

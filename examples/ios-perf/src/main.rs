@@ -194,8 +194,9 @@ fn beat(t: f64) {
     });
 }
 
-fn on_encoded(f: &FrameEncoded) {
+fn on_encoded(f: &FrameEncoded, started: &mut Option<std::sync::mpsc::Sender<()>>) {
     if f.outcome() != FrameOutcome::Drawn { return; }
+    if let Some(started) = started.take() { started.send(()).ok(); }
     REC.with(|r| {
         let mut r = r.borrow_mut();
         if !r.first_encoded {
@@ -211,7 +212,7 @@ fn on_encoded(f: &FrameEncoded) {
     });
 }
 
-fn on_presented(p: &FramePresented, started: &mut Option<std::sync::mpsc::Sender<()>>) {
+fn on_presented(p: &FramePresented) {
     let first = REC.with(|r| {
         let mut r = r.borrow_mut();
         if let Some((first, last)) = r.seqs && (first..=last).contains(&p.seq()) {
@@ -230,7 +231,6 @@ fn on_presented(p: &FramePresented, started: &mut Option<std::sync::mpsc::Sender
     let marks: String = rune::marks::marks().into_iter()
         .map(|(name, at)| format!(" {name}={}", ms(probe::since_start_ms(probe::wall_of(at))))).collect();
     say(format!("PERF marks{marks}"));
-    if let Some(started) = started.take() { started.send(()).ok(); }
 }
 
 fn say_first_frame(at: SystemTime, source: &str, main_wall: Option<SystemTime>) {
@@ -402,7 +402,7 @@ fn main() {
     app.on_ready(|_| on_ready())
         .on_visibility(|_, visible, _| trace::step("visibility", || format!("visible={visible}")))
         .on_focus(|_, focused, _| trace::step("focus", || format!("focused={focused}")))
-        .on_frame_encoded(on_encoded)
-        .on_frame_presented(move |p| on_presented(p, &mut started))
+        .on_frame_encoded(move |f| on_encoded(f, &mut started))
+        .on_frame_presented(on_presented)
         .run();
 }

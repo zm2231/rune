@@ -58,7 +58,7 @@ fn index_files(s: &mut State, tx: &mut Tx) {
     tx.index_search_items(s.files.iter().map(|f| {
         SearchItem::new(file_name(f)).with_domain("files").with_title(file_name(f)).with_details(f.display().to_string()).with_keyword("mac").with_keyword("parity")
     }));
-    s.search = format!("Indexed {} files; search Spotlight for \"parity\" or a file's name", s.files.len());
+    s.search = format!("Indexed {} files; search Spotlight for \"parity\", then Tab into the app's results", s.files.len());
 }
 
 fn on_open_search_item(s: &mut State, id: &str, tx: &mut Tx) {

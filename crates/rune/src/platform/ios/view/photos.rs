@@ -64,7 +64,7 @@ impl RuneView {
             self.pace(Event::Wake);
             return;
         }
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+        let nanos = crate::time::system_now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
         let folder = Arc::new(std::env::temp_dir().join(format!("Picked-{nanos}")));
         let copies = Arc::new(Mutex::new(Copies { left: count, paths: vec![None; count] }));
         let view = Arc::new(MainOnly(Weak::new(self)));

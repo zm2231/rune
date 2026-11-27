@@ -17,12 +17,14 @@ use std::time::Duration;
 
 use rune::{
     AppSpec, Color, Cx, Dash, El, FillRule, ImageFilter, LineCap, Path, Pixels, PixelsWrap, Shape,
-    SurfaceFit, Tx, canvas, col, el, memo, row, text,
+    Spring, SurfaceFit, Tx, canvas, col, el, memo, row, text,
 };
 
 struct State {
     t: f32,
-    wide: bool,
+    grow_w: f32,
+    grow_v: f32,
+    grow_at: f64,
     sprite: Pixels,
     symbolic: Pixels,
     motif: Pixels,
@@ -439,7 +441,7 @@ fn dashed_strokes() -> Shape {
         .stroke_dashed(vec![[184.0, 48.0], [264.0, 48.0]], false, 1.0, Dash::new(8.0, 4.0).phase(4.0), INK)
 }
 
-fn dashes(wide: bool) -> El {
+fn dashes(grow_w: f32) -> El {
     let notice = el()
         .size(150.0, 64.0)
         .radius(10.0)
@@ -455,7 +457,7 @@ fn dashes(wide: bool) -> El {
         .border_dash(0.0, 5.0)
         .border_dash_cap(LineCap::Round);
     let growing = el()
-        .size(if wide { 140.0 } else { 80.0 }, 64.0)
+        .size(grow_w, 64.0)
         .radius(12.0)
         .border(1.5, WARM)
         .border_dash(6.0, 4.0)
@@ -464,7 +466,7 @@ fn dashes(wide: bool) -> El {
         .gap(16.0)
         .child(notice)
         .child(dots)
-        .child(el().w(140.0).child(growing))
+        .child(el().w(GROW_WIDE + 12.0).child(growing))
         .child(memo("dashed_strokes", (), || canvas(dashed_strokes()).size(270.0, 68.0)))
 }
 
@@ -542,16 +544,27 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
             col()
                 .gap(8.0)
                 .child(label("Dashes: a dashed notice, round-capped dots, a box springing wider with a dash on each corner, dashed strokes"))
-                .child(dashes(s.wide)),
+                .child(dashes(s.grow_w)),
         )
 }
 
 const GROW_EVERY: f64 = 1.6;
+const GROW_NARROW: f32 = 80.0;
+const GROW_WIDE: f32 = 140.0;
+const GROW_SPRING: Spring = Spring::new(0.7, 0.15);
 
 fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
     s.t = t as f32;
-    s.wide = (t / GROW_EVERY) as u64 % 2 == 1;
-    tx.wake_after(Duration::from_secs_f64(GROW_EVERY - t.rem_euclid(GROW_EVERY)));
+    let target = if (t / GROW_EVERY) as u64 % 2 == 1 { GROW_WIDE } else { GROW_NARROW };
+    let (w, v) = GROW_SPRING.sample(s.grow_w, s.grow_v, target, (t - s.grow_at).max(0.0) as f32);
+    s.grow_at = t;
+    if (w - target).abs() < 0.01 && v.abs() < 0.01 {
+        (s.grow_w, s.grow_v) = (target, 0.0);
+        tx.wake_after(Duration::from_secs_f64(GROW_EVERY - t.rem_euclid(GROW_EVERY)));
+    } else {
+        (s.grow_w, s.grow_v) = (w, v);
+        tx.wake_after(Duration::ZERO);
+    }
     true
 }
 
@@ -563,7 +576,9 @@ fn main() {
             (820.0, 1110.0),
             || State {
                 t: 0.0,
-                wide: false,
+                grow_w: GROW_NARROW,
+                grow_v: 0.0,
+                grow_at: 0.0,
                 sprite: pixel_sprite(),
                 symbolic: symbolic_icon(),
                 motif: wrap_motif(),

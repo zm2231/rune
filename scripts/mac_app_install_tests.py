@@ -61,6 +61,11 @@ class InstallerRegression(unittest.TestCase):
         self.assertEqual(info["NSUserActivityTypes"], ["com.example.demo.note"])
         self.assertEqual(info["CFBundleIdentifier"], "com.example.demo")
 
+    @staticmethod
+    def stage(bundle):
+        assert bundle.stage is not None
+        return bundle.stage
+
     def bundle(self, home):
         live = Path(home) / "Demo.app"
         live.mkdir()
@@ -72,7 +77,7 @@ class InstallerRegression(unittest.TestCase):
             with self.subTest(reason=reason), tempfile.TemporaryDirectory() as home:
                 live = self.bundle(home)
                 with Bundle(live) as bundle:
-                    (bundle.stage / "version").write_text("new")
+                    (self.stage(bundle) / "version").write_text("new")
 
                     def start(rollback):
                         self.assertEqual((live / "version").read_text(), "old" if rollback else "new")
@@ -87,7 +92,7 @@ class InstallerRegression(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             live = self.bundle(home)
             with Bundle(live) as bundle:
-                (bundle.stage / "version").write_text("new")
+                (self.stage(bundle) / "version").write_text("new")
                 def fail(_rollback=False):
                     raise RuntimeError("unresponsive")
                 with self.assertRaisesRegex(RuntimeError, "unresponsive"):
@@ -98,7 +103,7 @@ class InstallerRegression(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             live = self.bundle(home)
             with Bundle(live) as bundle:
-                (bundle.stage / "version").write_text("new")
+                (self.stage(bundle) / "version").write_text("new")
                 with patch("mac_app_install.command"), patch("mac_app_install.running", return_value={123: ()}), \
                      patch("mac_app_install.time.monotonic", side_effect=[0, 16]):
                     def start(rollback):
@@ -177,10 +182,11 @@ with Bundle(live) as bundle:
     bundle.replace(lambda: None, lambda _: None, lambda: None)
 """
             with Bundle(live) as first:
-                (first.stage / "version").write_text("first")
+                (self.stage(first) / "version").write_text("first")
                 first.publish()
                 child = subprocess.Popen([sys.executable, "-c", script, str(live)],
                                          cwd=Path(__file__).parent, stdout=subprocess.PIPE, text=True)
+                assert child.stdout is not None
                 self.assertEqual(child.stdout.readline().strip(), "blocked")
                 first.restore()
             try:
@@ -189,7 +195,8 @@ with Bundle(live) as bundle:
                 if child.poll() is None:
                     child.kill()
                     child.wait()
-                child.stdout.close()
+                if child.stdout is not None:
+                    child.stdout.close()
             self.assertEqual((live / "version").read_text(), "second")
 
     def test_receipt_must_identify_replacement(self):

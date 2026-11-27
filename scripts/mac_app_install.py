@@ -124,7 +124,7 @@ def build(stage, args):
     shutil.copy2(args.bin, macos / args.exe)
     if args.icon:
         shutil.copy2(args.icon, resources / "icon.icns")
-    plist = dict(CFBundleName=args.name, CFBundleDisplayName=args.name,
+    plist: dict[str, object] = dict(CFBundleName=args.name, CFBundleDisplayName=args.name,
                  CFBundleIdentifier=args.id, CFBundleExecutable=args.exe,
                  CFBundleIconFile="icon", CFBundlePackageType="APPL",
                  CFBundleShortVersionString="0.0.1", LSMinimumSystemVersion="13.0",

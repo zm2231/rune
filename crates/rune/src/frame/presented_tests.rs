@@ -453,6 +453,23 @@ fn metal_log_separates_trace_callbacks_and_shadow_watches_and_bounds_buffer() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn a_drawable_presented_in_a_transaction_is_on_screen_without_a_presented_handler() {
+    let log = crate::frame::present_time::metal::Log::untraced();
+    log.acquire(1, false);
+    log.presented(1);
+    assert_eq!(log.on_screen(), 0, "a plain present waits for its presented handler");
+    log.acquire(2, true);
+    log.presented(2);
+    assert_eq!(log.on_screen(), 2, "Metal runs no handler for it; the transaction's commit shows it");
+    log.acquire(3, false);
+    log.presented(3);
+    assert_eq!(log.on_screen(), 2, "a later plain present still waits");
+    let _ = log.record_presented(3, 0.0);
+    assert_eq!(log.on_screen(), 3);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 #[allow(unsafe_code)]
 fn metal_layer_hook_attaches_to_offscreen_metal_surface_and_tracks_acquired_drawables() {
     use objc2::rc::Retained;

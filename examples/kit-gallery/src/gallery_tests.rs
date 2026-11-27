@@ -583,3 +583,46 @@ fn a_combobox_narrows_to_a_screen_narrower_than_its_width() {
     assert_eq!(frame[0], 24.0);
     assert_eq!(frame[2], 240.0 - 48.0, "the field fills the story's width inside its padding");
 }
+
+#[test]
+fn every_story_sidebar_and_tab_list_shows_its_rows() {
+    let mut empty = Vec::new();
+    for &(id, setup) in stories::SCENES {
+        let mut g = init();
+        setup(&mut g);
+        let mut rt = rune::Runtime::new(g, view, (1000.0, 800.0), rune::Env::new(true, 1.0));
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        let els = rt.elements();
+        for list in els.iter().filter(|e| e.key.as_deref() == Some("sidebar-list") || e.role == "tablist") {
+            let rows: Vec<_> = els.iter().filter(|e| matches!(e.role, "listitem" | "tab") && e.path.starts_with(&format!("{}/", list.path))).collect();
+            if rows.is_empty() { continue; }
+            if !rows.iter().any(|r| r.visible[3] >= r.target[3] * 0.5 && r.target[3] > 0.0) {
+                empty.push(format!("{id}: {} shows none of its {} rows", list.path, rows.len()));
+            }
+        }
+    }
+    assert!(empty.is_empty(), "lists drawn without their rows:\n{}", empty.join("\n"));
+}
+
+#[test]
+fn the_sidebar_and_tab_row_stories_show_every_row_at_every_text_size() {
+    for id in ["rune-sidebar--two-line", "rune-tab-strip--status", "rune-avatar--rows"] {
+        let &(_, setup) = stories::SCENES.iter().find(|&&(s, _)| s == id).unwrap_or_else(|| panic!("missing story {id:?}"));
+        for scale in [1.0, 2.5] {
+            let mut g = init();
+            setup(&mut g);
+            g.text_scale = rune_kit::TextScale::new(scale);
+            let mut rt = rune::Runtime::new(g, view, (1400.0, 1000.0), rune::Env::new(true, 1.0));
+            rt.frame(0.0);
+            rt.settle_all();
+            rt.frame(0.0);
+            let rows: Vec<_> = rt.elements().into_iter().filter(|e| matches!(e.role, "listitem" | "tab")).collect();
+            assert!(!rows.is_empty(), "{id} at {scale}x has rows");
+            for r in rows {
+                assert!(r.visible[3] >= r.target[3] - 0.5 && r.target[3] > 0.0, "{id} at {scale}x cuts {} ({:?} of {:?})", r.path, r.visible, r.target);
+            }
+        }
+    }
+}

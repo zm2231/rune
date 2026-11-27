@@ -1,14 +1,10 @@
-//! AppKit pop-up menus. winit panics if its handler re-enters, and a menu's tracking loop run
-//! inside a handler would hold every Rune frame until it closed. So the menu opens from a
-//! run-loop block, after the handler returns: while it tracks, winit's observers (registered
-//! for the common modes, which include the tracking mode) keep delivering redraws, display
-//! ticks and wakes.
+//! AppKit pop-up menus. The menu opens from a run-loop block, after the winit handler returns
+//! (`platform::macos::run_later`), so Rune keeps drawing while it tracks.
 
 #![allow(unsafe_code)]
 
-use std::{cell::{Cell, RefCell}, ffi::c_void, rc::Rc, sync::Arc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
-use block2::{Block, RcBlock};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel, rc::Retained,
     runtime::{AnyClass, AnyObject}};
 use objc2_app_kit::{NSMenu, NSMenuItem};
@@ -78,7 +74,7 @@ pub(super) fn show(window: &Arc<Window>, show: Show, session: Rc<Session>, wake:
         (true, None) => show.at.0 as f64 - menu.size().width,
     };
     let at = NSPoint::new(x, show.at.1 as f64);
-    run_later(move || {
+    crate::platform::macos::run_later("pop-up menu", move || {
         if !session.begin() { return; }
         // A close or hide in the same turn as the request, after the host handed it over.
         let picked = if view.window().is_some_and(|w| w.isVisible()) {
@@ -175,31 +171,5 @@ fn clear_targets(menu: &NSMenu) {
             item.setAction(None);
             if let Some(submenu) = item.submenu() { clear_targets(&submenu); }
         }
-    }
-}
-
-#[link(name = "CoreFoundation", kind = "framework")]
-unsafe extern "C" {
-    static kCFRunLoopDefaultMode: *const c_void;
-    fn CFRunLoopGetMain() -> *mut c_void;
-    fn CFRunLoopPerformBlock(run_loop: *mut c_void, mode: *const c_void, block: &Block<dyn Fn()>);
-    fn CFRunLoopWakeUp(run_loop: *mut c_void);
-}
-
-/// Runs `f` on the main run loop after the current callout returns, in the default mode, as
-/// winit queues its own deferred work.
-fn run_later(f: impl FnOnce() + 'static) {
-    let f = Cell::new(Some(f));
-    let block = RcBlock::new(move || {
-        if let Some(f) = f.take() && std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err() {
-            eprintln!("rune: pop-up menu panicked");
-        }
-    });
-    // SAFETY: the main run loop is valid for the process, the mode is a CFStringRef, and
-    // CFRunLoopPerformBlock copies the block.
-    unsafe {
-        let run_loop = CFRunLoopGetMain();
-        CFRunLoopPerformBlock(run_loop, kCFRunLoopDefaultMode, &block);
-        CFRunLoopWakeUp(run_loop);
     }
 }

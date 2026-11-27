@@ -272,6 +272,15 @@ impl crate::runtime::RuntimeCore {
         if !matches!(self.host.sharing.state, State::Idle) { self.share_step(Event::Refused(why.into())); }
     }
 
+    pub(crate) fn dismiss_share(&mut self) {
+        if !matches!(self.host.sharing.state, State::Idle) { let _ = self.resolve_share(Ok(None)); }
+    }
+
+    pub(crate) fn drop_shares(&mut self) {
+        self.host.sharing.state = State::Idle;
+        self.host.sharing.callbacks.clear();
+    }
+
     /// Queues what the hosts' sheets answered since the last frame.
     pub(crate) fn take_share_answers(&mut self) {
         let answered = std::mem::take(&mut *self.host.sharing.answered.borrow_mut());

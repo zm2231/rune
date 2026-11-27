@@ -209,14 +209,14 @@ impl ZoomPan {
     }
 
     /// Ctrl or ⌘ + wheel zooms about the pointer; a plain wheel pans content that overflows.
-    /// False leaves the wheel to a scroll view around the pane.
+    /// False leaves a mouse or trackpad wheel to a scroll view around the pane.
     fn wheel(&mut self, e: rune::WheelEvent, tx: &mut Tx) -> bool {
         if e.mods.ctrl || e.mods.cmd {
             // A browser's wheel runs the other way.
             self.zoom_at(self.scale() * crate::image_zoom::math::wheel_zoom_factor(-e.dy), [e.x, e.y], tx);
             return true;
         }
-        self.pan_by([e.dx, e.dy], tx)
+        self.pan_by([e.dx, e.dy], tx) || e.touch
     }
 
     fn magnify(&mut self, e: rune::MagnifyEvent, tx: &mut Tx) -> bool {

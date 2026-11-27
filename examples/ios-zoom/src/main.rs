@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use rune::{AppSpec, Cx, El, Tx, col, el, row, text};
+use rune::{AppSpec, Cx, El, GesturePhase, Tx, col, el, row, text};
 use rune_kit::{Button, Canvas, ImageZoom, Kit, KitCx, KitTheme, Preview, Stage, StageZoom, ZoomPan};
 
 struct State {
@@ -9,6 +9,15 @@ struct State {
     stage: StageZoom,
     preview: ImageZoom,
     open: bool,
+    probe: Probe,
+}
+
+#[derive(Default)]
+struct Probe {
+    pans: u32,
+    moved: [f32; 2],
+    phase: Option<GesturePhase>,
+    pinches: u32,
 }
 
 const PANE: [f32; 2] = [340.0, 220.0];
@@ -53,8 +62,32 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 format!("Canvas: {:.0}%, centred on ({x:.0}, {y:.0})", s.pan.scale() * 100.0)
             }))
             .child(el().key("canvas").size(PANE[0], PANE[1]).child(canvas))
-            .child(caption(k, format!("Stage: {}", if s.stage.zoomed() { "zoomed in" } else { "fitted" })))
+            .child(caption(k, {
+                let [x, y] = s.stage.pan();
+                format!("Stage: {}, panned ({x:.0}, {y:.0})", if s.stage.zoomed() { "zoomed in" } else { "fitted" })
+            }))
             .child(el().key("stage").size(PANE[0], PANE[1]).child(stage))
+            .child(caption(k, {
+                let p = &s.probe;
+                format!("Two fingers here: {} pans ({:?}), moved ({:.0}, {:.0}); {} pinches", p.pans, p.phase, p.moved[0], p.moved[1], p.pinches)
+            }))
+            .child(
+                el().key("probe")
+                    .size(PANE[0], 100.0)
+                    .fill(k.c.layer_02)
+                    .on_wheel(|s: &mut State, e, _| {
+                        if !e.touch { return false; }
+                        let p = &mut s.probe;
+                        if e.phase == GesturePhase::Began { p.pans += 1; }
+                        p.phase = Some(e.phase);
+                        p.moved = [p.moved[0] + e.dx, p.moved[1] + e.dy];
+                        true
+                    })
+                    .on_magnify(|s: &mut State, e, _| {
+                        if e.phase == GesturePhase::Began { s.probe.pinches += 1; }
+                        true
+                    }),
+            )
             .child(row().child(open));
         if s.open {
             let size = cx.layout_size("root").unwrap_or([390.0, 760.0]);
@@ -71,7 +104,7 @@ fn main() {
     let mut spec = AppSpec::new(
         "Zoom",
         (390.0, 760.0),
-        || State { theme: KitTheme::neutral(), pan: ZoomPan::new(), stage: StageZoom::default(), preview: ImageZoom::new(), open: false },
+        || State { theme: KitTheme::neutral(), pan: ZoomPan::new(), stage: StageZoom::default(), preview: ImageZoom::new(), open: false, probe: Probe::default() },
         view,
     );
     spec.poll = Some(|s: &mut State, now: f64, tx: &mut Tx| s.preview.poll(now, tx));

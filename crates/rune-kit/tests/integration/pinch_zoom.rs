@@ -97,3 +97,43 @@ fn ctrl_wheel_handed_over_as_a_pinch_zooms_as_the_wheel_does() {
         assert!((by_wheel - by_pinch).abs() < 1e-4, "the same zoom either way for dy {dy}: {by_wheel} by wheel, {by_pinch} as a pinch");
     }
 }
+
+fn two_fingers(rt: &mut Runtime<App>, at: (f32, f32), steps: &[(f32, [f32; 2])]) {
+    let (mut t, [mut x, mut y], mut half) = (0.01, [at.0, at.1], 50.0);
+    rt.touch(1, TouchPhase::Started, x - half, y, 0.0);
+    rt.touch(2, TouchPhase::Started, x + half, y, t);
+    for &(spread, [dx, dy]) in steps {
+        (t, x, y, half) = (t + 0.01, x + dx, y + dy, half + spread);
+        rt.touch(1, TouchPhase::Moved, x - half, y, t);
+        rt.touch(2, TouchPhase::Moved, x + half, y, t);
+        rt.frame(0.0);
+    }
+    rt.touch(2, TouchPhase::Ended, x + half, y, t + 0.01);
+    rt.touch(1, TouchPhase::Ended, x - half, y, t + 0.02);
+    rt.frame(1.0 / 60.0);
+}
+
+#[test]
+fn two_fingers_moving_together_pan_a_zoomed_canvas() {
+    let mut rt = run(pane);
+    pinch(&mut rt, (300.0, 200.0));
+    pinch(&mut rt, (300.0, 200.0));
+    let (scale, [x, y]) = (rt.state.pan.scale(), rt.state.pan.to_content([300.0, 200.0]));
+    two_fingers(&mut rt, (300.0, 200.0), &[(0.0, [3.0, 3.0]); 20]);
+    let [x2, y2] = rt.state.pan.to_content([300.0, 200.0]);
+    let along = 60.0 * (1.0 - 8.0 / 7200.0_f32.sqrt());
+    assert!(((x - x2) * scale - along).abs() < 0.1 && ((y - y2) * scale - along).abs() < 0.1, "the content follows the fingers past the slop: ({x}, {y}) to ({x2}, {y2})");
+}
+
+#[test]
+fn a_two_finger_pan_that_begins_with_the_pinch_pans_the_stage_once_it_zooms() {
+    let pan = |drift: f32| {
+        let mut rt = run(stage);
+        let steps: Vec<_> = (0..20).map(|_| (4.0, [0.0, 0.0])).chain((0..10).map(|_| (0.0, [drift, 0.0]))).collect();
+        two_fingers(&mut rt, (300.0, 200.0), &steps);
+        assert!(rt.state.stage.zoomed(), "the spread zooms the stage in");
+        rt.state.stage.pan()
+    };
+    let (still, drifted) = (pan(0.0), pan(3.0));
+    assert!((drifted[0] - still[0] - 30.0).abs() < 0.1, "the stage follows the fingers 30 points: {still:?} to {drifted:?}");
+}

@@ -107,6 +107,8 @@ impl Default for StageZoom {
 impl StageZoom {
     pub fn zoomed(&self) -> bool { self.zoom > 1.0 }
 
+    pub fn pan(&self) -> [f32; 2] { self.pan }
+
     fn min_zoom(&self) -> f32 { 0.25f32.min(1.0 / self.geom.get().fit) }
 
     fn max_zoom(&self) -> f32 { 8.0f32.max(1.0 / self.geom.get().fit) }
@@ -185,7 +187,7 @@ impl StageZoom {
 
     fn wheel(&mut self, e: rune::WheelEvent, tx: &mut Tx) -> bool {
         let pinch = e.mods.ctrl || e.mods.cmd;
-        if !pinch && self.zoom <= 1.0 { return false; }
+        if !pinch && self.zoom <= 1.0 { return e.touch; }
         if pinch {
             // A browser's delta runs the other way.
             self.zoom_at(self.zoom * (e.dy / 100.0).exp(), [e.x, e.y], tx);

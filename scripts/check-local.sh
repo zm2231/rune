@@ -18,7 +18,7 @@ Default steps:
 
 Options:
   --wasm        Also run cargo check-wasm and cargo check-webgl (warnings warn)
-  --ios         Also run cargo clippy -p rune --lib for the iOS simulator (aarch64-apple-ios-sim)
+  --ios         Also run cargo clippy -p rune --lib and type-check its tests for the iOS simulator (aarch64-apple-ios-sim)
   --strict      Run strict web lints (cargo lint-wasm and cargo lint-webgl, warnings denied)
   --hot         Also run cargo check-hot (rune with --features hot)
   --features    Also check optional/no-default feature sets (gpu counters, Linux noop, rune optional features, rune-kit --all-features)
@@ -151,10 +151,14 @@ fi
 if [ "$run_ios" -eq 1 ]; then
   if [ "$(uname -s)" = "Darwin" ]; then
     run_step "cargo clippy (iOS simulator)" cargo clippy -p rune --lib --target aarch64-apple-ios-sim
+    run_step "rune lib tests check (iOS simulator)" cargo check -p rune --lib --tests --target aarch64-apple-ios-sim
   else
     run_step "cargo clippy (iOS simulator)" env CC_aarch64_apple_ios_sim=clang \
       CFLAGS_aarch64_apple_ios_sim=--target=arm64-apple-ios16.0-simulator CARGO_FEATURE_PURE=1 \
       cargo clippy -p rune --lib --target aarch64-apple-ios-sim
+    run_step "rune lib tests check (iOS simulator)" env CC_aarch64_apple_ios_sim=clang \
+      CFLAGS_aarch64_apple_ios_sim=--target=arm64-apple-ios16.0-simulator CARGO_FEATURE_PURE=1 \
+      cargo check -p rune --lib --tests --target aarch64-apple-ios-sim
   fi
 fi
 

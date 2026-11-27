@@ -124,11 +124,7 @@ impl Renderer {
             Block::List { start, items } => {
                 let item_maps = match map { BlockMap::List(m) => m.as_slice(), _ => &[][..] };
                 let saved = self.flow.get();
-                let indent = match self.s.list_nested {
-                    Some([bullets, numbers]) if saved.lists > 0 => if start.is_some() { numbers } else { bullets },
-                    _ => self.s.list_indent,
-                };
-                let space = if self.s.list_outside { rune::text::measure("x x", &[], self.s.body, None).0 - rune::text::measure("xx", &[], self.s.body, None).0 } else { 0.0 };
+                let (indent, space) = self.list_column(*start, items.len(), saved.lists > 0);
                 self.run_frames(
                     vec![RenderFrame::List {
                         list_block: b,
@@ -250,11 +246,7 @@ impl Renderer {
                                 *pending = Some((key, top, prose, cap_prose, own));
                                 let item_maps = match map { BlockMap::List(m) => m.as_slice(), _ => &[][..] };
                                 let saved = self.flow.get();
-                                let indent = match self.s.list_nested {
-                                    Some([bullets, numbers]) if saved.lists > 0 => if start.is_some() { numbers } else { bullets },
-                                    _ => self.s.list_indent,
-                                };
-                                let space = if self.s.list_outside { rune::text::measure("x x", &[], self.s.body, None).0 - rune::text::measure("xx", &[], self.s.body, None).0 } else { 0.0 };
+                                let (indent, space) = self.list_column(*start, items.len(), saved.lists > 0);
                                 stack.push(RenderFrame::List { list_block: b, start: *start, items, pre_items: pb.map(|p| &*p.items), item_maps, saved_flow: saved, indent, space, open_tail: child_open_tail, allow_memo: am, idx: 0, col: list_container(*start), pending_item: None });
                                 descended = true;
                                 break;
@@ -437,6 +429,23 @@ impl Renderer {
             r = on_task(r.cursor(Cursor::Pointer), block_key, item_idx, !checked);
         }
         r
+    }
+
+    fn list_column(&self, start: Option<u64>, count: usize, nested: bool) -> (f32, f32) {
+        let s = &self.s;
+        let indent = match s.list_nested {
+            Some([bullets, numbers]) if nested => if start.is_some() { numbers } else { bullets },
+            _ => s.list_indent,
+        };
+        let gap = rune::text::measure("x x", &[], s.body, None).0 - rune::text::measure("xx", &[], s.body, None).0;
+        let widest = match start {
+            Some(first) => {
+                let font = TextStyle { features: table::with_tnum(s.body.features), ..s.body };
+                rune::text::measure(&format!("{}.", first + count.saturating_sub(1) as u64), &[], font, None).0
+            }
+            None => rune::text::measure("•", &[], s.body, None).0,
+        };
+        (indent.max(widest + 2.0 * gap), if s.list_outside { gap } else { 0.0 })
     }
 
     fn list_marker(&self, start: Option<u64>, k: usize, indent: f32, space: f32) -> El {

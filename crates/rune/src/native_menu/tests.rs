@@ -383,7 +383,7 @@ fn large_dynamic_submenu_tree_validates_and_dispatches_exact_leaf() {
     assert_eq!(state, [0, 137, 199]);
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 #[test]
 fn unsupported_native_platform_is_a_noop_but_headless_works() {
     let app = app().menu_item(item("quick"));

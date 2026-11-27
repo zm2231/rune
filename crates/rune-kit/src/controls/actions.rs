@@ -158,7 +158,7 @@ enum Label {
 pub(crate) fn format_shortcut(s: &str) -> String {
     let s = s.trim();
     if let Ok(sc) = s.parse::<rune::Shortcut>() {
-        sc.menu_keycaps().join(if cfg!(target_os = "macos") { "" } else { "+" })
+        sc.menu_keycaps().join(if rune::MAC_KEYS { "" } else { "+" })
     } else {
         s.to_owned()
     }

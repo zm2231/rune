@@ -149,7 +149,7 @@ pub(super) struct PopupListCore {
     pub(super) side: Side,
     pub(super) align: Align,
     pub(super) gutter: f32,
-    pub(super) width: f32,
+    pub(super) width: Option<f32>,
     pub(super) max_height: f32,
     pub(super) padding: f32,
     pub(super) row_radius: Option<f32>,
@@ -169,7 +169,7 @@ impl PopupListCore {
             side: Side::Top,
             align: Align::Start,
             gutter: 4.0,
-            width: 260.0,
+            width: None,
             max_height: 240.0,
             padding: 4.0,
             row_radius: None,
@@ -274,7 +274,7 @@ impl PopupListCore {
         let side = self.side;
         let align = self.align;
         let gutter = self.gutter;
-        let width = self.width;
+        let width = self.width.unwrap_or_else(|| k.text_size(260.0));
         let padding = self.padding;
         let instant = !self.animate_filtering;
         let list = self.build_list(k, bind);
@@ -328,7 +328,9 @@ impl<S: 'static> PopupList<S> {
     pub fn offset(mut self, gap: f32) -> Self { self.core.gutter = gap; self }
     pub fn gutter(mut self, gap: f32) -> Self { self.core.gutter = gap; self }
     pub fn open(mut self, open: bool) -> Self { self.core.open = open; self }
-    pub fn width(mut self, width: f32) -> Self { self.core.width = width; self }
+    /// The popup's width in points (260 at the default text size by default, following the
+    /// kit's text size).
+    pub fn width(mut self, width: f32) -> Self { self.core.width = Some(width); self }
     pub fn max_height(mut self, max_height: f32) -> Self { self.core.max_height = max_height; self }
     /// Space between the popover's edge and its rows, in points (default 4).
     pub fn padding(mut self, padding: f32) -> Self { self.core.padding = padding; self }

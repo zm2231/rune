@@ -843,18 +843,21 @@ fn gpu_memory_policy_child() {
             [128 * MIB, 64 * MIB]
         }
         "parked-invalidation" => {
-            let Some(gpu) = Gpu::test_headless_or_noop() else { return };
-            let device = gpu.device.clone();
-            let renderer = super::super::Renderer::new(&gpu.device, wgpu::TextureFormat::Bgra8Unorm);
-            crate::render::park_gpu(gpu, renderer);
-            // Setting the active policy again leaves the parked device alone.
-            crate::set_gpu_memory_policy(GpuMemoryPolicy::MemoryUsage);
-            let (gpu, renderer) = super::super::prewarm::take().expect("unchanged policy keeps parked GPU");
-            assert!(gpu.device == device, "the next surface draws on the parked device");
-            super::super::prewarm::park(gpu, renderer, super::super::prewarm::PARKED);
-            // Changing the policy discards the parked device so it is never silently reused.
-            crate::set_gpu_memory_policy(GpuMemoryPolicy::Manual { block_size: (32 * MIB)..(64 * MIB) });
-            assert!(super::super::prewarm::take().is_none(), "changed policy must discard parked GPU");
+            #[cfg(not(target_os = "ios"))]
+            {
+                let Some(gpu) = Gpu::test_headless_or_noop() else { return };
+                let device = gpu.device.clone();
+                let renderer = super::super::Renderer::new(&gpu.device, wgpu::TextureFormat::Bgra8Unorm);
+                crate::render::park_gpu(gpu, renderer);
+                // Setting the active policy again leaves the parked device alone.
+                crate::set_gpu_memory_policy(GpuMemoryPolicy::MemoryUsage);
+                let (gpu, renderer) = super::super::prewarm::take().expect("unchanged policy keeps parked GPU");
+                assert!(gpu.device == device, "the next surface draws on the parked device");
+                super::super::prewarm::park(gpu, renderer, super::super::prewarm::PARKED);
+                // Changing the policy discards the parked device so it is never silently reused.
+                crate::set_gpu_memory_policy(GpuMemoryPolicy::Manual { block_size: (32 * MIB)..(64 * MIB) });
+                assert!(super::super::prewarm::take().is_none(), "changed policy must discard parked GPU");
+            }
             return;
         }
         other => panic!("unexpected RUNE_TEST_GPU_MEMORY_POLICY: {other}"),

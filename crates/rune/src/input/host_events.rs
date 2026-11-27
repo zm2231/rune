@@ -8,7 +8,7 @@ use std::ops::Range;
 
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event::{ElementState, Ime as WIme, MouseScrollDelta};
-#[cfg(not(target_os = "ios"))]
+#[cfg(any(test, not(target_os = "ios")))]
 use winit::event::TouchPhase;
 use winit::keyboard::{ModifiersState, PhysicalKey};
 use winit::window::Window;
@@ -225,7 +225,7 @@ pub(crate) fn web_touch_end_activate(rt: &RuntimeCore, document: bool, ended_in_
 }
 
 /// Maps a winit touch/gesture phase to Rune's `GesturePhase`.
-#[cfg(not(target_os = "ios"))]
+#[cfg(any(test, not(target_os = "ios")))]
 pub(crate) fn gesture_phase(phase: TouchPhase) -> crate::GesturePhase {
     match phase {
         TouchPhase::Started => crate::GesturePhase::Began,

@@ -224,7 +224,7 @@ impl<S: 'static> Runtime<S> {
         core.content_height(&app)
     }
 
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(all(test, not(any(target_arch = "wasm32", target_os = "ios"))))]
     pub(crate) fn measure_content(&mut self) -> (f32, f32) {
         let (core, app) = self.split_mut();
         core.measure_content(&app)

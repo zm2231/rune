@@ -116,9 +116,11 @@ pub(crate) use state::{Life, Minimize, MinimizeEvent, Sight};
 pub(crate) use surface::{Backoff, BackoffEvent, ConfigureError, acquire_checked, configure, frame_latency, reblend_core, surface_config};
 #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub(crate) use surface::{
-    BackoffEffect, HiddenPace, configure_checked, poll_timer_deadline_core, timer_deadline_core, timer_wants_frame_core,
+    BackoffEffect, configure_checked, poll_timer_deadline_core, timer_deadline_core, timer_wants_frame_core,
 };
-#[cfg(not(target_os = "ios"))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, not(target_os = "ios"))))]
+pub(crate) use surface::HiddenPace;
+#[cfg(any(test, not(target_os = "ios")))]
 pub(crate) use surface::Presented;
 pub(crate) use surface::{Missed, TIMER_FRAME, rebuild_renderer_core};
 #[cfg(target_arch = "wasm32")]

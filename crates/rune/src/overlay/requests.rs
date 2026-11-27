@@ -113,7 +113,7 @@ impl TokenQueue {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, not(target_os = "ios")))]
     pub(super) fn len(&self) -> usize {
         match self {
             Self::Open(pending) => pending.len(),
@@ -162,7 +162,7 @@ pub(super) struct Requests {
     pub woken: bool,
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "ios")))]
 impl Requests {
     /// Whether the latest request shows (`Some(true)`) or hides the overlay.
     pub fn visible(&self) -> Option<bool> { self.visibility.map(|v| matches!(v, Visibility::Show(_))) }

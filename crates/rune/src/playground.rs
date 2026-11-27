@@ -145,9 +145,9 @@ impl<S: 'static> Default for Playground<S> {
 }
 
 impl<S: 'static> Playground<S> {
-    /// No pages, a bar, ⌘⇧D (Ctrl+Shift+D off macOS), and enabled in debug builds only.
+    /// No pages, a bar, ⌘⇧D (Ctrl+Shift+D off macOS and iOS), and enabled in debug builds only.
     pub fn new() -> Self {
-        let shortcut = if cfg!(target_os = "macos") { "Shift+Cmd+D" } else { "Ctrl+Shift+D" };
+        let shortcut = if crate::edit::MAC_KEYS { "Shift+Cmd+D" } else { "Ctrl+Shift+D" };
         Playground {
             pages: Vec::new(),
             triggers: Vec::new(),
@@ -282,7 +282,7 @@ impl<S: 'static> Playground<S> {
     }
 
     /// The shortcut that opens and closes the playground, or `None` for none: by default ⌘⇧D,
-    /// Ctrl+Shift+D off macOS. On macOS it's the View menu's Playground item's.
+    /// Ctrl+Shift+D off macOS and iOS. On macOS it's the View menu's Playground item's.
     pub fn shortcut(mut self, shortcut: Option<Shortcut>) -> Self {
         self.shortcut = shortcut;
         self

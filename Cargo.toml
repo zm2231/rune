@@ -105,7 +105,7 @@ default-members = [
     "crates/rune-taffy",
     "themes/opencode",
 ]
-exclude = ["tools/rune-dev-guard", "tools/ratex-math-wasm", "tools/ratex-math-wasm/pack", "vendor/accesskit_atspi_common", "vendor/accesskit_macos", "vendor/accesskit_windows", "vendor/naga", "vendor/parley_engine", "vendor/sctk-adwaita", "vendor/tiny-skia-path", "vendor/wgpu-hal", "vendor/winit"]
+exclude = ["tools/rune-dev-guard", "tools/ratex-math-wasm", "tools/ratex-math-wasm/pack", "vendor/accesskit_atspi_common", "vendor/accesskit_macos", "vendor/accesskit_windows", "vendor/naga", "vendor/parley_engine", "vendor/sctk-adwaita", "vendor/sonora-aec3", "vendor/tiny-skia-path", "vendor/wgpu-hal", "vendor/winit"]
 
 # wgpu-hal as published plus `vendor/wgpu-hal.patch`: `dx12::Instance::expose_adapter` (a `wgpu::Adapter` for the
 # one adapter Rune picks through DXGI, with no device made on the others, `crates/rune-gpu/src/pick.rs`), FXC loaded on
@@ -190,6 +190,13 @@ accesskit_atspi_common = { path = "vendor/accesskit_atspi_common" }
 # answer and the published adapter leaves out. Re-made by
 # `scripts/vendor-accesskit-macos.sh <version>` when AccessKit is bumped; apps that build Rune patch it too.
 accesskit_macos = { path = "vendor/accesskit_macos" }
+# sonora-aec3 as published plus `vendor/sonora-aec3.patch`: the voice echo canceller trusts its
+# linear filter's echo estimate after 1.5 s of far-end audio rather than 0.4 s, so the first short
+# bursts or words of a call don't reach the far end as echo while the filter is still converging
+# (the first 1.5 s of far-end speech is cancelled by suppression alone). Re-made by
+# `scripts/vendor-sonora-aec3.sh <version>` when sonora is bumped; apps that build Rune patch it
+# too (`sonora` comes in through rune-media, so a path dependency can't reach it).
+sonora-aec3 = { path = "vendor/sonora-aec3" }
 
 [workspace.package]
 edition = "2024"

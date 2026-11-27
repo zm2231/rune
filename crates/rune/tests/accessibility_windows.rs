@@ -69,6 +69,7 @@ mod win {
             return;
         }
         std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(60)); eprintln!("timeout"); std::process::exit(2) });
+        rune::orderly_exit();
         let spec = AppSpec::new("Accessible", (360.0, 240.0), State::default, view);
         let (ready_tx, ready_rx) = mpsc::channel();
         let window = &WINDOW;
@@ -117,6 +118,7 @@ mod win {
                 let count = wait("the label to follow", || all(&uia, hwnd).ok()?.into_iter().find(|f| f.id == "count" && f.name == "Pressed 1 times"));
                 println!("accessibility_windows: {:?}", count.name);
             });
+            if run.is_err() { eprintln!("accessibility_windows: failed"); std::process::exit(1); }
             *out.lock().unwrap() = Some(run.is_ok());
             handle.quit();
         });

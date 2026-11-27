@@ -40,6 +40,7 @@ fn main() {
         return;
     }
     std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(60)); eprintln!("timeout"); std::process::exit(2) });
+    rune::orderly_exit();
     let mut app = App::new(AppSpec::new("secondary main", (240.0, 120.0), || Main, main_view)).args(Vec::new());
     let main = app.handle();
     let settings = App::new(AppSpec::new("secondary settings", (240.0, 120.0), || Settings { label: "initial".into() }, settings_view))
@@ -71,6 +72,7 @@ fn main() {
             assert_eq!(state(&settings, |s| s.label.clone()), "opened", "reopening keeps the state");
             assert!(window.is_ready());
         });
+        if run.is_err() { eprintln!("secondary_window: failed"); std::process::exit(1); }
         *out.lock().unwrap() = Some(run.is_ok());
         // The settings window is open and retained, yet the app ends with its main window.
         main.close();

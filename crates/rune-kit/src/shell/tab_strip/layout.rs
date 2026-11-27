@@ -108,7 +108,7 @@ pub(super) struct Strip {
 /// OpenCode's activity ring: the kit's spinner at 14 points in the muted icon colour, the
 /// base one in dark mode, where the dim cells vanish.
 fn busy_ring(k: &Kit) -> El {
-    Spinner::new().size(14.0).color(if k.dark { k.c.icon_base } else { k.c.icon_muted }).build(k)
+    Spinner::new().size(k.text_size(14.0)).color(if k.dark { k.c.icon_base } else { k.c.icon_muted }).build(k)
 }
 
 pub(super) struct TabStripCore<'a> {

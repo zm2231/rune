@@ -333,7 +333,7 @@ impl Select {
                 .child(
                     text(o.clone()).key("label").font(k.ty.ui_compact).color(c.text_base).grow(1.0).shrink().truncate().a11y_hidden(),
                 )
-                .child(el().key("indicator").size(16.0, 16.0).center().a11y_hidden().child(
+                .child(el().key("indicator").size(k.text_size(16.0), k.text_size(16.0)).center().a11y_hidden().child(
                     icon(k.glyph.check_small, k.text_size(14.0)).color(c.icon_base).opacity(if selected { 1.0 } else { 0.0 }),
                 ));
             if let Some(d) = self.details.get(i).cloned().flatten() {

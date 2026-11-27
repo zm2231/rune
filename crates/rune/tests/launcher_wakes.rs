@@ -68,6 +68,7 @@ mod mac {
             return;
         }
         std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(60)); eprintln!("timeout"); std::process::exit(2) });
+        rune::orderly_exit();
         let spec = AppSpec { poll: Some(poll), ..AppSpec::new("launcher wakes", (240.0, 80.0), || State { label: "initial".into() }, view) };
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let app = App::new(spec).args(Vec::new()).keep_running()
@@ -83,6 +84,7 @@ mod mac {
                 hidden_and_shown_wakes(&handle);
                 reveal_after_update(&handle);
             });
+            if run.is_err() { eprintln!("launcher_wakes: failed"); std::process::exit(1); }
             *out.lock().unwrap() = Some(run.is_ok());
             handle.quit();
         });

@@ -509,6 +509,7 @@ pub use video::ThumbnailPrecision;
 pub use video::ThumbnailRequest;
 pub use video::Thumbnails;
 pub use video::Video;
+pub use voice::EchoCancellerStats;
 pub use voice::FakeVoice;
 pub use voice::Voice;
 pub use voice::VoiceError;

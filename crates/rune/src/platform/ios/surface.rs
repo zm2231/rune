@@ -55,8 +55,9 @@ pub(crate) trait Surface {
     // Size and frames.
     /// The view's size in points and its display scale.
     fn resize(&mut self, size: (f32, f32), scale: f32);
-    /// Steps the app to `target`, when the frame will be on screen, and presents it.
-    fn frame(&mut self, target: Instant) -> EmbedFrame;
+    /// Steps the app to `target`, when the frame will be on screen, and presents it: with
+    /// `only_loops`, when nothing but its loops asked for the frame, a loop-only step may do.
+    fn frame(&mut self, target: Instant, only_loops: bool) -> EmbedFrame;
 
     // Touch and pointer.
     /// One finger's event at (x, y) in the view's points, `time` in seconds since boot.
@@ -271,13 +272,13 @@ impl<S: 'static> Surface for Hosted<S> {
     // Size and frames.
     fn resize(&mut self, size: (f32, f32), scale: f32) { self.host.resize(size, scale); }
 
-    fn frame(&mut self, target: Instant) -> EmbedFrame {
+    fn frame(&mut self, target: Instant, only_loops: bool) -> EmbedFrame {
         self.accessibility.receive(self.host.runtime_mut().core_mut(), self.title);
         self.park_step(park::Event::Drawing);
         self.app_requests();
         if let Role::Overlay(overlay) = &self.role { overlay.feed.drain(self.host.runtime_mut()); }
         self.host.runtime_mut().core_mut().take_late_link_answers();
-        let frame = self.host.frame_at(target);
+        let frame = self.host.frame_at_loops(target, only_loops);
         match &mut self.role {
             Role::App(_) => self.app_frame_done(frame),
             Role::Overlay(overlay) => overlay.feed.fit(self.host.runtime_mut()),

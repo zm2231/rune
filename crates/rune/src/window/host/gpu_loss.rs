@@ -293,6 +293,7 @@ impl Host {
         self.app.rt_mut().cancel_timer_frame();
         self.app.popup_cancel(&mut self.popup);
         self.app.file_dialog_cancel(&mut self.file_dialog);
+        self.app.share_cancel();
         self.app.rt_mut().cancel_pointer();
         self.files = FileDrop::default();
         if let Some(w) = &mut self.win {
@@ -315,6 +316,7 @@ impl Host {
             let _ = crate::quit::send(crate::quit::Event::Start { ending: false, after });
             self.app.popup_cancel(&mut self.popup);
             self.app.file_dialog_cancel(&mut self.file_dialog);
+            self.app.share_cancel();
             event_loop.exit();
             return;
         }

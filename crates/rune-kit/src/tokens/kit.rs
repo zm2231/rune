@@ -260,6 +260,9 @@ pub struct Kit {
     /// a [`TextScale`](crate::TextScale) in scope gives [`Kit::with_text_scale`] otherwise.
     /// [`Kit::text`] and [`Kit::text_size`] scale an app's own styles and sizes by it.
     pub text_scale: f32,
+    /// The text colour of each [`TextRole`](crate::TextRole): timestamps, links, code, live
+    /// work, diffs, peers' messages and states.
+    pub roles: crate::TextRoles,
 }
 
 impl Kit {

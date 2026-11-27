@@ -36,6 +36,13 @@ pub enum TouchPhase {
     Cancelled,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TouchSource {
+    Finger,
+    #[cfg_attr(not(any(target_os = "ios", test)), allow(dead_code))]
+    Pointer,
+}
+
 /// How a touch hold timer turns into a secondary press.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
@@ -307,8 +314,12 @@ impl RuntimeCore {
     /// Web, mapped onto the runtime clock from `PointerEvent.timeStamp`). A host with touches
     /// calls this for every one; `id` tells fingers apart.
     pub(crate) fn touch(&mut self, app: &mut dyn AppDriver, id: u64, phase: TouchPhase, x: f32, y: f32, time: f64) {
+        self.touch_from(app, id, phase, (x, y), time, TouchSource::Finger);
+    }
+
+    pub(crate) fn touch_from(&mut self, app: &mut dyn AppDriver, id: u64, phase: TouchPhase, (x, y): (f32, f32), time: f64, source: TouchSource) {
         match phase {
-            TouchPhase::Started => self.touch_down(app, id, x, y, time),
+            TouchPhase::Started => self.touch_down(app, id, x, y, time, source),
             TouchPhase::Moved => self.touch_move(app, id, x, y, time),
             TouchPhase::Ended | TouchPhase::Cancelled => self.touch_up(app, id, x, y, time, phase == TouchPhase::Cancelled),
         }
@@ -354,9 +365,9 @@ impl RuntimeCore {
         let _ = self.apply_hold_effects(effects);
     }
 
-    fn touch_down(&mut self, app: &mut dyn AppDriver, id: u64, x: f32, y: f32, time: f64) {
+    fn touch_down(&mut self, app: &mut dyn AppDriver, id: u64, x: f32, y: f32, time: f64, source: TouchSource) {
         self.pointer.touch.in_touch = true;
-        self.touch_down_inner(app, id, x, y, time);
+        self.touch_down_inner(app, id, x, y, time, source);
         self.pointer.touch.in_touch = false;
     }
 
@@ -435,7 +446,7 @@ impl RuntimeCore {
         }
     }
 
-    fn touch_down_inner(&mut self, app: &mut dyn AppDriver, id: u64, x: f32, y: f32, time: f64) {
+    fn touch_down_inner(&mut self, app: &mut dyn AppDriver, id: u64, x: f32, y: f32, time: f64, source: TouchSource) {
         if self.pointer.touch.state.is_active() {
             if let Some(mid) = self.pointer.touch.state.second_down_midpoint(id, (x, y)) {
                 let targets = TwoFingerTargets { in_host: self.pointer.touch.two_fingers_in_host, ..self.two_finger_targets(mid) };
@@ -451,7 +462,7 @@ impl RuntimeCore {
         let has_edge = edge_drag::any_candidate(edge);
         let scroll = self.touch_scroll_start(x, y);
         self.pointer_move(app, x, y);
-        self.press_down(app, x, y, true);
+        self.press_down(app, x, y, Some(source));
         let now = self.now_clock();
         let policy = self.pointer.touch.policy;
         let (mode, start_hold) = if self.host.titlebar.resize.is_some() {

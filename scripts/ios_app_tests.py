@@ -214,6 +214,12 @@ class BundleRegression(unittest.TestCase):
             plist = plistlib.loads((stage / "Info.plist").read_bytes())
             self.assertEqual(plist["CFBundleURLTypes"], [dict(CFBundleURLName="com.example.hello", CFBundleURLSchemes=["myapp", "myapp-dev"])])
 
+    def test_a_pointers_clicks_reach_the_app_as_pointer_touches(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command", Tools()):
+            stage = Path(tmp) / "out/Hello.app"
+            ios_app.build(stage, args(tmp))
+            self.assertIs(plistlib.loads((stage / "Info.plist").read_bytes())["UIApplicationSupportsIndirectInputEvents"], True)
+
     def test_multiple_scenes_declares_them_and_the_activity_that_opens_a_window_and_a_bundle_without_it_has_one_scene(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(ios_app, "command", Tools()):
             stage = Path(tmp) / "out/Hello.app"

@@ -952,7 +952,8 @@ app.run();
   changed the state (a handler that isn't `Tx::live_only`, a `poll` that returns true, an
   update) wakes the other windows, which run their views on their next frame; an idle turn wakes
   nobody. `SharedState::on_enter(|s, key| ..)` and `on_leave` run around each turn with the
-  window's key, for fields that belong to one window; `Cx::window()` and `Tx::window()` give the
+  window's key, for fields that belong to one window (their changes wake no other window, since
+  they run every turn); `Cx::window()` and `Tx::window()` give the
   key too. `poll` runs in each window's frames, so app-wide polling belongs in one window's
   `poll` or checks `tx.window()`. On iOS each window is a scene (iPad) or a sheet (iPhone). See
   `examples/shared-windows`.

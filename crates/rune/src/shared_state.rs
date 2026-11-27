@@ -76,7 +76,10 @@ impl<S: 'static> SharedState<S> {
     }
 
     /// Runs with the window's key at the start of each of its turns, after the state moved in
-    /// and before anything else sees it: swap the window's own fields into place here.
+    /// and before anything else sees it: swap the window's own fields into place here. What
+    /// it and [`Self::on_leave`] change is the window's own and wakes no other window, since
+    /// they run in every turn; a change the other windows show goes through a handler, `poll`
+    /// or an update.
     pub fn on_enter(self, f: fn(&mut S, &str)) -> Self {
         self.cell.on_enter.set(Some(f));
         self

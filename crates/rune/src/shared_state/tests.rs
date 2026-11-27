@@ -99,6 +99,23 @@ fn hooks_run_with_each_window_key_around_its_turn() {
 }
 
 #[test]
+fn hooks_that_swap_a_windows_own_fields_wake_no_other_window() {
+    let shared = SharedState::new(Notes::default())
+        .on_enter(|s, key| s.log.push(format!("enter {key}")))
+        .on_leave(|s, key| s.log.push(format!("leave {key}")));
+    let (mut a, mut ra) = window(&shared, "a");
+    let (mut b, mut rb) = window(&shared, "b");
+    let ((a_woken, a_wake), (b_woken, b_wake)) = (counter(), counter());
+    a.connect(a_wake);
+    b.connect(b_wake);
+    for t in [0.0, 0.016, 0.032] {
+        turn(&mut a, &mut ra, |rt| rt.frame(t));
+        turn(&mut b, &mut rb, |rt| rt.frame(t));
+    }
+    assert_eq!((a_woken.load(Ordering::Relaxed), b_woken.load(Ordering::Relaxed)), (0, 0));
+}
+
+#[test]
 #[should_panic(expected = "still holds their SharedState")]
 fn a_turn_inside_another_windows_turn_panics() {
     let shared = SharedState::new(Notes::default());

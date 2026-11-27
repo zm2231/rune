@@ -34,7 +34,7 @@ fn a_real_sound_server_loop_is_cancelled() {
     for second in 1..seconds {
         let at = second * RATE as usize;
         let window = &talk[at - RATE as usize / 2..at];
-        let lag = (0..RATE as usize / 4).max_by(|&a, &b| {
+        let lag = (0..RATE as usize).max_by(|&a, &b| {
             let score = |l: usize| window.iter().zip(&heard[at - RATE as usize / 2 + l..]).map(|(p, c)| p * c).sum::<f32>();
             score(a).total_cmp(&score(b))
         });

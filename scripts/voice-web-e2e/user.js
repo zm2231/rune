@@ -1,0 +1,11 @@
+user_pref("media.navigator.permission.disabled", true);
+user_pref("media.navigator.streams.fake", false);
+user_pref("media.autoplay.default", 0);
+user_pref("media.autoplay.block-webaudio", false);
+user_pref("media.autoplay.blocking_policy", 0);
+user_pref("media.cubeb.backend", "pulse");
+user_pref("browser.shell.checkDefaultBrowser", false);
+user_pref("datareporting.policy.dataSubmissionEnabled", false);
+user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);
+user_pref("browser.aboutwelcome.enabled", false);
+user_pref("app.update.enabled", false);

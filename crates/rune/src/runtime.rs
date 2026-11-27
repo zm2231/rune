@@ -166,6 +166,7 @@ use paint::soft_edges::{in_fade, inherit_fade};
 
 pub(crate) use scroll::offset::{ScrollAnchor, ScrollRequest};
 pub(crate) use scroll::reveal::ScrollReveal;
+pub(crate) use motion::deadlines::Wake;
 #[doc(hidden)]
 pub use commit::path::{child_path, path_segment};
 #[doc(hidden)]

@@ -88,7 +88,7 @@ pub struct Tx {
     pub(crate) scroll_stops: Vec<String>,
     /// Elements to hold where they show across this commit (`Tx::keep_on_screen`).
     pub(crate) keep_on_screen: Vec<String>,
-    pub(crate) wakes: Vec<std::time::Duration>,
+    pub(crate) wakes: Vec<crate::runtime::Wake>,
     /// `Tx::request_poll`: asks for another `poll` round in this frame (or a wake on the next
     /// turn when called outside a frame, such as from `AppHandle::update`).
     pub(crate) request_poll: bool,
@@ -417,11 +417,30 @@ impl Tx {
         if let Some(trace) = &mut self.trace { trace.channels.push((name, kind, value)); }
     }
 
-    /// Wake the app's poll hook after an unscaled duration. Every deadline due by a frame
-    /// collapses into that frame's one poll, so asking on every poll never adds polls.
-    /// This schedules a frame, not a view commit; poll returns true if state changed.
+    /// Wake the app's poll hook after an unscaled duration. This schedules a frame, not a view
+    /// commit; poll returns true if state changed. No timer thread is created.
+    ///
+    /// Each wake fires once, and wakes stack: one asked before still fires when an earlier
+    /// poll runs in between, and deadlines due by the same frame share its one poll. So a
+    /// poll that asks `wake_after(d)` on every run starts a new chain of wakes each time
+    /// something else makes it run, and an idle window polls more and more often (debug
+    /// builds say so once more than 8 are pending). To repeat, either ask only when arming
+    /// the timer, or ask [`Tx::wake_at`] on a fixed schedule, which a repeat of the same
+    /// deadline doesn't add to:
+    ///
+    /// ```
+    /// # struct State { next: f64 }
+    /// fn poll(s: &mut State, clock: f64, tx: &mut rune::Tx) -> bool {
+    ///     while s.next <= clock {
+    ///         s.next += 0.25;
+    ///     }
+    ///     tx.wake_at(s.next);
+    ///     false
+    /// }
+    /// ```
+    ///
     /// For debounce, keep the latest due time in app state and reschedule the remaining
-    /// duration when an earlier wake arrives. No timer thread is created.
+    /// duration when an earlier wake arrives.
     ///
     /// `wake_after(Duration::ZERO)` from the poll asks for the next frame: a poll that steps
     /// its own animation from the frame clock keeps a shown window or overlay drawing at the
@@ -432,7 +451,7 @@ impl Tx {
     pub fn wake_after(&mut self, duration: std::time::Duration) {
         #[cfg(feature = "frame-profile")]
         crate::frame::live_log::waker(std::panic::Location::caller(), duration);
-        self.wakes.push(duration);
+        self.wakes.push(crate::runtime::Wake::After(duration));
     }
 
     /// Ask for `poll` to run again for work queued in state.
@@ -492,15 +511,21 @@ impl Tx {
         if self.scale.is_finite() && self.scale > 0.0 { self.scale } else { 1.0 }
     }
 
-    /// Wake the app's poll hook once the clock reaches `due` (seconds on [`Tx::clock`]), as
-    /// [`Tx::wake_after`] does for the time left; a deadline already past wakes the next
-    /// frame. A timed state stores its deadline and asks for it here, and its poll checks
-    /// `clock >= due` to fire the timer as an event.
+    /// Wake the app's poll hook once the clock reaches `due` (seconds on [`Tx::clock`]); a
+    /// deadline already past wakes the next frame. A timed state stores its deadline and asks
+    /// for it here, and its poll checks `clock >= due` to fire the timer as an event. A NaN
+    /// `due` wakes the next frame and a positive-infinite one never wakes. Like
+    /// [`Tx::wake_after`]'s, the wake fires once, but asking again for a deadline already
+    /// pending (to within a microsecond) adds nothing, so a poll may ask on every run.
     #[cfg_attr(feature = "frame-profile", track_caller)]
     pub fn wake_at(&mut self, due: f64) {
         #[cfg(feature = "frame-profile")]
-        crate::frame::live_log::waker(std::panic::Location::caller(), std::time::Duration::from_secs_f64((due - self.clock).max(0.0)));
-        self.wakes.push(std::time::Duration::from_secs_f64((due - self.clock).max(0.0)));
+        crate::frame::live_log::waker(std::panic::Location::caller(), std::time::Duration::try_from_secs_f64((due - self.clock).max(0.0)).unwrap_or(std::time::Duration::MAX));
+        if due.is_nan() {
+            self.wakes.push(crate::runtime::Wake::At(self.clock));
+        } else if due < f64::INFINITY {
+            self.wakes.push(crate::runtime::Wake::At(due));
+        }
     }
 
     /// Close the window after this handler (`App::on_close` runs; bypasses

@@ -209,6 +209,7 @@ pub(crate) fn step(state: &mut State, event: Event) -> Effects<Effect> {
 
 /// Where a host sends what its sheet answered, on the main thread, any time later. The answer
 /// waits for the runtime's next frame, which `wake` asks for.
+#[cfg(any(test, target_os = "ios", target_os = "macos", target_arch = "wasm32"))]
 #[derive(Clone)]
 pub(crate) struct Reply {
     id: u64,
@@ -216,15 +217,20 @@ pub(crate) struct Reply {
     wake: Waker,
 }
 
+#[cfg(any(test, target_os = "ios", target_os = "macos", target_arch = "wasm32"))]
 impl Reply {
     pub(crate) fn send(&self, result: ShareResult) {
         self.answered.borrow_mut().push((self.id, result));
         (self.wake)();
     }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn of(&self, sharing: &Sharing) -> bool { Rc::ptr_eq(&self.answered, &sharing.answered) }
 }
 
 /// What a host shows: the share, where its anchor is in window points (none when its element
 /// is gone), and where its answer goes.
+#[cfg(any(test, target_os = "ios", target_os = "macos", target_arch = "wasm32"))]
 pub(crate) struct Shown {
     pub(crate) share: Share,
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
@@ -254,7 +260,7 @@ impl crate::runtime::RuntimeCore {
     pub(crate) fn share_requested(&self) -> bool { matches!(self.host.sharing.state, State::Requested(_)) }
 
     /// The share for the host to show, marked shown, with its answer's way back.
-    #[cfg_attr(not(any(target_os = "ios", target_os = "macos", target_arch = "wasm32")), allow(dead_code))]
+    #[cfg(any(test, target_os = "ios", target_os = "macos", target_arch = "wasm32"))]
     pub(crate) fn take_share(&mut self, wake: Waker) -> Option<Shown> {
         let State::Requested(p) = &self.host.sharing.state else { return None };
         let (id, share) = (p.id, p.share.clone());
@@ -271,6 +277,10 @@ impl crate::runtime::RuntimeCore {
     pub(crate) fn refuse_share(&mut self, why: &str) {
         if !matches!(self.host.sharing.state, State::Idle) { self.share_step(Event::Refused(why.into())); }
     }
+
+    /// Closes the native pickers showing this runtime's shares, which it answers itself.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn forget_native_shares(&self) { macos::forget(&self.host.sharing); }
 
     #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn dismiss_share(&mut self) {

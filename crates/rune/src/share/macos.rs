@@ -1,9 +1,12 @@
 //! The share sheet on macOS: an `NSSharingServicePicker` beside the anchor in the window's
-//! content view. The picker answers when the user chooses a service, with its title, or
-//! dismisses the picker, with none. It opens from a run-loop block after the winit handler
-//! returns (`platform::macos::run_later`), so every window keeps drawing while its menu tracks.
-//! Where it shows as a window of its own, that window closing without a choice answers none too;
-//! a window is a picker's when it opens after that picker shows and before any later one does.
+//! content view, which macOS shows as a popover. The picker answers when the user chooses a
+//! service, with its title, or dismisses the popover (a click outside it), with none. It opens
+//! from a run-loop block after the winit handler returns (`platform::macos::run_later`), so every
+//! window keeps drawing while it shows. Escape closes it, with none: the popover never becomes key,
+//! so a local event monitor, installed while a picker shows, takes Escape in the window under it
+//! before AppKit dispatches it, and neither that press, its repeats nor its release reach the app.
+//! A runtime that answers its share itself, as when its window hides, closes or loses its GPU
+//! surface (`RuntimeCore::cancel_shares`), closes and forgets its pickers.
 
 #![allow(unsafe_code)]
 
@@ -12,8 +15,8 @@ use std::cell::RefCell;
 use block2::RcBlock;
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyObject, NSObject};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, msg_send};
-use objc2_app_kit::{NSApplication, NSWindow};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, msg_send, sel};
+use objc2_app_kit::NSWindow;
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSString, NSURL};
 
@@ -21,6 +24,10 @@ use super::{Reply, Shown};
 
 /// `NSRectEdgeMinY`: below the anchor in a flipped view, above it otherwise.
 const MIN_Y_EDGE: usize = 1;
+const KEY_DOWN_AND_UP: usize = (1 << 10) | (1 << 11);
+const KEY_DOWN: usize = 10;
+const KEY_UP: usize = 11;
+const ESCAPE: u16 = 53;
 
 define_class!(
     // SAFETY: `NSObject` has no subclassing requirements, and the class has no `Drop`.
@@ -50,31 +57,109 @@ impl Delegate {
         let answered: *const Delegate = self;
         crate::platform::macos::run_later("share picker", move || {
             SHOWING.with(|showing| showing.borrow_mut().retain(|s| !std::ptr::eq(&*s.delegate, answered)));
+            unwatch_if_idle();
         });
     }
+
+    fn open(&self) -> bool { self.ivars().borrow().is_some() }
 }
 
+#[derive(Clone)]
 struct Showing {
-    _picker: Retained<AnyObject>,
+    picker: Retained<AnyObject>,
     delegate: Retained<Delegate>,
-    before: Vec<Retained<NSWindow>>,
-    until: Option<Vec<Retained<NSWindow>>>,
-    watched: Vec<Retained<NSWindow>>,
-    observers: Vec<Retained<AnyObject>>,
-}
-
-impl Drop for Showing {
-    fn drop(&mut self) {
-        // SAFETY: each token came from this center's `addObserverForName:...`.
-        unsafe {
-            let center: Retained<AnyObject> = msg_send![class!(NSNotificationCenter), defaultCenter];
-            for token in &self.observers { let _: () = msg_send![&*center, removeObserver: &**token]; }
-        }
-    }
+    host: Retained<NSWindow>,
 }
 
 thread_local! {
     static SHOWING: RefCell<Vec<Showing>> = const { RefCell::new(Vec::new()) };
+    static ESCAPED: RefCell<Vec<Retained<NSWindow>>> = const { RefCell::new(Vec::new()) };
+    static MONITOR: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
+}
+
+fn watch_escape() {
+    if MONITOR.with(|m| m.borrow().is_some()) { return; }
+    let handler = RcBlock::new(|event: *mut AnyObject| -> *mut AnyObject {
+        // SAFETY: AppKit passes a live key event on the main thread; `type`, `keyCode`, `isARepeat`
+        // and `window` are its plain getters.
+        let (kind, code, repeat, window) = unsafe {
+            let kind: usize = msg_send![event, type];
+            let code: u16 = msg_send![event, keyCode];
+            let repeat: bool = if kind == KEY_DOWN { msg_send![event, isARepeat] } else { false };
+            let window: *mut NSWindow = msg_send![event, window];
+            (kind, code, repeat, window)
+        };
+        if code != ESCAPE || !(kind == KEY_DOWN || kind == KEY_UP) { return event; }
+        // SAFETY: `window` is the live event's window or null; retaining it keeps it for the hold.
+        let Some(window) = (unsafe { Retained::retain(window) }) else { return event };
+        if escape(window, kind == KEY_DOWN, repeat) { std::ptr::null_mut() } else { event }
+    });
+    // SAFETY: the monitor copies the handler; `unwatch_if_idle` removes it with its token.
+    let token: Option<Retained<AnyObject>> = unsafe {
+        msg_send![class!(NSEvent), addLocalMonitorForEventsMatchingMask: KEY_DOWN_AND_UP, handler: &*handler]
+    };
+    MONITOR.with(|m| *m.borrow_mut() = token);
+}
+
+fn unwatch_if_idle() {
+    let idle = SHOWING.with(|s| s.borrow().is_empty()) && ESCAPED.with(|e| e.borrow().is_empty());
+    if !idle { return; }
+    if let Some(token) = MONITOR.with(|m| m.borrow_mut().take()) {
+        // SAFETY: the token came from addLocalMonitorForEventsMatchingMask.
+        unsafe { let _: () = msg_send![class!(NSEvent), removeMonitor: &*token]; }
+    }
+}
+
+/// Takes out the pickers showing `sharing`'s shares and drops their replies, so they answer
+/// nothing more, then closes them a run-loop pass later.
+pub(crate) fn forget(sharing: &super::Sharing) {
+    let ours = |s: &Showing| s.delegate.ivars().borrow().as_ref().is_some_and(|r| r.of(sharing));
+    let gone: Vec<Showing> = SHOWING.with(|showing| {
+        let mut showing = showing.borrow_mut();
+        let (gone, kept) = std::mem::take(&mut *showing).into_iter().partition(ours);
+        *showing = kept;
+        gone
+    });
+    if gone.is_empty() { return; }
+    for s in &gone { drop(s.delegate.ivars().borrow_mut().take()); }
+    crate::platform::macos::run_later("share picker", move || {
+        for Showing { picker, .. } in gone {
+            // SAFETY: as in `escape`.
+            unsafe {
+                let closes: bool = msg_send![&*picker, respondsToSelector: sel!(close)];
+                if closes { let _: () = msg_send![&*picker, close]; }
+            }
+        }
+        ESCAPED.with(|escaped| escaped.borrow_mut().retain(|w| w.isVisible()));
+        unwatch_if_idle();
+    });
+}
+
+fn escape(window: Retained<NSWindow>, pressed: bool, repeat: bool) -> bool {
+    let mine = |w: &NSWindow| std::ptr::eq(w, &*window);
+    let held = ESCAPED.with(|escaped| {
+        let mut escaped = escaped.borrow_mut();
+        let held = escaped.iter().any(|w| mine(w));
+        if !pressed || !repeat { escaped.retain(|w| !mine(w)); }
+        held
+    });
+    if !pressed || repeat {
+        if !pressed && held { crate::platform::macos::run_later("share picker", unwatch_if_idle); }
+        return held;
+    }
+    let open: Vec<Showing> = SHOWING.with(|showing| showing.borrow().iter()
+        .filter(|s| mine(&s.host) && s.delegate.open()).cloned().collect());
+    if open.is_empty() { return false; }
+    for Showing { picker, .. } in open {
+        // SAFETY: `respondsToSelector:` takes a selector and returns a `BOOL`; `close` takes no
+        // arguments and answers the delegate with no service.
+        unsafe {
+            let closes: bool = msg_send![&*picker, respondsToSelector: sel!(close)];
+            if closes { let _: () = msg_send![&*picker, close]; }
+        }
+    }
+    ESCAPED.with(|escaped| escaped.borrow_mut().push(window));
+    true
 }
 
 /// Shows `shown` over `window`'s content view once the current winit handler returns. A
@@ -86,10 +171,10 @@ pub(crate) fn show(shown: Shown, window: &winit::window::Window) {
         return;
     };
     crate::platform::macos::run_later("share picker", move || {
-        if !view.window().is_some_and(|w| w.isVisible()) {
+        let Some(host) = view.window().filter(|w| w.isVisible()) else {
             reply.send(Ok(None));
             return;
-        }
+        };
         // SAFETY: `init` is `NSObject`'s designated initializer, sent to an allocated `Delegate`
         // whose ivars are set.
         let delegate: Retained<Delegate> = unsafe { msg_send![super(mtm.alloc::<Delegate>().set_ivars(RefCell::new(Some(reply)))), init] };
@@ -107,12 +192,10 @@ pub(crate) fn show(shown: Shown, window: &winit::window::Window) {
             let _: () = msg_send![&*picker, setDelegate: &*delegate];
             picker
         };
-        let before = windows(mtm);
         SHOWING.with(|showing| {
-            let mut showing = showing.borrow_mut();
-            for earlier in showing.iter_mut().filter(|s| s.until.is_none()) { earlier.until = Some(before.clone()); }
-            showing.push(Showing { _picker: picker.clone(), delegate: delegate.clone(), before, until: None, watched: Vec::new(), observers: Vec::new() });
+            showing.borrow_mut().push(Showing { picker: picker.clone(), delegate, host });
         });
+        watch_escape();
         // SAFETY: `bounds` is a rect and `isFlipped` a `BOOL` of the view, and the picker shows
         // relative to a rect in it.
         unsafe {
@@ -122,44 +205,6 @@ pub(crate) fn show(shown: Shown, window: &winit::window::Window) {
             let y = if flipped { y } else { bounds.size.height - y - h };
             let rect = CGRect::new(CGPoint::new(x, y), CGSize::new(w.max(1.0), h.max(1.0)));
             let _: () = msg_send![&*picker, showRelativeToRect: rect, ofView: &*view, preferredEdge: MIN_Y_EDGE];
-        }
-        watch_picker_windows(mtm, &delegate);
-        crate::platform::macos::run_later("share picker", move || watch_picker_windows(mtm, &delegate));
-    });
-}
-
-fn windows(mtm: MainThreadMarker) -> Vec<Retained<NSWindow>> {
-    NSApplication::sharedApplication(mtm).windows().iter().collect()
-}
-
-fn watch_picker_windows(mtm: MainThreadMarker, delegate: &Retained<Delegate>) {
-    let now = windows(mtm);
-    SHOWING.with(|showing| {
-        let mut showing = showing.borrow_mut();
-        let Some(at) = showing.iter().position(|s| std::ptr::eq(&*s.delegate, &**delegate)) else { return };
-        let has = |list: &[Retained<NSWindow>], window: &NSWindow| list.iter().any(|w| std::ptr::eq(&**w, window));
-        let opened: Vec<Retained<NSWindow>> = now.into_iter().filter(|window| {
-            let object: &AnyObject = window;
-            !has(&showing[at].before, window)
-                && showing[at].until.as_deref().is_none_or(|until| has(until, window))
-                && !showing.iter().any(|s| has(&s.watched, window))
-                && !crate::platform::objc_class::has_subclass(object, b"Winit")
-                && !crate::platform::objc_class::has_subclass(object, b"Rune")
-        }).collect();
-        let entry = &mut showing[at];
-        for window in opened {
-            let delegate = delegate.clone();
-            let closed = RcBlock::new(move |_note: *mut AnyObject| delegate.answer(None));
-            // SAFETY: the center copies the block and calls it on the posting (main) thread; the
-            // name is AppKit's window-will-close notification and the object a live window. The
-            // token is removed when the entry goes (`Showing::drop`).
-            let token: Option<Retained<AnyObject>> = unsafe {
-                let center: Retained<AnyObject> = msg_send![class!(NSNotificationCenter), defaultCenter];
-                msg_send![&*center, addObserverForName: &*NSString::from_str("NSWindowWillCloseNotification"),
-                    object: &*window, queue: std::ptr::null::<AnyObject>(), usingBlock: &*closed]
-            };
-            entry.observers.extend(token);
-            entry.watched.push(window);
         }
     });
 }

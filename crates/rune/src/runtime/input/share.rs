@@ -3,6 +3,8 @@ use super::*;
 impl RuntimeCore {
     #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn cancel_shares(&mut self, app: &mut dyn AppDriver) {
+        #[cfg(target_os = "macos")]
+        self.forget_native_shares();
         for _ in 0..64 {
             self.dismiss_share();
             let Some(pos) = self.frame.queue.iter().position(|a| matches!(a, Action::Shared(..))) else { return };

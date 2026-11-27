@@ -1,6 +1,12 @@
 //! The share picker opens without stopping Rune: while it is on screen, a spinner in a second
-//! window keeps drawing, and the picker's dismissal reaches the callback exactly once. Opens
-//! windows, so it only runs with RUNE_GUI_TESTS=1 in a logged-in GUI session.
+//! window keeps drawing. A click outside the picker (macOS shows it as a popover) dismisses it and
+//! reaches the callback exactly once, and hiding the window it shows over answers its share. Where
+//! the picker tracks as a menu instead, the test cancels the menu through AppKit and says so.
+//! With permission to post system events (Accessibility), it then presses a real Escape (a
+//! CoreGraphics key event posted to this process only) while a picker shows over Rune's key
+//! window: the picker closes and answers once, and the app never sees that Escape, while the next
+//! Escape, with no picker, reaches it. Opens windows, so it only runs with RUNE_GUI_TESTS=1 in a
+//! logged-in GUI session.
 
 #![allow(unsafe_code)]
 
@@ -17,6 +23,8 @@ mod mac {
     use std::sync::{Mutex, mpsc};
     use std::time::Duration;
 
+    use std::ffi::c_void;
+
     use objc2::{class, msg_send, rc::Retained, runtime::AnyObject};
     use objc2_foundation::NSString;
     use rune::*;
@@ -28,6 +36,7 @@ mod mac {
     static SECOND_FRAMES: AtomicUsize = AtomicUsize::new(0);
     static TRACKING: AtomicBool = AtomicBool::new(false);
     static ANSWERS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static APP_ESCAPES: AtomicUsize = AtomicUsize::new(0);
 
     thread_local! {
         static MENU: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
@@ -48,6 +57,11 @@ mod mac {
     }
 
     fn second_view(_: &Second, _: &mut Cx<Second>) -> El { el().child(spinner()) }
+
+    fn main_key(_: &mut Main, key: &KeyEvent, _: &mut Tx) -> bool {
+        if key.key == Key::Escape { APP_ESCAPES.fetch_add(1, Ordering::SeqCst); }
+        false
+    }
 
     fn main_poll(_: &mut Main, _: f64, _: &mut Tx) -> bool {
         MAIN_FRAMES.fetch_add(1, Ordering::SeqCst);
@@ -120,49 +134,121 @@ mod mac {
         }
     }
 
-    #[derive(Clone, Copy, Debug)]
-    enum Dismiss { Escape, CloseWindow }
-
-    fn dismiss(handle: &AppHandle<Main>, how: Dismiss) {
+    fn click_outside(handle: &AppHandle<Main>) {
         on_main(handle, move |_, _| {
             let baseline = BASELINE.with(|b| b.borrow().clone());
-            // SAFETY: main thread (an update); the tracking NSMenu, the app's live windows, and an
-            // autoreleased NSEvent that postEvent:atStart: retains.
+            // SAFETY: main thread (an update); the tracking NSMenu, the app's live windows, and
+            // autoreleased NSEvents that postEvent:atStart: retains.
             unsafe {
                 if let Some(menu) = MENU.with(|slot| slot.borrow().clone()) {
+                    println!("share_macos: the picker tracks as a menu; cancelling its tracking through AppKit");
                     let _: () = msg_send![&*menu, cancelTracking];
                     return;
                 }
-                let added: Vec<usize> = windows().into_iter().filter(|w| !baseline.contains(w)).filter(|&w| {
-                    let visible: bool = msg_send![w as *mut AnyObject, isVisible];
-                    visible
-                }).collect();
-                for &w in &added {
+                for w in windows().into_iter().filter(|w| !baseline.contains(w)) {
                     let class: *const AnyObject = msg_send![w as *mut AnyObject, className];
-                    let class = &*(class as *const NSString);
-                    println!("share_macos: picker window class {class}");
+                    println!("share_macos: picker window class {}", *(class as *const NSString));
                 }
-                match how {
-                    Dismiss::Escape => {
-                        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
-                        let chars = NSString::from_str("\u{1b}");
-                        for &w in &added {
-                            let number: isize = msg_send![w as *mut AnyObject, windowNumber];
-                            for kind in [10usize, 11] {
-                                let info: *mut AnyObject = msg_send![class!(NSProcessInfo), processInfo];
-                                let now: f64 = msg_send![info, systemUptime];
-                                let event: *mut AnyObject = msg_send![class!(NSEvent), keyEventWithType: kind, location: objc2_foundation::NSPoint::new(0.0, 0.0),
-                                    modifierFlags: 0usize, timestamp: now, windowNumber: number, context: std::ptr::null::<AnyObject>(),
-                                    characters: &*chars, charactersIgnoringModifiers: &*chars, isARepeat: false, keyCode: 53u16];
-                                assert!(!event.is_null(), "NSEvent made the Escape key event");
-                                let _: () = msg_send![app, postEvent: event, atStart: false];
-                            }
-                        }
-                    }
-                    Dismiss::CloseWindow => for &w in &added { let _: () = msg_send![w as *mut AnyObject, close]; },
+                let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+                let Some(&rune_window) = baseline.iter().find(|&&w| {
+                    let class: *const AnyObject = msg_send![w as *mut AnyObject, className];
+                    (*(class as *const NSString)).to_string().starts_with("Winit")
+                }) else { panic!("no winit window to click") };
+                let number: isize = msg_send![rune_window as *mut AnyObject, windowNumber];
+                for kind in [1usize, 2] {
+                    let info: *mut AnyObject = msg_send![class!(NSProcessInfo), processInfo];
+                    let now: f64 = msg_send![info, systemUptime];
+                    let event: *mut AnyObject = msg_send![class!(NSEvent), mouseEventWithType: kind, location: objc2_foundation::NSPoint::new(8.0, 8.0),
+                        modifierFlags: 0usize, timestamp: now, windowNumber: number, context: std::ptr::null::<AnyObject>(),
+                        eventNumber: 0isize, clickCount: 1isize, pressure: if kind == 1 { 1.0f32 } else { 0.0f32 }];
+                    assert!(!event.is_null(), "NSEvent made the click");
+                    let _: () = msg_send![app, postEvent: event, atStart: false];
                 }
             }
         });
+    }
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGPreflightPostEventAccess() -> bool;
+        fn CGEventCreateKeyboardEvent(source: *const c_void, key: u16, down: bool) -> *mut c_void;
+        fn CGEventPostToPid(pid: i32, event: *mut c_void);
+        fn CFRelease(object: *mut c_void);
+    }
+
+    fn real_escape_key() {
+        for down in [true, false] {
+            // SAFETY: a null source makes an event from the default state; 53 is Escape's key
+            // code. The event goes to this process only, then is released once.
+            unsafe {
+                let event = CGEventCreateKeyboardEvent(std::ptr::null(), 53, down);
+                assert!(!event.is_null(), "CoreGraphics made the Escape key event");
+                CGEventPostToPid(std::process::id() as i32, event);
+                CFRelease(event);
+            }
+        }
+    }
+
+    fn key_window(handle: &AppHandle<Main>) -> String {
+        on_main(handle, |_, _| {
+            // SAFETY: main thread (an update); `keyWindow` may be nil and is checked.
+            unsafe {
+                let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+                let key: *mut AnyObject = msg_send![app, keyWindow];
+                if key.is_null() { return "none".to_owned(); }
+                let class: *const AnyObject = msg_send![key, className];
+                (*(class as *const NSString)).to_string()
+            }
+        })
+    }
+
+    fn activate(handle: &AppHandle<Main>) -> bool {
+        on_main(handle, |_, _| {
+            // SAFETY: main thread (an update); activates this app and reads the frontmost one,
+            // checked non-null.
+            unsafe {
+                let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+                let _: () = msg_send![app, activateIgnoringOtherApps: true];
+                let workspace: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
+                let front: *mut AnyObject = msg_send![workspace, frontmostApplication];
+                !front.is_null() && { let pid: i32 = msg_send![front, processIdentifier]; pid as u32 == std::process::id() }
+            }
+        })
+    }
+
+    fn real_escape(handle: &AppHandle<Main>) {
+        // SAFETY: takes no arguments and has no preconditions.
+        if !unsafe { CGPreflightPostEventAccess() } {
+            println!("share_macos: no permission to post system events (Accessibility); skipping the real Escape");
+            return;
+        }
+        let frontmost = activate(handle);
+        std::thread::sleep(Duration::from_millis(300));
+        open_picker(handle);
+        std::thread::sleep(Duration::from_millis(300));
+        if TRACKING.load(Ordering::SeqCst) || picker_windows(handle) == 0 {
+            println!("share_macos: the picker isn't a popover window here; skipping the real Escape");
+            click_outside(handle);
+            return;
+        }
+        let (count, escapes) = (answers().len(), APP_ESCAPES.load(Ordering::SeqCst));
+        println!("share_macos: real Escape: this app frontmost {frontmost}, key window {}", key_window(handle));
+        real_escape_key();
+        let answered = wait("an answer to Escape", Duration::from_secs(2), || answers().len() > count);
+        println!("share_macos: real Escape: answered {answered}, {} picker window(s) on screen, key window now {}", picker_windows(handle), key_window(handle));
+        assert!(answered, "Escape didn't close the share picker");
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(answers()[count..], ["Ok(None)"], "Escape answers the share once with none: {:?}", answers());
+        assert!(wait("the picker to leave the screen", Duration::from_secs(2), || picker_windows(handle) == 0), "the picker stayed on screen after Escape");
+        assert_eq!(APP_ESCAPES.load(Ordering::SeqCst), escapes, "the Escape that closed the picker reached the app");
+
+        real_escape_key();
+        assert!(wait("the app's Escape", Duration::from_secs(2), || APP_ESCAPES.load(Ordering::SeqCst) == escapes + 1), "with no picker, Escape didn't reach the app");
+    }
+
+    fn open_picker(handle: &AppHandle<Main>) {
+        handle.update(share);
+        assert!(wait("the picker", Duration::from_secs(5), || TRACKING.load(Ordering::SeqCst) || picker_windows(handle) > 0), "the share picker never appeared");
     }
 
     fn answers() -> Vec<String> { ANSWERS.lock().unwrap().clone() }
@@ -174,7 +260,7 @@ mod mac {
         }
         std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(90)); eprintln!("timeout"); std::process::exit(2) });
         rune::orderly_exit();
-        let spec = AppSpec { poll: Some(main_poll), ..AppSpec::new("share", (320.0, 160.0), || Main, main_view) };
+        let spec = AppSpec { poll: Some(main_poll), on_key: Some(main_key), ..AppSpec::new("share", (320.0, 160.0), || Main, main_view) };
         let (ready_tx, ready_rx) = mpsc::channel();
         let mut app = App::new(spec).args(Vec::new()).on_ready(move |_| { ready_tx.send(()).ok(); });
         let handle = app.handle();
@@ -207,9 +293,7 @@ mod mac {
         std::thread::sleep(Duration::from_millis(500));
         println!("share_macos: second window drew {} frames in 500 ms before the picker", SECOND_FRAMES.load(Ordering::SeqCst) - before);
 
-        handle.update(share);
-        let opened = wait("the picker", Duration::from_secs(5), || TRACKING.load(Ordering::SeqCst) || picker_windows(handle) > 0);
-        assert!(opened, "the share picker never appeared");
+        open_picker(handle);
         println!("share_macos: the picker opened as {}", if TRACKING.load(Ordering::SeqCst) { "a tracking menu" } else { "a window" });
 
         let (main_before, second_before) = (MAIN_FRAMES.load(Ordering::SeqCst), SECOND_FRAMES.load(Ordering::SeqCst));
@@ -221,22 +305,30 @@ mod mac {
         assert!(main_during >= 10, "the sharing window stalled while the picker was open ({main_during} frames in 500 ms)");
         assert!(answers().is_empty(), "nothing answers while the picker is open: {:?}", answers());
 
-        dismiss(handle, Dismiss::Escape);
-        if !wait("an answer to Escape", Duration::from_secs(3), || !answers().is_empty()) {
-            println!("share_macos: Escape didn't dismiss the picker; closing its window");
-            dismiss(handle, Dismiss::CloseWindow);
-        }
-        assert!(wait("the dismissal's answer", Duration::from_secs(5), || !answers().is_empty()), "the dismissal never answered");
+        click_outside(handle);
+        assert!(wait("the dismissal's answer", Duration::from_secs(3), || !answers().is_empty()), "a click outside the picker never answered");
         std::thread::sleep(Duration::from_millis(300));
         assert_eq!(answers(), ["Ok(None)"], "the dismissal reaches the callback once");
+        assert!(wait("the picker to leave the screen", Duration::from_secs(2), || !TRACKING.load(Ordering::SeqCst) && picker_windows(handle) == 0), "the picker stayed on screen");
         let before = SECOND_FRAMES.load(Ordering::SeqCst);
         std::thread::sleep(Duration::from_millis(200));
         assert!(SECOND_FRAMES.load(Ordering::SeqCst) > before, "frames keep running after the picker");
 
-        handle.update(share);
-        assert!(wait("the picker again", Duration::from_secs(5), || TRACKING.load(Ordering::SeqCst) || picker_windows(handle) > 0), "the picker didn't open a second time");
-        dismiss(handle, Dismiss::CloseWindow);
-        assert!(wait("the second answer", Duration::from_secs(5), || answers().len() == 2), "closing the picker's window never answered");
+        open_picker(handle);
+        click_outside(handle);
+        assert!(wait("the second answer", Duration::from_secs(3), || answers().len() == 2), "the second picker's dismissal never answered");
         assert_eq!(answers(), ["Ok(None)", "Ok(None)"]);
+
+        open_picker(handle);
+        handle.hide();
+        assert!(wait("the hide's answer", Duration::from_secs(3), || answers().len() == 3), "hiding the window under the picker never answered");
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(answers(), ["Ok(None)", "Ok(None)", "Ok(None)"], "the hide answers once, and the picker's own answer after it doesn't");
+        println!("share_macos: {} picker window(s) on screen after the hide", picker_windows(handle));
+        handle.open();
+        assert!(wait("the window back", Duration::from_secs(3), || handle.is_visible()));
+        std::thread::sleep(Duration::from_millis(300));
+
+        real_escape(handle);
     }
 }

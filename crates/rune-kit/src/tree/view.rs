@@ -226,7 +226,7 @@ pub struct TreeStyle {
 impl TreeStyle {
     pub fn from_kit(k: &Kit) -> TreeStyle {
         TreeStyle {
-            row_height: 24.0,
+            row_height: k.text_size(24.0),
             indent: 14.0,
             padding: 6.0,
             guides: true,

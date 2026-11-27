@@ -27,7 +27,7 @@ use std::collections::{HashMap, HashSet};
 use rune::{AppSpec, Cx, El, TextEdit, col};
 use std::rc::Rc;
 
-use rune_kit::{Kit, KitCx, KitTheme};
+use rune_kit::{Kit, KitCx, KitTheme, TextScale};
 
 pub struct G {
     pub story: &'static str,
@@ -92,6 +92,8 @@ pub struct G {
     pub neutral: bool,
     pub palette: bool,
     pub theme: KitTheme,
+    /// The View menu's text size (Cmd+=, Cmd+-, Cmd+0).
+    pub text_scale: TextScale,
     /// `--reduced-motion`: the runtime's reduced-motion mode.
     pub reduced: bool,
 }
@@ -183,6 +185,7 @@ fn init() -> G {
         neutral,
         palette,
         theme: theme(neutral, palette),
+        text_scale: TextScale::default(),
         reduced: rune::extra_args().iter().any(|a| a == "--reduced-motion"),
     }
 }
@@ -278,7 +281,7 @@ fn view(s: &G, cx: &mut Cx<G>) -> El {
     }
     cx.zoom(cx.system_text_scale());
     cx.bold_text(cx.system_bold_text());
-    cx.with_kit(&s.theme, |cx| themed(s, cx))
+    cx.with_text_scale(&s.text_scale, |cx| cx.with_kit(&s.theme, |cx| themed(s, cx)))
 }
 
 fn themed(s: &G, cx: &mut Cx<G>) -> El {
@@ -307,7 +310,7 @@ fn themed(s: &G, cx: &mut Cx<G>) -> El {
 }
 
 fn build_app() -> rune::App<G> {
-    rune::App::new(AppSpec {
+    let mut app = rune::App::new(AppSpec {
         scenes: stories::SCENES,
         setup: Some(|s, waker| s.images.set_waker(waker)),
         poll: Some(|s, _, _| {
@@ -326,7 +329,11 @@ fn build_app() -> rune::App<G> {
     })
     .on_popup_menu(|s: &mut G, req, _| {
         s.popup_menu = Some(req);
-    })
+    });
+    for item in TextScale::menu_items(|s: &mut G| &mut s.text_scale) {
+        app = app.menu_item(item);
+    }
+    app
 }
 
 fn main() {

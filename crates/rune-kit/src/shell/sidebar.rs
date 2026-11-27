@@ -11,10 +11,10 @@ use crate::{ControlSize, IconButton, IconButtonVariant, Kit, Spinner};
 type Apply = Box<dyn FnOnce(El) -> El>;
 type Themed = Box<dyn FnOnce(&Kit) -> El>;
 
-/// A sidebar row's height (AppKit's medium source-list row).
+/// A sidebar row's height (AppKit's medium source-list row), at the theme's own text size.
 pub const ROW_HEIGHT: f32 = 28.0;
 /// A two-line sidebar row's default height when [`SidebarRow::subtitle`] is set without
-/// [`SidebarRow::height`].
+/// [`SidebarRow::height`], at the theme's own text size.
 pub const TWO_LINE_ROW_HEIGHT: f32 = 40.0;
 /// Each level of [`SidebarRow::depth`] indents this far.
 pub const INDENT: f32 = 16.0;
@@ -40,7 +40,7 @@ pub struct Sidebar {
     header_gap: f32,
     header_pad: [f32; 2],
     row_gap: f32,
-    row_height: f32,
+    row_height: Option<f32>,
 }
 
 impl Sidebar {
@@ -54,7 +54,7 @@ impl Sidebar {
             header_gap: 2.0,
             header_pad: [0.0, INSET],
             row_gap: 0.0,
-            row_height: ROW_HEIGHT,
+            row_height: None,
         }
     }
     /// Points between the sidebar's sides and its rows, header and footer (default 8).
@@ -78,10 +78,11 @@ impl Sidebar {
         self.row_gap = points.max(0.0);
         self
     }
-    /// The height of [`Self::virtual_rows`]' rows (default [`ROW_HEIGHT`]). Give the rows the
+    /// The height of [`Self::virtual_rows`]' rows (default [`ROW_HEIGHT`] at the kit's
+    /// [`Kit::text_scale`]). Give the rows the
     /// same height with [`SidebarRow::height`].
     pub fn row_height(mut self, points: f32) -> Self {
-        self.row_height = points.max(1.0);
+        self.row_height = Some(points.max(1.0));
         self
     }
     /// The list's accessible name.
@@ -133,7 +134,7 @@ impl Sidebar {
         let list = col().key("sidebar-list").role("list").label(self.label).focus_group().focus_follows().w_full().px(inset);
         let list = match self.body {
             Body::Items(items) => list.pb(INSET).gap(self.row_gap).children(items.into_iter().map(|f| f(k))),
-            Body::Virtual(rows) => rows(list.growth(GrowthSpec::default()), self.row_height),
+            Body::Virtual(rows) => rows(list.growth(GrowthSpec::default()), self.row_height.unwrap_or_else(|| k.text_size(ROW_HEIGHT))),
         };
         let mut root = col().key("sidebar").w_full().h_full().min_h(0.0);
         if !self.header.is_empty() {
@@ -573,7 +574,7 @@ impl SidebarRow {
         let renaming = self.rename.is_some();
         let (ink, glyph) = if self.selected { (c.text_base, c.icon_base) } else { (c.text_muted, c.icon_muted) };
         let two_lines = self.subtitle.is_some();
-        let height = self.height.unwrap_or(if two_lines { TWO_LINE_ROW_HEIGHT } else { ROW_HEIGHT });
+        let height = self.height.unwrap_or_else(|| k.text_size(if two_lines { TWO_LINE_ROW_HEIGHT } else { ROW_HEIGHT }));
         let font = self.title_style.unwrap_or(if two_lines {
             TextStyle { weight: 500.0, ..k.ty.ui_compact }
         } else {

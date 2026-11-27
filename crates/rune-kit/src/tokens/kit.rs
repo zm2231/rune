@@ -256,6 +256,10 @@ pub struct Kit {
     /// Component metrics a theme sets in place of the built-in ones (button and switch sizes,
     /// field box, text area type, checkbox colours). `Metrics::default()` keeps them all.
     pub metrics: crate::Metrics,
+    /// How much larger than the theme's own the type is: 1 as a theme builds it, and the scale
+    /// a [`TextScale`](crate::TextScale) in scope gives [`Kit::with_text_scale`] otherwise.
+    /// [`Kit::text`] and [`Kit::text_size`] scale an app's own styles and sizes by it.
+    pub text_scale: f32,
 }
 
 impl Kit {

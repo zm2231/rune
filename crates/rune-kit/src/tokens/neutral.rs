@@ -139,6 +139,7 @@ impl Kit {
             invalid_text: false,
             forced: None,
             metrics: crate::Metrics::default(),
+            text_scale: 1.0,
         }
     }
 }

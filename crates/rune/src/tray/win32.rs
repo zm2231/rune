@@ -6,7 +6,7 @@
 #![allow(unsafe_code)]
 
 use super::{ClickAction, Handler, TrayClick, TrayError, TrayEvent, TrayIcon, TrayItem, TraySpec, route_click};
-use std::{cell::Cell, ptr, sync::{Arc, Mutex, mpsc}, thread::JoinHandle};
+use std::{cell::Cell, ptr, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}, mpsc}, thread::JoinHandle};
 use windows_sys::Win32::{Foundation::*, System::LibraryLoader::GetModuleHandleW, UI::{Shell::*, WindowsAndMessaging::*}};
 
 const CALLBACK: u32 = WM_APP + 1;
@@ -274,7 +274,12 @@ impl Native {
     pub(super) fn set_icon_name(&self, _name: String) {}
     pub(super) fn set_title(&self, _title: String) {}
     pub(super) fn set_accessibility_label(&self, label: String) {
-        self.model.lock().unwrap_or_else(|e| e.into_inner()).label = label;
+        let mut model = self.model.lock().unwrap_or_else(|e| e.into_inner());
+        if cfg!(debug_assertions) && !model.tooltip.is_empty() && !LABEL_HIDDEN_WARNED.swap(true, Ordering::Relaxed) {
+            eprintln!("rune: Tray::set_accessibility_label has no effect on Windows while the tray has a tooltip: Narrator reads the tooltip. Clear it with Tray::set_tooltip(\"\") to have the label read.");
+        }
+        model.label = label;
+        drop(model);
         self.update();
     }
     pub(super) fn rect(&self) -> Option<[i32; 4]> {
@@ -293,6 +298,8 @@ impl Native {
 /// The windows of the trays alive now, so a fast exit can take their icons off the
 /// notification area (an icon a process leaves behind stays until the pointer passes over it).
 static LIVE: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+
+static LABEL_HIDDEN_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Removes every tray icon at once, from whatever thread (`NIM_DELETE` names the icon by its
 /// window and id); their threads and windows go with the process.

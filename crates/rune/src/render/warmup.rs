@@ -181,7 +181,7 @@ impl Renderer {
 
     /// Drops surface-specific textures and scratch buffers before parking this renderer for a
     /// future surface (`warm::park`), keeping compiled pipelines and the glyph atlas.
-    #[cfg(not(any(target_os = "macos", target_os = "ios", target_arch = "wasm32")))]
+    #[cfg(not(any(target_os = "ios", target_arch = "wasm32")))]
     pub(super) fn clear_for_park(&mut self) {
         self.clear_images();
         self.layers.clear_all();
@@ -200,7 +200,7 @@ impl Renderer {
 
     /// Extracts the `Send` core when no native surface renderer has been created; drops `self` on
     /// the calling thread and returns `None` otherwise.
-    #[cfg(not(any(target_os = "macos", target_os = "ios", target_arch = "wasm32")))]
+    #[cfg(not(any(target_os = "ios", target_arch = "wasm32")))]
     pub(super) fn into_warm(self) -> Option<WarmRenderer> {
         if self.surfaces.is_some() {
             return None;
@@ -321,21 +321,18 @@ pub(crate) fn surface_gpu(gpu: &std::sync::Arc<super::Gpu>) {
 }
 
 /// A hidden overlay's device and renderer, its surface dropped, for the next window's or
-/// overlay's surface to take (`warm::park`). macOS drops them: its prewarmed panels keep theirs.
+/// overlay's surface to take (`prewarm::park`).
 #[cfg(all(test, not(any(target_arch = "wasm32", target_os = "ios"))))]
 pub(crate) fn take_parked_gpu_for_test() -> Option<(super::Gpu, super::Renderer)> {
     #[cfg(not(target_os = "macos"))]
     { super::prewarm::take() }
     #[cfg(target_os = "macos")]
-    { None }
+    { super::prewarm::take_parked() }
 }
 
 #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub(crate) fn park_gpu(gpu: super::Gpu, renderer: super::Renderer) {
-    #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
     super::prewarm::park(gpu, renderer, super::prewarm::PARKED);
-    #[cfg(any(target_os = "macos", target_arch = "wasm32"))]
-    drop((renderer, gpu));
 }
 
 /// Starts making, on a thread, the GPU device and Rune's renderer the next window or overlay

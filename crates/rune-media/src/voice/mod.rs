@@ -44,6 +44,22 @@
 //! Echo cancellation on real Windows hardware hasn't been verified yet; the code is checked by
 //! compiling it and by tests that run without audio devices.
 //!
+//! **The web.** The stream asks the browser for the microphone with its own echo cancellation,
+//! noise suppression and gain control on, and runs both directions through one AudioWorklet in
+//! an `AudioContext` at the stream's rate, so echo cancellation is the browser's. Without
+//! threads in the page's wasm, the stream's control and audio both pass through the page's main
+//! thread: the worklet posts each 10 ms of microphone audio there and gets the same amount of
+//! speaker audio back, buffered 20 ms ahead. A main thread busy for longer than the buffer (a
+//! long frame, heavy script) plays silence or drops speaker audio, counted in
+//! [`VoiceStats::late_frames`]. The page needs HTTPS or `localhost`. Browsers start audio only
+//! after the person interacts with the page, so call [`Voice::start`] from a click or key
+//! handler; started earlier, audio begins at the next click or key press. The first start asks
+//! for the microphone; a refusal fails the stream ([`VoiceState::Failed`]) and
+//! [`Voice::permission`] then reads [`MicPermission::Denied`]. A change of audio devices rebuilds
+//! the stream. Checked in headless Chromium with a fake microphone; echo cancellation in Chrome,
+//! Firefox and Safari with real speakers hasn't been verified yet, and whether each browser
+//! cancels the page's own Web Audio output is up to the browser.
+//!
 //! Elsewhere, [`Voice::open`] returns [`VoiceError::Unsupported`].
 //!
 //! Apps reach these types through `rune`, which re-exports them.
@@ -64,8 +80,12 @@ mod streams;
 mod apple;
 #[cfg(target_os = "linux")]
 mod linux;
-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "linux", target_os = "windows")))]
+#[cfg(target_arch = "wasm32")]
+mod inline;
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "linux", target_os = "windows", target_arch = "wasm32")))]
 mod unsupported;
+#[cfg(target_arch = "wasm32")]
+mod web;
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -73,8 +93,10 @@ mod windows;
 use apple as backend;
 #[cfg(target_os = "linux")]
 use linux as backend;
-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "linux", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "linux", target_os = "windows", target_arch = "wasm32")))]
 use unsupported as backend;
+#[cfg(target_arch = "wasm32")]
+use web as backend;
 #[cfg(target_os = "windows")]
 use windows as backend;
 
@@ -88,6 +110,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -219,6 +242,10 @@ pub struct VoiceStats {
     pub mic_dropped_frames: u64,
     /// Device callbacks larger than the stream's buffers, which got silence.
     pub oversized_callbacks: u64,
+    /// Speaker frames played as silence, or dropped, because audio didn't cross between the
+    /// app's thread and the audio thread in time. Only the web counts these: there the audio
+    /// passes through the page's main thread, so a long frame or a busy script shows up here.
+    pub late_frames: u64,
     /// From the last [`Voice::start`] to the device's first callback.
     pub start_to_audio: Option<Duration>,
 }
@@ -241,6 +268,7 @@ pub struct Voice {
     board: Arc<Board>,
     meters: Arc<Meters>,
     sample_rate: u32,
+    #[cfg(not(target_arch = "wasm32"))]
     thread: Option<JoinHandle<()>>,
 }
 
@@ -252,9 +280,10 @@ impl fmt::Debug for Voice {
 
 impl Voice {
     /// Opens the system's echo-cancelled voice I/O on the default microphone and speaker. The
-    /// device is prepared on a thread of its own, so this returns at once; call
-    /// [`start`](Self::start) to begin. A bundled app needs `NSMicrophoneUsageDescription` in
-    /// its Info.plist, and without one this fails instead of letting the system end the app.
+    /// device is prepared on a thread of its own (on the web, asynchronously on the page's main
+    /// thread), so this returns at once; call [`start`](Self::start) to begin. A bundled Apple
+    /// app needs `NSMicrophoneUsageDescription` in its Info.plist, and without one this fails
+    /// instead of letting the system end the app.
     pub fn open(spec: VoiceSpec) -> Result<(Voice, VoiceMic, VoiceSpeaker), VoiceError> {
         spec.validate()?;
         backend::check()?;
@@ -282,15 +311,24 @@ impl Voice {
         }
         let (signals, received) = mpsc::channel();
         let (capture, playback, meters) = (ends.capture, ends.playback, ends.meters.clone());
-        let (thread_board, thread_signals) = (board.clone(), signals.clone());
-        let thread = std::thread::Builder::new()
-            .name("rune-voice".into())
-            .spawn(move || {
-                let device = device(capture, playback, thread_signals);
-                Control::new(device, meters, thread_board).run(&received);
-            })
-            .map_err(|e| VoiceError::OpenFailed(e.to_string()))?;
-        let voice = Voice { signals, board, meters: ends.meters, sample_rate: spec.sample_rate, thread: Some(thread) };
+        #[cfg(not(target_arch = "wasm32"))]
+        let voice = {
+            let (thread_board, thread_signals) = (board.clone(), signals.clone());
+            let thread = std::thread::Builder::new()
+                .name("rune-voice".into())
+                .spawn(move || {
+                    let device = device(capture, playback, thread_signals);
+                    Control::new(device, meters, thread_board).run(&received);
+                })
+                .map_err(|e| VoiceError::OpenFailed(e.to_string()))?;
+            Voice { signals, board, meters: ends.meters, sample_rate: spec.sample_rate, thread: Some(thread) }
+        };
+        #[cfg(target_arch = "wasm32")]
+        let voice = {
+            let device = device(capture, playback, signals.clone());
+            inline::add(Control::new(device, meters, board.clone()), received);
+            Voice { signals, board, meters: ends.meters, sample_rate: spec.sample_rate }
+        };
         Ok((voice, ends.mic, ends.speaker))
     }
 
@@ -354,12 +392,15 @@ impl Voice {
 
     fn send(&self, signal: Signal) {
         self.signals.send(signal).ok();
+        #[cfg(target_arch = "wasm32")]
+        inline::pump();
     }
 }
 
 impl Drop for Voice {
     fn drop(&mut self) {
         self.send(Signal::Close);
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(thread) = self.thread.take() {
             thread.join().ok();
         }

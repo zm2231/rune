@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>voice-loopback</title>
+<style>
+body { font: 15px system-ui; margin: 24px; max-width: 980px }
+pre { font: 13px ui-monospace, monospace; white-space: pre-wrap }
+#report { font-size: 15px; padding: 12px; border: 1px solid #8884; border-radius: 6px }
+#meter { height: 14px; background: #8883; border-radius: 3px; overflow: hidden; margin: 8px 0 }
+#meter div { height: 100%; width: 0; background: #2a8; transition: width 0.1s }
+#log { max-height: 40vh; overflow: auto; opacity: 0.8 }
+button { font-size: 15px; padding: 6px 14px }
+</style>
+<h1>voice-loopback</h1>
+<p>Plays a 200 ms noise burst every 2 s through the speaker and reads the echo-cancelled microphone.
+With loopback on, the microphone also plays back 300 ms late.</p>
+<ol>
+<li>Use the computer's own speakers, not headphones, at a normal volume.</li>
+<li>Stay quiet for 10 s: <b>burst echo</b> should settle well below 0 dB re burst (−30 dB or lower means the echo is gone). Near 0 dB means none was removed.</li>
+<li>With loopback on, talk: you hear yourself once, 300 ms late. A repeating echo or a howl means echo is getting through.</li>
+<li><b>late</b> counts speaker frames lost because the page's main thread was busy; it should stay at or near 0.</li>
+</ol>
+<p><label><input type="checkbox" id="loopback" checked> Loop the microphone back to the speaker</label>
+<button id="start">Start</button> <button id="stop" disabled>Stop</button></p>
+<div id="meter"><div></div></div>
+<pre id="report">Not started.</pre>
+<pre id="log"></pre>
+<script type="module">
+import init, { start, stop, tick, report } from './app.js';
+const $ = (id) => document.getElementById(id);
+let timers = [];
+try {
+    await init();
+} catch (error) {
+    $('report').textContent = String(error);
+}
+const log = (text) => {
+    if (!text) return;
+    $('log').textContent += text + '\n';
+    $('log').scrollTop = $('log').scrollHeight;
+};
+$('start').onclick = () => {
+    timers.forEach(clearInterval);
+    log(start($('loopback').checked));
+    timers = [
+        setInterval(() => log(tick()), 5),
+        setInterval(() => {
+            const line = report();
+            $('report').textContent = line.split(' | ').join('\n');
+            const level = Number((/mic (-?[\d.]+) dBFS/.exec(line) || [])[1] ?? -120);
+            $('meter').firstElementChild.style.width = Math.max(0, Math.min(100, (level + 80) * 1.25)) + '%';
+        }, 1000),
+    ];
+    $('start').disabled = true;
+    $('stop').disabled = false;
+};
+$('stop').onclick = () => {
+    timers.forEach(clearInterval);
+    timers = [];
+    stop();
+    log('stopped');
+    $('start').disabled = false;
+    $('stop').disabled = true;
+};
+</script>
+</html>

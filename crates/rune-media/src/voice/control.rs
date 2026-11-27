@@ -6,7 +6,9 @@ use rune_core::machine::{Attempt, Seq};
 use rune_core::time::Instant;
 use std::collections::VecDeque;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::mpsc::RecvTimeoutError;
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 
 const MAX_EVENTS: usize = 64;
@@ -122,6 +124,7 @@ impl Control {
         Self { device, meters, board, seq: Seq::default(), state: State::Idle, wake: None }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn run(mut self, signals: &Receiver<Signal>) {
         self.device.prepare().ok();
         while self.state != State::Closed {
@@ -130,6 +133,37 @@ impl Control {
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn prepare(&mut self) {
+        self.device.prepare().ok();
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn drain(&mut self, signals: &Receiver<Signal>) -> Option<Instant> {
+        while self.state != State::Closed {
+            match signals.try_recv() {
+                Ok(signal) => self.feed(signal.event(rune_core::time::now())),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.feed(Event::Close),
+            }
+        }
+        let now = rune_core::time::now();
+        if let Some((attempt, due)) = self.wake
+            && now >= due
+            && self.state != State::Closed
+        {
+            self.wake = None;
+            self.feed(Event::RetryDue { attempt, now });
+        }
+        self.wake.map(|(_, due)| due).filter(|_| self.state != State::Closed)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn closed(&self) -> bool {
+        self.state == State::Closed
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn next_event(&mut self, signals: &Receiver<Signal>) -> Event {
         let received = match self.wake {
             Some((attempt, due)) => {

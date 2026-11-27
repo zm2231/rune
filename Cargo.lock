@@ -4829,6 +4829,7 @@ dependencies = [
  "blake3",
  "block2 0.6.2",
  "bytemuck",
+ "js-sys",
  "libc",
  "objc2 0.6.5",
  "objc2-audio-toolbox",
@@ -4852,6 +4853,7 @@ dependencies = [
  "rune-staging",
  "sonora",
  "symphonia",
+ "wasm-bindgen",
  "wgpu",
  "windows",
  "windows-core",
@@ -6288,6 +6290,7 @@ name = "voice-loopback"
 version = "0.0.1"
 dependencies = [
  "rune",
+ "wasm-bindgen",
 ]
 
 [[package]]

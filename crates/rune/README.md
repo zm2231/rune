@@ -3496,13 +3496,17 @@ let heard = speaker.played_frames();
   communications audio. The system's echo canceller is used when the microphone's driver
   offers one (Windows 11 lists it among the stream's effects); otherwise, as on Windows 10, the
   in-app canceller from Linux runs. Never both. Not yet run on real Windows audio hardware.
-- **The web**: `Voice::open` returns `VoiceError::Unsupported`.
+- **The web**: the browser's own echo cancellation, noise suppression and gain control on
+  `getUserMedia`, with both directions through one AudioWorklet. Audio crosses the page's main
+  thread in 10 ms blocks, so a busy main thread counts `VoiceStats::late_frames`. Call
+  `Voice::start` from a click or key handler. Needs HTTPS or `localhost`. Not yet run in a
+  browser with real speakers.
 - **Tests**: `Voice::open_fake(spec, &FakeVoice)` runs on every platform without hardware.
   `FakeVoice::tick(frames)` runs one device callback. The fake microphone hears what
   `FakeVoice::say` queued plus the speaker's output at the `echo(gain, delay)` you set.
   `change_devices`, `interrupt`, `end_interruption`, `reset_media`, `background` and
   `foreground` drive the same transitions the system would.
-- **Try it**: `cargo run -p voice-loopback` on a Mac or a Linux desktop (see `examples/README.md`).
+- **Try it**: `cargo run -p voice-loopback` on a Mac, a Linux desktop or Windows, or its web page (see `examples/README.md`).
 
 ### Edge overlays (`App::overlay`, `overlay.rs`, `platform/layer_shell.rs`)
 

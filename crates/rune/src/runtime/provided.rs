@@ -20,6 +20,7 @@ struct Inner<T> {
 }
 
 impl<T: 'static> Provided<T> {
+    /// `value`, with an id no earlier value made on this thread has.
     pub fn new(value: T) -> Self {
         let id = NEXT.with(|n| n.replace(n.get() + 1));
         Self(Rc::new(Inner { id, value }))

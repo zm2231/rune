@@ -46,16 +46,19 @@ impl KitEnv {
         self
     }
 
+    /// This environment blending in sRGB when `on`, in linear light otherwise.
     pub fn srgb_blend(mut self, on: bool) -> Self {
         self.srgb_blend = on;
         self
     }
 
+    /// This environment with or without the system's increased contrast.
     pub fn increased_contrast(mut self, on: bool) -> Self {
         self.increased_contrast = on;
         self
     }
 
+    /// This environment with another system accent.
     pub fn accent(mut self, accent: Color) -> Self {
         self.accent = accent;
         self

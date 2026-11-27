@@ -207,6 +207,7 @@ impl PointerLock {
         self.state == LockState::Pending
     }
 
+    #[cfg(target_os = "ios")]
     #[inline]
     pub(in crate::runtime) fn is_ready(&self) -> bool {
         self.state == LockState::Ready

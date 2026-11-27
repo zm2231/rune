@@ -14,6 +14,7 @@ mod rects;
 #[cfg(feature = "test-support")]
 mod requested;
 mod scroll;
+mod window;
 
 #[cfg(feature = "test-support")]
 pub use requested::{FocusKind, FocusRequest, Requested, RevealRequest};
@@ -186,6 +187,7 @@ pub struct Tx {
     pub(crate) evict_memos: Vec<String>,
     /// `Tx::clock`.
     pub(crate) clock: f64,
+    pub(crate) window: Option<std::sync::Arc<str>>,
     /// `Tx::scale` (0 when unset on `Tx::default()`, which reads as 1.0).
     pub(crate) scale: f32,
 }

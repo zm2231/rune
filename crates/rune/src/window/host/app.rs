@@ -231,6 +231,7 @@ pub(in crate::window) fn test_app_with_requests<S: 'static>(
         turn_scope: None,
         keep_layout: None,
         kept_layout: None,
+        member: None,
     })
 }
 
@@ -251,6 +252,7 @@ pub(crate) struct TypedWindowApp<S: 'static> {
     /// `App::layout_seed`'s keeper, and the seed it was last given (or the launch's own).
     pub(super) keep_layout: Option<Box<dyn FnMut(crate::LayoutSeed)>>,
     pub(super) kept_layout: Option<crate::LayoutSeed>,
+    pub(super) member: Option<crate::shared_state::Member<S>>,
 }
 
 impl<S: 'static> TypedWindowApp<S> {
@@ -271,23 +273,26 @@ impl<S: 'static> TypedWindowApp<S> {
             turn_scope: None,
             keep_layout: None,
             kept_layout: None,
+            member: None,
         }
     }
 
-    #[cfg(all(test, feature = "hot"))]
-    pub(crate) fn from_app(mut app: crate::App<S>, waker: crate::runtime::Waker) -> Self {
+    #[cfg(test)]
+    pub(crate) fn from_app(mut app: crate::App<S>, key: &str, waker: crate::runtime::Waker) -> Self {
         let (on_close_request, on_quit_request, on_close, on_rest, on_reopen, on_quit, turn_scope) = (
             app.on_close_request, app.on_quit_request, app.on_close, app.on_rest, app.on_reopen, app.on_quit, app.turn_scope,
         );
         let on_geometry = app.on_window_geometry;
         let comp = app.compositor.take();
         let (layout_seed, keep_layout) = (app.layout_seed.take(), app.keep_layout.take());
-        let (spec, state, shared, runtime) = app.into_parts(None);
+        let (spec, state, shared, runtime, member) = app.into_member_parts(key, None);
+        if let Some(member) = &member { member.connect(waker.clone()); }
         let mut rt = crate::tooling::runtime_for(&spec, state, spec.size, crate::runtime::Env::default(), waker);
         rt.configure(runtime);
+        rt.core_mut().set_window_key(key);
         Self {
             rt, shared, comp, on_frame_drawn: None, on_close_request, on_quit_request, on_close, on_rest, on_quit, on_reopen, on_geometry, turn_scope,
-            keep_layout, kept_layout: layout_seed,
+            keep_layout, kept_layout: layout_seed, member,
         }
     }
 
@@ -300,6 +305,16 @@ impl<S: 'static> TypedWindowApp<S> {
         keep(seed.clone());
         self.kept_layout = Some(seed.clone());
     }
+
+    fn holds_state(&self) -> bool {
+        self.member.as_ref().is_none_or(crate::shared_state::Member::resident)
+    }
+}
+
+impl<S: 'static> Drop for TypedWindowApp<S> {
+    fn drop(&mut self) {
+        if let Some(member) = &mut self.member { member.release(&mut self.rt); }
+    }
 }
 
 impl<S: 'static> WindowApp for TypedWindowApp<S> {
@@ -308,12 +323,14 @@ impl<S: 'static> WindowApp for TypedWindowApp<S> {
     fn rt_mut(&mut self) -> &mut RuntimeCore { self.rt.core_mut() }
 
     fn with_driver(&mut self, f: &mut dyn FnMut(&mut RuntimeCore, &mut dyn AppDriver)) {
+        debug_assert!(self.holds_state(), "rune: a window ran its app outside its turn");
         let (core, mut driver) = self.rt.split_mut();
         f(core, &mut driver);
     }
 
     fn enter_turn(&mut self) -> bool {
-        let Some(scope) = self.turn_scope else { return false };
+        if let Some(member) = &mut self.member { member.enter(&mut self.rt); }
+        let Some(scope) = self.turn_scope else { return self.member.is_some() };
         #[cfg(feature = "hot")]
         crate::hot::patched_or_original!("turn_scope::enter", scope.enter, &mut self.rt.state);
         #[cfg(not(feature = "hot"))]
@@ -328,9 +345,11 @@ impl<S: 'static> WindowApp for TypedWindowApp<S> {
             #[cfg(not(feature = "hot"))]
             (scope.leave)(&mut self.rt.state);
         }
+        if let Some(member) = &mut self.member { member.leave(&mut self.rt); }
     }
 
     fn run_on_close_request(&mut self) -> Option<crate::CloseResponse> {
+        debug_assert!(self.holds_state(), "rune: a window ran its app outside its turn");
         let f = self.on_close_request?;
         let mut response = crate::CloseResponse::Close;
         self.rt.update(|s, tx| {
@@ -347,6 +366,7 @@ impl<S: 'static> WindowApp for TypedWindowApp<S> {
     }
 
     fn run_on_quit_request(&mut self) -> Option<crate::QuitResponse> {
+        debug_assert!(self.holds_state(), "rune: a window ran its app outside its turn");
         let f = self.on_quit_request?;
         let mut response = crate::QuitResponse::Quit;
         self.rt.update(|s, tx| {
@@ -359,6 +379,7 @@ impl<S: 'static> WindowApp for TypedWindowApp<S> {
     }
 
     fn run_on_close(&mut self) {
+        debug_assert!(self.holds_state(), "rune: a window ran its app outside its turn");
         self.keep_layout();
         if let Some(f) = self.on_close {
             #[cfg(feature = "hot")]
@@ -369,6 +390,7 @@ impl<S: 'static> WindowApp for TypedWindowApp<S> {
     }
 
     fn run_on_quit(&mut self) -> bool {
+        debug_assert!(self.holds_state(), "rune: a window ran its app outside its turn");
         self.keep_layout();
         let Some(f) = self.on_quit else { return false };
         #[cfg(feature = "hot")]
@@ -379,6 +401,7 @@ impl<S: 'static> WindowApp for TypedWindowApp<S> {
     }
 
     fn run_on_rest(&mut self) {
+        debug_assert!(self.holds_state(), "rune: a window ran its app outside its turn");
         self.keep_layout();
         if let Some(f) = self.on_rest {
             #[cfg(feature = "hot")]
@@ -406,6 +429,7 @@ impl<S: 'static> WindowApp for TypedWindowApp<S> {
     fn watches_geometry(&self) -> bool { self.on_geometry.is_some() }
 
     fn run_on_geometry(&mut self, geometry: crate::WindowGeometry) {
+        debug_assert!(self.holds_state(), "rune: a window ran its app outside its turn");
         let Some(f) = self.on_geometry else { return };
         #[cfg(feature = "hot")]
         self.rt.update_if(|s, tx| crate::hot::patched_or_original!("on_window_geometry", f, s, geometry, tx));
@@ -424,6 +448,7 @@ impl<S: 'static> WindowApp for TypedWindowApp<S> {
     }
 
     fn drain_startup(&mut self, shortcuts: &crate::shortcuts::Guard, menus: &mut crate::native_menu::MenuGuard) {
+        debug_assert!(self.holds_state(), "rune: a window ran its app outside its turn");
         super::events::startup_updates(&self.shared, shortcuts, |f| {
             self.rt.update_if(f);
             menus.drain();
@@ -431,6 +456,7 @@ impl<S: 'static> WindowApp for TypedWindowApp<S> {
     }
 
     fn drain_window(&mut self, shortcuts: &crate::shortcuts::Guard, menus: &mut crate::native_menu::MenuGuard) -> (WindowRequests, bool, bool) {
+        debug_assert!(self.holds_state(), "rune: a window ran its app outside its turn");
         shortcuts.drain();
         menus.drain();
         let (mut had_updates, mut updated) = (false, false);
@@ -460,6 +486,7 @@ impl<S: 'static> WindowApp for TypedWindowApp<S> {
     }
 
     fn render_compositor(&mut self, args: CompositorFrame<'_>) -> bool {
+        debug_assert!(self.holds_state(), "rune: a window ran its app outside its turn");
         let Some(c) = self.comp.as_mut() else { return false };
         let mut f = Frame {
             device: args.device,
@@ -484,6 +511,7 @@ impl<S: 'static> WindowApp for TypedWindowApp<S> {
     }
 
     fn inspect_frame(&mut self) {
+        debug_assert!(self.holds_state(), "rune: a window ran its app outside its turn");
         if let Some(hook) = self.on_frame_drawn.as_mut() {
             hook(&self.rt);
         }
@@ -491,5 +519,8 @@ impl<S: 'static> WindowApp for TypedWindowApp<S> {
 
     fn text_idle_owed(&self) -> bool { self.rt.text_idle_owed() }
 
-    fn text_idle_turn(&mut self) -> bool { self.rt.text_idle_turn() }
+    fn text_idle_turn(&mut self) -> bool {
+        debug_assert!(self.holds_state(), "rune: a window ran its app outside its turn");
+        self.rt.text_idle_turn()
+    }
 }

@@ -147,6 +147,16 @@ pub(crate) trait Surface {
     fn hidden_parts(&mut self) -> crate::overlay::ios::Mounted<'_>;
     fn set_window(&mut self, key: String);
     fn close(&mut self);
+
+    fn enter_turn(&mut self);
+    fn leave_turn(&mut self);
+}
+
+pub(super) fn in_turn<R>(surface: &mut dyn Surface, f: impl FnOnce(&mut dyn Surface) -> R) -> R {
+    surface.enter_turn();
+    let result = f(&mut *surface);
+    surface.leave_turn();
+    result
 }
 
 pub(crate) struct OverlaySlot {
@@ -168,6 +178,13 @@ pub(super) struct Hosted<S: 'static> {
     pub(super) wake: Waker,
     pub(super) appearance: Appearance,
     pub(super) park: park::State,
+    pub(super) member: Option<crate::shared_state::Member<S>>,
+}
+
+impl<S: 'static> Drop for Hosted<S> {
+    fn drop(&mut self) {
+        if let Some(member) = &mut self.member { member.release(self.host.runtime_mut()); }
+    }
 }
 
 pub(super) enum Role<S: 'static> {
@@ -549,6 +566,14 @@ impl<S: 'static> Surface for Hosted<S> {
     fn close(&mut self) {
         if let Role::App(app) = &self.role && let Some(close) = app.on_close { self.host.runtime_mut().update(close); }
         (self.wake)();
+    }
+
+    fn enter_turn(&mut self) {
+        if let Some(member) = &mut self.member { member.enter(self.host.runtime_mut()); }
+    }
+
+    fn leave_turn(&mut self) {
+        if let Some(member) = &mut self.member { member.leave(self.host.runtime_mut()); }
     }
 }
 

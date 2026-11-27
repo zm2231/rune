@@ -1,0 +1,1 @@
+- **macOS tray items are findable by automation.** The status item's button carries the `TraySpec` id as its accessibility identifier (`AXIdentifier`) and the tray's accessibility label as its `AXDescription`, which `Tray::set_accessibility_label` keeps current, so VoiceOver and scripts find it in the app's extras menu bar, press it and read its label.

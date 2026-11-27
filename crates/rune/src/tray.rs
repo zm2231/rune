@@ -148,6 +148,11 @@ pub struct TraySpec {
     pub(crate) menu_on_primary_click: bool,
 }
 impl TraySpec {
+    /// A tray item named `title`, which screen readers announce until
+    /// [`Tray::set_accessibility_label`] replaces it. `id` is a stable application id
+    /// (`"dev.rune.app"`): the StatusNotifierItem `Id` on Linux, and on macOS the status item
+    /// button's accessibility identifier (`AXIdentifier`), so automation finds the item in the
+    /// app's extras menu bar (`AXExtrasMenuBar`, System Events' `menu bar 2`) by it.
     pub fn new(id: impl Into<String>, title: impl Into<String>, icon: TrayIcon) -> Self {
         Self { id: id.into(), title: title.into(), tooltip: String::new(), icon_name: String::new(), icon, menu: Vec::new(), menu_on_primary_click: false }
     }
@@ -307,8 +312,9 @@ impl Tray {
     /// [`TraySpec::new`] title. Use it when the icon changes to show a different state, so
     /// VoiceOver reads "App unavailable" rather than the name it launched with.
     ///
-    /// - macOS: the status item image's accessibility description, which VoiceOver reads; it
-    ///   carries over to icons set later with [`Tray::set_icon`].
+    /// - macOS: the status item button's accessibility label (`AXDescription`) and its image's
+    ///   accessibility description, which VoiceOver reads; both carry over to icons set later
+    ///   with [`Tray::set_icon`].
     /// - Linux: the StatusNotifierItem `Title` property (the one [`Tray::set_title`] sets), with
     ///   `NewTitle` emitted.
     /// - Windows: Narrator reads the icon's tooltip text, the one string Windows keeps for it. The

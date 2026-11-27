@@ -1,6 +1,9 @@
 //! An app with a second window and an overlay, on every platform. The main window opens a
 //! "Details" window, which keeps its own count, and shows a HUD on the bottom edge.
 //!
+//! Hiding the HUD fades it out, and once it is gone `OverlayHandle::after_hidden` counts the
+//! hide in the main window.
+//!
 //! On the desktop the details window is a window of its own and the HUD floats above other
 //! apps. On an iPad built with `scripts/ios-app --multiple-scenes` the details window is a scene
 //! of its own; on an iPhone it is a sheet over the main window, which a swipe down closes. On
@@ -11,6 +14,8 @@
 
 #![forbid(unsafe_code)]
 
+use std::time::Duration;
+
 use rune::tok::{self, type_};
 use rune::{App, AppHandle, AppSpec, Cx, El, OverlayHandle, OverlayInput, OverlayOptions, OverlaySpec, ScreenEdge, ScrollSpec, Tx, WindowOptions, WindowSpec, col, el, row, text};
 
@@ -18,8 +23,10 @@ struct Main {
     count: u32,
     tapped: Option<usize>,
     hud_shown: bool,
+    hud_hidden: u32,
     details: Option<AppHandle<Details>>,
     hud: Option<OverlayHandle<Hud>>,
+    me: Option<AppHandle<Main>>,
 }
 
 #[derive(Default)]
@@ -46,7 +53,11 @@ fn main_view(s: &Main, cx: &mut Cx<Main>) -> El {
         .child(button("open-details", "Open details".into(), &t, |s: &mut Main, _| if let Some(d) = &s.details { d.open() }))
         .child(button("toggle-hud", hud.into(), &t, |s: &mut Main, _| {
             s.hud_shown = !s.hud_shown;
-            if let Some(hud) = &s.hud { if s.hud_shown { hud.show() } else { hud.hide() } }
+            let Some(hud) = &s.hud else { return };
+            if s.hud_shown { return hud.show(); }
+            hud.fade_out(Duration::from_millis(400));
+            let me = s.me.clone();
+            hud.after_hidden(move |_, _| if let Some(me) = me { me.update(|s: &mut Main, _| s.hud_hidden += 1) });
         }))
         .child(button("count", format!("Count {}", s.count), &t, |s: &mut Main, _| s.count += 1));
     let tapped = match s.tapped {
@@ -64,6 +75,7 @@ fn main_view(s: &Main, cx: &mut Cx<Main>) -> El {
         .child(text("Windows").role("heading").level(1).font(type_::TITLE).color(t.text))
         .child(controls)
         .child(text(tapped).key("tapped").font(type_::BODY).color(t.text_secondary))
+        .child(text(format!("HUD hidden {} times", s.hud_hidden)).key("hud-hidden").font(type_::BODY).color(t.text_secondary))
         .child(col().key("rows").w_full().grow(1.0).shrink().scroll(ScrollSpec { stick_bottom: false }).child(rows))
 }
 
@@ -86,7 +98,7 @@ fn hud_view(s: &Hud, cx: &mut Cx<Hud>) -> El {
 }
 
 fn app() -> App<Main> {
-    let mut app = App::new(AppSpec::new("Windows", (420.0, 720.0), || Main { count: 0, tapped: None, hud_shown: false, details: None, hud: None }, main_view));
+    let mut app = App::new(AppSpec::new("Windows", (420.0, 720.0), || Main { count: 0, tapped: None, hud_shown: false, hud_hidden: 0, details: None, hud: None, me: None }, main_view));
     let details = App::new(AppSpec::new("Details", (360.0, 280.0), Details::default, details_view)).on_close(|s: &mut Details, _| s.closed += 1);
     let details = WindowSpec::from_app("details", details)
         .options(WindowOptions { visible: false, ..Default::default() });
@@ -94,7 +106,8 @@ fn app() -> App<Main> {
     let hud = OverlaySpec { edge: ScreenEdge::Bottom, margin: 24.0, interactive: true, ..OverlaySpec::new("HUD", (300.0, 56.0), hud_view) }
         .options(OverlayOptions { input: OverlayInput::Regions, ..Default::default() });
     let hud = app.overlay(hud, Hud::default());
-    app.init(move || Main { count: 0, tapped: None, hud_shown: false, details: Some(details), hud: Some(hud) })
+    let me = app.handle();
+    app.init(move || Main { count: 0, tapped: None, hud_shown: false, hud_hidden: 0, details: Some(details), hud: Some(hud), me: Some(me) })
 }
 
 fn main() {

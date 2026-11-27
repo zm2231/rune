@@ -92,7 +92,8 @@ pub struct FocusRequest<'a> {
 impl<'a> Requested<'a> {
     /// Every wake asked for ([`Tx::wake_after`], and [`Tx::wake_at`] as the time left), in order.
     pub fn wakes(&self) -> impl Iterator<Item = Duration> + 'a {
-        self.0.wakes.iter().copied()
+        let clock = self.0.clock;
+        self.0.wakes.iter().map(move |wake| wake.left(clock))
     }
 
     /// The soonest wake asked for.

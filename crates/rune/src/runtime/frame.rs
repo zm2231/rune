@@ -366,8 +366,8 @@ impl RuntimeCore {
         self.motion.keep_loops_on_clock(&self.scene, self.t, self.clock, self.time_scale, dt);
         let (polled, due) = self.frame.begin_frame_poll(self.clock);
         let due_touch = self.pointer.touch_hold_deadline().is_some_and(|d| d <= self.clock);
-        self.frame.idle_frame_begins(self.animating, polled || due > 0 || due_touch, live_woke);
-        self.frame.drain_due_wakes(due);
+        self.frame.idle_frame_begins(self.animating, polled || due || due_touch, live_woke);
+        if due { self.frame.drain_due_wakes(self.clock); }
         self.fire_hover_delays();
         self.fire_press_repeat();
         self.fire_edge_scroll();
@@ -508,7 +508,7 @@ impl RuntimeCore {
             self.latch_requests(app, &mut tx);
         }
         self.release_files();
-        self.schedule_wakes(tx.wakes.drain(..));
+        self.schedule_tx_wakes(tx.wakes.drain(..));
         self.motion.capture_flights(&self.tree.nodes, &mut self.paint, &mut self.text, self.env.scale, self.viewport, self.t, &mut tx);
         if self.edit.caret_watch && self.caret_moved(None) { self.commit.dirty = true; }
         let read_moved = self.layout_reads_moved();

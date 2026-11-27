@@ -5,6 +5,7 @@ use std::rc::Rc;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::Waker;
 use crate::Tx;
+use crate::machine::Effects;
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -43,49 +44,100 @@ impl QuickLook {
     pub fn index(&self) -> usize { self.index.min(self.files.len().saturating_sub(1)) }
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) enum State {
+    #[default]
+    Closed,
+    Asked(QuickLook),
+    Open(QuickLook),
+    Closing,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Event {
+    Show(QuickLook),
+    Close,
+    Taken,
+    UserClosed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Effect {
+    OpenChanged,
+}
+
+impl State {
+    fn open(&self) -> bool { matches!(self, Self::Asked(_) | Self::Open(_)) }
+
+    fn look(&self) -> Option<&QuickLook> {
+        match self {
+            Self::Asked(look) | Self::Open(look) => Some(look),
+            Self::Closed | Self::Closing => None,
+        }
+    }
+}
+
+pub(crate) fn step(state: &mut State, event: Event) -> Effects<Effect> {
+    let event = match event {
+        Event::Show(look) if look.files.is_empty() => Event::Close,
+        event => event,
+    };
+    let was_open = state.open();
+    *state = match (std::mem::take(state), event) {
+        (_, Event::Show(look)) => State::Asked(look),
+        (State::Asked(_) | State::Open(_) | State::Closing, Event::Close) => State::Closing,
+        (State::Asked(look), Event::Taken) => State::Open(look),
+        (State::Closing, Event::Taken) | (State::Open(_), Event::UserClosed) => State::Closed,
+        (other, _) => other,
+    };
+    if state.open() != was_open { Effects::one(Effect::OpenChanged) } else { Effects::none() }
+}
+
 #[derive(Default)]
 pub(crate) struct Previewing {
-    shown: Option<QuickLook>,
-    sent: bool,
+    state: State,
     closed: Rc<Cell<bool>>,
 }
 
 impl crate::runtime::RuntimeCore {
     pub(crate) fn request_quick_look(&mut self, look: Option<QuickLook>) {
-        let look = look.filter(|look| !look.files.is_empty() && !self.host.native_overlay);
-        let p = &mut self.host.quick_look;
-        if p.shown.is_some() != look.is_some() { self.commit.dirty = true; }
-        p.shown = look;
-        p.sent = false;
+        if self.host.native_overlay { return; }
+        self.quick_look_step(look.map_or(Event::Close, Event::Show));
     }
 
-    pub(crate) fn quick_look_open(&self) -> bool { self.host.quick_look.shown.is_some() }
+    pub(crate) fn quick_look_open(&self) -> bool { self.host.quick_look.state.open() }
 
-    pub(crate) fn quick_look(&self) -> Option<&QuickLook> { self.host.quick_look.shown.as_ref() }
+    pub(crate) fn quick_look(&self) -> Option<&QuickLook> { self.host.quick_look.state.look() }
 
     pub(crate) fn take_quick_look_closed(&mut self) {
-        let p = &mut self.host.quick_look;
-        if p.closed.take() && p.sent && p.shown.take().is_some() { self.commit.dirty = true; }
+        if self.host.quick_look.closed.take() { self.quick_look_step(Event::UserClosed); }
     }
 
     pub(crate) fn close_quick_look(&mut self) {
-        let p = &mut self.host.quick_look;
-        p.sent = true;
-        if p.shown.take().is_some() { self.commit.dirty = true; }
+        self.quick_look_step(Event::Taken);
+        self.quick_look_step(Event::UserClosed);
     }
 
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    fn take_quick_look(&mut self) -> Option<Option<QuickLook>> {
-        let p = &mut self.host.quick_look;
-        if std::mem::replace(&mut p.sent, true) { return None; }
-        p.closed.set(false);
-        Some(p.shown.clone())
+    pub(crate) fn take_quick_look(&mut self) -> Option<Option<QuickLook>> {
+        let take = match &self.host.quick_look.state {
+            State::Asked(look) => Some(Some(look.clone())),
+            State::Closing => Some(None),
+            State::Closed | State::Open(_) => None,
+        };
+        if take.is_some() {
+            self.host.quick_look.closed.set(false);
+            self.quick_look_step(Event::Taken);
+        }
+        take
+    }
+
+    fn quick_look_step(&mut self, event: Event) {
+        for Effect::OpenChanged in step(&mut self.host.quick_look.state, event) { self.commit.dirty = true; }
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn show_in_window(rt: &mut crate::runtime::RuntimeCore, window: Option<&winit::window::Window>, wake: impl FnOnce() -> Waker) {
-    if rt.host.quick_look.sent { return; }
     #[cfg(target_os = "macos")]
     if let Some(window) = window && let Some(look) = rt.take_quick_look() {
         let closed = rt.host.quick_look.closed.clone();
@@ -95,13 +147,12 @@ pub(crate) fn show_in_window(rt: &mut crate::runtime::RuntimeCore, window: Optio
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (window, wake);
-        rt.close_quick_look();
+        refuse(rt);
     }
 }
 
-#[cfg(any(test, target_vendor = "apple", target_arch = "wasm32"))]
 pub(crate) fn refuse(rt: &mut crate::runtime::RuntimeCore) {
-    if !rt.host.quick_look.sent { rt.close_quick_look(); }
+    if rt.take_quick_look().is_some() { rt.quick_look_step(Event::UserClosed); }
 }
 
 impl Tx {

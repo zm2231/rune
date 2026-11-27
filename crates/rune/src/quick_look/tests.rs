@@ -63,3 +63,12 @@ fn the_user_closing_the_panel_reruns_the_view_and_nothing_to_show_stays_closed()
     assert!(rt.quick_look().is_none());
     assert!(shows(&rt, "closed"));
 }
+
+#[test]
+fn a_runtime_that_never_asked_has_nothing_for_its_host() {
+    let mut rt = app(&["a.pdf"]);
+    assert_eq!(rt.core_mut().take_quick_look(), None);
+    press(&mut rt, 1.0 / 60.0);
+    assert!(rt.core_mut().take_quick_look().is_some_and(|look| look.is_some()));
+    assert_eq!(rt.core_mut().take_quick_look(), None, "taken once");
+}

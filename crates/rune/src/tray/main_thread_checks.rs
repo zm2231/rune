@@ -5,6 +5,7 @@ struct FakeStatusItem {
     image: RefCell<Option<Retained<NSImage>>>,
     titles: RefCell<Vec<String>>,
     tooltips: RefCell<Vec<Option<String>>>,
+    highlights: RefCell<Vec<bool>>,
     rect: Cell<Option<[i32; 4]>>,
     attached: RefCell<Option<Retained<NSMenu>>>,
     popped_menus: RefCell<Vec<Retained<NSMenu>>>,
@@ -18,6 +19,7 @@ impl FakeStatusItem {
             image: RefCell::new(None),
             titles: RefCell::new(Vec::new()),
             tooltips: RefCell::new(Vec::new()),
+            highlights: RefCell::new(Vec::new()),
             rect: Cell::new(Some([2400, 0, 56, 48])),
             attached: RefCell::new(None),
             popped_menus: RefCell::new(Vec::new()),
@@ -38,6 +40,10 @@ impl StatusItemHost for FakeStatusItem {
 
     fn set_tooltip(&self, tooltip: Option<&str>) {
         self.tooltips.borrow_mut().push(tooltip.map(str::to_owned));
+    }
+
+    fn set_highlighted(&self, highlighted: bool) {
+        self.highlights.borrow_mut().push(highlighted);
     }
 
     fn screen_rect(&self, _mtm: MainThreadMarker) -> Option<[i32; 4]> {
@@ -83,6 +89,7 @@ fn new_with_fake(
         thickness,
         menu: spec.menu,
         rect: None,
+        highlighted: false,
     }));
     let target = alloc_button_target(mtm, id, model.clone(), Arc::new(on_event), spec.menu_on_primary_click);
     let fake = Rc::new(FakeStatusItem::new());
@@ -350,4 +357,26 @@ pub fn menu_on_primary_click_attaches_a_menu_filled_when_it_opens(mtm: MainThrea
     drop(native);
     assert!(attached.delegate().is_none());
     assert!(fake.removed.get());
+}
+
+pub fn set_highlighted_survives_icon_title_and_menu_updates(mtm: MainThreadMarker) {
+    let spec = TraySpec::new("dev.rune.pill", "Pill", TrayIcon::rgba(16, 16, vec![255; 16 * 16 * 4]))
+        .menu(vec![TrayItem::action("a", "A")]);
+    let (native, fake, target) = new_with_fake(mtm, spec, 22.0, |_| {}).unwrap();
+
+    native.set_title("1".into());
+    native.set_icon(TrayIcon::rgba(16, 16, vec![0; 16 * 16 * 4])).unwrap();
+    assert!(fake.highlights.borrow().is_empty());
+
+    native.set_highlighted(true);
+    native.set_title("2".into());
+    native.set_icon(TrayIcon::rgba(16, 16, vec![255; 16 * 16 * 4])).unwrap();
+    assert_eq!(*fake.highlights.borrow(), vec![true; 3]);
+    target.handle_click(mtm, TrayClick::Secondary);
+    assert_eq!(fake.popped_menus.borrow().len(), 1);
+
+    native.set_highlighted(false);
+    native.set_title("3".into());
+    assert_eq!(*fake.highlights.borrow(), vec![true, true, true, false]);
+    drop(native);
 }

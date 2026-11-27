@@ -40,6 +40,7 @@ fn main() {
     checks::fake_host_lifecycle_menu_tooltip_clicks_and_drop(mtm);
     checks::callback_panic_is_caught_and_reentrant_menu_click_is_ignored(mtm);
     checks::fake_host_set_icon_set_title_rect_and_check_menu_items(mtm);
+    checks::set_highlighted_survives_icon_title_and_menu_updates(mtm);
     checks::menu_on_primary_click_attaches_a_menu_filled_when_it_opens(mtm);
     println!("tray_macos: fake status item checks ok");
 

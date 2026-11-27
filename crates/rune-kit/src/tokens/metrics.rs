@@ -60,6 +60,45 @@ impl ButtonMetrics {
     }
 }
 
+/// A square [`IconButton`](crate::IconButton)'s box and glyph size at one size.
+///
+/// ```
+/// # use rune_kit::{BySize, ControlSize, IconButton, IconButtonMetrics, Kit};
+/// let mut k = Kit::neutral(true);
+/// let ib = |size, radius, icon| IconButtonMetrics { size, radius, icon };
+/// k.metrics.icon_button = Some(BySize {
+///     mini: ib(24.0, 6.0, 14.0),
+///     small: ib(28.0, 8.0, 16.0),
+///     regular: ib(32.0, 8.0, 16.0),
+///     large: ib(36.0, 10.0, 18.0),
+///     extra_large: ib(40.0, 10.0, 20.0),
+/// });
+/// let _ = IconButton::new(k.glyph.close).control_size(ControlSize::Regular).build(&k);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct IconButtonMetrics {
+    /// Width and height of the square button, in points.
+    pub size: f32,
+    pub radius: f32,
+    /// Glyph size, in points.
+    pub icon: f32,
+}
+
+impl IconButtonMetrics {
+    /// The built-in table: 16, 20, 24, 28 and 36 point squares with `k.radius` corners
+    /// (`sm`, `sm`, `md`, `md`, `lg`) and 12, 16, 16, 16 and 18 point glyphs.
+    pub fn kit(k: &Kit) -> BySize<IconButtonMetrics> {
+        let m = |size, radius, icon| IconButtonMetrics { size, radius, icon };
+        BySize {
+            mini: m(16.0, k.radius.sm, 12.0),
+            small: m(20.0, k.radius.sm, 16.0),
+            regular: m(24.0, k.radius.md, 16.0),
+            large: m(28.0, k.radius.md, 16.0),
+            extra_large: m(36.0, k.radius.lg, 18.0),
+        }
+    }
+}
+
 /// A compact [`Switch`](crate::Switch)'s track and knob at one size. The track is a capsule and
 /// the knob a pill, `inset` points in from the track's edges.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -189,14 +228,18 @@ impl CheckboxColors {
     }
 }
 
-/// A [`SegmentedControl`](crate::SegmentedControl)'s height, horizontal segment padding and
-/// corner radius.
+/// A [`SegmentedControl`](crate::SegmentedControl)'s height, horizontal segment padding, corner
+/// radius, and the groove left around the selected pill and between segments.
 ///
 /// ```
 /// # use rune_kit::{Kit, SegmentedControl, SegmentedMetrics};
 /// let mut k = Kit::neutral(true);
 /// k.metrics.segmented = Some(SegmentedMetrics { height: 24.0, padding_x: 8.0, ..SegmentedMetrics::kit(&k) });
 /// let _ = SegmentedControl::new(&["List", "Grid"], Some(0)).build(&k);
+///
+/// // A 20-point pill with 2 points of groove around it and between segments.
+/// k.metrics.segmented = Some(SegmentedMetrics { inset: 2.0, gap: 2.0, ..SegmentedMetrics::kit(&k) });
+/// let _ = SegmentedControl::new(&["Edit", "Color", "Export"], Some(0)).build(&k);
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SegmentedMetrics {
@@ -204,12 +247,18 @@ pub struct SegmentedMetrics {
     /// Padding left and right of each segment's content.
     pub padding_x: f32,
     pub radius: f32,
+    /// Groove between the control's edge and its segments, so the selected pill sits inside it
+    /// (`height - 2 * inset` tall, with `radius - inset` corners). At most half the height.
+    pub inset: f32,
+    /// Space between neighbouring segments.
+    pub gap: f32,
 }
 
 impl SegmentedMetrics {
-    /// The built-in box: 28 points tall, 12 points of side padding and `k.radius.md` corners.
+    /// The built-in box: 28 points tall, 12 points of side padding, `k.radius.md` corners, and a
+    /// pill that fills its segment (no inset, no gap).
     pub fn kit(k: &Kit) -> SegmentedMetrics {
-        SegmentedMetrics { height: 28.0, padding_x: 12.0, radius: k.radius.md }
+        SegmentedMetrics { height: 28.0, padding_x: 12.0, radius: k.radius.md, inset: 0.0, gap: 0.0 }
     }
 }
 
@@ -432,11 +481,11 @@ impl MenuMetrics {
 ///
 /// ```
 /// # use rune_kit::{
-/// #     BySize, ButtonMetrics, DialogMetrics, FieldMetrics, KeybindMetrics, Kit, MenuMetrics,
-/// #     PopupRowMetrics, ProgressMetrics, SegmentedMetrics, SwitchLook,
+/// #     BySize, ButtonMetrics, DialogMetrics, FieldMetrics, IconButtonMetrics, KeybindMetrics,
+/// #     Kit, MenuMetrics, PopupRowMetrics, ProgressMetrics, SegmentedMetrics, SwitchLook,
 /// # };
 /// let mut k = Kit::neutral(true);
-/// // Tailwind's 24/28/32/36 buttons.
+/// // Tailwind's 24/28/32/36 buttons and matching square icon buttons.
 /// let m = |height, padding_x, radius| ButtonMetrics { height, padding_x, radius, icon: 16.0 };
 /// k.metrics.button = Some(BySize {
 ///     mini: m(24.0, 8.0, 6.0),
@@ -444,6 +493,14 @@ impl MenuMetrics {
 ///     regular: m(32.0, 10.0, 8.0),
 ///     large: m(36.0, 12.0, 10.0),
 ///     extra_large: m(40.0, 16.0, 10.0),
+/// });
+/// let ib = |size, radius| IconButtonMetrics { size, radius, icon: 16.0 };
+/// k.metrics.icon_button = Some(BySize {
+///     mini: ib(24.0, 6.0),
+///     small: ib(28.0, 8.0),
+///     regular: ib(32.0, 8.0),
+///     large: ib(36.0, 10.0),
+///     extra_large: ib(40.0, 10.0),
 /// });
 /// // A 32 point field, 11 points in, with a 3 point focus halo outside its edge.
 /// k.metrics.field = Some(FieldMetrics {
@@ -471,6 +528,9 @@ pub struct Metrics {
     /// Push [`Button`](crate::Button) boxes per [`ControlSize`]; else [`ButtonMetrics::kit`].
     /// The deprecated `ButtonSize` sizes keep their own metrics.
     pub button: Option<BySize<ButtonMetrics>>,
+    /// Square [`IconButton`](crate::IconButton) boxes and glyph sizes per [`ControlSize`]; else
+    /// [`IconButtonMetrics::kit`].
+    pub icon_button: Option<BySize<IconButtonMetrics>>,
     /// Compact [`Switch`](crate::Switch) sizes per [`ControlSize`]; else
     /// [`SwitchMetrics::NS_SWITCH`]. The web and standard appearances keep their own.
     pub switch: Option<BySize<SwitchMetrics>>,
@@ -523,6 +583,10 @@ impl Kit {
     pub(crate) fn button_metrics(&self, size: ControlSize) -> ButtonMetrics {
         self.metrics.button.unwrap_or_else(|| ButtonMetrics::kit(self)).get(size)
     }
+    pub(crate) fn icon_button_metrics(&self, size: ControlSize) -> IconButtonMetrics {
+        let m = self.metrics.icon_button.unwrap_or_else(|| IconButtonMetrics::kit(self)).get(size);
+        IconButtonMetrics { size: non_neg(m.size), radius: non_neg(m.radius), icon: non_neg(m.icon) }
+    }
     pub(crate) fn switch_metrics(&self, size: ControlSize) -> SwitchMetrics {
         self.metrics.switch.unwrap_or(SwitchMetrics::NS_SWITCH).get(size)
     }
@@ -542,7 +606,14 @@ impl Kit {
 
     pub(crate) fn segmented_metrics(&self) -> SegmentedMetrics {
         let m = self.metrics.segmented.unwrap_or_else(|| SegmentedMetrics::kit(self));
-        SegmentedMetrics { height: non_neg(m.height), padding_x: non_neg(m.padding_x), radius: non_neg(m.radius) }
+        let height = non_neg(m.height);
+        SegmentedMetrics {
+            height,
+            padding_x: non_neg(m.padding_x),
+            radius: non_neg(m.radius),
+            inset: non_neg(m.inset).min(height / 2.0),
+            gap: non_neg(m.gap),
+        }
     }
     pub(crate) fn disclosure_header_height(&self) -> f32 {
         non_neg(self.metrics.disclosure_header_height.unwrap_or(32.0))

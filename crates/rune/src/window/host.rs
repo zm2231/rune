@@ -472,17 +472,14 @@ impl Host {
         if replays { println!("rune-script-window {}", native_handle.key()); }
         {
             let rt = app.rt_mut();
-            rt.set_system_reduced_motion(crate::platform::preferences::reduced_motion());
-            rt.set_system_contrast(crate::platform::preferences::contrast());
-            rt.set_system_increased_contrast(crate::platform::preferences::increased_contrast());
-            rt.set_full_keyboard_access(crate::platform::preferences::full_keyboard_access());
+            crate::input::host_events::refresh_accessibility_preferences(rt);
             crate::platform::accent::watch();
             rt.set_system_accent(crate::system_accent());
             crate::platform::scroll_bars::watch();
             rt.set_system_scroll_bars_state(crate::platform::scroll_bars::current().with_override(args.scroll_bars));
             rt.frame.enable_trace_channels(args.trace.is_some());
             rt.set_live_waker(Arc::new(move || { live_proxy.send_event(WakeEvent::Live(slot)).ok(); }));
-            rt.set_os_drag(crate::drag_out::SUPPORTED);
+            rt.set_os_drag(crate::drag_out::supported(wayland));
             rt.transparent = options.transparent;
             rt.track_marks = has_comp;
             rt.wall_start = Some(crate::time::now());

@@ -63,7 +63,7 @@ accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "<dev rev>"
 accesskit_atspi_common = { git = "https://github.com/anomalyco/rune", rev = "<dev rev>" }
 ```
 
-Rune is pre-release. Pin a rev of `dev`; `dev` is never rewritten. Cargo does not inherit `[patch.crates-io]` from a dependency, so put those patches in your workspace root `Cargo.toml` at the same `rev`. When pinning or bumping `rev`, check Rune's [`Cargo.toml`](Cargo.toml) for the current `[patch.crates-io]` list and see [Depending on Rune](crates/rune/README.md#depending-on-rune) for details.
+Rune is pre-release. Pin a rev of `dev`; `dev` is never rewritten. Cargo does not inherit `[patch.crates-io]` from a dependency, so put those patches in your workspace root `Cargo.toml` at the same `rev`. When pinning or bumping `rev`, check Rune's [`Cargo.toml`](Cargo.toml) for the current `[patch.crates-io]` list and see [Depending on Rune](crates/rune/README.md#depending-on-rune) for details. To build from an internal mirror or without network, see [From a mirror or without network](crates/rune/README.md#from-a-mirror-or-without-network); every Rune line must use the same URL as well as the same `rev`, and [`scripts/check_rune_pins.py`](scripts/check_rune_pins.py) checks that on each bump.
 
 On Windows, the MSVC toolchain (`x86_64-pc-windows-msvc`, rustup's default) needs only the Visual Studio C++ build tools rustup asks for. The GNU toolchain (`x86_64-pc-windows-gnu`) also needs MinGW-w64's binutils on `PATH`: `windows-link` (under `parking_lot`, `libloading`, `windows-core` and `windows-sys`, so under every Windows UI crate) imports with `raw-dylib`, rustc makes those import libraries with `dlltool` on GNU targets, and the `dlltool` in rustup's `rust-mingw` can't run without an `as` it doesn't ship ([rust-lang/rust#140704](https://github.com/rust-lang/rust/issues/140704)). Without binutils the build stops at `windows-result` with `error calling dlltool 'dlltool.exe': program not found`. Install [MSYS2](https://www.msys2.org), run `pacman -S mingw-w64-ucrt-x86_64-binutils`, and put `C:\msys64\ucrt64\bin` on `PATH` (or build with `RUSTFLAGS=-Cdlltool=C:\msys64\ucrt64\bin\dlltool.exe`).
 
@@ -71,7 +71,20 @@ On Windows, the MSVC toolchain (`x86_64-pc-windows-msvc`, rustup's default) need
 
 Pinning a `dev` git revision above remains the supported way to use Rune. Maintainers stage, verify, and publish `0.0.0-dev.N` development snapshots under `rune-ui` (with `[lib] name = "rune"` and twelve `rune-ui-*` internal crates) using `scripts/publish-crates.sh --version <ver> --rev <rev>` (dry run by default; `--publish --wait` uploads in dependency order without modifying committed manifests). Consumers of `rune-ui` still add the same workspace `[patch.crates-io]` block pinned to that snapshot's commit.
 
-[Docs](crates/rune/README.md) · [Components](crates/rune-kit/README.md) · [Examples](examples) · [Changelog](CHANGELOG.md)
+### CLI (`rune`)
+
+Install the cross-platform CLI (`crates/rune-cli`) to scaffold new projects, verify Rune pins, and run the guarded hot-reload / watch-and-restart dev loop without Bash or Python:
+
+```sh
+cargo install --git https://github.com/anomalyco/rune --rev <dev rev> rune-cli
+rune new my-app
+cd my-app
+rune dev
+```
+
+See [`crates/rune-cli/README.md`](crates/rune-cli/README.md) for `rune new`, `rune dev`, `rune check`, `rune doctor`, and `rune.toml` / `[package.metadata.rune.dev]` options.
+
+[Docs](crates/rune/README.md) · [CLI](crates/rune-cli/README.md) · [Components](crates/rune-kit/README.md) · [Examples](examples) · [Changelog](CHANGELOG.md)
 
 ## Contributing
 

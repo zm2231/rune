@@ -5,10 +5,8 @@
 //! window keeps drawing while it shows. Escape closes it, with none: the popover never becomes key,
 //! so a local event monitor, installed while a picker shows, takes Escape in the window under it
 //! before AppKit dispatches it, and neither that press, its repeats nor its release reach the app.
-//! Should `close` not answer, the share answers none anyway, and the popover's window is closed
-//! when it is the only picker's. A runtime that answers its share itself, as when its window hides,
-//! closes or loses its GPU surface (`RuntimeCore::cancel_shares`), closes and forgets its pickers.
-//! `RUNE_SHARE_LOG=1` logs each step to stderr.
+//! A runtime that answers its share itself, as when its window hides, closes or loses its GPU
+//! surface (`RuntimeCore::cancel_shares`), closes and forgets its pickers.
 
 #![allow(unsafe_code)]
 
@@ -18,7 +16,7 @@ use block2::RcBlock;
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyObject, NSObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, msg_send, sel};
-use objc2_app_kit::{NSApplication, NSWindow};
+use objc2_app_kit::NSWindow;
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSString, NSURL};
 
@@ -30,11 +28,6 @@ const KEY_DOWN_AND_UP: usize = (1 << 10) | (1 << 11);
 const KEY_DOWN: usize = 10;
 const KEY_UP: usize = 11;
 const ESCAPE: u16 = 53;
-
-fn log() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("RUNE_SHARE_LOG").is_some_and(|v| v != "0"))
-}
 
 define_class!(
     // SAFETY: `NSObject` has no subclassing requirements, and the class has no `Drop`.
@@ -53,7 +46,6 @@ define_class!(
                 let title: Retained<NSString> = unsafe { msg_send![service, title] };
                 title.to_string()
             });
-            if log() { eprintln!("rune: share picker delegate answered {title:?}"); }
             self.answer(title);
         }
     }
@@ -77,7 +69,6 @@ struct Showing {
     picker: Retained<AnyObject>,
     delegate: Retained<Delegate>,
     host: Retained<NSWindow>,
-    before: Vec<Retained<NSWindow>>,
 }
 
 thread_local! {
@@ -107,7 +98,6 @@ fn watch_escape() {
     let token: Option<Retained<AnyObject>> = unsafe {
         msg_send![class!(NSEvent), addLocalMonitorForEventsMatchingMask: KEY_DOWN_AND_UP, handler: &*handler]
     };
-    if log() { eprintln!("rune: share picker Escape monitor installed: {}", token.is_some()); }
     MONITOR.with(|m| *m.borrow_mut() = token);
 }
 
@@ -118,11 +108,6 @@ fn unwatch_if_idle() {
         // SAFETY: the token came from addLocalMonitorForEventsMatchingMask.
         unsafe { let _: () = msg_send![class!(NSEvent), removeMonitor: &*token]; }
     }
-}
-
-fn class_name(object: &NSWindow) -> String {
-    let object: &AnyObject = object;
-    object.class().name().to_string_lossy().into_owned()
 }
 
 /// Takes out the pickers showing `sharing`'s shares and drops their replies, so they answer
@@ -137,7 +122,6 @@ pub(crate) fn forget(sharing: &super::Sharing) {
     });
     if gone.is_empty() { return; }
     for s in &gone { drop(s.delegate.ivars().borrow_mut().take()); }
-    if log() { eprintln!("rune: share picker forgetting {} picker(s) whose shares were cancelled", gone.len()); }
     crate::platform::macos::run_later("share picker", move || {
         for Showing { picker, .. } in gone {
             // SAFETY: as in `escape`.
@@ -165,29 +149,14 @@ fn escape(window: Retained<NSWindow>, pressed: bool, repeat: bool) -> bool {
     }
     let open: Vec<Showing> = SHOWING.with(|showing| showing.borrow().iter()
         .filter(|s| mine(&s.host) && s.delegate.open()).cloned().collect());
-    if log() { eprintln!("rune: share picker Escape keyDown in window {}: {} open picker(s) over it", class_name(&window), open.len()); }
     if open.is_empty() { return false; }
-    for Showing { picker, delegate, before, .. } in open {
+    for Showing { picker, .. } in open {
         // SAFETY: `respondsToSelector:` takes a selector and returns a `BOOL`; `close` takes no
         // arguments and answers the delegate with no service.
-        let closes = unsafe {
+        unsafe {
             let closes: bool = msg_send![&*picker, respondsToSelector: sel!(close)];
             if closes { let _: () = msg_send![&*picker, close]; }
-            closes
-        };
-        if log() { eprintln!("rune: share picker close {}; answered at once: {}", if closes { "sent" } else { "unavailable" }, !delegate.open()); }
-        crate::platform::macos::run_later("share picker", move || {
-            if !delegate.open() { return; }
-            let Some(mtm) = MainThreadMarker::new() else { return };
-            let alone = SHOWING.with(|showing| showing.borrow().iter().filter(|s| s.delegate.open()).count() == 1);
-            let popovers: Vec<Retained<NSWindow>> = NSApplication::sharedApplication(mtm).windows().iter()
-                .filter(|w| w.isVisible() && !before.iter().any(|b| std::ptr::eq(&**b, &**w)) && class_name(w).contains("Popover"))
-                .collect();
-            let close = alone && popovers.len() == 1;
-            if log() { eprintln!("rune: share picker still open after close; {} popover window(s) new since it showed; closing it: {close}; answering none", popovers.len()); }
-            if close { popovers[0].close(); }
-            delegate.answer(None);
-        });
+        }
     }
     ESCAPED.with(|escaped| escaped.borrow_mut().push(window));
     true
@@ -223,9 +192,8 @@ pub(crate) fn show(shown: Shown, window: &winit::window::Window) {
             let _: () = msg_send![&*picker, setDelegate: &*delegate];
             picker
         };
-        let before = NSApplication::sharedApplication(mtm).windows().iter().collect();
         SHOWING.with(|showing| {
-            showing.borrow_mut().push(Showing { picker: picker.clone(), delegate, host, before });
+            showing.borrow_mut().push(Showing { picker: picker.clone(), delegate, host });
         });
         watch_escape();
         // SAFETY: `bounds` is a rect and `isFlipped` a `BOOL` of the view, and the picker shows

@@ -994,6 +994,7 @@ fn a_failed_first_window_ends_the_loop_with_its_error_unless_another_window_stay
     assert_eq!(startup_error, None);
 }
 
+#[cfg(not(target_os = "ios"))]
 #[test]
 fn no_direct_surface_configure_outside_helper() {
     fn walk(dir: &std::path::Path, bad: &mut Vec<String>) {

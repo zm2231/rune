@@ -167,11 +167,16 @@ fn scene(s: &Scene, cx: &mut Cx<Scene>) -> El {
             let menu = Menu::new("menu")
                 .trigger(Button::new("Edit").build(k))
                 .item(MenuItem::new("Copy").icon(&STAR))
-                .item(MenuItem::new("Wrap").checked(true))
+                .item(MenuItem::new("Word wrap").shortcut("\u{2325} Z").checked(true))
                 .item(MenuItem::new("More").submenu(vec![MenuEntry::item(MenuItem::new("Less"))], false))
                 .open(true)
                 .build(k, &mut layer);
-            let select = Select::new("select", &["One", "Two"]).current(Some("One")).open(true).build(k, &mut layer);
+            let wide = Menu::new("wide")
+                .trigger(Button::new("View").build(k))
+                .item(MenuItem::new("Show the minimap beside the editor"))
+                .open(true)
+                .build(k, &mut layer);
+            let select = Select::new("select", &["One", "Elderberry"]).current(Some("One")).open(true).build(k, &mut layer);
             let tabs = TabStrip::new("tabs", TabOrientation::Horizontal)
                 .tabs([TabItem::new("a", "Alpha").icon(&STAR).closable(true), TabItem::new("b", "Beta").status(Some(crate::shell::TabItemStatus::Busy))])
                 .viewport_width(Some(400.0))
@@ -182,7 +187,7 @@ fn scene(s: &Scene, cx: &mut Cx<Scene>) -> El {
             let folder = TreeItem::new("lib").build(k, &TreeRow::new("lib", 0).expanded(Some(true)), &TreeStyle::from_kit(k));
             let diff = crate::diff::DiffView::new(|s: &Scene| &s.diff, |s: &mut Scene| &mut s.diff).on_comment(|_: &mut Scene, _, _| {}).build(s, k);
             #[cfg(feature = "markdown")]
-            let markdown = crate::Markdown::new("# One\n\n## Two\n\n### Three\n\n#### Four\n\nBody with `code`.\n\n![Missing chart](missing.png)\n\n```\nlet x = 1;\n```\n").build(k);
+            let markdown = crate::Markdown::new("# One\n\n## Two\n\n### Three\n\n#### Four\n\nBody with `code`.\n\n1. First\n2. Second\n\n![Missing chart](missing.png)\n\n```\nlet x = 1;\n```\n").build(k);
             #[cfg(not(feature = "markdown"))]
             let markdown = el();
             #[cfg(feature = "markdown")]
@@ -197,8 +202,18 @@ fn scene(s: &Scene, cx: &mut Cx<Scene>) -> El {
                 .child(row().child(tabs.key("tab_strip")))
                 .child(row().child(list.key("list")))
                 .child(row().child(menu))
+                .child(row().child(wide))
                 .child(row().child(select))
-                .child(Toast::new("toast", "Saved").icon(k, &STAR).closable().build(k).key("toast"))
+                .child(
+                    Toast::new("toast", "Download started")
+                        .icon(k, &STAR)
+                        .description("23% \u{b7} 2 min left")
+                        .closable()
+                        .action(k, "Run in background", true, |_: &mut Scene, _: &mut rune::Tx| {})
+                        .action(k, "Cancel", false, |_: &mut Scene, _: &mut rune::Tx| {})
+                        .build(k)
+                        .key("toast"),
+                )
                 .child(SidebarHeader::new("Pinned").collapsed(false).build(k).key("sidebar_header"))
                 .child(el().w(240.0).child(SidebarRow::new("Inbox").icon(&STAR).status(crate::shell::RowStatus::Busy).build(k).key("sidebar_icon_row")))
                 .child(el().w(300.0).child(tree.key("tree_row")))
@@ -270,6 +285,28 @@ fn at_twice_the_text_size_kit_text_and_the_glyphs_beside_it_double() {
             assert!((label.target[0] - subtitle.target[0]).abs() < 0.5, "{row}'s subtitle {:?} starts under its label {:?}", subtitle.target, label.target);
         }
     }
+
+    for (scale, els) in [(1.0, &plain), (2.0, &big)] {
+        for key in ["menu-menu", "wide-menu", "select-content", "toast"] {
+            let root = els.iter().find(|e| e.key.as_deref() == Some(key)).unwrap_or_else(|| panic!("{key} at {scale}x"));
+            let right = root.target[0] + root.target[2];
+            for e in els.iter().filter(|e| e.path.starts_with(&format!("{}/", root.path))) {
+                assert!(!e.text_cut, "{key} cuts {:?} at {scale}x", e.text);
+                assert!(e.target[0] + e.target[2] <= right + 0.5, "{key}'s {} {:?} ends past its right edge {right} at {scale}x", e.path, e.text);
+            }
+        }
+        #[cfg(feature = "markdown")]
+        for (marker, item) in [("1.", "First"), ("2.", "Second")] {
+            let find = |t: &str| els.iter().find(|e| e.path.contains("/markdown/") && e.text.as_deref() == Some(t)).unwrap_or_else(|| panic!("markdown {t:?} at {scale}x"));
+            let (m, i) = (find(marker), find(item));
+            let size = m.text_style.as_ref().unwrap().size;
+            let ink = m.target[0] + (m.target[2] + m.text_size.unwrap()[0]) / 2.0;
+            assert!(i.target[0] - ink >= size * 0.25, "the list marker {marker:?} ends {} before its text at {scale}x", i.target[0] - ink);
+        }
+    }
+
+    let width = |els: &[rune::ElementInfo]| els.iter().find(|e| e.key.as_deref() == Some("menu-menu")).expect("the menu").target[2];
+    assert!(width(&big) >= width(&plain) * 2.0 - 0.5, "a menu of short labels keeps its least width at its text's size: {} to {}", width(&plain), width(&big));
 
     let mut pluses = 0;
     for b in big.iter().filter(|e| e.key.as_deref() == Some("plus")) {

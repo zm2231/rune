@@ -319,10 +319,11 @@ fn cap(key: char) -> String {
     if key == ' ' { "Space".into() } else { key.to_ascii_uppercase().to_string() }
 }
 
-/// A shortcut as the bar shows it: "⇧⌘D", or "Ctrl+Shift+D" off macOS. Its menu item and the
-/// window both match the character, so this is the key on every layout.
+/// A shortcut as the bar shows it: "⇧⌘D" with Mac keys (macOS, iOS), or "Ctrl+Shift+D"
+/// elsewhere. Its menu item and the window both match the character, so this is the key on
+/// every layout.
 fn keycaps(shortcut: &Shortcut) -> String {
-    shortcut.menu_keycaps().join(if cfg!(target_os = "macos") { "" } else { "+" })
+    shortcut.menu_keycaps().join(if crate::edit::MAC_KEYS { "" } else { "+" })
 }
 
 /// A quiet square button showing `glyph`, named by `label` in its tooltip; `on` fills it as the

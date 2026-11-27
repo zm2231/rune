@@ -343,17 +343,18 @@ fn a_new_system_scroll_bar_setting_rebuilds_the_view_and_its_memos() {
     let mut rt = Runtime::new((), view, (300.0, 40.0), Env::new(true, 1.0));
     rt.frame(0.0);
     let w = |rt: &Runtime<()>, key: &str| rt.presented(key).unwrap().0[2];
+    let classic = if cfg!(target_os = "ios") { (20.0, 30.0) } else { (80.0, 90.0) };
     assert_eq!((w(&rt, "cx"), w(&rt, "memo")), (20.0, 30.0), "headless defaults to WhenScrolling");
     rt.set_system_scroll_bars(crate::ScrollBars::Always);
     rt.frame(5.0);
-    assert_eq!((w(&rt, "cx"), w(&rt, "memo")), (80.0, 90.0));
+    assert_eq!((w(&rt, "cx"), w(&rt, "memo")), classic, "iOS scroll bars always overlay");
     rt.set_system_scroll_bars(crate::ScrollBars::Automatic);
     rt.set_system_scroller_overlay(true);
     rt.frame(5.0);
     assert_eq!((w(&rt, "cx"), w(&rt, "memo")), (20.0, 30.0));
     rt.set_system_scroller_overlay(false);
     rt.frame(5.0);
-    assert_eq!((w(&rt, "cx"), w(&rt, "memo")), (80.0, 90.0));
+    assert_eq!((w(&rt, "cx"), w(&rt, "memo")), classic);
 }
 
 #[test]

@@ -25,7 +25,7 @@ fn shift(key: Key) -> KeyEvent {
 
 fn word_key(key: Key, extend: bool) -> KeyEvent {
     let mut mods = Mods { shift: extend, ..Mods::default() };
-    if cfg!(target_os = "macos") {
+    if crate::edit::MAC_KEYS {
         mods.alt = true;
     } else {
         mods.ctrl = true;
@@ -34,7 +34,7 @@ fn word_key(key: Key, extend: bool) -> KeyEvent {
 }
 
 fn line_key(end: bool, extend: bool) -> KeyEvent {
-    if cfg!(target_os = "macos") {
+    if crate::edit::MAC_KEYS {
         KeyEvent {
             key: if end { Key::Right } else { Key::Left },
             mods: Mods { cmd: true, shift: extend, ..Mods::default() },
@@ -48,7 +48,7 @@ fn line_key(end: bool, extend: bool) -> KeyEvent {
 }
 
 fn doc_key(end: bool, extend: bool) -> KeyEvent {
-    if cfg!(target_os = "macos") {
+    if crate::edit::MAC_KEYS {
         KeyEvent {
             key: if end { Key::Down } else { Key::Up },
             mods: Mods { cmd: true, shift: extend, ..Mods::default() },

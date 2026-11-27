@@ -15,8 +15,8 @@ pub struct HoverCard {
     open: bool,
     placement: Placement,
     gutter: f32,
-    min_width: f32,
-    max_width: f32,
+    min_width: Option<f32>,
+    max_width: Option<f32>,
     width: Option<f32>,
     hover: Option<Box<dyn FnOnce(El) -> El>>,
     role: Option<&'static str>,
@@ -32,8 +32,8 @@ impl HoverCard {
             open: false,
             placement: Placement::Bottom,
             gutter: 4.0,
-            min_width: 200.0,
-            max_width: 320.0,
+            min_width: None,
+            max_width: None,
             width: None,
             hover: None,
             role: None,
@@ -67,7 +67,8 @@ impl HoverCard {
         self.gutter = g;
         self
     }
-    /// Minimum width of the card surface in points (default 200). Overridden by [`Self::width`].
+    /// Minimum width of the card surface in points (default 200 at the default text size,
+    /// following the kit's text size). Overridden by [`Self::width`].
     ///
     /// ```
     /// use rune_kit::HoverCard;
@@ -75,10 +76,11 @@ impl HoverCard {
     /// let _card = HoverCard::new("preview").min_width(140.0);
     /// ```
     pub fn min_width(mut self, w: f32) -> Self {
-        self.min_width = w;
+        self.min_width = Some(w);
         self
     }
-    /// Maximum width of the card surface in points (default 320; lower [`Self::min_width`] as
+    /// Maximum width of the card surface in points (default 320 at the default text size,
+    /// following the kit's text size; lower [`Self::min_width`] as
     /// well to allow cards narrower than 200). Overridden by [`Self::width`].
     ///
     /// ```
@@ -87,7 +89,7 @@ impl HoverCard {
     /// let _card = HoverCard::new("preview").max_width(420.0);
     /// ```
     pub fn max_width(mut self, w: f32) -> Self {
-        self.max_width = w;
+        self.max_width = Some(w);
         self
     }
     /// Fixes the card surface width in points, overriding [`Self::min_width`] and
@@ -165,7 +167,9 @@ impl HoverCard {
         let mut content = col().key(format!("{}-card", self.key));
         content = match self.width {
             Some(w) => content.w(w.max(0.0)),
-            None => content.min_w(self.min_width.max(0.0)).max_w(self.max_width.max(0.0)),
+            None => content
+                .min_w(self.min_width.unwrap_or_else(|| k.text_size(200.0)).max(0.0))
+                .max_w(self.max_width.unwrap_or_else(|| k.text_size(320.0)).max(0.0)),
         };
         if let Some(r) = self.role {
             content = content.role(r);

@@ -54,8 +54,7 @@ fn every_key_has_one_lowercase_character() {
 #[test]
 fn menu_keycaps_show_the_accelerator() {
     let caps = |s: &str| s.parse::<Shortcut>().unwrap().menu_keycaps();
-    let mac = cfg!(target_os = "macos");
-    assert_eq!(caps("cmd+b"), [if mac { "⌘" } else { "Super" }, "B"]);
+    assert_eq!(caps("cmd+b"), [if crate::edit::MAC_KEYS { "⌘" } else { "Super" }, "B"]);
     assert_eq!(caps("ctrl+cmd+f").last().unwrap(), "F");
     assert_eq!(caps("cmd+=").last().unwrap(), "=");
     assert_eq!(caps("cmd+shift+z").last().unwrap(), "Z");

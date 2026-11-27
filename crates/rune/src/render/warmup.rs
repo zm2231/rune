@@ -322,7 +322,7 @@ pub(crate) fn surface_gpu(gpu: &std::sync::Arc<super::Gpu>) {
 
 /// A hidden overlay's device and renderer, its surface dropped, for the next window's or
 /// overlay's surface to take (`warm::park`). macOS drops them: its prewarmed panels keep theirs.
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, not(any(target_arch = "wasm32", target_os = "ios"))))]
 pub(crate) fn take_parked_gpu_for_test() -> Option<(super::Gpu, super::Renderer)> {
     #[cfg(not(target_os = "macos"))]
     { super::prewarm::take() }

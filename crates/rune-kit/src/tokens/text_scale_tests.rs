@@ -202,6 +202,8 @@ fn scene(s: &Scene, cx: &mut Cx<Scene>) -> El {
                 .child(SidebarHeader::new("Pinned").collapsed(false).build(k).key("sidebar_header"))
                 .child(el().w(240.0).child(SidebarRow::new("Inbox").icon(&STAR).status(crate::shell::RowStatus::Busy).build(k).key("sidebar_icon_row")))
                 .child(el().w(300.0).child(tree.key("tree_row")))
+                .child(el().w(240.0).child(SidebarRow::new("Inbox").icon(&STAR).subtitle("3 unread").build(k).key("sidebar_two_icon")))
+                .child(el().w(240.0).child(SidebarRow::new("Ada").avatar(el().size(k.text_size(16.0), k.text_size(16.0))).subtitle("Online").build(k).key("sidebar_two_avatar")))
                 .child(el().w(300.0).child(folder.key("tree_folder")))
                 .child(el().w(900.0).h(400.0).child(diff.key("diff")))
                 .children(layer)
@@ -260,6 +262,14 @@ fn at_twice_the_text_size_kit_text_and_the_glyphs_beside_it_double() {
     let tab = |key: &str| big.iter().find(|e| e.path.contains("/t-b/") && e.key.as_deref() == Some(key)).unwrap_or_else(|| panic!("the busy tab's {key}"));
     let (title, status) = (tab("title"), tab("status"));
     assert!(title.target[0] + title.target[2] <= status.target[0] + 0.5, "the busy tab's title {:?} ends before its status {:?}", title.target, status.target);
+
+    for els in [&plain, &big] {
+        for row in ["sidebar_two_icon", "sidebar_two_avatar"] {
+            let part = |key: &str| els.iter().find(|e| e.path.contains(&format!("/{row}/")) && e.key.as_deref() == Some(key)).unwrap_or_else(|| panic!("{row}'s {key}"));
+            let (label, subtitle) = (part("label"), part("subtitle"));
+            assert!((label.target[0] - subtitle.target[0]).abs() < 0.5, "{row}'s subtitle {:?} starts under its label {:?}", subtitle.target, label.target);
+        }
+    }
 
     let mut pluses = 0;
     for b in big.iter().filter(|e| e.key.as_deref() == Some("plus")) {

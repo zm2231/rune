@@ -642,7 +642,7 @@ impl SidebarRow {
             Some(sub) => {
                 let first = row().key("line1").w_full().gap(6.0).center_y().children(lead).child(label);
                 let second = text(sub).key("subtitle").font(sub_font).color(self.subtitle_color.unwrap_or(c.text_faint)).truncate().w_full().a11y_hidden();
-                let second = row().key("line2").w_full().pl(if has_lead { 16.0 + 6.0 } else { 0.0 }).child(second);
+                let second = row().key("line2").w_full().pl(if has_lead { k.text_size(16.0) + 6.0 } else { 0.0 }).child(second);
                 r.child(col().key("lines").grow(1.0).shrink().min_w(0.0).child(first).child(second))
             }
             None => r.children(lead).child(label),

@@ -77,6 +77,7 @@ pub(crate) struct CxCore {
     pub(super) system_languages: Option<Rc<[String]>>,
     pub(super) system_reduced_motion: bool,
     pub(super) pointer_locked: bool,
+    pub(super) quick_look_open: bool,
     pub(super) reduced_motion: bool,
     pub(super) time_scale: f32,
     /// [`Cx::zoom`], read once the view returns.
@@ -173,6 +174,7 @@ impl CxCore {
     pub(crate) fn system_bold_text(&self) -> bool { self.system_bold_text }
     pub(crate) fn system_reduced_motion(&self) -> bool { self.system_reduced_motion }
     pub(crate) fn pointer_locked(&self) -> bool { self.pointer_locked }
+    pub(crate) fn quick_look_open(&self) -> bool { self.quick_look_open }
     pub(crate) fn system_languages(&self) -> &[String] {
         match &self.system_languages {
             Some(langs) => langs,
@@ -667,6 +669,10 @@ impl<S> Cx<S> {
     /// ```
     #[inline(always)]
     pub fn pointer_locked(&self) -> bool { self.core.pointer_locked() }
+    /// Whether this window's Quick Look panel ([`Tx::quick_look`](crate::Tx::quick_look)) is
+    /// open; the view re-runs when the user closes it. Always false where no panel shows.
+    #[inline(always)]
+    pub fn quick_look_open(&self) -> bool { self.core.quick_look_open() }
     /// The user's preferred languages as BCP 47 tags (RFC 5646), most preferred first (for
     /// example `["ar-EG", "en-US"]`). Queries the platform lazily on first read
     /// (`GetUserPreferredUILanguages` on Windows, `NSLocale.preferredLanguages` on macOS/iOS,

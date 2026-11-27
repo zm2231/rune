@@ -270,6 +270,7 @@ impl RuntimeCore {
     pub(crate) fn frame_split(&mut self, app: &mut dyn AppDriver, catch_up: f64, dt: f64) -> bool {
         self.motion.clear_handovers();
         self.take_share_answers();
+        self.take_quick_look_closed();
         // Like a native shell: the logical clock follows host time (timers, poll), while
         // animations step by the frame's own dt, so idle time never lands on a fresh commit.
         let elapsed = catch_up + dt;

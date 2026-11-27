@@ -534,6 +534,13 @@ impl<S: 'static> Runtime<S> {
     /// the next frame. For tests and headless drivers; a system sheet answers itself.
     #[inline(always)]
     pub fn resolve_share(&mut self, result: crate::ShareResult) -> Result<(), crate::ShareError> { self.core_mut().resolve_share(result) }
+    /// What [`Tx::quick_look`](crate::Tx::quick_look) asked to preview, while the panel is open.
+    #[inline(always)]
+    pub fn quick_look(&self) -> Option<&crate::QuickLook> { self.core().quick_look() }
+    /// Closes the Quick Look panel as if the user did; the view re-runs. For tests and
+    /// headless drivers.
+    #[inline(always)]
+    pub fn close_quick_look(&mut self) { self.core_mut().close_quick_look(); }
 
     #[inline(always)]
     pub fn text_selection(&self) -> Option<(&str, std::ops::Range<usize>)> { self.core().text_selection() }

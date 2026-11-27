@@ -728,6 +728,7 @@ impl Host {
             if self.file_dialog.open_core(self.app.rt_mut(), window.map(|w| &**w)) && let Some(w) = shown { w.request_redraw(); }
             let shared = &self.shared;
             crate::share::show_in_window(self.app.rt_mut(), window.map(|w| &**w), || super::setup_waker(shared));
+            crate::quick_look::show_in_window(self.app.rt_mut(), window.map(|w| &**w), || super::setup_waker(shared));
             // A callback that ran (a menu that couldn't open) may have asked to close, quit or
             // minimize.
             if self.app.rt().shell_request.is_none()

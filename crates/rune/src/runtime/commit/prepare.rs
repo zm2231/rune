@@ -70,6 +70,7 @@ impl RuntimeCore {
             content_limits: (None, None),
             system_reduced_motion: self.host.system_reduced_motion,
             pointer_locked: self.pointer_locked(),
+            quick_look_open: self.quick_look_open(),
             titlebar_inset: self.host.titlebar_inset / self.host.zoom.k,
             safe_area: self.safe_area().map(|inset| inset / self.host.zoom.k),
             system_text_scale: self.host.system_text_scale,

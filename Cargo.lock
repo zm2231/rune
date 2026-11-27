@@ -2925,6 +2925,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-parity"
+version = "0.0.1"
+dependencies = [
+ "rune",
+]
+
+[[package]]
 name = "markup5ever"
 version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -297,6 +297,7 @@ pub(crate) fn flush_requests(rt: &mut RuntimeCore, app: &mut dyn AppDriver, serv
     if !serves.shares {
         rt.refuse_share("share sheets are unsupported in embedded views");
     }
+    crate::quick_look::refuse(rt);
     if !serves.shell { rt.shell_request = None; }
     rt.host.user_close_request = false;
     rt.ignore_minimize("an embedded layer");

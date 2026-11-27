@@ -432,6 +432,7 @@ pub(super) struct Measurement<'a> {
     pub(super) content_limits: crate::overlay::sizing::SizeLimits,
     pub(super) system_reduced_motion: bool,
     pub(super) pointer_locked: bool,
+    pub(super) quick_look_open: bool,
     pub(super) titlebar_inset: f32,
     /// `Cx::safe_area`, in the view's points.
     pub(super) safe_area: [f32; 4],

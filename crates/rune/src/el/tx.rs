@@ -132,6 +132,8 @@ pub struct Tx {
     pub(crate) popup_menu_opened: bool,
     pub(crate) file_dialogs: Vec<crate::file_dialog::Call>,
     pub(crate) shares: Vec<crate::share::Call>,
+    pub(crate) quick_look: Option<Option<crate::QuickLook>>,
+    pub(crate) quick_look_open: bool,
     pub(crate) window_frame: Option<crate::window::frame::FrameRequest>,
     /// The mouse button driving this press or drag (`Tx::button`).
     pub(crate) button: crate::PointerButton,

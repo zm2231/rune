@@ -58,6 +58,7 @@ members = [
     "examples/drag-out",
     "examples/sketch",
     "examples/drop-files",
+    "examples/mac-parity",
     "examples/rich-clipboard",
     "examples/matched",
     "examples/launcher",

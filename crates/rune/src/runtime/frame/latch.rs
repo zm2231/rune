@@ -152,6 +152,7 @@ impl RuntimeCore {
         for request in tx.shares.drain(..).filter_map(|call| call.take()) {
             self.request_share(request);
         }
+        if let Some(look) = tx.quick_look.take() { self.request_quick_look(look); }
         if let Some(mode) = tx.font_smoothing.take() { self.set_font_smoothing(mode); }
         if std::mem::take(&mut tx.fonts_added) { self.follow_font_families(); }
         if let Some((sans, mono)) = tx.font_families.take() { self.set_font_families(&sans, &mono); }
@@ -184,7 +185,7 @@ impl RuntimeCore {
         Tx { trace: self.tracing().then(crate::el::TraceCalls::default), mods: self.kbd.held_mods, selection: self.selection_snapshot(app),
             input_time: crate::input::time::current(), clock: self.polled_at(), scale: self.env.scale, focus_visible: self.kbd.focus.keyboard(),
             focused: self.focused_key(), focused_path: self.kbd.focus.owned(), focused_link,
-            assistive: self.host.a11y.is_some() || cfg!(target_arch = "wasm32"), window_hidden: !self.live_visible(), ..Tx::default() }
+            assistive: self.host.a11y.is_some() || cfg!(target_arch = "wasm32"), window_hidden: !self.live_visible(), quick_look_open: self.quick_look_open(), ..Tx::default() }
     }
 
     /// A scalar from the actual draw path (e.g. `shell.width`). Values hold until resampled.

@@ -18,6 +18,7 @@ mod open_url;
 mod overlay;
 mod platform;
 mod popup_menu;
+mod quick_look;
 mod quit;
 mod share;
 mod shortcuts;
@@ -321,6 +322,7 @@ pub use popup_menu::PopupMenuError;
 pub use popup_menu::PopupMenuRequest;
 pub use popup_menu::PopupMenuStyle;
 pub use popup_menu::popup_menu_supported;
+pub use quick_look::QuickLook;
 #[cfg(not(target_arch = "wasm32"))]
 pub use quit::exit_deadline;
 pub use quit::fast_exit;

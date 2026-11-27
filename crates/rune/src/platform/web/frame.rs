@@ -343,6 +343,7 @@ impl FrameHost for WebFrameHost<'_> {
             }
         }
         self.r.app.rt_mut().refuse_file_dialog("native file dialogs are unsupported on web");
+        crate::quick_look::refuse(self.r.app.rt_mut());
         if self.r.app.rt().share_requested() {
             let shared = self.r.shared.clone();
             if let Some(shown) = self.r.app.rt_mut().take_share(Arc::new(move || shared.wake_app())) { crate::share::web::show(shown); }

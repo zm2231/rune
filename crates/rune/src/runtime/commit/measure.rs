@@ -78,6 +78,7 @@ impl RuntimeCore {
             ),
             system_reduced_motion: self.host.system_reduced_motion,
             pointer_locked: self.pointer_locked(),
+            quick_look_open: self.quick_look_open(),
             // The window's controls are in its points; the view's are over the zoom.
             titlebar_inset: self.host.titlebar_inset / self.host.zoom.k,
             safe_area: self.safe_area().map(|inset| inset / self.host.zoom.k),
@@ -232,6 +233,7 @@ impl Measurement<'_> {
         let flags = u32::from(self.maximized)
             | (u32::from(self.full_screen) << 1)
             | (u32::from(self.pointer_locked) << 2)
+            | (u32::from(self.quick_look_open) << 7)
             | (u32::from(self.window_backdrop.to_u8()) << 3)
             | (u32::from(self.renderer_kind.to_u8()) << 6)
             | (u32::from(self.window_backdrop_supported) << 25);
@@ -563,6 +565,7 @@ impl Measurement<'_> {
             system_languages: this.system_languages.clone(),
             system_reduced_motion: this.system_reduced_motion,
             pointer_locked: this.pointer_locked,
+            quick_look_open: this.quick_look_open,
             reduced_motion: this.system_reduced_motion,
             time_scale: this.time_scale,
             zoom: 1.0,

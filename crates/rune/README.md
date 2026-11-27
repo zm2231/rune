@@ -3486,13 +3486,19 @@ let heard = speaker.played_frames();
   Hardened Runtime or sandboxed app also needs the `com.apple.security.device.audio-input`
   entitlement. An unbundled binary run from a terminal asks on the terminal's behalf. The
   iOS audio session is covered in "Voice calls" in `IOS.md`.
-- **Windows, Linux and the web**: `Voice::open` returns `VoiceError::Unsupported`.
+- **Linux**: a PulseAudio (or PipeWire, through `pipewire-pulse`) record and playback stream
+  on the default devices, falling back to ALSA, both loaded at run time. Echo cancellation and
+  noise suppression run in the app (WebRTC's AEC3 through `sonora`) with the samples Rune plays
+  as the reference, so no system echo-cancel module is needed. Only Rune's own output is
+  cancelled, and the microphone level isn't adjusted. `scripts/voice-pulse-e2e.sh` measures
+  echo against a real PulseAudio server in Docker.
+- **Windows and the web**: `Voice::open` returns `VoiceError::Unsupported`.
 - **Tests**: `Voice::open_fake(spec, &FakeVoice)` runs on every platform without hardware.
   `FakeVoice::tick(frames)` runs one device callback. The fake microphone hears what
   `FakeVoice::say` queued plus the speaker's output at the `echo(gain, delay)` you set.
   `change_devices`, `interrupt`, `end_interruption`, `reset_media`, `background` and
   `foreground` drive the same transitions the system would.
-- **Try it**: `cargo run -p voice-loopback` on a Mac (see `examples/README.md`).
+- **Try it**: `cargo run -p voice-loopback` on a Mac or a Linux desktop (see `examples/README.md`).
 
 ### Edge overlays (`App::overlay`, `overlay.rs`, `platform/layer_shell.rs`)
 

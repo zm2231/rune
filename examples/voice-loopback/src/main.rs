@@ -1,6 +1,5 @@
 use rune::{MicPermission, Voice, VoiceSpec, VoiceState};
 use std::collections::VecDeque;
-use std::f32::consts::TAU;
 use std::process::exit;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -10,8 +9,7 @@ const TICK: Duration = Duration::from_millis(5);
 const PERIOD: u64 = 2 * RATE as u64;
 const BURST: u64 = RATE as u64 / 5;
 const RAMP: u64 = RATE as u64 / 200;
-const TONE_HZ: f32 = 1_000.0;
-const TONE_LEVEL: f32 = 0.3;
+const BURST_LEVEL: f32 = 0.3;
 const MARGIN: u64 = RATE as u64 / 20;
 const QUIET_FROM: u64 = BURST + RATE as u64 / 2;
 const QUIET_TO: u64 = PERIOD - RATE as u64 / 5;
@@ -28,11 +26,11 @@ fn args() -> Args {
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--tone-only" => args.loopback = false,
+            "--burst-only" => args.loopback = false,
             "--delay-ms" => args.delay_ms = it.next().and_then(|v| v.parse().ok()).unwrap_or(args.delay_ms),
             "--seconds" => args.seconds = it.next().and_then(|v| v.parse().ok()),
             _ => {
-                eprintln!("usage: voice-loopback [--tone-only] [--delay-ms N] [--seconds N]");
+                eprintln!("usage: voice-loopback [--burst-only] [--delay-ms N] [--seconds N]");
                 exit(2);
             }
         }
@@ -40,13 +38,21 @@ fn args() -> Args {
     args
 }
 
-fn tone(s: u64) -> f32 {
+fn noise(s: u64) -> f32 {
+    let mut x = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^= x >> 31;
+    (x >> 40) as f32 / (1u64 << 23) as f32 - 1.0
+}
+
+fn burst(s: u64) -> f32 {
     let at = s % PERIOD;
     if at >= BURST {
         return 0.0;
     }
     let envelope = (at.min(BURST - at) as f32 / RAMP as f32).min(1.0);
-    TONE_LEVEL * envelope * (TAU * TONE_HZ * (s as f32) / RATE as f32).sin()
+    BURST_LEVEL * envelope * noise(s)
 }
 
 fn db(rms: f64) -> f64 {
@@ -55,7 +61,7 @@ fn db(rms: f64) -> f64 {
 
 #[derive(Default)]
 struct Echo {
-    tone: (f64, u64),
+    burst: (f64, u64),
     quiet: (f64, u64),
     period: u64,
     last: Option<(f64, f64)>,
@@ -65,19 +71,19 @@ impl Echo {
     fn hear(&mut self, played: u64, sample: f32) {
         let period = played / PERIOD;
         if period != self.period {
-            if self.tone.1 > 0 && self.quiet.1 > 0 {
-                let tone = (self.tone.0 / self.tone.1 as f64).sqrt();
+            if self.burst.1 > 0 && self.quiet.1 > 0 {
+                let burst = (self.burst.0 / self.burst.1 as f64).sqrt();
                 let quiet = (self.quiet.0 / self.quiet.1 as f64).sqrt();
-                let reference = f64::from(TONE_LEVEL) / std::f64::consts::SQRT_2;
-                self.last = Some((db(tone / reference), db(quiet)));
+                let reference = f64::from(BURST_LEVEL) / 3f64.sqrt();
+                self.last = Some((db(burst / reference), db(quiet)));
             }
             *self = Self { period, last: self.last, ..Self::default() };
         }
         let at = played % PERIOD;
         let energy = f64::from(sample) * f64::from(sample);
         if (MARGIN..BURST + MARGIN).contains(&at) {
-            self.tone.0 += energy;
-            self.tone.1 += 1;
+            self.burst.0 += energy;
+            self.burst.1 += 1;
         } else if (QUIET_FROM..QUIET_TO).contains(&at) {
             self.quiet.0 += energy;
             self.quiet.1 += 1;
@@ -118,7 +124,7 @@ fn main() {
     permission();
     voice.start();
     println!(
-        "voice-loopback: {} Hz mono, 1 kHz tone for 200 ms every 2 s{}",
+        "voice-loopback: {} Hz mono, a 200 ms noise burst every 2 s{}",
         RATE,
         if args.loopback { format!(", mic looped to the speaker {} ms late", args.delay_ms) } else { String::new() }
     );
@@ -159,7 +165,7 @@ fn main() {
         let need = TARGET_QUEUED.saturating_sub(speaker.queued()).min(out.len());
         for slot in &mut out[..need] {
             let looped = if line.len() > delay { line.pop_front().unwrap_or(0.0) } else { 0.0 };
-            *slot = tone(written) + looped;
+            *slot = burst(written) + looped;
             written += 1;
         }
         speaker.write(&out[..need]);
@@ -169,7 +175,7 @@ fn main() {
             let stats = voice.stats();
             let residual = echo
                 .last
-                .map(|(tone, quiet)| format!("tone echo {tone:.1} dB re tone, quiet floor {quiet:.1} dBFS"))
+                .map(|(burst, quiet)| format!("burst echo {burst:.1} dB re burst, quiet floor {quiet:.1} dBFS"))
                 .unwrap_or_else(|| "measuring echo".into());
             println!(
                 "[{:>7.3}s] {state:?} | open->running {} | start->audio {} | captured {} played {} dropped {} oversized {} | {residual}",

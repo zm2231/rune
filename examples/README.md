@@ -44,7 +44,7 @@ In debug builds, apps built with `rune::run`, `App::run`, or `rune::run_windows`
 | --- | --- | --- | --- | --- |
 | [`shapes`](shapes) | Vector strokes, filled polygons, compound paths with transparent holes (`FillRule`), SVG 2 path data (`Path::from_svg`, `Shape::fill_svg`, `fill_svg_with`, `stroke_svg`), Bézier paths, waveforms, multi-hole circular element cutouts (`El::cutout_circles`), nearest-neighbour pixel-art scaling (`El::image_filter`, `ImageFilter::Nearest`), runtime alpha-tinted symbolic icons (`El::pixels_tint`), wrapped and tiled image patterns (`El::pixels_wrap`, `El::pixels_tile`, `PixelsWrap`), and memoized canvases | `Shape`, `Path`, `FillRule`, `LineCap`, `ImageFilter`, `PixelsWrap`, `canvas`, `memo`, `El::cutout_circles`, `El::image_filter`, `El::pixels_tint`, `El::pixels_wrap`, `El::pixels_tile` | Desktop, headless | `cargo run -p shapes -- --snap target/shapes.png --at 1.5` |
 | [`video-player`](video-player) | Playing video or audio files and URLs (defaults to an embedded test clip) with keyframe scrub bar (`seek_fast` / `is_seeking`), frame stepping (`step`), frame-rate and shown-timestamp readout (`frame_duration` / `presented_time`), mute, loop, and output-device controls | `Player`, `PlayerState`, `SurfaceFit`, `Waker` | Desktop, headless | `cargo run -p video-player -- --snap target/video-player.png --at 0.6` |
-| [`voice-loopback`](voice-loopback) | Echo-cancelled full-duplex call audio: plays a 1 kHz tone for 200 ms every 2 s and loops the microphone back to the speaker 300 ms late, printing open-to-running and start-to-audio times, the tone's echo left in the microphone, and device-change and interruption events (`--tone-only`, `--delay-ms N`, `--seconds N`); see [Running `voice-loopback`](#running-voice-loopback) | `Voice`, `VoiceSpec`, `VoiceMic`, `VoiceSpeaker`, `VoiceState`, `VoiceEvent`, `MicPermission` | macOS (iOS through `Voice` in an app); other platforms print that voice audio is unsupported | No headless mode |
+| [`voice-loopback`](voice-loopback) | Echo-cancelled full-duplex call audio: plays a 200 ms noise burst every 2 s and loops the microphone back to the speaker 300 ms late, printing open-to-running and start-to-audio times, the burst's echo left in the microphone, and device-change and interruption events (`--burst-only`, `--delay-ms N`, `--seconds N`); see [Running `voice-loopback`](#running-voice-loopback) | `Voice`, `VoiceSpec`, `VoiceMic`, `VoiceSpeaker`, `VoiceState`, `VoiceEvent`, `MicPermission` | macOS and Linux (iOS through `Voice` in an app); other platforms print that voice audio is unsupported | No headless mode |
 | [`video-tiles`](video-tiles) | Four live video surfaces fed from a background producer, plus a headless `--bench-native` mode | `NativeSurface`, `ByteFrame`, `SurfaceFit`, `native_surface::macos::PixelBuffer` | Desktop, headless (NV12 `IOSurface` on macOS; byte planes elsewhere) | `cargo run -p video-tiles -- --snap target/video-tiles.png --scale 2` |
 | [`cursed-settings`](cursed-settings) | Settings window where controls trigger custom `rune-fx` and `rune-light` effects via a compositor | `rune::run_with`, `Compositor`, `rune-kit`, `rune-theme-opencode`, `rune-fx`, `rune-light` | Desktop, headless | `cargo run -p cursed-settings -- --snap target/cursed-settings.png --scene fire` |
 | [`showreel`](showreel) | Clock-driven showcase scenes combining Rune UI and `rune-fx` for frame-exact `--video` captures | `App::compositor`, `AppSpec::scenes`, `rune-fx` | Desktop, headless | `cargo run -p showreel -- --scene deploy --snap target/showreel.png --at 1.0` |
@@ -83,9 +83,9 @@ These packages are diagnostic labs, benchmarks, or site asset renderers rather t
 
 ## Running `voice-loopback`
 
-On a Mac, from the repository root: `cargo run -p voice-loopback`. Run from Terminal, the
-binary needs no `Info.plist` or entitlements: macOS asks for the microphone on Terminal's
-behalf, and the answer is under System Settings > Privacy & Security > Microphone. As a bundle,
+On a Mac or a Linux desktop, from the repository root: `cargo run -p voice-loopback`. On a Mac,
+run from Terminal, the binary needs no `Info.plist` or entitlements: macOS asks for the
+microphone on Terminal's behalf, and the answer is under System Settings > Privacy & Security > Microphone. As a bundle,
 `scripts/mac-app --name "Voice Loopback" --id com.example.voice-loopback --exe voice-loopback
 --bin target/release/voice-loopback --mic "Voice Loopback plays your voice back to test echo
 cancellation."` writes `NSMicrophoneUsageDescription`. A Hardened Runtime or sandboxed build
@@ -93,7 +93,9 @@ also needs the `com.apple.security.device.audio-input` entitlement.
 
 Each second it prints the state, `open->running` (from `Voice::open` until the stream ran),
 `start->audio` (from `Voice::start` until the first device callback), frame counters, and,
-after each tone, `tone echo`, the microphone's level during the tone relative to the tone
-itself, next to the quiet floor between tones. Stay quiet during the tones to measure echo, or
-use `--tone-only` so your voice isn't looped back. Unplugging or plugging in headphones prints
+after each burst, `burst echo`, the microphone's level during the burst relative to the burst
+itself, next to the quiet floor between bursts. The probe is broadband noise rather than a tone
+because echo cancellers built for speech, WebRTC's AEC3 among them, cancel steady pure tones far
+less than speech. Stay quiet during the bursts to measure echo, or use `--burst-only` so your
+voice isn't looped back. Unplugging or plugging in headphones prints
 `state Reconnecting`, then `event DeviceChanged` and `state Running`.

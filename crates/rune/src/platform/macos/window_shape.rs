@@ -18,7 +18,12 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_app_kit::NSWindow;
 use std::cell::Cell;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+pub(crate) fn trace(what: std::fmt::Arguments<'_>) {
+    static ON: OnceLock<bool> = OnceLock::new();
+    if *ON.get_or_init(|| std::env::var_os("RUNE_SHADOW_LOG").is_some()) { eprintln!("rune: shadow: {what}"); }
+}
 
 #[link(name = "QuartzCore", kind = "framework")]
 #[allow(unsafe_code)]
@@ -113,13 +118,16 @@ impl Shadow {
         let n = self.log.last_acquired();
         self.last.set(n);
         self.update(|r| r.presented(n));
+        trace(format_args!("presented drawable {n}, on screen {}, state {:?}", self.log.on_screen(), self.state.get()));
     }
 
     /// At the start of each run loop turn.
     pub(crate) fn turn(&self) {
         let mut state = self.state.get();
         if state == Resample::Idle { return; }
-        if state.turn(self.log.on_screen()) {
+        let on_screen = self.log.on_screen();
+        if state.turn(on_screen) {
+            trace(format_args!("invalidateShadow, on screen {on_screen}"));
             self.window.invalidateShadow();
         }
         self.state.set(state);
@@ -128,7 +136,9 @@ impl Shadow {
 
     fn update(&self, f: impl FnOnce(&mut Resample)) {
         let mut state = self.state.get();
+        let before = state;
         f(&mut state);
+        if state != before { trace(format_args!("{before:?} -> {state:?}, on screen {}", self.log.on_screen())); }
         self.state.set(state);
         self.log.watch(state != Resample::Idle);
         // Its drawable already landed, so no presented handler will wake the next turn.

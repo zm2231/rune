@@ -467,6 +467,9 @@ impl Host {
         let shadow = hook_log.clone().filter(|_| resamples && present.is_some())
             .and_then(|log| crate::platform::macos::window_shape::Shadow::new(&window, log, visible || launcher));
         #[cfg(target_os = "macos")]
+        crate::platform::macos::window_shape::trace(format_args!("{}: resamples {resamples}, present hook {}, shadow {}, first {}",
+            self.native_handle.key(), present.is_some(), shadow.is_some(), visible || launcher));
+        #[cfg(target_os = "macos")]
         if self.args.trace.is_some() && present.is_none() { eprintln!("rune: trace: this surface reports no present times"); }
         #[cfg(target_os = "macos")]
         let fn_key = if self.app.rt().modifier_keys() { crate::input::fn_key::FnKey::new(&window) } else { None };

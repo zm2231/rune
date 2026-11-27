@@ -272,7 +272,7 @@ mod mac {
                     let menu: Retained<AnyObject> = unsafe {
                         let menu: Allocated<AnyObject> = msg_send![class!(NSMenu), alloc];
                         let menu: Retained<AnyObject> = msg_send![menu, initWithTitle: &*NSString::from_str("context")];
-                        let _: *mut AnyObject = msg_send![&*menu, addItemWithTitle: &*NSString::from_str("Item"), action: std::ptr::null::<c_void>(), keyEquivalent: &*NSString::from_str("")];
+                        let _: *mut AnyObject = msg_send![&*menu, addItemWithTitle: &*NSString::from_str("Item"), action: None::<objc2::runtime::Sel>, keyEquivalent: &*NSString::from_str("")];
                         menu
                     };
                     CONTEXT.with(|c| *c.borrow_mut() = Some(menu.clone()));

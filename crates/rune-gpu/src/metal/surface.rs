@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use objc2_core_foundation::CGSize;
-use objc2_quartz_core::{CALayer, CAMetalDrawable, CAMetalLayer};
+use objc2_quartz_core::{CALayer, CAMetalDrawable, CAMetalLayer, CATransaction};
 use objc2::rc::{Retained, autoreleasepool};
 use parking_lot::Mutex;
 use raw_window_metal::Layer;
@@ -19,6 +19,7 @@ use super::{MetalDevice, Obj, Shared, send_sync};
 #[derive(Debug)]
 pub(crate) struct MetalSurface {
     layer: Retained<CAMetalLayer>,
+    owned: bool,
     configured: Mutex<Option<(Arc<Shared>, wgpu::TextureFormat)>>,
 }
 
@@ -43,13 +44,23 @@ pub(super) unsafe fn create(target: wgpu::SurfaceTargetUnsafe) -> DispatchSurfac
             _ => panic!("RUNE_GPU_BACKEND=metal needs an AppKit or UIKit view or a CALayer"),
         }
     };
+    let owned = !layer.pre_existing();
     // SAFETY: `into_raw` hands over its retain of a CAMetalLayer.
     let layer = unsafe { Retained::from_raw(layer.into_raw().as_ptr().cast::<CAMetalLayer>()) }.expect("a CAMetalLayer");
-    DispatchSurface::custom(MetalSurface { layer, configured: Mutex::new(None) })
+    DispatchSurface::custom(MetalSurface { layer, owned, configured: Mutex::new(None) })
 }
 
 impl MetalSurface {
     pub(super) fn layer(&self) -> &CAMetalLayer { &self.layer }
+}
+
+impl Drop for MetalSurface {
+    fn drop(&mut self) {
+        if self.owned {
+            self.layer.removeFromSuperlayer();
+            CATransaction::flush();
+        }
+    }
 }
 
 /// The `NSWindow` hosting `layer`: the first ancestor layer with a delegate is the backing

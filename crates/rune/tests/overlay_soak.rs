@@ -3,7 +3,10 @@
 //! memory stays flat and that every show draws on the one GPU device the first show made
 //! (hex#1268: memory grew by gigabytes over an hour of dictation on a hybrid laptop). Prints the
 //! memory every few hundred cycles. Opens overlays, so it only runs with RUNE_GUI_TESTS=1 in a
-//! desktop session; `RUNE_SOAK_CYCLES` sets the count (2000 by default).
+//! desktop session; `RUNE_SOAK_CYCLES` sets the count (2000 by default), and `RUNE_SOAK_ONLY=hud`
+//! or `=plate` cycles just that overlay. On macOS each line also splits the footprint into the
+//! counted Rust heap and the rest, with threads and open files, and `RUNE_SOAK_CENSUS=1` prints
+//! `vmmap -summary` and the `heap` tool's largest classes after the warm-up and at the end.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -11,6 +14,10 @@ use std::time::Duration;
 use rune::*;
 
 static STARTS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(target_os = "macos")]
+#[global_allocator]
+static ALLOC: procwatch::alloc::Counting = procwatch::alloc::Counting::system();
 
 /// Memory may grow this much from the warmed-up baseline to the last cycle.
 const ALLOWED_GROWTH_MB: f64 = 48.0;
@@ -83,11 +90,55 @@ fn memory_mb() -> f64 {
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 fn memory_mb() -> f64 { 0.0 }
 
+#[cfg(target_os = "macos")]
+fn breakdown() -> String {
+    let Some(s) = procwatch::snapshot() else { return String::new() };
+    let heap = s.heap.as_ref().map_or(0, |h| h.live);
+    format!(" (Rust heap {:.1} MB, rest {:.1} MB, {} threads, {} open files)",
+        heap as f64 / 1e6, s.unaccounted().unwrap_or(0) as f64 / 1e6, s.threads.len(), s.fds)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn breakdown() -> String { String::new() }
+
+#[cfg(target_os = "macos")]
+const TRACKED: [&str; 8] = ["Layer", "View", "Window", "Panel", "Drawable", "IOSurface", "KeyValue", "MTL"];
+
+#[cfg(target_os = "macos")]
+fn census(when: &str) {
+    if std::env::var_os("RUNE_SOAK_CENSUS").is_none() { return; }
+    let pid = std::process::id().to_string();
+    for (tool, args, lines) in [("vmmap", vec!["-summary", pid.as_str()], usize::MAX), ("heap", vec![pid.as_str()], 80)] {
+        match std::process::Command::new(tool).args(&args).output() {
+            Ok(out) => {
+                println!("--- {tool} {when} ---");
+                let text = String::from_utf8_lossy(&out.stdout);
+                for line in text.lines().take(lines) { println!("{line}"); }
+                if tool == "heap" {
+                    println!("--- heap {when}: layers, views, windows, drawables, observers ---");
+                    for line in text.lines().filter(|line| TRACKED.iter().any(|class| line.contains(class))) { println!("{line}"); }
+                }
+            }
+            Err(error) => println!("--- {tool} {when}: {error} ---"),
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn census(_: &str) {}
+
 fn main() {
     if std::env::var_os("RUNE_GUI_TESTS").is_none() {
         println!("overlay_soak: skipped (set RUNE_GUI_TESTS=1 in a desktop session)");
         return;
     }
+    let only = rune::env::var("RUNE_SOAK_ONLY");
+    let only: Option<&'static str> = match only.as_deref() {
+        None => None,
+        Some("hud") => Some("hud"),
+        Some("plate") => Some("plate"),
+        Some(other) => panic!("RUNE_SOAK_ONLY is hud or plate, not {other}"),
+    };
     let cycles: usize = rune::env::var("RUNE_SOAK_CYCLES").and_then(|n| n.parse().ok()).unwrap_or(2000).max(WARM_UP + 1);
     std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(3600)); eprintln!("timeout"); std::process::exit(2) });
     rune::orderly_exit();
@@ -107,15 +158,19 @@ fn main() {
             let started = rune::time::now();
             let mut baseline = 0.0;
             for cycle in 0..cycles {
-                show("hud", &hud);
-                show("live text", &plate);
-                hide("live text", &plate);
-                hide("hud", &hud);
-                if cycle + 1 == WARM_UP { baseline = memory_mb(); }
+                if only != Some("plate") { show("hud", &hud); }
+                if only != Some("hud") { show("live text", &plate); }
+                if only != Some("hud") { hide("live text", &plate); }
+                if only != Some("plate") { hide("hud", &hud); }
+                if cycle + 1 == WARM_UP {
+                    baseline = memory_mb();
+                    census("after the warm-up");
+                }
                 if (cycle + 1) % 250 == 0 {
-                    println!("cycle {:>5}: {:.0} MB, {} GPU device(s) made, {:.0} s", cycle + 1, memory_mb(), STARTS.load(Ordering::SeqCst), started.elapsed().as_secs_f64());
+                    println!("cycle {:>5}: {:.0} MB{}, {} GPU device(s) made, {:.0} s", cycle + 1, memory_mb(), breakdown(), STARTS.load(Ordering::SeqCst), started.elapsed().as_secs_f64());
                 }
             }
+            census("at the end");
             let end = memory_mb();
             let starts = STARTS.load(Ordering::SeqCst);
             println!("overlay_soak: {cycles} cycles, {baseline:.0} MB after {WARM_UP}, {end:.0} MB at the end, {starts} GPU device(s) made");

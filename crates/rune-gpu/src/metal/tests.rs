@@ -750,3 +750,34 @@ fn metal_surface_configure_sets_maximum_drawable_count_from_frame_latency() {
     }
     drop(surface);
 }
+
+#[allow(unsafe_code)]
+#[test]
+fn dropping_a_surface_removes_the_layer_it_added_and_its_observers() {
+    use objc2::rc::autoreleasepool;
+    use objc2_quartz_core::{CALayer, CAMetalLayer};
+    let root = CALayer::new();
+    // SAFETY: reads the sublayers of a layer this thread alone touches.
+    let sublayers = || autoreleasepool(|_| unsafe { root.sublayers() }.map_or(0, |layers| layers.len()));
+    let instance = super::instance();
+    for _ in 0..3 {
+        let target = wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(Retained::as_ptr(&root) as *mut std::ffi::c_void);
+        // SAFETY: `root` outlives `surface`.
+        let surface = unsafe { instance.create_surface_unsafe(target) }.expect("MetalSurface");
+        assert_eq!(sublayers(), 1);
+        drop(surface);
+        assert_eq!(sublayers(), 0, "the surface's layer stays on its parent");
+        // SAFETY: `observationInfo` is NSObject's KVO registration pointer, nil with no observers.
+        let observers: *mut std::ffi::c_void = unsafe { objc2::msg_send![&root, observationInfo] };
+        assert!(observers.is_null(), "the parent layer is still observed");
+    }
+
+    let parent = CALayer::new();
+    let metal = CAMetalLayer::new();
+    parent.addSublayer(&metal);
+    let target = wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(Retained::as_ptr(&metal) as *mut std::ffi::c_void);
+    // SAFETY: `metal` outlives `surface`.
+    let surface = unsafe { instance.create_surface_unsafe(target) }.expect("MetalSurface");
+    drop(surface);
+    assert!(metal.superlayer().is_some(), "a caller's own Metal layer stays where it was");
+}

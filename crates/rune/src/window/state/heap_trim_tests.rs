@@ -248,25 +248,16 @@ fn another_threads_free_inside_every_attempt_misses_a_rest_and_the_next_rest_hit
     use std::sync::mpsc;
 
     let symbols = super::heap_trim::glibc::symbols().expect("glibc exports malloc_trim and mallinfo");
-    let big = Layout::from_size_align(2 * PROBE_SIZE, 8).unwrap();
+    let big = 2 * PROBE_SIZE;
     let (cue, cued) = mpsc::channel::<()>();
     let (freed, wait_freed) = mpsc::channel::<()>();
     let attempts = super::heap_trim::PROBE_ATTEMPTS;
     let other = std::thread::spawn(move || {
-        let held: Vec<usize> = (0..attempts)
-            .map(|_| {
-                // SAFETY: `big` has non-zero size and valid alignment.
-                let p = unsafe { std::alloc::alloc(big) };
-                // SAFETY: `p` is a live `big`-sized allocation.
-                unsafe { std::ptr::write_volatile(p, 1) };
-                p as usize
-            })
-            .collect();
+        let held: Vec<Vec<u8>> = (0..attempts).map(|_| vec![1u8; big]).collect();
         freed.send(()).unwrap();
-        for p in held {
+        for block in held {
             cued.recv().unwrap();
-            // SAFETY: `p` came from `std::alloc::alloc(big)` above and is freed once.
-            unsafe { std::alloc::dealloc(p as *mut u8, big) };
+            drop(block);
             freed.send(()).unwrap();
         }
     });
@@ -296,7 +287,7 @@ fn another_threads_free_inside_every_attempt_misses_a_rest_and_the_next_rest_hit
         dealloc,
     );
     other.join().unwrap();
-    assert!(!spoiled, "a {} KiB free on another thread hides the probe's growth", big.size() / 1024);
+    assert!(!spoiled, "a {} KiB free on another thread hides the probe's growth", big / 1024);
     assert_eq!(samples.get(), 3 * attempts);
 
     let mut state = Allocator::Unknown { misses: 0 };

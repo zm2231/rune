@@ -2,8 +2,9 @@
 //! input only on its hit regions (`OverlayInput::Regions`), never activates the app, and sits
 //! at window level 3 (`.floating`). A press in the region and a drag past the threshold start
 //! the session, write the file to the drag pasteboard, and show the drag image over the element
-//! (its window-server window, read with `CGWindowListCopyWindowInfo`, where
-//! `El::on_screen_layout` says the element is). With Accessibility access the test then posts a
+//! (read with `CGWindowListCopyWindowInfo`: a card-sized window where `El::on_screen_layout`
+//! says the element is, or, where macOS draws drag images inside one window covering the
+//! display, that window). With Accessibility access the test then posts a
 //! real button release where the pointer is, over the panel: the app's own windows take no
 //! drops, so the end arrives once, `Cancelled`, and the next click is an ordinary press.
 //! Without it, it checks the session start, pasteboard and image only.
@@ -89,6 +90,21 @@ mod mac {
                 let key: Bool = msg_send![&*w, isKeyWindow];
                 (msg_send![&*w, level], msg_send![&*w, styleMask], key.as_bool(), msg_send![&*w, frame])
             })
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Image {
+        Card([f64; 4]),
+        Display,
+    }
+
+    fn primary_size() -> (f64, f64) {
+        // SAFETY: called on the AppKit main thread; queries `NSScreen.screens` and the first screen's `frame`.
+        unsafe {
+            let screens: Retained<NSArray<AnyObject>> = msg_send![class!(NSScreen), screens];
+            let frame: NSRect = msg_send![&*screens.iter().next().expect("a screen"), frame];
+            (frame.size.width, frame.size.height)
         }
     }
 
@@ -184,16 +200,21 @@ mod mac {
 
         // The image is the card's snapshot, laid exactly over the card when the session starts;
         // it then follows the pointer from the event that started it, at most `TRAVEL` away.
+        let display = on_main(&handle, primary_size);
         let mut image = None;
         for _ in 0..100 {
             let windows = drag_windows();
-            image = windows.into_iter().find(|w| (w[2] - cw).abs() <= 2.0 && (w[3] - ch).abs() <= 2.0);
+            image = windows.iter().copied().find(|w| (w[2] - cw).abs() <= 2.0 && (w[3] - ch).abs() <= 2.0)
+                .map(Image::Card)
+                .or_else(|| windows.iter().any(|w| w[2] >= display.0 && w[3] >= display.1).then_some(Image::Display));
             if image.is_some() { break; }
             std::thread::sleep(Duration::from_millis(20));
         }
-        let image = image.unwrap_or_else(|| panic!("no card-sized window at the dragging level: {:?}", drag_windows()));
-        assert!((image[0] - cx).abs() <= TRAVEL + 1.0 && (image[1] - cy).abs() <= 1.0,
-            "the drag image {image:?} sits over the card {expected:?}");
+        let image = image.unwrap_or_else(|| panic!("no drag image window at the dragging level: {:?}", drag_windows()));
+        if let Image::Card(image) = image {
+            assert!((image[0] - cx).abs() <= TRAVEL + 1.0 && (image[1] - cy).abs() <= 1.0,
+                "the drag image {image:?} sits over the card {expected:?}");
+        }
         assert_eq!(PRESSES.load(Ordering::SeqCst), 0, "a drag-out isn't a press");
 
         if ENDED.lock().unwrap().is_empty() {

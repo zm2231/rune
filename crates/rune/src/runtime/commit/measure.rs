@@ -573,18 +573,20 @@ impl Measurement<'_> {
             wm_state_read: std::cell::Cell::new(false),
             layout: this.layout_seen.clone(),
             layout_reads: Default::default(),
+            provided: Default::default(),
         };
         let mut keep_windows = true;
         loop {
             let cx = fresh_cx(self);
             #[cfg(feature = "hot")]
             let emptied = self.memo.emptied();
-            let memo = crate::memo::enter(std::mem::take(self.memo), self.env, self.system_accent, self.system_reduced_motion, self.languages_gen, crate::theme::blends_srgb(), self.memo_chrome_bits(), cx.caret.clone(), cx.layout.clone());
+            let memo = crate::memo::enter(std::mem::take(self.memo), self.env, self.system_accent, (self.system_reduced_motion, self.system_increased_contrast), self.languages_gen, crate::theme::blends_srgb(), self.memo_chrome_bits(), cx.caret.clone(), cx.layout.clone());
             let view_time = crate::frame::profile::Scope::new(crate::frame::profile::Phase::View);
             // The view and the rows it builds measure text with the window's own text system.
             #[cfg(not(feature = "hot"))]
             let (mut root, cx) = crate::text::lend(&mut *text, || {
                 let (root, cx) = self.root_view(cx);
+                crate::memo::seal();
                 (self.build_tree(root, tx, force_all, keep_windows), cx)
             });
             // Index-built rows run the app's closures in `build_tree`, so a patch's panic there
@@ -593,6 +595,7 @@ impl Measurement<'_> {
             let (mut root, cx, memo) = {
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::text::lend(&mut *text, || {
                     let (root, cx) = self.root_view(cx);
+                    crate::memo::seal();
                     (self.build_tree(root, tx, force_all, keep_windows), cx)
                 }))) {
                     Ok((root, cx)) => (root, cx, memo),
@@ -605,8 +608,9 @@ impl Measurement<'_> {
                         self.virtual_culled.clear();
                         self.virtual_inputs.clear();
                         let cx = fresh_cx(self);
-                        let memo = crate::memo::enter(emptied, self.env, self.system_accent, self.system_reduced_motion, self.languages_gen, crate::theme::blends_srgb(), self.memo_chrome_bits(), cx.caret.clone(), cx.layout.clone());
+                        let memo = crate::memo::enter(emptied, self.env, self.system_accent, (self.system_reduced_motion, self.system_increased_contrast), self.languages_gen, crate::theme::blends_srgb(), self.memo_chrome_bits(), cx.caret.clone(), cx.layout.clone());
                         let (root, cx) = crate::hot::original_only(|| self.root_view(cx));
+                        crate::memo::seal();
                         (crate::hot::original_only(|| self.build_tree(root, tx, force_all, keep_windows)), cx, memo)
                     }
                 }

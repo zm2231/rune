@@ -1,5 +1,5 @@
 use super::VoiceEvent;
-use super::machine::{Cause, Effect, Event, Fault, MAX_TRIES, SETTLE, State, step};
+use super::machine::{Cause, Effect, Event, Fault, MAX_TRIES, Opened, SETTLE, State, step};
 use rune_core::machine::{Attempt, Effects, Seq};
 use rune_core::time::Instant;
 use std::time::Duration;
@@ -23,14 +23,14 @@ impl Rig {
         step(&mut self.seq, &mut self.state, event).into_iter().collect()
     }
 
-    fn ran(&mut self, ms: u64, result: Result<(), Fault>) -> Vec<Effect> {
+    fn ran(&mut self, ms: u64, result: Result<Opened, Fault>) -> Vec<Effect> {
         let now = self.at(ms);
         self.step(Event::Ran { result, now })
     }
 
     fn running(mut self) -> Self {
         assert_eq!(self.step(Event::Start), vec![Effect::Run]);
-        assert_eq!(self.ran(0, Ok(())), vec![Effect::Tell(VoiceEvent::Started)]);
+        assert_eq!(self.ran(0, Ok(Opened::Live)), vec![Effect::Tell(VoiceEvent::Started)]);
         self
     }
 
@@ -107,7 +107,7 @@ fn device_changes_settle_into_one_rebuild_and_tell_device_changed() {
 
     assert!(rig.step(Event::RetryDue { attempt: stale, now: due }).is_empty());
     assert_eq!(rig.step(Event::RetryDue { attempt, now: due }), vec![Effect::Run]);
-    assert_eq!(rig.ran(200, Ok(())), vec![Effect::Tell(VoiceEvent::DeviceChanged)]);
+    assert_eq!(rig.ran(200, Ok(Opened::Live)), vec![Effect::Tell(VoiceEvent::DeviceChanged)]);
     assert_eq!(rig.state, State::Running);
 }
 
@@ -132,7 +132,7 @@ fn an_interruption_pauses_and_resumes_when_the_system_says_so() {
     assert_eq!(rig.step(Event::InterruptionBegan), vec![Effect::Halt, Effect::Tell(VoiceEvent::Interrupted)]);
     assert_eq!(rig.state, State::Interrupted { resume: true });
     assert_eq!(rig.step(Event::InterruptionEnded { should_resume: true }), vec![Effect::Run]);
-    assert_eq!(rig.ran(0, Ok(())), vec![Effect::Tell(VoiceEvent::Resumed)]);
+    assert_eq!(rig.ran(0, Ok(Opened::Live)), vec![Effect::Tell(VoiceEvent::Resumed)]);
     assert_eq!(rig.state, State::Running);
 }
 
@@ -210,7 +210,7 @@ fn a_failed_stream_comes_back_after_a_device_change_or_media_reset() {
         let (attempt, due) = rig.wake();
         assert_eq!(effects, vec![Effect::Discard, Effect::WakeAt { attempt, due }]);
         assert_eq!(rig.step(Event::RetryDue { attempt, now: due }), vec![Effect::Run]);
-        assert_eq!(rig.ran(0, Ok(())), vec![Effect::Tell(VoiceEvent::DeviceChanged)]);
+        assert_eq!(rig.ran(0, Ok(Opened::Live)), vec![Effect::Tell(VoiceEvent::DeviceChanged)]);
         assert_eq!(rig.state, State::Running);
     }
 }
@@ -223,7 +223,7 @@ fn a_stream_lost_while_running_rebuilds_after_settling() {
     assert_eq!(effects, vec![Effect::Discard, Effect::WakeAt { attempt, due }]);
     assert_eq!(due, rig.at(5) + SETTLE);
     assert_eq!(rig.step(Event::RetryDue { attempt, now: due }), vec![Effect::Run]);
-    assert_eq!(rig.ran(200, Ok(())), vec![Effect::Tell(VoiceEvent::DeviceChanged)]);
+    assert_eq!(rig.ran(200, Ok(Opened::Live)), vec![Effect::Tell(VoiceEvent::DeviceChanged)]);
 }
 
 #[test]
@@ -241,4 +241,38 @@ fn a_loss_reported_after_stopping_changes_nothing() {
     rig.step(Event::Stop);
     assert!(rig.step(Event::Lost { fault: Fault::lasting("late"), now: rig.at(5) }).is_empty());
     assert_eq!(rig.state, State::Idle);
+}
+
+#[test]
+fn a_device_that_opens_later_is_starting_until_its_first_audio() {
+    let mut rig = Rig::new();
+    rig.step(Event::Start);
+    assert!(rig.ran(0, Ok(Opened::AwaitingAudio)).is_empty());
+    assert_eq!(rig.state.public(), super::VoiceState::Starting);
+    assert_eq!(rig.step(Event::AudioArrived), vec![Effect::Tell(VoiceEvent::Started)]);
+    assert_eq!(rig.state, State::Running);
+    assert!(rig.step(Event::AudioArrived).is_empty());
+}
+
+#[test]
+fn a_refusal_while_opening_fails_once() {
+    let mut rig = Rig::new();
+    rig.step(Event::Start);
+    rig.ran(0, Ok(Opened::AwaitingAudio));
+    let effects = rig.step(Event::Lost { fault: Fault::lasting("refused"), now: rig.at(5_000) });
+    assert_eq!(effects, vec![Effect::Discard, Effect::Tell(VoiceEvent::Failed("refused".into()))]);
+    assert_eq!(rig.state, State::Failed("refused".into()));
+}
+
+#[test]
+fn a_device_change_while_opening_rebuilds() {
+    let mut rig = Rig::new();
+    rig.step(Event::Start);
+    rig.ran(0, Ok(Opened::AwaitingAudio));
+    let effects = rig.step(Event::DevicesChanged { now: rig.at(10) });
+    let (attempt, due) = rig.wake();
+    assert_eq!(effects, vec![Effect::Discard, Effect::WakeAt { attempt, due }]);
+    assert_eq!(rig.step(Event::RetryDue { attempt, now: due }), vec![Effect::Run]);
+    rig.ran(200, Ok(Opened::AwaitingAudio));
+    assert_eq!(rig.step(Event::AudioArrived), vec![Effect::Tell(VoiceEvent::Started)]);
 }

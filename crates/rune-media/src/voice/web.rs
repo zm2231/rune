@@ -4,6 +4,7 @@ use super::duplex::{self, Heard, Render};
 use super::inline;
 use super::io::{Capture, Meters, Playback};
 use super::machine::Fault;
+use super::rates::Rates;
 use crate::recorder::MicPermission;
 use js_sys::Float32Array;
 use std::cell::RefCell;
@@ -23,7 +24,7 @@ extern "C" {
     #[wasm_bindgen(js_name = voiceWakeAfter)]
     pub(super) fn wake_after(ms: f64, callback: &JsValue);
     #[wasm_bindgen(js_name = voiceOpen)]
-    fn open(rate: u32, frames: &Closure<dyn FnMut(Float32Array, u32) -> Float32Array>, ended: &Closure<dyn FnMut(String, String)>) -> JsValue;
+    fn open(frames: &Closure<Frames>, ended: &Closure<dyn FnMut(String, String)>) -> JsValue;
     #[wasm_bindgen(js_name = voiceClose)]
     fn close(session: &JsValue);
 }
@@ -55,10 +56,11 @@ pub(super) fn request_permission(callback: Box<dyn FnOnce(MicPermission) + Send>
 }
 
 type Ends = Rc<RefCell<Option<(Render, Heard)>>>;
+type Frames = dyn FnMut(Float32Array, u32, bool, f64) -> Float32Array;
 
 struct Session {
     handle: JsValue,
-    _frames: Closure<dyn FnMut(Float32Array, u32) -> Float32Array>,
+    _frames: Closure<Frames>,
     _ended: Closure<dyn FnMut(String, String)>,
 }
 
@@ -97,6 +99,10 @@ impl VoiceDevice for Browser {
         Ok(())
     }
 
+    fn runs_from_first_audio(&self) -> bool {
+        true
+    }
+
     fn run(&mut self) -> Result<(), Fault> {
         if self.session.is_some() {
             return Ok(());
@@ -104,15 +110,26 @@ impl VoiceDevice for Browser {
         if permission() == MicPermission::Denied {
             return Err(Fault::lasting("microphone access was refused; allow it in the browser's site settings"));
         }
-        let (ends, meters) = (self.ends.clone(), self.meters.clone());
+        let (ends, meters, rate, signals) = (self.ends.clone(), self.meters.clone(), self.rate, self.signals.clone());
         let mut speaker = Vec::new();
-        let frames = Closure::<dyn FnMut(Float32Array, u32) -> Float32Array>::new(move |mic: Float32Array, late: u32| {
+        let mut rates: Option<Rates> = None;
+        let mut arrived = false;
+        let frames = Closure::<Frames>::new(move |mic: Float32Array, late: u32, live: bool, device_rate: f64| {
             let heard = mic.to_vec();
             speaker.resize(heard.len(), 0.0);
-            meters.count_late(u64::from(late));
+            meters.count_late((f64::from(late) * f64::from(rate) / device_rate.max(1.0)).round() as u64);
+            if live && !arrived {
+                arrived = true;
+                signals.send(Signal::AudioArrived).ok();
+                inline::soon();
+            }
+            if rates.as_ref().is_some_and(|r| r.block() != heard.len()) {
+                rates = None;
+            }
+            let rates = rates.get_or_insert_with(|| Rates::new(device_rate.round() as u32, rate, heard.len()));
             if let Some((render, listen)) = ends.borrow_mut().as_mut() {
-                listen.capture(&heard);
-                render.render(&mut speaker);
+                rates.hear(&heard, |voice| listen.capture(voice));
+                rates.play(&mut speaker, |voice| render.render(voice));
             } else {
                 speaker.fill(0.0);
             }
@@ -123,7 +140,7 @@ impl VoiceDevice for Browser {
             signals.send(fault(&kind, message)).ok();
             inline::soon();
         });
-        let handle = open(self.rate, &frames, &ended);
+        let handle = open(&frames, &ended);
         self.session = Some(Session { handle, _frames: frames, _ended: ended });
         Ok(())
     }

@@ -49,19 +49,23 @@
 //!
 //! **The web.** The stream asks the browser for the microphone with its own echo cancellation,
 //! noise suppression and gain control on, and runs both directions through one AudioWorklet in
-//! an `AudioContext` at the stream's rate, so echo cancellation is the browser's. Without
-//! threads in the page's wasm, the stream's control and audio both pass through the page's main
-//! thread: the worklet posts each 10 ms of microphone audio there and gets the same amount of
-//! speaker audio back, buffered 20 ms ahead. A main thread busy for longer than the buffer (a
-//! long frame, heavy script) plays silence or drops speaker audio, counted in
-//! [`VoiceStats::late_frames`]. The page needs HTTPS or `localhost`. Browsers start audio only
-//! after the person interacts with the page, so call [`Voice::start`] from a click or key
-//! handler; started earlier, audio begins at the next click or key press. The first start asks
-//! for the microphone; a refusal fails the stream ([`VoiceState::Failed`]) and
-//! [`Voice::permission`] then reads [`MicPermission::Denied`]. A change of audio devices rebuilds
-//! the stream. Checked in headless Chromium with a fake microphone; echo cancellation in Chrome,
-//! Firefox and Safari with real speakers hasn't been verified yet, and whether each browser
-//! cancels the page's own Web Audio output is up to the browser.
+//! an `AudioContext` at the audio device's own rate, so echo cancellation is the browser's. The
+//! context keeps the device's rate because Firefox cancels only the sound played in the same
+//! audio graph as the microphone, and a context at any other rate gets a graph of its own; Rune
+//! converts between the device's rate and the stream's. Without threads in the page's wasm, the
+//! stream's control and audio both pass through the page's main thread: the worklet posts each
+//! 10 ms of microphone audio there and gets the same amount of speaker audio back, buffered
+//! 20 ms ahead. A main thread busy for longer than the buffer (a long frame, heavy script) plays
+//! silence or drops speaker audio, counted in [`VoiceStats::late_frames`]. The page needs HTTPS
+//! or `localhost`. Browsers start audio only after the person interacts with the page, so call
+//! [`Voice::start`] from a click or key handler; started earlier, audio begins at the next click
+//! or key press. The stream stays [`VoiceState::Starting`] until the first microphone audio
+//! arrives, so it isn't [`VoiceState::Running`] while the browser's permission prompt is open.
+//! The first start asks for the microphone; a refusal fails the stream ([`VoiceState::Failed`])
+//! and [`Voice::permission`] then reads [`MicPermission::Denied`]. A change of audio devices
+//! rebuilds the stream. Echo cancellation has been measured in headless Firefox and Chromium
+//! against a PulseAudio server whose microphone hears the speaker, at device rates of 44.1 and
+//! 48 kHz; Safari and real speakers haven't been verified yet.
 //!
 //! Elsewhere, [`Voice::open`] returns [`VoiceError::Unsupported`].
 //!
@@ -77,6 +81,8 @@ mod echo_path;
 mod fake;
 mod io;
 mod machine;
+#[cfg(target_arch = "wasm32")]
+mod rates;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 mod streams;
 #[cfg(any(target_os = "macos", target_os = "ios"))]

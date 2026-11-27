@@ -3501,10 +3501,15 @@ let heard = speaker.played_frames();
   offers one (Windows 11 lists it among the stream's effects); otherwise, as on Windows 10, the
   in-app canceller from Linux runs. Never both. Not yet run on real Windows audio hardware.
 - **The web**: the browser's own echo cancellation, noise suppression and gain control on
-  `getUserMedia`, with both directions through one AudioWorklet. Audio crosses the page's main
-  thread in 10 ms blocks, so a busy main thread counts `VoiceStats::late_frames`. Call
-  `Voice::start` from a click or key handler. Needs HTTPS or `localhost`. Not yet run in a
-  browser with real speakers.
+  `getUserMedia`, with both directions through one AudioWorklet in an `AudioContext` at the
+  device's own rate (Firefox cancels only what plays in the microphone's audio graph, and a
+  context at another rate gets its own), converted to and from the stream's rate in Rune. Audio
+  crosses the page's main thread in 10 ms blocks, so a busy main thread counts
+  `VoiceStats::late_frames`. The state stays `Starting` until the first microphone audio
+  arrives, so not while the permission prompt is open. Call `Voice::start` from a click or key
+  handler. Needs HTTPS or `localhost`. `scripts/voice-web-e2e.sh` measures echo in headless
+  Firefox or Chromium against a real PulseAudio server in Docker. Not yet run in a browser with
+  real speakers.
 - **Tests**: `Voice::open_fake(spec, &FakeVoice)` runs on every platform without hardware.
   `FakeVoice::tick(frames)` runs one device callback. The fake microphone hears what
   `FakeVoice::say` queued plus the speaker's output at the `echo(gain, delay)` you set.

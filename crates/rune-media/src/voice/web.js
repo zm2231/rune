@@ -35,7 +35,7 @@ class RuneVoice extends AudioWorkletProcessor {
         for (let i = 0; i < out.length; i++) {
             this.batch[this.filled++] = input ? input[i] : 0;
             if (this.filled === this.block) {
-                this.port.postMessage({ mic: this.batch, late: this.late }, [this.batch.buffer]);
+                this.port.postMessage({ mic: this.batch, late: this.late, live: !!input }, [this.batch.buffer]);
                 this.late = 0;
                 this.batch = new Float32Array(this.block);
                 this.filled = 0;
@@ -120,7 +120,7 @@ function resumeOnGesture(context) {
     addEventListener('keydown', resume, true);
 }
 
-export function voiceOpen(rate, frames, ended) {
+export function voiceOpen(frames, ended) {
     const session = { closed: false, context: null, stream: null, node: null, source: null, onDevices: null };
     const report = (kind, message) => {
         if (!session.closed) ended(kind, message);
@@ -128,7 +128,7 @@ export function voiceOpen(rate, frames, ended) {
     session.report = report;
     (async () => {
         try {
-            const context = new AudioContext({ sampleRate: rate, latencyHint: 'interactive' });
+            const context = new AudioContext({ latencyHint: 'interactive' });
             session.context = context;
             resumeOnGesture(context);
             const url = URL.createObjectURL(new Blob([PROCESSOR], { type: 'text/javascript' }));
@@ -146,7 +146,7 @@ export function voiceOpen(rate, frames, ended) {
             }
             permissionState = 'granted';
             session.stream = stream;
-            const block = Math.floor(rate / 100);
+            const block = Math.floor(context.sampleRate / 100);
             const node = new AudioWorkletNode(context, 'rune-voice', {
                 numberOfInputs: 1,
                 numberOfOutputs: 1,
@@ -157,7 +157,7 @@ export function voiceOpen(rate, frames, ended) {
             });
             node.port.onmessage = (event) => {
                 if (session.closed) return;
-                const out = frames(event.data.mic, event.data.late);
+                const out = frames(event.data.mic, event.data.late, event.data.live, context.sampleRate);
                 node.port.postMessage(out, [out.buffer]);
             };
             const source = context.createMediaStreamSource(stream);

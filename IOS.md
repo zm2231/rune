@@ -704,7 +704,7 @@ the same Apple Account, with apps from the same team; a simulator can't hand off
 items to the device's search, and `App::on_open_search_item` gets the id of a result the user
 opens, the one that launched the app before the first frame. It needs nothing in the bundle and
 works on a simulator: index, swipe down on the home screen, search, and open the result. From iOS 17 the
-home-screen search may find an item by the words of its title alone, not its details or keywords,
+home-screen search finds an item by the words of its title alone, not its details or keywords,
 and may miss a search of three letters or fewer.
 `examples/ios-system` does both:
 

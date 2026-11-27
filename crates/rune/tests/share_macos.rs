@@ -2,9 +2,10 @@
 //! window keeps drawing. A click outside the picker (macOS shows it as a popover) dismisses it and
 //! reaches the callback exactly once, and hiding the window it shows over answers its share. Where
 //! the picker tracks as a menu instead, the test cancels the menu through AppKit and says so.
-//! With permission to post system events (Accessibility), it then presses a real Escape through
-//! the HID event tap, first with Rune's window key and then after a click inside the picker, and
-//! prints where the key went and whether the picker answered; those runs only report. Opens windows, so it only runs
+//! With permission to post system events (Accessibility), it then presses a real Escape, a
+//! CoreGraphics key event posted to this process only, first with Rune's window key and then with
+//! the picker's window made key through AppKit, and prints where the key went and whether the
+//! picker answered; those runs only report. Opens windows, so it only runs
 //! with RUNE_GUI_TESTS=1 in a logged-in GUI session.
 
 #![allow(unsafe_code)]
@@ -25,7 +26,7 @@ mod mac {
     use std::ffi::c_void;
 
     use objc2::{class, msg_send, rc::Retained, runtime::AnyObject};
-    use objc2_foundation::{NSPoint, NSRect, NSString};
+    use objc2_foundation::NSString;
     use rune::*;
 
     struct Main;
@@ -165,29 +166,21 @@ mod mac {
     unsafe extern "C" {
         fn CGPreflightPostEventAccess() -> bool;
         fn CGEventCreateKeyboardEvent(source: *const c_void, key: u16, down: bool) -> *mut c_void;
-        fn CGEventCreateMouseEvent(source: *const c_void, kind: u32, at: NSPoint, button: u32) -> *mut c_void;
-        fn CGEventPost(tap: u32, event: *mut c_void);
+        fn CGEventPostToPid(pid: i32, event: *mut c_void);
         fn CFRelease(object: *mut c_void);
     }
 
-    const HID_TAP: u32 = 0;
-
-    fn post_hid(events: impl IntoIterator<Item = *mut c_void>) {
-        for event in events {
-            assert!(!event.is_null(), "CoreGraphics made the event");
-            // SAFETY: a live event this function owns, posted then released once.
-            unsafe { CGEventPost(HID_TAP, event); CFRelease(event); }
+    fn real_escape_key() {
+        for down in [true, false] {
+            // SAFETY: a null source makes an event from the default state; 53 is Escape's key
+            // code. The event goes to this process only, then is released once.
+            unsafe {
+                let event = CGEventCreateKeyboardEvent(std::ptr::null(), 53, down);
+                assert!(!event.is_null(), "CoreGraphics made the Escape key event");
+                CGEventPostToPid(std::process::id() as i32, event);
+                CFRelease(event);
+            }
         }
-    }
-
-    fn hid_escape() {
-        // SAFETY: a null source makes events from the default HID state; 53 is Escape's key code.
-        post_hid([true, false].map(|down| unsafe { CGEventCreateKeyboardEvent(std::ptr::null(), 53, down) }));
-    }
-
-    fn hid_click(at: NSPoint) {
-        // SAFETY: a null source; kinds 1 and 2 are left mouse down and up, button 0 the left one.
-        post_hid([1, 2].map(|kind| unsafe { CGEventCreateMouseEvent(std::ptr::null(), kind, at, 0) }));
     }
 
     fn key_window(handle: &AppHandle<Main>) -> String {
@@ -217,21 +210,17 @@ mod mac {
         })
     }
 
-    fn inside_picker(handle: &AppHandle<Main>) -> Option<NSPoint> {
+    fn make_picker_key(handle: &AppHandle<Main>) -> bool {
         on_main(handle, |_, _| {
             let baseline = BASELINE.with(|b| b.borrow().clone());
-            // SAFETY: main thread (an update); the app's live windows and the main screen, whose
-            // top edge is the origin of CoreGraphics' global coordinates.
+            // SAFETY: main thread (an update); a live, visible window of the app.
             unsafe {
-                let picker = windows().into_iter().filter(|w| !baseline.contains(w)).find(|&w| {
+                let Some(picker) = windows().into_iter().filter(|w| !baseline.contains(w)).find(|&w| {
                     let visible: bool = msg_send![w as *mut AnyObject, isVisible];
                     visible
-                })?;
-                let frame: NSRect = msg_send![picker as *mut AnyObject, frame];
-                let screens: *mut AnyObject = msg_send![class!(NSScreen), screens];
-                let main: *mut AnyObject = msg_send![screens, firstObject];
-                let screen: NSRect = msg_send![main, frame];
-                Some(NSPoint::new(frame.origin.x + 8.0, screen.size.height - (frame.origin.y + frame.size.height) + 8.0))
+                }) else { return false };
+                let _: () = msg_send![picker as *mut AnyObject, makeKeyWindow];
+                true
             }
         })
     }
@@ -239,7 +228,7 @@ mod mac {
     fn escape(handle: &AppHandle<Main>, when: &str) -> bool {
         let before = answers().len();
         println!("share_macos: real Escape ({when}): key window {}", key_window(handle));
-        hid_escape();
+        real_escape_key();
         let answered = wait("an answer to Escape", Duration::from_secs(2), || answers().len() > before);
         println!("share_macos: real Escape ({when}): answered {answered}, {} picker window(s) on screen, key window now {}",
             picker_windows(handle), key_window(handle));
@@ -259,21 +248,17 @@ mod mac {
         println!("share_macos: real Escape: this app frontmost {frontmost}");
         let count = answers().len();
         if !escape(handle, "Rune's window key") {
-            match inside_picker(handle) {
-                Some(at) => {
-                    println!("share_macos: clicking inside the picker at ({:.0}, {:.0}) in screen points", at.x, at.y);
-                    hid_click(at);
-                    std::thread::sleep(Duration::from_millis(500));
-                    if answers().len() == count { escape(handle, "after a click inside the picker"); }
-                    else { println!("share_macos: the click inside the picker answered {:?}", answers().last()); }
-                }
-                None => println!("share_macos: no picker window to click inside"),
+            if make_picker_key(handle) {
+                std::thread::sleep(Duration::from_millis(300));
+                escape(handle, "the picker's window made key through AppKit");
+            } else {
+                println!("share_macos: no picker window to make key");
             }
             if answers().len() == count { click_outside(handle); }
         }
         assert!(wait("the picker's answer", Duration::from_secs(3), || answers().len() == count + 1), "the picker never answered");
         std::thread::sleep(Duration::from_millis(300));
-        assert_eq!(answers().len(), count + 1, "the picker answered once: {:?}", answers());
+        assert_eq!(answers()[count..], ["Ok(None)"], "the picker's dismissal answered once with none: {:?}", answers());
     }
 
     fn open_picker(handle: &AppHandle<Main>) {

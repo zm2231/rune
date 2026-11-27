@@ -11,6 +11,10 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 version="${1:?usage: scripts/vendor-sonora-aec3.sh <version>}"
+if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+  echo "usage: scripts/vendor-sonora-aec3.sh <version>   (a crates.io version such as 0.3.0, not '$version')" >&2
+  exit 2
+fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 curl -fsSL "https://static.crates.io/crates/sonora-aec3/sonora-aec3-$version.crate" -o "$tmp/crate.tar.gz"

@@ -517,6 +517,7 @@ impl Measurement<'_> {
                             bold_text: self.defaults.bold_text,
                             missed_virtual_memo: false,
                         };
+                        let flatten_time = crate::frame::profile::Scope::new(crate::frame::profile::Phase::Flatten);
                         let (kid_slot, kid_dirty) = flatten_with_buf(
                             row_el,
                             Some(new_list_idx),
@@ -530,6 +531,7 @@ impl Measurement<'_> {
                             scale,
                             &mut memo_ctx,
                         );
+                        drop(flatten_time);
                         pending = memo_ctx.pending;
                         reused = memo_ctx.reused;
                         row_slots.push(kid_slot);
@@ -636,6 +638,7 @@ impl Measurement<'_> {
                                 bold_text: self.defaults.bold_text,
                                 missed_virtual_memo: false,
                             };
+                            let flatten_time = crate::frame::profile::Scope::new(crate::frame::profile::Phase::Flatten);
                             let (kid_slot, kid_dirty) = flatten_with_buf(
                                 item_el,
                                 Some(new_container_idx),
@@ -649,6 +652,7 @@ impl Measurement<'_> {
                                 scale,
                                 &mut memo_ctx,
                             );
+                            drop(flatten_time);
                             pending = memo_ctx.pending;
                             reused = memo_ctx.reused;
                             item_slots.push(kid_slot);

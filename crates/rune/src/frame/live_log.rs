@@ -178,7 +178,8 @@ pub(crate) struct Frame {
     pub(crate) encoded: Stamp,
     pub(crate) submitted: Stamp,
     pub(crate) presented: Stamp,
-    /// Wall ms per `profile::Phase` (view, commit, layout, text, paint, apply), then CPU ms.
+    /// Wall ms per `profile::Phase` (view, commit, layout, text, paint, apply, flatten, place,
+    /// focus), then CPU ms.
     pub(crate) phases: [f64; 2 * PHASES],
     pub(crate) encode_parts: [u64; crate::frame::encode_parts::PARTS],
     pub(crate) nodes: usize,

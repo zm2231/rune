@@ -390,6 +390,7 @@ impl RuntimeCore {
                 why |= CommitWhy::POLL;
                 self.commit.watch.meter.poll();
             }
+            self.frame.poll_asked(self.clock, &one.wakes);
             merge(&mut tx, one);
         }
         if !polled && app.playground().is_some_and(|p| p.polls()) {

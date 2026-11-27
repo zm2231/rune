@@ -158,7 +158,7 @@ impl LayerHostCore {
         rt.set_srgb_blend(true);
         rt.set_os_drag(false);
         rt.set_pointer_lock_supported(false);
-        rt.wall_start = Some(now);
+        rt.wall_start.get_or_insert(now);
         rt.frame.set_record_events(false);
         rt.host.surface_stats = Some(self.meter.shared());
         let target_format = if rt.srgb_blend() { self.config.format.remove_srgb_suffix() } else { self.config.format };
@@ -383,8 +383,17 @@ impl<S: 'static> LayerHost<S> {
     /// after the frame whose handler made it, a paste when the clipboard's worker answers,
     /// which calls `wake` for the frame that delivers it. Without this a host reads
     /// [`Runtime::copy_request`] itself and pastes arrive only from a clipboard a test supplies.
-    pub fn with_system_clipboard(mut self, wake: Waker) -> Self {
-        let mut clipboard = crate::clipboard::Client::default();
+    #[cfg(target_os = "ios")]
+    pub(crate) fn hidden_parts(&mut self) -> crate::overlay::ios::Mounted<'_> {
+        let serves = EmbedSurface::serves(self);
+        crate::overlay::ios::Mounted { rt: &mut self.rt, clipboard: self.core.clipboard.as_ref(), serves }
+    }
+
+    pub fn with_system_clipboard(self, wake: Waker) -> Self {
+        self.with_clipboard(crate::clipboard::Client::default(), wake)
+    }
+
+    pub(crate) fn with_clipboard(mut self, mut clipboard: crate::clipboard::Client, wake: Waker) -> Self {
         clipboard.connect(wake);
         self.core.clipboard = Some(clipboard);
         self
@@ -695,9 +704,12 @@ mod tests {
 
     #[test]
     fn links_open_in_the_system_only_when_the_host_asks() {
+        // SAFETY: `CAMetalLayer` is a QuartzCore class whose `+new` returns a retained instance.
         let layer: Retained<AnyObject> = unsafe { msg_send![AnyClass::get(c"CAMetalLayer").expect("QuartzCore"), new] };
         let view = |_: &(), _: &mut Cx<()>| -> El { col().size(120.0, 80.0) };
         let spec = AppSpec::new("embed-links", (120.0, 80.0), || (), view);
+        // SAFETY: `layer` is a valid retained `CAMetalLayer` owned by this test, in no window's
+        // layer tree, and `host` is declared after it, so it drops first and `layer` outlives it.
         let host = unsafe {
             LayerHost::from_core_animation_layer(
                 Retained::as_ptr(&layer) as *mut std::ffi::c_void,

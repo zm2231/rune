@@ -108,6 +108,12 @@ mod presence;
 use presence::{Presence, Release};
 #[cfg(target_os = "ios")]
 pub(crate) mod ios;
+#[cfg(any(test, target_os = "ios"))]
+#[path = "overlay/standby.rs"]
+mod standby;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "overlay/hide_wait.rs"]
+mod hide_wait;
 mod requests;
 use requests::{KeyRequest, Requests, Update, Visibility};
 #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]

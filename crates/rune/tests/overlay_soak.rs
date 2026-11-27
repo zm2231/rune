@@ -80,6 +80,7 @@ fn main() {
     }
     let cycles: usize = rune::env::var("RUNE_SOAK_CYCLES").and_then(|n| n.parse().ok()).unwrap_or(2000).max(WARM_UP + 1);
     std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(3600)); eprintln!("timeout"); std::process::exit(2) });
+    rune::orderly_exit();
     on_gpu(|event| if event == GpuEvent::Starting { STARTS.fetch_add(1, Ordering::SeqCst); });
     let mut app = App::new(AppSpec::new("overlay soak", (100.0, 100.0), || (), hud)).args(Vec::new()).windowless();
     let hud = app.overlay(OverlaySpec::new("soak hud", (200.0, 40.0), hud)
@@ -112,6 +113,7 @@ fn main() {
             assert_eq!(starts, 1, "every show draws on the first show's device");
             assert!(end - baseline < ALLOWED_GROWTH_MB, "memory grew {:.0} MB over {} cycles", end - baseline, cycles - WARM_UP);
         });
+        if run.is_err() { eprintln!("overlay_soak: failed"); std::process::exit(1); }
         *out.lock().unwrap() = Some(run.is_ok());
         handle.quit();
     });

@@ -60,6 +60,7 @@ fn main() {
         eprintln!("timeout");
         std::process::exit(2)
     });
+    rune::orderly_exit();
     clip().surface().set_observer(Arc::new(|t| {
         // Runs in wgpu's work-done callback: no panic there, even on a poisoned lock.
         FRAMES.lock().unwrap_or_else(|e| e.into_inner()).insert(t.frame_id);
@@ -168,6 +169,7 @@ fn main() {
             }
             println!("video_gui: audio played {duration:.2} s to the end, muted");
         });
+        if run.is_err() { eprintln!("video_gui: failed"); std::process::exit(1); }
         *out.lock().unwrap() = Some(run.is_ok());
         main.close();
     });

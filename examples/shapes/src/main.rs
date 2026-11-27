@@ -553,10 +553,23 @@ const GROW_NARROW: f32 = 80.0;
 const GROW_WIDE: f32 = 140.0;
 const GROW_SPRING: Spring = Spring::new(0.7, 0.15);
 
+fn grow_target(period: u64) -> f32 {
+    if period % 2 == 1 { GROW_WIDE } else { GROW_NARROW }
+}
+
 fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
     s.t = t as f32;
-    let target = if (t / GROW_EVERY) as u64 % 2 == 1 { GROW_WIDE } else { GROW_NARROW };
-    let (w, v) = GROW_SPRING.sample(s.grow_w, s.grow_v, target, (t - s.grow_at).max(0.0) as f32);
+    let now = (t / GROW_EVERY).floor() as u64;
+    let target = grow_target(now);
+    let (mut w, mut v) = (s.grow_w, s.grow_v);
+    let mut period = (s.grow_at / GROW_EVERY).floor() as u64;
+    while period < now {
+        let flip = (period + 1) as f64 * GROW_EVERY;
+        (w, v) = GROW_SPRING.sample(w, v, grow_target(period), (flip - s.grow_at).max(0.0) as f32);
+        s.grow_at = flip;
+        period += 1;
+    }
+    (w, v) = GROW_SPRING.sample(w, v, target, (t - s.grow_at).max(0.0) as f32);
     s.grow_at = t;
     if (w - target).abs() < 0.01 && v.abs() < 0.01 {
         (s.grow_w, s.grow_v) = (target, 0.0);

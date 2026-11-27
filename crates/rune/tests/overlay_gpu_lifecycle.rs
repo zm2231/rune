@@ -81,6 +81,7 @@ mod lazy {
             return;
         }
         std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(120)); eprintln!("timeout"); std::process::exit(2) });
+        rune::orderly_exit();
         on_gpu(|event| if event == GpuEvent::Starting { STARTS.fetch_add(1, Ordering::SeqCst); });
         let mut app = App::new(AppSpec::new("overlay gpu lifecycle", (100.0, 100.0), || (), view)).args(Vec::new()).windowless();
         let created = Arc::new(AtomicUsize::new(0));
@@ -156,6 +157,7 @@ mod lazy {
                 println!("| --- | --- |");
                 for (name, ms) in r { println!("| {name} | {} |", ms.map_or("none".into(), |ms| format!("{ms:.0} ms"))); }
             });
+            if run.is_err() { eprintln!("overlay_gpu_lifecycle: failed"); std::process::exit(1); }
             *out.lock().unwrap() = Some(run.is_ok());
             handle.quit();
         });

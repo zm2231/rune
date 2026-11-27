@@ -5,10 +5,11 @@ use std::sync::atomic::Ordering;
 
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
-use winit::window::{Theme, Window, WindowId};
+use winit::window::{Theme, WindowId};
 
+use super::pointer::{begin_host_drag_out, button_at, cursor_moved_core};
 use super::stepping::FrameMove;
-use super::{Host, WindowApp};
+use super::Host;
 use crate::app::Shared;
 use crate::input::host_events;
 use crate::window::chrome::{self, sync_chrome_core};
@@ -17,8 +18,6 @@ use crate::window::chrome::mac;
 use crate::window::file_drop::{FileDrop, FileStep};
 use crate::window::keys::{map_key_event, map_mods};
 use crate::window::state::{Cover, RestEvent};
-#[cfg(not(target_os = "macos"))]
-use crate::window::surface::RedrawEvent;
 use crate::window::surface::Win;
 use crate::window::{WakeEvent, gesture_phase, pointer_button, sync_screen_origin_core};
 
@@ -771,137 +770,9 @@ impl Host {
     }
 }
 
-/// Starts an armed OS drag-out session from a pointer or touch move event.
-fn begin_host_drag_out(
-    gpu: Option<&(std::sync::Arc<crate::render::Gpu>, crate::render::Renderer)>,
-    l: &mut crate::window::surface::Win,
-    rt: &crate::runtime::RuntimeCore,
-    native_handle: &crate::window::handle::WindowHandle,
-    scale: f32,
-    start: crate::drag_out::DragOutStart,
-) {
-    let image = gpu.filter(|_| start.item.drag_image().is_none()).and_then(|(gpu, renderer)| {
-        crate::drag_out::snapshot(gpu, renderer, (l.config.width, l.config.height), scale, rt.clear_color(), start.rect)
-    });
-    let (sink, path) = (rt.drag_end_sink(), start.path.clone());
-    let handle = native_handle.clone();
-    crate::drag_out::begin(&l.window, start, image, Box::new(move |outcome| {
-        sink.borrow_mut().push((path, outcome));
-        handle.send(WakeEvent::App);
-    }));
-    l.apply_cursor_core(rt, false);
-}
-
-/// Applies a pointer move in view points, returning whether the host must request a redraw and
-/// any OS drag-out session the move armed. Leaves `timer_frame` quiet and `loop_frame` untouched
-/// when the move changed nothing the next frame would run or paint.
-pub(super) fn cursor_moved_core(
-    app: &mut dyn WindowApp,
-    timer_frame: &mut crate::window::surface::TimerFrame,
-    loop_frame: &mut crate::window::surface::LoopFrame,
-    x: f32,
-    y: f32,
-) -> (bool, Option<crate::drag_out::DragOutStart>) {
-    let changed = app.observe_pointer(x, y);
-    let drag_out = app.rt_mut().take_drag_out();
-    let redraw = changed || drag_out.is_some();
-    if redraw {
-        timer_frame.no_longer_quiet();
-        loop_frame.touched();
-    }
-    (redraw, drag_out)
-}
-
 /// Runs the updates queued before launch with `run`, as the host `shortcuts` guards, as every
 /// later drain does, so an activation queued before launch runs in its place among them.
 pub(in crate::window) fn startup_updates<S: 'static>(shared: &Shared<S>, shortcuts: &crate::shortcuts::Guard, run: impl FnMut(crate::app::Update<S>)) {
     let _receiving = shortcuts.receiving();
     shared.take_updates().into_iter().for_each(run);
-}
-
-/// Where a mouse button acts. On Windows, the point its message carries
-/// (`platform::win32::press_point`). Elsewhere, where the runtime last saw the pointer, else
-/// where the system says it is: a menu that took the mouse (`release_pointer_for_popup`) leaves
-/// the runtime no pointer, and winit reports no move for a cursor that hasn't moved since, so a
-/// click at the same spot after the menu closes would otherwise be lost. The pointer moves
-/// there first, so hover is under it as the press lands.
-fn button_at(app: &mut dyn WindowApp, window: &Window) -> Option<(f32, f32)> {
-    #[cfg(target_os = "windows")]
-    if let Some((x, y)) = crate::platform::win32::press_point::current(window) {
-        let input_scale = app.rt().input_scale();
-        let at = (x as f32 / input_scale, y as f32 / input_scale);
-        if app.rt().pointer() != Some(at) { app.pointer_move(at.0, at.1); }
-        return Some(at);
-    }
-    if let Some(at) = app.rt().pointer() { return Some(at); }
-    let (x, y) = crate::input::drop_pointer::DropPointer::new().sample(window, app.rt().zoom())?;
-    app.pointer_move(x, y);
-    Some((x, y))
-}
-
-impl Host {
-    /// The system's paint (`RedrawRequested`), or one the loop runs for a window whose paint
-    /// the system keeps putting off (`Redraw`).
-    pub(in crate::window) fn paint(&mut self, event_loop: &ActiveEventLoop) {
-        // The frame a due timer asked for drew, or ran covered in `draw`.
-        if let Some(l) = &mut self.win { l.timer_frame.drawn(); }
-        // AppKit paints off its own display link; elsewhere a paint holds what it asks for.
-        #[cfg(not(target_os = "macos"))]
-        if let Some(l) = &self.win { l.redraw_step(RedrawEvent::Paint); }
-        #[cfg(target_os = "macos")]
-        let satisfied = self.win.as_ref().is_some_and(Win::take_redraw_on_paint);
-        // A new accent, scroller style, light/dark, reduced-motion or double-click preference asks
-        // every window to redraw.
-        {
-            let rt = self.app.rt_mut();
-            rt.set_system_accent(crate::system_accent());
-            rt.set_system_scroll_bars_state(crate::platform::scroll_bars::current().with_override(self.args.scroll_bars));
-            #[cfg(target_os = "linux")]
-            {
-                rt.set_system_reduced_motion(crate::platform::preferences::reduced_motion());
-                rt.double_click_interval = crate::platform::preferences::double_click_interval();
-            }
-            if self.args.theme.is_none() && let Some(dark) = self.win.as_ref().and_then(|l| crate::platform::preferences::desktop_dark(&l.window)) {
-                rt.set_system_dark(dark);
-            }
-        }
-        #[cfg(target_os = "macos")]
-        if self.win.as_ref().is_some_and(|l| l.native.full_screen.take()) {
-            if let Some(l) = self.win.as_ref() {
-                sync_chrome_core(self.app.rt_mut(), l, self.chrome, self.titlebar);
-            }
-            self.record_live_window_state();
-        }
-        // A `DisplayTick` that already drew and settled the queued work leaves a stale
-        // `RedrawRequested` in winit's queue. Skip it while resting with nothing changed so it
-        // cannot bump a coasting display link back to `Active` for a duplicate frame.
-        #[cfg(target_os = "macos")]
-        if satisfied && self.win.as_ref().is_some_and(|l| l.presented.is_some()) {
-            let rt = self.app.rt();
-            if !rt.stale() && !rt.live_pending() && !rt.has_pending_input() && rt.host.window_frame.is_none() {
-                return;
-            }
-        }
-        // The window procedure asks for this paint when a caption button's hover or
-        // press changes.
-        #[cfg(target_os = "windows")]
-        if let Some(l) = &self.win { sync_chrome_core(self.app.rt_mut(), l, self.chrome, self.titlebar); }
-        // A Linux frame of Rune's own takes the desktop's button layout, which the settings
-        // portal asks for this paint to show, and whether the window is maximized.
-        #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
-        if crate::titlebar::linux::chosen() && let Some(l) = &self.win { sync_chrome_core(self.app.rt_mut(), l, self.chrome, self.titlebar); }
-        // X11 `PropertyNotify` on EWMH/GTK WM-state atoms sets a per-window flag and asks for
-        // `RedrawRequested`; sync chrome only when that flag fired (zero IPC on ordinary redraws).
-        #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
-        if !self.wayland && let Some(l) = &self.win
-            && winit::platform::x11::WindowExtX11::take_wm_state_changed(&*l.window)
-        {
-            sync_chrome_core(self.app.rt_mut(), l, self.chrome, self.titlebar);
-        }
-        self.redraw();
-        self.shell(event_loop);
-        // What asked for a frame while it painted waits for the turn's end.
-        #[cfg(not(target_os = "macos"))]
-        if let Some(l) = &self.win { l.redraw_step(RedrawEvent::Painted); }
-    }
 }

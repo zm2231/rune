@@ -243,7 +243,7 @@ fn pre_step_reblend_failure_runs_covered_wake_once_and_schedules_backoff() {
 #[test]
 fn cursor_moved_skips_redraw_within_same_hovered_row_and_keeps_quiet_timer_and_loop_frames() {
     use crate::el::Cursor;
-    use crate::window::host::events::cursor_moved_core;
+    use crate::window::host::pointer::cursor_moved_core;
     use crate::window::surface::{LoopFrame, TimerFrame};
     use crate::{Color, Phase, ScrollSpec, Spring, col};
 
@@ -749,7 +749,7 @@ fn turn_end_guard_requests_redraw_when_user_input_is_queued_at_rest() {
 
 #[test]
 fn cursor_moved_core_wakes_and_produces_drag_when_deferred_titlebar_press_crosses_threshold() {
-    use crate::window::host::events::cursor_moved_core;
+    use crate::window::host::pointer::cursor_moved_core;
     use crate::window::surface::{LoopFrame, TimerFrame};
     use crate::{Cx, El, Env, Runtime, TitlebarAction, el};
 

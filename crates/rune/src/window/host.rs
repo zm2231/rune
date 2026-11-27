@@ -27,6 +27,8 @@ pub(in crate::window) mod draw;
 pub(in crate::window) mod events;
 pub(in crate::window) mod gpu_loss;
 pub(in crate::window) mod lifecycle;
+pub(in crate::window) mod paint;
+pub(in crate::window) mod pointer;
 pub(in crate::window) mod render;
 pub(in crate::window) mod shell_requests;
 pub(in crate::window) mod stepping;

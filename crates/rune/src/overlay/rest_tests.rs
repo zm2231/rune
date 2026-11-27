@@ -461,7 +461,7 @@ fn overlay_idle_rest_after_24_resizes_retires_metal_submissions_and_releases_spa
     let done = retired.clone();
     gpu.queue.on_submitted_work_done(move || done.store(true, Ordering::Release));
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = crate::time::now() + Duration::from_secs(5);
     loop {
         let t0 = crate::time::now();
         overlay.dirty = false;
@@ -469,7 +469,7 @@ fn overlay_idle_rest_after_24_resizes_retires_metal_submissions_and_releases_spa
         overlay.note_presented_with(t0, false);
         overlay.wake_due(t0 + REST_AFTER);
         assert_eq!(overlay.rest, Rest::Idle);
-        if !cfg!(target_os = "macos") || retired.load(Ordering::Acquire) || std::time::Instant::now() > deadline {
+        if !cfg!(target_os = "macos") || retired.load(Ordering::Acquire) || crate::time::now() > deadline {
             break;
         }
         std::thread::sleep(Duration::from_millis(5));

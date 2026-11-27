@@ -28,8 +28,9 @@ define_class!(
     impl Delegate {
         #[unsafe(method(sharingServicePicker:didChooseSharingService:))]
         fn chose(&self, _picker: &AnyObject, service: Option<&AnyObject>) {
-            // SAFETY: a sharing service's `title` is an `NSString`.
             let title = service.map(|service| {
+                // SAFETY: the picker passes an `NSSharingService`, whose `title` takes no
+                // arguments and returns a non-null `NSString`, retained here.
                 let title: Retained<NSString> = unsafe { msg_send![service, title] };
                 title.to_string()
             });

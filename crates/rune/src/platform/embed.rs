@@ -695,9 +695,12 @@ mod tests {
 
     #[test]
     fn links_open_in_the_system_only_when_the_host_asks() {
+        // SAFETY: `CAMetalLayer` is a QuartzCore class whose `+new` returns a retained instance.
         let layer: Retained<AnyObject> = unsafe { msg_send![AnyClass::get(c"CAMetalLayer").expect("QuartzCore"), new] };
         let view = |_: &(), _: &mut Cx<()>| -> El { col().size(120.0, 80.0) };
         let spec = AppSpec::new("embed-links", (120.0, 80.0), || (), view);
+        // SAFETY: `layer` is a valid retained `CAMetalLayer` owned by this test, in no window's
+        // layer tree, and `host` is declared after it, so it drops first and `layer` outlives it.
         let host = unsafe {
             LayerHost::from_core_animation_layer(
                 Retained::as_ptr(&layer) as *mut std::ffi::c_void,

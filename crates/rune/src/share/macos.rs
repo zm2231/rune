@@ -58,6 +58,7 @@ struct Showing {
     _picker: Retained<AnyObject>,
     delegate: Retained<Delegate>,
     before: Vec<Retained<NSWindow>>,
+    until: Option<Vec<Retained<NSWindow>>>,
     watched: Vec<Retained<NSWindow>>,
     observers: Vec<Retained<AnyObject>>,
 }
@@ -107,7 +108,11 @@ pub(crate) fn show(shown: Shown, window: &winit::window::Window) {
             picker
         };
         let before = windows(mtm);
-        SHOWING.with(|showing| showing.borrow_mut().push(Showing { _picker: picker.clone(), delegate: delegate.clone(), before, watched: Vec::new(), observers: Vec::new() }));
+        SHOWING.with(|showing| {
+            let mut showing = showing.borrow_mut();
+            for earlier in showing.iter_mut().filter(|s| s.until.is_none()) { earlier.until = Some(before.clone()); }
+            showing.push(Showing { _picker: picker.clone(), delegate: delegate.clone(), before, until: None, watched: Vec::new(), observers: Vec::new() });
+        });
         // SAFETY: `bounds` is a rect and `isFlipped` a `BOOL` of the view, and the picker shows
         // relative to a rect in it.
         unsafe {
@@ -136,7 +141,7 @@ fn watch_picker_windows(mtm: MainThreadMarker, delegate: &Retained<Delegate>) {
         let opened: Vec<Retained<NSWindow>> = now.into_iter().filter(|window| {
             let object: &AnyObject = window;
             !has(&showing[at].before, window)
-                && showing[at + 1..].iter().all(|later| has(&later.before, window))
+                && showing[at].until.as_deref().is_none_or(|until| has(until, window))
                 && !showing.iter().any(|s| has(&s.watched, window))
                 && !crate::platform::macos::has_subclass(object, b"Winit")
                 && !crate::platform::macos::has_subclass(object, b"Rune")

@@ -23,7 +23,9 @@ Another brand writes another theme crate; no component changes.
 ## Use
 
 ```rust
-let k = rune_theme_opencode::kit(cx.system_dark());
+// App state holds `theme: KitTheme`, made once with `rune_theme_opencode::kit_theme()`.
+cx.with_kit(&s.theme, |cx| {
+let k = &*cx.kit();                  // this window's kit: appearance, blend mode, contrast
 let mut layer = Vec::new();          // overlay contents, mounted above everything
 let body = col()
     .child(Button::new("Save").variant(ButtonVariant::Contrast).on_press(|s: &mut App| s.save()).build(k))
@@ -38,7 +40,17 @@ let body = col()
             .build(k, &mut layer),
     );
 rune_kit::root(body, layer)          // the view's root
+})
 ```
+
+**Themes at runtime.** A `KitTheme` turns each window's `KitEnv` (appearance, blend mode,
+increased contrast, system accent) into a `Kit`, keeps the kits of its four latest environments,
+and frees them when the last clone drops. `cx.with_kit(&theme, |cx| ..)` scopes it over part of
+the view, and `cx.kit()` reads the innermost one (Rune's neutral kit outside any), so a sidebar
+can take its own kit inside a window's. To change the look, replace the theme in app state:
+`KitTheme::new(|env| { let mut k = rune_theme_opencode::kit(env); k.c.bg_accent = accent; k })`.
+Memos built under a theme build again when it is replaced. A closure that outlives the view (a
+`virtual_rows` row, a handler) captures a clone of the `Rc<Kit>`, not a borrow.
 
 `AppSpec { fonts: rune_theme_opencode::FONTS, families: rune_theme_opencode::FAMILIES, .. }`
 loads Inter and IBM Plex Mono.

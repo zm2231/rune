@@ -15,6 +15,7 @@ use super::super::overlay::{self, Effect, Event};
 use super::super::surface::{Mount, OverlaySlot};
 use super::RuneView;
 use super::link::MainOnly;
+use crate::platform::objc_boundary::guarded;
 use crate::machine::{Attempt, Seq};
 use crate::overlay::ios::{Control, Standby, Turn};
 use crate::platform::main_queue::{after_main, on_main};
@@ -186,12 +187,14 @@ impl RuneView {
         let Some(view) = self.ivars().overlays.borrow()[at].view.clone() else { return };
         let target = Weak::new(&*view);
         let animations = RcBlock::new(move || {
-            // SAFETY: a `UIView` property of this type.
-            if let Some(view) = target.load() { let _: () = unsafe { msg_send![&*view, setAlpha: f64::from(alpha)] }; }
+            guarded("overlay fade animations", || {
+                // SAFETY: a `UIView` property of this type.
+                if let Some(view) = target.load() { let _: () = unsafe { msg_send![&*view, setAlpha: f64::from(alpha)] }; }
+            })
         });
         let owner = Weak::new(self);
         let completion = RcBlock::new(move |_finished: Bool| {
-            if let Some(owner) = owner.load() { owner.step_overlay(at, Event::Faded(attempt)); }
+            guarded("overlay fade completion", || if let Some(owner) = owner.load() { owner.step_overlay(at, Event::Faded(attempt)); })
         });
         // SAFETY: `animateWithDuration:animations:completion:` takes a duration and two blocks,
         // which it copies.

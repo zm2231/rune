@@ -27,6 +27,7 @@ pub(crate) mod layer_shell_machine;
 pub(crate) mod macos;
 #[cfg(target_vendor = "apple")]
 pub(crate) use rune_core::main_queue;
+pub(crate) mod objc_boundary;
 #[cfg(any(test, all(target_os = "linux", feature = "dbus")))]
 pub(crate) mod portal;
 #[cfg(any(test, all(target_os = "linux", feature = "dbus")))]

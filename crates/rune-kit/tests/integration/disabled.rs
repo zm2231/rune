@@ -65,7 +65,7 @@ fn a_disabled_contrast_button_fades_as_the_browser_does() {
     use rune::color::srgb_encode;
     use rune::render::{Gpu, OFFSCREEN_FORMAT, Offscreen, Renderer};
     fn view(_: &(), cx: &mut Cx<()>) -> El {
-        let k = rune_theme_opencode::kit(cx.system_dark());
+        let k = &rune_theme_opencode::kit(&KitEnv::of(cx));
         let b = Button::new("Unlock").variant(ButtonVariant::Contrast).control_size(ControlSize::Large).disabled(true).build(k);
         col().w_full().h_full().fill(k.c.bg_base).padding(10.0).child(b.w(200.0))
     }
@@ -84,7 +84,7 @@ fn a_disabled_contrast_button_fades_as_the_browser_does() {
         target.copy(&mut encoder);
         renderer.submit(&gpu.queue, encoder);
         let px = target.read(&gpu.device);
-        let k = rune::theme::with_blend(true, || rune_theme_opencode::kit(dark));
+        let k = rune_theme_opencode::kit(&KitEnv::new(dark).srgb_blend(true));
         let byte = |c: f32| (srgb_encode(c) * 255.0).round();
         let (fill, page) = (byte(k.c.bg_contrast.r), byte(k.c.bg_base.r));
         let mix = |fg: f32, bg: f32, a: f32| a * fg + (1.0 - a) * bg;

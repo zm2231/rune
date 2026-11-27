@@ -413,6 +413,7 @@ pub use runtime::MotionElement;
 pub use runtime::Pick;
 pub use runtime::Picked;
 pub use runtime::Pose;
+pub use runtime::Provided;
 pub use runtime::ResolvedTextStyle;
 pub use runtime::Runtime;
 pub use runtime::SelectedText;

@@ -212,6 +212,7 @@ impl Measurement<'_> {
     /// playground around its stage).
     fn root_view(&self, cx: cx::CxCore) -> (El, cx::CxCore) {
         let (root, cx) = self.app.view(cx, self.viewport);
+        crate::memo::seal();
         // The Windows caption buttons go over everything the view drew, in a frame around it.
         let Some(caption) = &self.caption else { return (root, cx) };
         let symbol = cx.caption_color.unwrap_or(if self.env.system_dark { Color::WHITE } else { Color::BLACK });
@@ -573,13 +574,14 @@ impl Measurement<'_> {
             wm_state_read: std::cell::Cell::new(false),
             layout: this.layout_seen.clone(),
             layout_reads: Default::default(),
+            provided: Default::default(),
         };
         let mut keep_windows = true;
         loop {
             let cx = fresh_cx(self);
             #[cfg(feature = "hot")]
             let emptied = self.memo.emptied();
-            let memo = crate::memo::enter(std::mem::take(self.memo), self.env, self.system_accent, self.system_reduced_motion, self.languages_gen, crate::theme::blends_srgb(), self.memo_chrome_bits(), cx.caret.clone(), cx.layout.clone());
+            let memo = crate::memo::enter(std::mem::take(self.memo), self.env, self.system_accent, (self.system_reduced_motion, self.system_increased_contrast), self.languages_gen, crate::theme::blends_srgb(), self.memo_chrome_bits(), cx.caret.clone(), cx.layout.clone());
             let view_time = crate::frame::profile::Scope::new(crate::frame::profile::Phase::View);
             // The view and the rows it builds measure text with the window's own text system.
             #[cfg(not(feature = "hot"))]
@@ -605,7 +607,7 @@ impl Measurement<'_> {
                         self.virtual_culled.clear();
                         self.virtual_inputs.clear();
                         let cx = fresh_cx(self);
-                        let memo = crate::memo::enter(emptied, self.env, self.system_accent, self.system_reduced_motion, self.languages_gen, crate::theme::blends_srgb(), self.memo_chrome_bits(), cx.caret.clone(), cx.layout.clone());
+                        let memo = crate::memo::enter(emptied, self.env, self.system_accent, (self.system_reduced_motion, self.system_increased_contrast), self.languages_gen, crate::theme::blends_srgb(), self.memo_chrome_bits(), cx.caret.clone(), cx.layout.clone());
                         let (root, cx) = crate::hot::original_only(|| self.root_view(cx));
                         (crate::hot::original_only(|| self.build_tree(root, tx, force_all, keep_windows)), cx, memo)
                     }

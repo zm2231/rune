@@ -19,11 +19,13 @@
 //!   rows are inserted or removed above it while the memo keeps the old handler.
 //! - **Live values and pixels** stay bound: a `Live`, `LiveText` or `Pixels` is a shared handle,
 //!   so a reused subtree shows its newest value or image without a rebuild.
-//! - **Environment.** The window's dark mode, scale, reduced-motion preference, system accent
-//!   (`Cx::accent`, `Cx::focus_color`) and blend mode (`theme::blends_srgb`, which theme
-//!   colours resolve by) are part of every version, so changing any of them builds
-//!   again. App state the closure reads (a theme, a locale, a selection) must be part of
-//!   `version`. For a text field that's the
+//! - **Environment.** The window's dark mode, scale, reduced-motion and increased-contrast
+//!   preferences, system accent (`Cx::accent`, `Cx::focus_color`) and blend mode
+//!   (`theme::blends_srgb`, which theme colours resolve by) are part of every version, so
+//!   changing any of them builds again. So are the [`Provided`](crate::Provided) values in
+//!   scope (`Cx::provide`, such as a kit theme): a memo built inside one, or in a virtual row
+//!   of a view that provides one, builds again when another replaces it. Other app state the
+//!   closure reads (a locale, a selection) must be part of `version`. For a text field that's the
 //!   `TextEdit` itself, which hashes its text, selection, composition and focus.
 //! - **`Cx` reads.** `Cx::layout`, `Cx::layout_with`, `Cx::layout_size`, `Cx::window_layout`,
 //!   `Cx::window_layout_with`, `Cx::anchor_placement`, `Cx::caret`, `Cx::selection_rects` and `Cx::field_selection_rects` called inside the closure are recorded with
@@ -56,6 +58,8 @@ use crate::runtime::HashMap;
 use crate::runtime::layout_read::{LayoutRects, SELECTION, anchor_key, field_selection_key, note_read};
 
 mod built;
+mod provided;
+pub(crate) use provided::{salt, seal};
 mod reads;
 mod region;
 pub(crate) mod snapshot;
@@ -119,6 +123,7 @@ pub(crate) struct MemoCache {
     nested_scratch: Vec<(Rc<str>, u64)>,
     pub(crate) present_len: usize,
     pass: u64,
+    provided: u64,
     #[cfg(test)]
     pub(crate) builds: usize,
 }
@@ -222,6 +227,7 @@ struct Scope {
     reads: Vec<Vec<Read>>,
     seen: Seen,
     replayed: Replayed,
+    provided: u64,
 }
 
 impl Scope {
@@ -248,7 +254,7 @@ pub(crate) fn enter(
     mut cache: MemoCache,
     env: crate::Env,
     accent: crate::SystemAccent,
-    reduced_motion: bool,
+    (reduced_motion, increased_contrast): (bool, bool),
     languages_gen: u64,
     srgb_blend: bool,
     chrome: [u32; 5],
@@ -263,7 +269,7 @@ pub(crate) fn enter(
     // So does a change to what the window's controls take (`Cx::chrome_insets`), to the icon
     // swap (`text::set_icon_swap_size`), and to overridden languages (`Runtime::set_languages`).
     let icons = crate::text::icon::swap_state();
-    let env = hash_of(&(env.system_dark, scale.to_bits(), reduced_motion, languages_gen, accent, crate::platform::scroll_bars::scoped(), srgb_blend, chrome, icons));
+    let env = hash_of(&(env.system_dark, scale.to_bits(), reduced_motion, increased_contrast, languages_gen, accent, crate::platform::scroll_bars::scoped(), srgb_blend, chrome, icons));
     let scope = Scope {
         cache,
         env,
@@ -274,6 +280,7 @@ pub(crate) fn enter(
         reads: Vec::new(),
         seen: Seen { caret, layout },
         replayed: Replayed::default(),
+        provided: 0,
     };
     SCOPES.with_borrow_mut(|s| s.push(scope));
     Guard(true)
@@ -317,7 +324,7 @@ pub(crate) fn enter_partial(
     kept_rows: &crate::runtime::HashSet<u64>,
     env: crate::Env,
     accent: crate::SystemAccent,
-    reduced_motion: bool,
+    (reduced_motion, increased_contrast): (bool, bool),
     languages_gen: u64,
     srgb_blend: bool,
     chrome: [u32; 5],
@@ -337,7 +344,10 @@ pub(crate) fn enter_partial(
         keep_nested_rows(&mut cache, &mut nested, next);
     }
     cache.nested_scratch = nested;
-    enter(cache, env, accent, reduced_motion, languages_gen, srgb_blend, chrome, caret, layout)
+    let provided = cache.provided;
+    let guard = enter(cache, env, accent, (reduced_motion, increased_contrast), languages_gen, srgb_blend, chrome, caret, layout);
+    provided::restore(provided);
+    guard
 }
 
 /// Ends the view build [`enter`] began; dropped without [`Guard::finish`] (a panicking view),

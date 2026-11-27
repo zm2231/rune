@@ -4,11 +4,17 @@
 //!
 //! ```
 //! # use rune::{Cx, El};
-//! # fn _view(cx: &Cx<()>) -> El {
-//! let k = rune_theme_opencode::kit(cx.system_dark());
-//! rune_kit::Button::new("Save").build(k)
-//! # }
-//! # let _ = rune_kit::Button::new("Save").build(rune_theme_opencode::kit(true));
+//! use rune_kit::{KitCx, KitTheme};
+//!
+//! struct App { theme: KitTheme }
+//!
+//! fn view(s: &App, cx: &mut Cx<App>) -> El {
+//!     cx.with_kit(&s.theme, |cx| {
+//!         let k = cx.kit();
+//!         rune_kit::Button::new("Save").build(&k)
+//!     })
+//! }
+//! # let _ = App { theme: rune_theme_opencode::kit_theme() };
 //! ```
 
 #![forbid(unsafe_code)]
@@ -19,10 +25,12 @@ pub mod icons;
 pub mod provider_icons;
 pub mod tree_icons;
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::OnceLock;
 
 use rune::{Color, TextStyle, Theme};
-use rune_kit::{Elevation, Glyphs, Kit, Motion, Palette, Radius, StateColors, Type, css, glyphs};
+use rune_kit::{Elevation, Glyphs, Kit, KitEnv, KitTheme, Motion, Palette, Radius, StateColors, Type, css, glyphs};
 use serde_json::Value;
 
 /// The theme as data: palette, light and dark tokens, computed shadows and numbers.
@@ -83,14 +91,26 @@ fn authored(dark: bool, name: &str) -> Color {
     theme(dark).authored(name).unwrap_or_else(|| panic!("theme.json has no {name:?}"))
 }
 
-/// The kit tokens for one appearance, resolved for the blend mode of the window building the
-/// view (`rune::theme::blends_srgb`): translucent tokens as authored when it blends in sRGB,
-/// re-solved over `bg_base` when it blends in linear light. Get it in the view rather than
-/// keeping it across a `Tx::set_srgb_blend`.
-pub fn kit(dark: bool) -> &'static Kit {
-    static KITS: [[OnceLock<Kit>; 2]; 2] = [const { [const { OnceLock::new() }; 2] }; 2];
-    let srgb = rune::theme::blends_srgb();
-    KITS[dark as usize][srgb as usize].get_or_init(|| rune::theme::with_blend(srgb, || build(dark)))
+/// The kit tokens for `env`: its appearance, translucent tokens as authored when it blends in
+/// sRGB and re-solved over `bg_base` when it blends in linear light, and
+/// [`Kit::increased_contrast`] when it asks for more contrast. Start from it to derive a kit in
+/// a [`KitTheme::new`] of the app's own.
+pub fn kit(env: &KitEnv) -> Kit {
+    thread_local! {
+        static BASE: RefCell<[[Option<Rc<Kit>>; 2]; 2]> = const { RefCell::new([[None, None], [None, None]]) };
+    }
+    let base = BASE.with_borrow_mut(|b| {
+        b[env.dark as usize][env.srgb_blend as usize]
+            .get_or_insert_with(|| Rc::new(rune::theme::with_blend(env.srgb_blend, || build(env.dark))))
+            .clone()
+    });
+    if env.increased_contrast { base.increased_contrast() } else { (*base).clone() }
+}
+
+/// [`kit`] as a [`KitTheme`] that follows each window's appearance. Make it once and keep it
+/// in app state: each theme rebuilds the memos built under it.
+pub fn kit_theme() -> KitTheme {
+    KitTheme::new(kit)
 }
 
 /// Inter at a variable weight with the kit's tracking (`-0.04px` at 13, `0.05px` at 11).
@@ -251,6 +271,8 @@ fn build(dark: bool) -> Kit {
 
 #[cfg(test)]
 mod tests {
+    use rune_kit::KitEnv;
+
     #[test]
     fn provider_marks_are_square_tintable_icons() {
         use super::provider_icons::{FALLBACK, NAMES, named};
@@ -270,7 +292,7 @@ mod tests {
     #[test]
     fn both_appearances_resolve() {
         for dark in [false, true] {
-            let k = super::kit(dark);
+            let k = super::kit(&KitEnv::new(dark));
             assert!(!k.elevation.button_neutral.is_empty());
             assert_eq!(k.dark, dark);
             let b = super::brand(dark);
@@ -281,13 +303,12 @@ mod tests {
     #[test]
     fn translucent_tokens_follow_the_blend_mode() {
         for dark in [false, true] {
-            let srgb = rune::theme::with_blend(true, || super::kit(dark));
-            let linear = rune::theme::with_blend(false, || super::kit(dark));
+            let srgb = super::kit(&KitEnv::new(dark));
+            let linear = super::kit(&KitEnv::new(dark).srgb_blend(false));
             let authored = super::authored(dark, "v2-overlay-simple-overlay-hover");
             assert_eq!(srgb.c.hover, authored, "sRGB blending paints the authored alpha");
             assert_eq!(linear.c.hover, rune::theme::srgb_equivalent(authored, linear.c.bg_base));
             assert_ne!(linear.c.hover.a, authored.a);
-            assert!(std::ptr::eq(super::kit(dark), srgb), "windows blend in sRGB by default");
             // Shadows too: light's floating elevation is `#0000001f 0px 0px 0px 0.5px, #00000014 …`.
             if !dark {
                 let alphas: Vec<u8> = srgb.elevation.floating.iter().map(|s| (s.color.a * 255.0).round() as u8).collect();
@@ -302,7 +323,7 @@ mod tests {
     #[test]
     fn elevation_layers_are_listed_ring_first_then_the_drops() {
         for dark in [false, true] {
-            let k = rune::theme::with_blend(true, || super::kit(dark));
+            let k = super::kit(&KitEnv::new(dark));
             let e = &k.elevation;
             let outer = [("raised", &e.raised), ("floating", &e.floating), ("overlay", &e.overlay), ("button_neutral", &e.button_neutral)];
             for (name, layers) in outer {

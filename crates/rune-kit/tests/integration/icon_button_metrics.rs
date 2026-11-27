@@ -1,6 +1,6 @@
 use rune::{Cx, El, Env, Runtime, col, el};
 use rune_kit::shell::{PaneState, SidebarToggle};
-use rune_kit::{
+use rune_kit::{KitEnv, 
     BySize, ControlSize, IconButton, IconButtonMetrics, Kit, Radius, SplitView, State, Toolbar,
 };
 
@@ -46,8 +46,8 @@ fn icon_button_metrics_defaults_preserve_built_in_values_and_follow_radius_scale
     for (name, base) in [
         ("neutral-light", Kit::neutral(false)),
         ("neutral-dark", Kit::neutral(true)),
-        ("opencode-light", rune_theme_opencode::kit(false).clone()),
-        ("opencode-dark", rune_theme_opencode::kit(true).clone()),
+        ("opencode-light", rune_theme_opencode::kit(&KitEnv::new(false))),
+        ("opencode-dark", rune_theme_opencode::kit(&KitEnv::new(true))),
     ] {
         let table = IconButtonMetrics::kit(&base);
         let expected = [

@@ -369,6 +369,7 @@ fn pinned_default_look_baseline() {
                 let mut g = init();
                 g.neutral = neutral;
                 g.palette = false;
+                g.theme = crate::theme(neutral, false);
                 setup(&mut g);
                 if id == "ui-menu--with-submenu" {
                     g.on.insert("recent".into());
@@ -477,7 +478,7 @@ fn overlay_default_metrics_match_explicit_kit_defaults() {
 
     fn pin_view(s: &G, cx: &mut Cx<G>) -> El {
         let base = kit(s, cx.system_dark());
-        let mut owned = base.clone();
+        let mut owned = (*base).clone();
         if EXPLICIT.get() {
             owned.metrics.dialog = Some(LITERAL_DIALOG);
             owned.metrics.popup_row = Some(LITERAL_POPUP_ROW);
@@ -554,7 +555,7 @@ fn overlay_default_metrics_match_explicit_kit_defaults() {
         ("opencode-dark", false, true),
         ("opencode-light", false, false),
     ] {
-        let base = if neutral { Kit::neutral(dark) } else { rune_theme_opencode::kit(dark).clone() };
+        let base = if neutral { Kit::neutral(dark) } else { rune_theme_opencode::kit(&rune_kit::KitEnv::new(dark)) };
         assert_eq!(DialogMetrics::kit(&base), LITERAL_DIALOG, "{theme}: DialogMetrics::kit default");
         assert_eq!(PopupRowMetrics::kit(&base), LITERAL_POPUP_ROW, "{theme}: PopupRowMetrics::kit default");
         assert_eq!(SelectMetrics::kit(&base), LITERAL_SELECT, "{theme}: SelectMetrics::kit default");

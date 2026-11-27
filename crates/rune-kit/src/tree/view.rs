@@ -86,7 +86,7 @@ impl TreeItem {
     pub fn build(self, k: &Kit, r: &TreeRow, style: &TreeStyle) -> El {
         let c = &k.c;
         let pad = style.padding;
-        let chevron_w = 16.0;
+        let chevron_w = k.text_size(16.0);
         let mut e = row()
             .role("treeitem")
             .label(self.label.clone())
@@ -132,7 +132,7 @@ impl TreeItem {
         if let Some(open) = r.expanded {
             e = e.child(
                 chevron.child(
-                    icon(style.chevron.unwrap_or(k.glyph.chevron_down), 16.0)
+                    icon(style.chevron.unwrap_or(k.glyph.chevron_down), chevron_w)
                         .key("glyph")
                         .color(if r.selected { style.chevron_selected } else { style.chevron_rest })
                         .icon_rotation(if open { 0.0 } else { -FRAC_PI_2 })

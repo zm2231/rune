@@ -649,7 +649,7 @@ impl View {
             .child(self.number(st, i, f, c.old, Side::Old, c.kind, selected, digits).key("no"))
             .child(self.number(st, i, f, c.new, Side::New, c.kind, selected, digits).key("nn"));
         if let Some(at) = self.unified_comment_target(f, c) {
-            gutter = gutter.child(self.plus(f, at).absolute(BAR + 2.0 * l.number_w(digits) - 10.0, l.plus_y()));
+            gutter = gutter.child(self.plus(f, at).absolute(l.plus_x(BAR + 2.0 * l.number_w(digits)), l.plus_y()));
         }
         if !st.wraps() {
             gutter = gutter.sticky_left(0.0);
@@ -700,7 +700,7 @@ impl View {
                 .child(self.number(st, i, f, n, side, kind, selected, digits).key("n"))
                 .child(self.code(st, f, &cell, copy, side, &st.keys[i]).key("code"));
             if let Some(at) = n.map(|n| LineRef::new(side, n)).filter(|&at| self.bind.can_comment(f, at)) {
-                h = h.child(self.plus(f, at).absolute(BAR + l.number_w(digits) - 10.0, l.plus_y()));
+                h = h.child(self.plus(f, at).absolute(l.plus_x(BAR + l.number_w(digits)), l.plus_y()));
             }
             h
         };

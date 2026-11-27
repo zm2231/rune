@@ -176,7 +176,8 @@ fn scene(s: &Scene, cx: &mut Cx<Scene>) -> El {
                 .build(k);
             let list = List::new().item(ListItem::new("Inbox").selected(true)).build(k);
             let tree = TreeItem::new("src").icon(&STAR).build(k, &TreeRow::new("src", 0), &TreeStyle::from_kit(k));
-            let diff = crate::diff::DiffView::new(|s: &Scene| &s.diff, |s: &mut Scene| &mut s.diff).build(s, k);
+            let folder = TreeItem::new("lib").build(k, &TreeRow::new("lib", 0).expanded(Some(true)), &TreeStyle::from_kit(k));
+            let diff = crate::diff::DiffView::new(|s: &Scene| &s.diff, |s: &mut Scene| &mut s.diff).on_comment(|_: &mut Scene, _, _| {}).build(s, k);
             col()
                 .w(900.0)
                 .items_start()
@@ -188,6 +189,7 @@ fn scene(s: &Scene, cx: &mut Cx<Scene>) -> El {
                 .child(SidebarHeader::new("Pinned").collapsed(false).build(k).key("sidebar_header"))
                 .child(el().w(240.0).child(SidebarRow::new("Inbox").icon(&STAR).build(k).key("sidebar_icon_row")))
                 .child(el().w(300.0).child(tree.key("tree_row")))
+                .child(el().w(300.0).child(folder.key("tree_folder")))
                 .child(el().w(900.0).h(400.0).child(diff.key("diff")))
                 .children(layer)
         })
@@ -226,7 +228,7 @@ fn at_twice_the_text_size_kit_text_and_the_glyphs_beside_it_double() {
         }
     }
     assert!(stuck.is_empty(), "text and glyphs that kept their size:\n{}", stuck.join("\n"));
-    for key in ["tab_strip", "list", "menu-menu", "select-content", "toast", "sidebar_header", "sidebar_icon_row", "tree_row", "diff"] {
+    for key in ["tab_strip", "list", "menu-menu", "select-content", "toast", "sidebar_header", "sidebar_icon_row", "tree_row", "tree_folder", "diff"] {
         let inside = |els: &[rune::ElementInfo]| {
             let root = els.iter().find(|e| e.key.as_deref() == Some(key) || e.path.ends_with(&format!("/{key}"))).map(|e| e.path.clone());
             root.map_or(0, |r| els.iter().filter(|e| e.path.starts_with(&r) && (e.text_style.is_some() || e.role == "icon")).count())
@@ -234,4 +236,17 @@ fn at_twice_the_text_size_kit_text_and_the_glyphs_beside_it_double() {
         assert!(inside(&big) > 0, "{key} draws text or glyphs");
     }
     assert!(texts > 20 && glyphs > 8, "{texts} texts and {glyphs} glyphs compared");
+
+    let mut pluses = 0;
+    for b in big.iter().filter(|e| e.key.as_deref() == Some("plus")) {
+        let a = at(&plain, &b.path).expect("the same comment button at 1x");
+        let numbers = |els: &[rune::ElementInfo], e: &rune::ElementInfo| {
+            let parent = &e.path[..e.path.rfind('/').unwrap()];
+            at(els, &format!("{parent}/nn")).map(|n| n.target[0] + n.target[2]).expect("the new line numbers beside it")
+        };
+        let past = |els: &[rune::ElementInfo], e: &rune::ElementInfo| e.target[0] + e.target[2] - numbers(els, e);
+        assert_eq!(past(&big, b), past(&plain, &a), "the comment button ends as far past the line numbers at any text size");
+        pluses += 1;
+    }
+    assert!(pluses > 0, "comment buttons compared");
 }

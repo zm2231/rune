@@ -197,6 +197,8 @@ impl Look {
     /// Where the comment button sits in a line's gutter: centred on the first line.
     pub(super) fn plus_y(&self) -> f32 { ((self.line_h() - self.icon) / 2.0).max(0.0) }
 
+    pub(super) fn plus_x(&self, numbers_end: f32) -> f32 { numbers_end + 6.0 - self.icon }
+
     /// One line-number column for numbers of `digits` digits.
     pub(super) fn number_w(&self, digits: u32) -> f32 {
         (digits as f32 * self.adv + 16.0).ceil()

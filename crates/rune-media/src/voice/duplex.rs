@@ -24,7 +24,6 @@ struct Cancel {
     scratch: Box<[f32]>,
 }
 
-#[cfg_attr(target_os = "linux", allow(dead_code))]
 pub(crate) fn passing(capture: Capture, playback: Playback) -> (Render, Heard) {
     (
         Render {
@@ -41,13 +40,13 @@ pub(crate) fn passing(capture: Capture, playback: Playback) -> (Render, Heard) {
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-pub(crate) fn cancelling(rate: u32, capture: Capture, playback: Playback) -> (Render, Heard) {
+fn cancelling(rate: u32, capture: Capture, playback: Playback) -> (Render, Heard) {
     let (producer, consumer) = RingBuffer::new(rate as usize);
     let cancel = Cancel { aec: Aec::new(rate), reference: consumer, scratch: vec![0.0; rate as usize / 100].into_boxed_slice() };
     (Render { playback, reference: Some(producer) }, Heard { capture, cancel: Some(Box::new(cancel)) })
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) fn for_path(path: super::echo_path::EchoPath, rate: u32, capture: Capture, playback: Playback) -> (Render, Heard) {
     use super::echo_path::EchoPath;
     match path {

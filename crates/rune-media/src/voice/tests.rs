@@ -203,7 +203,7 @@ fn an_out_of_range_rate_is_refused() {
     assert!(matches!(Voice::open_fake(VoiceSpec::new(4_000), &fake), Err(VoiceError::InvalidSpec(_))));
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "linux", target_os = "windows")))]
 #[test]
 fn platforms_without_voice_io_say_so() {
     assert_eq!(Voice::open(VoiceSpec::new(RATE)).err(), Some(VoiceError::Unsupported));

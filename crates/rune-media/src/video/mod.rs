@@ -56,7 +56,7 @@ mod unsupported;
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 use unsupported as backend;
 #[cfg(target_os = "windows")]
-mod windows;
+pub(crate) mod windows;
 #[cfg(target_os = "windows")]
 use self::windows as backend;
 #[cfg(target_os = "windows")]

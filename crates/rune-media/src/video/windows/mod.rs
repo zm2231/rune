@@ -18,7 +18,7 @@ mod gpu;
 mod inbox;
 mod layer;
 mod machine;
-mod mf;
+pub(crate) mod mf;
 pub(super) mod still;
 mod vsync;
 

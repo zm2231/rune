@@ -1,4 +1,5 @@
-use super::{Links, MicLink, SpeakerLink};
+use crate::voice::echo_path::EchoPath;
+use crate::voice::streams::{MicLink, Opened, SpeakerLink};
 use crate::audio::linux::{dlopen_library, dlsym_fn, dlsym_opt};
 use crate::voice::machine::Fault;
 use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_ulong, c_void};
@@ -104,11 +105,11 @@ impl Drop for Pcm {
 // SAFETY: a PCM handle is owned exclusively and used from one thread at a time.
 unsafe impl Send for Pcm {}
 
-pub(super) fn open(rate: u32) -> Result<Links, String> {
+pub(super) fn open(rate: u32) -> Result<Opened, String> {
     let api = api()?;
     let speaker = Pcm::open(api, PLAYBACK, rate)?;
     let mic = Pcm::open(api, CAPTURE, rate)?;
-    Ok((Box::new(Mic(mic)), Box::new(Speaker(speaker))))
+    Ok(Opened { mic: Box::new(Mic(mic)), speaker: Box::new(Speaker(speaker)), echo: EchoPath::InProcess })
 }
 
 pub(super) struct Mic(Pcm);

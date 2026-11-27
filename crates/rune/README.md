@@ -3492,7 +3492,11 @@ let heard = speaker.played_frames();
   as the reference, so no system echo-cancel module is needed. Only Rune's own output is
   cancelled, and the microphone level isn't adjusted. `scripts/voice-pulse-e2e.sh` measures
   echo against a real PulseAudio server in Docker.
-- **Windows and the web**: `Voice::open` returns `VoiceError::Unsupported`.
+- **Windows**: WASAPI on the default communications microphone and speaker, tagged as
+  communications audio. The system's echo canceller is used when the microphone's driver
+  offers one (Windows 11 lists it among the stream's effects); otherwise, as on Windows 10, the
+  in-app canceller from Linux runs. Never both. Not yet run on real Windows audio hardware.
+- **The web**: `Voice::open` returns `VoiceError::Unsupported`.
 - **Tests**: `Voice::open_fake(spec, &FakeVoice)` runs on every platform without hardware.
   `FakeVoice::tick(frames)` runs one device callback. The fake microphone hears what
   `FakeVoice::say` queued plus the speaker's output at the `echo(gain, delay)` you set.

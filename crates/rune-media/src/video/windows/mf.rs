@@ -73,7 +73,7 @@ fn load() -> Result<Library, String> {
 }
 
 /// A DLL from System32 only, never the app's folder or the current directory.
-pub(super) fn system_library(name: &str) -> Option<HMODULE> {
+pub(crate) fn system_library(name: &str) -> Option<HMODULE> {
     // SAFETY: loads a system DLL by name; the handle is kept for the process's life.
     unsafe { LoadLibraryExW(&HSTRING::from(name), None, LOAD_LIBRARY_SEARCH_SYSTEM32) }.ok()
 }
@@ -82,7 +82,7 @@ pub(super) fn system_library(name: &str) -> Option<HMODULE> {
 ///
 /// # Safety
 /// `F` must be the symbol's true signature.
-pub(super) unsafe fn symbol<F: Copy>(module: HMODULE, name: &std::ffi::CStr) -> Option<F> {
+pub(crate) unsafe fn symbol<F: Copy>(module: HMODULE, name: &std::ffi::CStr) -> Option<F> {
     // SAFETY: a lookup by name on a loaded module.
     let f = unsafe { GetProcAddress(module, PCSTR(name.as_ptr().cast())) }?;
     debug_assert_eq!(size_of::<F>(), size_of_val(&f));

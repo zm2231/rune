@@ -105,7 +105,12 @@ fn permission() {
             }
         }
         other => {
-            eprintln!("microphone access is {other:?}; allow it in System Settings > Privacy & Security > Microphone");
+            let settings = if cfg!(target_os = "windows") {
+                "Settings > Privacy & security > Microphone"
+            } else {
+                "System Settings > Privacy & Security > Microphone"
+            };
+            eprintln!("microphone access is {other:?}; allow it in {settings}");
             exit(1);
         }
     }

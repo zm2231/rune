@@ -30,6 +30,20 @@
 //! a sound card and PipeWire hasn't been verified yet. Linux has no microphone permission, so
 //! [`Voice::permission`] is [`MicPermission::Granted`].
 //!
+//! **Windows.** The stream opens shared-mode WASAPI clients on the default communications
+//! microphone and speaker, tagged as communications audio so the system's voice processing
+//! applies; on Windows 11 the speaker is named as the echo canceller's reference. When the
+//! microphone's driver offers the system echo canceller (Windows 11 lists it among the
+//! stream's audio effects, and turns it on when it can), the system cancels echo and Rune
+//! leaves the microphone alone; otherwise, as on Windows 10 or with a driver that has none, the
+//! same in-app canceller as on Linux runs instead. The two never both run. When the default
+//! communications device changes the stream rebuilds on the new one ([`VoiceEvent::DeviceChanged`]).
+//! [`Voice::permission`] reads the system's microphone privacy setting for desktop apps; when it
+//! is off the stream fails with a message saying where to turn it on. Windows may lower other
+//! apps' sound during a call, following the Communications setting in the Sound control panel.
+//! Echo cancellation on real Windows hardware hasn't been verified yet; the code is checked by
+//! compiling it and by tests that run without audio devices.
+//!
 //! Elsewhere, [`Voice::open`] returns [`VoiceError::Unsupported`].
 //!
 //! Apps reach these types through `rune`, which re-exports them.
@@ -39,24 +53,30 @@ mod aec;
 mod control;
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 mod duplex;
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 mod echo_path;
 mod fake;
 mod io;
 mod machine;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+mod streams;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple;
 #[cfg(target_os = "linux")]
 mod linux;
-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "linux", target_os = "windows")))]
 mod unsupported;
+#[cfg(target_os = "windows")]
+mod windows;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use apple as backend;
 #[cfg(target_os = "linux")]
 use linux as backend;
-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "linux", target_os = "windows")))]
 use unsupported as backend;
+#[cfg(target_os = "windows")]
+use windows as backend;
 
 pub use fake::FakeVoice;
 pub use io::{VoiceMic, VoiceSpeaker};
@@ -346,11 +366,15 @@ impl Drop for Voice {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 mod duplex_tests;
 #[cfg(test)]
 mod io_tests;
 #[cfg(test)]
 mod machine_tests;
+#[cfg(test)]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+mod streams_tests;
 #[cfg(test)]
 mod tests;

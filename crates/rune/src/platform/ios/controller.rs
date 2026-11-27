@@ -3,7 +3,9 @@
 use crate::platform::objc_boundary::guarded;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
-use objc2::{ClassType, MainThreadMarker, MainThreadOnly, define_class, extern_class, msg_send};
+use std::cell::Cell;
+
+use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, extern_class, msg_send};
 
 use super::appearance::status_bar_style;
 use super::view::UIResponder;
@@ -21,6 +23,7 @@ define_class!(
     #[unsafe(super(UIViewController, UIResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "RuneViewController"]
+    #[ivars = Cell<bool>]
     pub(crate) struct RuneViewController;
 
     // SAFETY: the superclass chain ends in `NSObject`, which implements the protocol.
@@ -39,6 +42,11 @@ define_class!(
             })
         }
 
+        #[unsafe(method(prefersPointerLocked))]
+        fn prefers_pointer_locked(&self) -> bool {
+            guarded("prefersPointerLocked", || self.ivars().get())
+        }
+
         #[unsafe(method(traitCollectionDidChange:))]
         fn trait_collection_did_change(&self, previous: Option<&AnyObject>) {
             guarded("traitCollectionDidChange:", || {
@@ -54,8 +62,16 @@ define_class!(
 
 impl RuneViewController {
     pub(crate) fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(Cell::new(false));
         // SAFETY: `init` is `UIViewController`'s initializer with no arguments.
-        unsafe { msg_send![Self::alloc(mtm), init] }
+        unsafe { msg_send![super(this), init] }
+    }
+
+    pub(crate) fn prefer_pointer_locked(&self, locked: bool) {
+        if self.ivars().replace(locked) == locked { return; }
+        // SAFETY: `UIViewController` has this method from iOS 14, which UIKit answers by asking
+        // `prefersPointerLocked` again.
+        unsafe { let _: () = msg_send![self, setNeedsUpdateOfPrefersPointerLocked]; }
     }
 
     pub(crate) fn owns(responder: Option<&AnyObject>) -> bool {

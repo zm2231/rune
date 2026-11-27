@@ -168,6 +168,7 @@ impl RuneView {
             Stage::Failed => Stage::Failed,
         };
         drop(stage);
+        if waiting { self.offer_pointer_lock(); }
         self.adopt_overlays(overlays);
         self.place_overlays();
         self.pace(Event::Wake);
@@ -195,6 +196,7 @@ impl RuneView {
         let released = self.with_surface(|surface| surface.lifecycle(event));
         // With no app started nothing hears a key, and the repeat stops all the same.
         if released.unwrap_or(true) { self.keys(keys::Event::Reset); }
+        self.sync_pointer_lock();
     }
 
     /// The view joined a window, or left the one it was in: in a window it draws at the
@@ -241,6 +243,7 @@ impl RuneView {
             for name in [UIAccessibilityBoldTextStatusDidChangeNotification, UIAccessibilityDarkerSystemColorsStatusDidChangeNotification] {
                 let _: () = msg_send![&*centre, addObserver: self, selector: sel!(runeDisplayOptions:), name: name, object: None::<&AnyObject>];
             }
+            self.observe_pointer_lock(&centre);
             self.lifecycle(lifecycle::Event::Attached(phase));
             self.pace(Event::Attached { foreground: phase != Phase::Background });
             // A reader already running reads the first frame.

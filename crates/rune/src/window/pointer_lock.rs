@@ -13,7 +13,9 @@
 //!   divided by `scale_factor()`.
 //! - **Web**: handled asynchronously in `platform/web` via the browser Pointer Lock API
 //!   (`requestPointerLock`, `pointerlockchange`, `pointerlockerror`, `movementX`/`movementY`).
-//! - **iOS & native overlays**: pointer lock is disabled (`set_pointer_lock_supported(false)`).
+//! - **iPadOS**: handled asynchronously in `platform/ios` through the view controller's
+//!   `prefersPointerLocked`, the scene's `pointerLockState` and `GCMouse` deltas.
+//! - **Native overlays**: pointer lock is disabled (`set_pointer_lock_supported(false)`).
 
 use winit::window::CursorGrabMode;
 

@@ -504,7 +504,7 @@ impl El {
         self
     }
     /// Requests declarative pointer lock on this element for relative mouse-look (games, 3D
-    /// viewports) on desktop windows and web browsers.
+    /// viewports) on desktop windows, web browsers and iPads.
     ///
     /// A primary mouse press whose primary target is this element captures the pointer (a press
     /// on a child control that handles primary input or on a covering element does not). While
@@ -539,8 +539,17 @@ impl El {
     ///   cooldown, unfocused document, or `pointerlockerror`), `Cx::pointer_locked()` stays
     ///   `false`, normal pointer input continues without getting stuck, and a later press can try
     ///   again.
-    /// - **iOS and native overlays**: unsupported; the element never captures and
-    ///   `Cx::pointer_locked()` stays `false`.
+    /// - **iPadOS**: a mouse's or trackpad's click (a `UITouchTypeIndirectPointer` touch, which
+    ///   needs `UIApplicationSupportsIndirectInputEvents` in the app's Info.plist; `scripts/ios-app`
+    ///   sets it) sets Rune's view controller's `prefersPointerLocked`. iPadOS locks only a
+    ///   full-screen or Stage Manager key window in front, so `Cx::pointer_locked()` turns `true`
+    ///   only once the scene's `pointerLockState` says it is locked, and stays `false` when iPadOS
+    ///   doesn't lock within half a second. Deltas come from `GCMouse`'s `mouseMovedHandler` (down
+    ///   positive), which Rune sets on every connected mouse while the lock is held. iPadOS
+    ///   releasing the lock (the window losing key status, the app leaving the front) ends the
+    ///   capture. A finger's tap never captures.
+    /// - **Native overlays, and iOS views under a view controller other than Rune's**: unsupported;
+    ///   the element never captures and `Cx::pointer_locked()` stays `false`.
     ///
     /// ```
     /// # use rune::{Cx, El, Env, Key, KeyEvent, Runtime, el};

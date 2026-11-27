@@ -26,7 +26,7 @@ use crate::embed::{EmbedFrame, LayerHost};
 use crate::overlay::ios::{Control, Feed};
 use crate::file_dialog::{DialogAnswer, FileDialogError};
 use crate::popup_menu::Show;
-use crate::runtime::{TouchPhase, Waker};
+use crate::runtime::{LockEffect, TouchPhase, TouchSource, Waker};
 use crate::time::Instant;
 use crate::{GesturePhase, Ime, KeyEvent, MagnifyEvent, PhysicalInput, RotateEvent};
 
@@ -62,8 +62,13 @@ pub(crate) trait Surface {
     fn presents(&mut self);
 
     // Touch and pointer.
-    /// One finger's event at (x, y) in the view's points, `time` in seconds since boot.
-    fn touch(&mut self, id: u64, phase: TouchPhase, x: f32, y: f32, time: f64);
+    /// One finger's event at (x, y) in the view's points, `time` in seconds since boot, or a
+    /// mouse's or trackpad's click that UIKit delivers as a touch.
+    fn touch(&mut self, id: u64, phase: TouchPhase, x: f32, y: f32, time: f64, source: TouchSource);
+    fn set_pointer_lock(&mut self, supported: bool);
+    fn take_pointer_lock(&mut self) -> Option<LockEffect>;
+    fn pointer_lock_answer(&mut self, locked: bool);
+    fn pointer_motion(&mut self, dx: f32, dy: f32);
     /// The pointer of a mouse or trackpad is at this point of the view, or left it.
     fn hover(&mut self, at: Option<(f32, f32)>);
     /// A wheel or a trackpad scrolled the content under `at` by `moved` points; `velocity` is
@@ -320,7 +325,7 @@ impl<S: 'static> Surface for Hosted<S> {
     fn presents(&mut self) { self.feedback.drain(); }
 
     // Touch and pointer.
-    fn touch(&mut self, id: u64, phase: TouchPhase, x: f32, y: f32, time: f64) {
+    fn touch(&mut self, id: u64, phase: TouchPhase, x: f32, y: f32, time: f64, source: TouchSource) {
         let (vx, vy) = self.in_view(x, y);
         let rt = self.host.runtime();
         // The field as it is before the runtime hears of the finger, which places the caret.
@@ -330,8 +335,22 @@ impl<S: 'static> Surface for Hosted<S> {
             field_touch::Event::Touch { phase, at: (x, y) }
         };
         self.field_step(event);
-        self.host.runtime_mut().touch(id, phase, vx, vy, time);
+        self.host.runtime_mut().touch_from(id, phase, vx, vy, time, source);
     }
+
+    fn set_pointer_lock(&mut self, supported: bool) {
+        let supported = supported && matches!(self.role, Role::App(_));
+        self.host.runtime_mut().set_pointer_lock_supported(supported);
+    }
+
+    fn take_pointer_lock(&mut self) -> Option<LockEffect> { self.host.runtime_mut().core_mut().take_pointer_lock_effect() }
+
+    fn pointer_lock_answer(&mut self, locked: bool) {
+        let core = self.host.runtime_mut().core_mut();
+        if locked { core.pointer_lock_granted(); } else { core.pointer_lock_lost(); }
+    }
+
+    fn pointer_motion(&mut self, dx: f32, dy: f32) { self.host.runtime_mut().pointer_motion(dx, dy); }
 
     fn hover(&mut self, at: Option<(f32, f32)>) {
         let at = at.map(|(x, y)| self.in_view(x, y));

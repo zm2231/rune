@@ -37,6 +37,7 @@ mod menu;
 mod mirror;
 mod overlays;
 mod photos;
+mod pointer_lock;
 mod share;
 mod tint;
 
@@ -127,6 +128,8 @@ pub(crate) struct Ivars {
     mirrored_by: RefCell<Weak<AnyObject>>,
     overlays: RefCell<Vec<overlays::Overlay>>,
     control: RefCell<Option<Rc<RefCell<crate::overlay::ios::Control>>>>,
+    pointer_lock: Cell<super::pointer_lock::State>,
+    pointer_lock_seq: Cell<Seq>,
 }
 
 define_class!(
@@ -411,6 +414,16 @@ define_class!(
             guarded("runeInactive:", || { self.resigning_active(); })
         }
 
+        #[unsafe(method(runePointerLock:))]
+        fn pointer_lock_state(&self, _notification: &AnyObject) {
+            guarded("runePointerLock:", || { self.pointer_lock_changed(); })
+        }
+
+        #[unsafe(method(runeMouse:))]
+        fn mouse(&self, _notification: &AnyObject) {
+            guarded("runeMouse:", || { self.mouse_connected(); })
+        }
+
         #[unsafe(method(runeTerminate:))]
         fn terminate(&self, _notification: &AnyObject) {
             guarded("runeTerminate:", || { self.terminating(); })
@@ -489,6 +502,8 @@ impl RuneView {
             mirrored_by: RefCell::default(),
             overlays: RefCell::default(),
             control: RefCell::new(None),
+            pointer_lock: Cell::new(super::pointer_lock::State::Free),
+            pointer_lock_seq: Cell::new(Seq::default()),
         });
         let frame = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0));
         // SAFETY: `initWithFrame:` is `UIView`'s designated initializer.
@@ -558,6 +573,7 @@ impl RuneView {
             posts.post();
         }
         self.sync_mirror();
+        self.sync_pointer_lock();
         self.pace(Event::Frame { animating: frame.animating, wake_after: frame.wake_after_secs });
     }
 

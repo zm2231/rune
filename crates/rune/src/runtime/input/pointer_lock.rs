@@ -1,12 +1,14 @@
 //! Declarative pointer lock (`El::pointer_lock`) for relative mouse-look capture on desktop
-//! windows and web browsers.
+//! windows, web browsers and iPads.
 //!
 //! Modelled as an explicit state machine (`LockState` / `LockEvent` / `LockEffect`) owned by
 //! `PointerState`. Opposite owed host effects (`Grab` and `Ungrab`) cancel out before the host
 //! syncs, so a grab the host never applied needs no release. Desktop windows grant immediately
-//! (`LockPolicy::Immediate`), web browsers grant or refuse asynchronously (`LockPolicy::Async`,
-//! entering `LockState::Pending` until `pointerlockchange` or `pointerlockerror`), and iOS and
-//! native overlays disable capture (`LockPolicy::Unsupported`).
+//! (`LockPolicy::Immediate`). Web browsers and iPadOS grant or refuse asynchronously
+//! (`LockPolicy::Async`, entering `LockState::Pending` until `pointerlockchange` or
+//! `pointerlockerror`, or until UIKit's scene locks the pointer or doesn't). Native overlays
+//! and iOS views under a view controller Rune doesn't own disable capture
+//! (`LockPolicy::Unsupported`).
 use super::*;
 use crate::machine::Effects;
 
@@ -15,22 +17,22 @@ use crate::machine::Effects;
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LockPolicy {
-    /// Host does not support pointer lock (iOS, native overlays): never captures.
+    /// Host does not support pointer lock (native overlays, iOS views Rune's view controller
+    /// doesn't hold): never captures.
     Unsupported,
     /// Desktop / headless host: a primary press transitions `Ready -> Locked` immediately.
     Immediate,
-    /// Browser host (W3C Pointer Lock API): a primary press transitions `Ready -> Pending` and
-    /// awaits `LockEvent::Granted` (`pointerlockchange`) or `LockEvent::PlatformReleased`
-    /// (`pointerlockerror` / rejected promise).
+    /// Browser host (W3C Pointer Lock API) or iPadOS (`prefersPointerLocked`): a primary press
+    /// transitions `Ready -> Pending` and awaits `LockEvent::Granted` (`pointerlockchange`, or
+    /// the scene's pointer locked) or `LockEvent::PlatformReleased` (`pointerlockerror`, a
+    /// rejected promise, or a scene that didn't lock).
     Async,
 }
 
 impl LockPolicy {
     #[inline]
     pub(crate) const fn default_for_target() -> Self {
-        #[cfg(target_os = "ios")]
-        { Self::Unsupported }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
         { Self::Async }
         #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
         { Self::Immediate }
@@ -177,8 +179,8 @@ impl PointerLock {
         self.policy != LockPolicy::Unsupported
     }
 
-    /// Sets the host grant policy (`Immediate` on desktop, `Async` on web, `Unsupported` on
-    /// iOS/overlays). Returns whether `is_locked()` flipped.
+    /// Sets the host grant policy (`Immediate` on desktop, `Async` on web and iPadOS,
+    /// `Unsupported` on overlays). Returns whether `is_locked()` flipped.
     #[inline]
     pub(in crate::runtime) fn set_policy(&mut self, policy: LockPolicy) -> bool {
         let mut flipped = false;
@@ -249,8 +251,8 @@ impl RuntimeCore {
         }
     }
 
-    /// Marks whether the current host supports pointer lock capture (disabled on iOS and
-    /// native overlays).
+    /// Marks whether the current host supports pointer lock capture (disabled on native
+    /// overlays and on iOS views under another app's view controller).
     #[inline]
     pub(crate) fn set_pointer_lock_supported(&mut self, supported: bool) {
         let policy = if supported {
@@ -319,9 +321,9 @@ impl RuntimeCore {
         target: usize,
         x: f32,
         y: f32,
-        touch: bool,
+        source: Option<TouchSource>,
     ) {
-        if touch
+        if source == Some(TouchSource::Finger)
             || self.pointer_locked()
             || self.pointer.pointer_lock.is_pending()
             || !self.pointer.pointer_lock.supported()
@@ -342,7 +344,7 @@ impl RuntimeCore {
 
     /// Called by an async host (web `pointerlockchange` -> canvas) when the browser grants
     /// pointer lock. Returns `true` when `pointer_locked()` flipped to `true`.
-    #[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
+    #[cfg_attr(not(any(target_arch = "wasm32", target_os = "ios", test)), allow(dead_code))]
     pub(crate) fn pointer_lock_granted(&mut self) -> bool {
         self.sync_pointer_lock();
         self.step_pointer_lock(LockEvent::Granted)
@@ -351,7 +353,7 @@ impl RuntimeCore {
     /// Called by an async host (web `pointerlockchange` -> null, `pointerlockerror`, or rejected
     /// promise) when the browser exits or refuses pointer lock. Returns `true` when
     /// `pointer_locked()` flipped to `false`.
-    #[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
+    #[cfg_attr(not(any(target_arch = "wasm32", target_os = "ios", test)), allow(dead_code))]
     pub(crate) fn pointer_lock_lost(&mut self) -> bool {
         self.step_pointer_lock(LockEvent::PlatformReleased)
     }

@@ -301,12 +301,13 @@ impl RuntimeCore {
     }
 
     pub(crate) fn pointer_down(&mut self, app: &mut dyn AppDriver, x: f32, y: f32) {
-        self.press_down(app, x, y, false);
+        self.press_down(app, x, y, None);
     }
 
-    /// A primary press at (x, y); `touch`: a finger's, which never runs `on_press` on the way
+    /// A primary press at (x, y); a touch's (`source`) never runs `on_press` on the way
     /// down (`El::press_on_down` is a mouse's).
-    pub(in crate::runtime) fn press_down(&mut self, app: &mut dyn AppDriver, x: f32, y: f32, touch: bool) {
+    pub(in crate::runtime) fn press_down(&mut self, app: &mut dyn AppDriver, x: f32, y: f32, source: Option<TouchSource>) {
+        let touch = source.is_some();
         self.sync_pointer_lock();
         let (x, y) = self.locked_point(x, y);
         let starts_gesture = !self.pointer.any_button_down() && !self.pointer.captured();
@@ -386,7 +387,7 @@ impl RuntimeCore {
             self.input_down(ji, (x, y), now, second, link.filter(|_| ji == ti), ji == ti, touch);
             return;
         }
-        self.try_capture_pointer_lock(ti, x, y, touch);
+        self.try_capture_pointer_lock(ti, x, y, source);
         let n = &self.tree.nodes[ti];
         // Clicking a link leaves focus where it is (a composer keeps typing). Selectable text
         // off its links isn't a control: the press blurs, as a click on plain content does.

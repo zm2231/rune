@@ -608,8 +608,9 @@ policy changes are applied in the same mutation phase.
   tree order before that press's target actions (skipping inert, exiting, and behind-modal
   subtrees while including observers inside an active modal), and windows with no observer pay
   one cached boolean check per press. `.pointer_lock(|s, [dx, dy], tx| ..)` requests declarative
-  relative mouse-look capture on desktop windows and web browsers (iOS and native overlays never
-  capture): a primary press whose primary target is that element captures (HUD buttons and covering
+  relative mouse-look capture on desktop windows, web browsers and iPads (a mouse's or trackpad's
+  click sets the view controller's `prefersPointerLocked`, and `Cx::pointer_locked()` turns true only
+  once iPadOS locks a full-screen key window; native overlays never capture): a primary press whose primary target is that element captures (HUD buttons and covering
   elements do not), hides the cursor while focused (desktop `CursorGrabMode::Locked`, falling back
   to `Confined` on X11; web plain `canvas.requestPointerLock()` synchronously inside the user gesture, then
   upgrading in place to `{ unadjustedMovement: true }` once locked where supported), freezes the

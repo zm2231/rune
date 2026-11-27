@@ -555,6 +555,14 @@ fn a_shortcut_recorder_reads_its_name_keys_and_recording() {
     let show = node(&show, "show");
     assert_eq!(show["value"], "Press shortcut");
     assert!(show["description"].as_str().is_some_and(|d| d.contains("Escape")));
+
+    rt.poll = Some(|s: &mut App, now, _| s.recorder.poll(now));
+    rt.frame(6.0);
+    let tree = rt.accessibility_json();
+    assert_eq!(node(&tree, "show")["value"], "Record shortcut", "a capture nothing reached ends");
+    let hint = node(&tree, "nothing-arrived");
+    assert!(has(hint, "live-assertive"), "the timeout's hint is announced as it appears");
+    assert!(hint["name"].as_str().is_some_and(|n| n.contains("another app")));
 }
 
 #[test]

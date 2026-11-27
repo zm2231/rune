@@ -4,6 +4,7 @@ mod native;
 mod probe;
 mod rows;
 mod stats;
+mod trace;
 #[cfg(target_os = "ios")]
 mod uikit;
 
@@ -98,6 +99,9 @@ struct Rec {
     refresh_hz: Vec<f64>,
     link: Vec<f64>,
     link_hz: Vec<f64>,
+    first_encoded: bool,
+    polls: usize,
+    beat: f64,
 }
 
 impl Rec {
@@ -131,6 +135,7 @@ fn set_driving(on: bool) { REC.with(|r| r.borrow_mut().driving = on); }
 
 fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     if s.drive == Drive::Requested {
+        trace::step("drive_running", || format!("clock={clock:.3} drive={:?}", args().drive));
         set_driving(true);
         #[cfg(target_os = "ios")]
         watch_link();
@@ -139,7 +144,9 @@ fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     match &mut s.drive {
         Drive::Running { start, glides } => {
             let t = clock - *start;
+            beat(t);
             if t >= drive::total_seconds() {
+                trace::step("drive_end", || format!("t={t:.3}"));
                 set_driving(false);
                 s.drive = Drive::Settling { until: clock + 0.5 };
                 tx.wake_at(clock + 0.5);
@@ -160,8 +167,12 @@ fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
                 }
             }
         }
-        Drive::Settling { until } if clock < *until => tx.wake_at(*until),
+        Drive::Settling { until } if clock < *until => {
+            trace::step("settling", || format!("clock={clock:.3} until={until:.3}"));
+            tx.wake_at(*until);
+        }
         Drive::Settling { .. } => {
+            trace::step("done", || format!("clock={clock:.3}"));
             s.drive = Drive::Done;
             report_rune();
             finish();
@@ -171,10 +182,26 @@ fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     false
 }
 
+fn beat(t: f64) {
+    if !trace::on() { return; }
+    REC.with(|r| {
+        let mut r = r.borrow_mut();
+        r.polls += 1;
+        if t - r.beat < 1.0 { return; }
+        r.beat = t;
+        let (polls, encoded, presented, skipped, link) = (r.polls, r.targets.len(), r.presented.len(), r.skipped, r.link.len());
+        trace::step("drive_beat", || format!("t={t:.3} polls={polls} encoded={encoded} presented={presented} skipped={skipped} link_ticks={link}"));
+    });
+}
+
 fn on_encoded(f: &FrameEncoded) {
     if f.outcome() != FrameOutcome::Drawn { return; }
     REC.with(|r| {
         let mut r = r.borrow_mut();
+        if !r.first_encoded {
+            r.first_encoded = true;
+            trace::step("first_encoded", || format!("seq={}", f.seq()));
+        }
         if !r.driving { return; }
         r.seqs = Some(r.seqs.map_or((f.seq(), f.seq()), |(first, _)| (first, f.seq())));
         if let Some(target) = f.presents_at() { let t = r.secs(target); r.targets.push(t); }
@@ -193,6 +220,7 @@ fn on_presented(p: &FramePresented, started: &mut Option<std::sync::mpsc::Sender
                 None => r.skipped += 1,
             }
         }
+        if !r.first_present && p.presented_at().is_none() { trace::step("present_without_time", || format!("seq={}", p.seq())); }
         let first = !r.first_present && p.presented_at().is_some();
         if first { r.first_present = true; }
         first.then(|| (p.presented_at(), r.main_wall))
@@ -231,11 +259,13 @@ fn link_extra(hz: &[f64]) -> String {
 
 fn finish() {
     say(format!("PERF after_scroll_footprint_mib={:.2}", probe::footprint_mib()));
+    trace::step("finish", || format!("exit={}", args().exit));
     if args().exit { std::process::exit(0); }
 }
 
 #[cfg(target_os = "ios")]
 fn watch_link() {
+    trace::step("watch_link", String::new);
     uikit::start_link(Box::new(|shown, target, link| {
         let done = REC.with(|r| {
             let mut r = r.borrow_mut();
@@ -245,7 +275,10 @@ fn watch_link() {
             }
             !r.driving && !r.link.is_empty()
         });
-        if done { uikit::stop_link(link); }
+        if done {
+            trace::step("watch_link_stop", String::new);
+            uikit::stop_link(link);
+        }
     }));
 }
 
@@ -253,10 +286,15 @@ fn watch_link() {
 fn drive_uikit() {
     let base = uikit::table_offset().unwrap_or(0.0);
     let mut start = None;
+    trace::step("drive_uikit", || format!("base={base:.1}"));
     uikit::start_link(Box::new(move |shown, target, link| {
-        let start = *start.get_or_insert(target);
+        let start = *start.get_or_insert_with(|| {
+            trace::step("drive_running", || format!("target={target:.3}"));
+            target
+        });
         let t = target - start;
         if t >= drive::total_seconds() {
+            trace::step("drive_end", || format!("t={t:.3}"));
             uikit::set_table_offset(base + drive::offset_at(drive::total_seconds()));
             uikit::stop_link(link);
             REC.with(|r| {
@@ -267,6 +305,7 @@ fn drive_uikit() {
             return;
         }
         uikit::set_table_offset(base + drive::offset_at(t));
+        beat(t);
         REC.with(|r| {
             let mut r = r.borrow_mut();
             r.link.push(shown);
@@ -276,6 +315,7 @@ fn drive_uikit() {
 }
 
 fn start_drive(s: &mut State) {
+    trace::step("drive_start", || format!("mode={:?}", args().mode));
     match args().mode {
         Mode::Rune => s.drive = Drive::Requested,
         #[cfg(target_os = "ios")]
@@ -288,10 +328,12 @@ fn start_drive(s: &mut State) {
 #[cfg(target_os = "ios")]
 fn say_display() {
     let (max_fps, plist) = uikit::display();
+    stats::set_max_fps(u32::try_from(max_fps).unwrap_or(120));
     say(format!("PERF display max_fps={max_fps} disable_min_frame_duration={plist}"));
 }
 
 fn on_ready() {
+    trace::step("ready", String::new);
     #[cfg(target_os = "ios")]
     {
         say_display();
@@ -301,13 +343,18 @@ fn on_ready() {
 
 #[cfg(target_os = "ios")]
 fn run_native() -> ! {
+    trace::step("native_main", String::new);
     native::run(|root| {
+        trace::step("scene_connected", String::new);
         say_display();
         uikit::show_table_in(root, args().rows);
+        trace::step("table_shown", String::new);
         uikit::start_link(Box::new(|_, target, link| {
+            trace::step("first_link_tick", || format!("target={target:.3}"));
             uikit::stop_link(link);
             say_first_frame(native::wall_of_media(target), "link_target", REC.with(|r| r.borrow().main_wall));
             native::after(args().idle, || {
+                trace::step("idle_sample", String::new);
                 say(format!("PERF idle_footprint_mib={:.2} idle_s={}", probe::footprint_mib(), args().idle));
                 if args().auto_scroll { drive_uikit(); }
             });
@@ -323,6 +370,7 @@ fn main() {
         std::process::exit(2);
     });
     ARGS.set(parsed).expect("arguments are parsed once");
+    trace::step("main", || format!("{:?}", args()));
     REC.with(|r| {
         let mut r = r.borrow_mut();
         r.base = Some(base);
@@ -336,13 +384,24 @@ fn main() {
     let handle = app.handle();
     let (started, first) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        if first.recv().is_err() { return; }
+        if first.recv().is_err() {
+            trace::step("idle_gave_up", String::new);
+            return;
+        }
+        trace::step("idle_wait", String::new);
         std::thread::sleep(Duration::from_secs_f64(args().idle));
+        trace::step("idle_sample", String::new);
         say(format!("PERF idle_footprint_mib={:.2} idle_s={}", probe::footprint_mib(), args().idle));
-        if args().auto_scroll { handle.update(|s, _| start_drive(s)); }
+        if args().auto_scroll {
+            trace::step("drive_asked", String::new);
+            handle.update(|s, _| start_drive(s));
+        }
     });
+    trace::step("app_run", String::new);
     let mut started = Some(started);
     app.on_ready(|_| on_ready())
+        .on_visibility(|_, visible, _| trace::step("visibility", || format!("visible={visible}")))
+        .on_focus(|_, focused, _| trace::step("focus", || format!("focused={focused}")))
         .on_frame_encoded(on_encoded)
         .on_frame_presented(move |p| on_presented(p, &mut started))
         .run();

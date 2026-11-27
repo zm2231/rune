@@ -5,7 +5,7 @@ Measures a Rune app on an iPhone and prints one `PERF` line per number:
 - `PERF first_frame_ms=… main_ms=… source=…`: from the kernel's process start time to the first frame on screen, and to `main`. In Rune mode the first frame is the one Metal reports presented (`App::on_frame_presented`, `source=presented`); native mode's differs (below). `PERF marks …` lists Rune's launch marks on the same clock.
 - `PERF display max_fps=… disable_min_frame_duration=…`: what the screen offers and whether the bundle's `Info.plist` lets an iPhone run above 60 Hz.
 - `PERF idle_footprint_mib=…`: `phys_footprint` from `task_info(TASK_VM_INFO)` after `--idle` seconds (5 by default) of doing nothing after the first frame.
-- With `--auto-scroll`, three fling-shaped scrolls of a 3,000-row list (about 8 s), then `PERF scroll mode=… source=… frames=… missed=… dropped=… p50_ms=… p99_ms=… max_ms=…`. `missed` counts frame intervals over 1.5 × 8.33 ms, `dropped` the refreshes they skipped.
+- With `--auto-scroll`, three fling-shaped scrolls of a 3,000-row list (about 8 s), then `PERF scroll mode=… source=… frames=… missed=… dropped=… p50_ms=… p99_ms=… max_ms=… period_ms=…`. `period_ms` is the refresh period at the screen's `max_fps` (8.33 ms on a 120 Hz iPhone, 16.67 ms on a 60 Hz one or the Simulator); `missed` counts frame intervals over 1.5 periods, `dropped` the refreshes they skipped.
 
 Sources:
 
@@ -23,6 +23,8 @@ Modes:
 
 `--exit` quits after the scroll summary; `--rows N` changes the list's length.
 
+With `IOS_PERF_TRACE=1` in the environment, each lifecycle step also prints `PERF trace t_ms=… thread=… step=…`, on the same clock as `first_frame_ms`: `main` (with the arguments), `app_run`, `ready`, `visibility` and `focus` changes, `first_encoded`, `present_without_time` (a presented frame Metal gave no time for), `idle_wait`, `idle_sample`, `drive_asked` (from the idle thread), `drive_start`, `drive_running`, a `drive_beat` each second while scrolling (polls, frames encoded and presented, skipped presents, link ticks), `drive_end`, `settling`, `done`, `watch_link`, `watch_link_stop` and `finish`. Native mode adds `native_main`, `scene_connected`, `table_shown` and `first_link_tick`. A run that stops short shows the last step it reached.
+
 ## Run it on a device
 
 ```sh
@@ -35,6 +37,8 @@ xcrun devicectl device process launch --console --terminate-existing --device <d
   --mode uikit --auto-scroll --exit
 xcrun devicectl device process launch --console --terminate-existing --device <device> com.example.iosperf \
   --mode native --auto-scroll --exit
+xcrun devicectl device process launch --console --terminate-existing --device <device> \
+  --environment-variables '{"IOS_PERF_TRACE": "1"}' com.example.iosperf --mode rune --auto-scroll --exit
 ```
 
 Launch each mode several times and compare medians. `first_frame_ms` is a cold number only on the first launch after an install or reboot.

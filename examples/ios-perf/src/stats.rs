@@ -1,5 +1,11 @@
-pub const PERIOD_MS: f64 = 1000.0 / 120.0;
-pub const MISS_MS: f64 = PERIOD_MS * 1.5;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+static MAX_FPS: AtomicU32 = AtomicU32::new(120);
+
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+pub fn set_max_fps(fps: u32) { MAX_FPS.store(fps.max(1), Ordering::Relaxed); }
+
+fn period_ms() -> f64 { 1000.0 / f64::from(MAX_FPS.load(Ordering::Relaxed)) }
 
 pub fn percentile(sorted: &[f64], p: f64) -> f64 {
     if sorted.is_empty() { return f64::NAN; }
@@ -18,12 +24,14 @@ pub fn intervals_ms(times_s: &[f64]) -> Vec<f64> {
 }
 
 pub fn scroll_line(mode: &str, source: &str, times_s: &[f64], extra: &str) -> String {
+    let period = period_ms();
+    let late = |g: &&f64| **g > period * 1.5;
     let gaps = intervals_ms(times_s);
-    let missed = gaps.iter().filter(|g| **g > MISS_MS).count();
-    let dropped: u64 = gaps.iter().filter(|g| **g > MISS_MS).map(|g| ((g / PERIOD_MS).round() as u64).saturating_sub(1).max(1)).sum();
+    let missed = gaps.iter().filter(late).count();
+    let dropped: u64 = gaps.iter().filter(late).map(|g| ((g / period).round() as u64).saturating_sub(1).max(1)).sum();
     let s = sorted(&gaps);
     format!(
-        "PERF scroll mode={mode} source={source} frames={} missed={missed} dropped={dropped} p50_ms={:.2} p99_ms={:.2} max_ms={:.2}{extra}",
+        "PERF scroll mode={mode} source={source} frames={} missed={missed} dropped={dropped} p50_ms={:.2} p99_ms={:.2} max_ms={:.2} period_ms={period:.2}{extra}",
         times_s.len(), percentile(&s, 50.0), percentile(&s, 99.0), s.last().copied().unwrap_or(f64::NAN),
     )
 }

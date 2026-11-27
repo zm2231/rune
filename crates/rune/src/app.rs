@@ -141,6 +141,8 @@ pub struct App<S: 'static> {
     pub(crate) on_open_files: Option<crate::open_url::incoming::OnOpenFiles<S>>,
     pub(crate) on_service: Option<crate::services::OnService<S>>,
     pub(crate) on_continue_activity: Option<crate::handoff::OnContinue<S>>,
+    pub(crate) on_open_search_item: Option<crate::spotlight::OnOpen<S>>,
+    pub(crate) on_search_index_error: Option<crate::spotlight::OnError<S>>,
     pub(crate) shared: Arc<Shared<S>>,
     #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
     pub(crate) overlays: Vec<Box<dyn crate::overlay::PendingOverlay>>,
@@ -230,6 +232,8 @@ impl<S: 'static> App<S> {
             on_open_files: None,
             on_service: None,
             on_continue_activity: None,
+            on_open_search_item: None,
+            on_search_index_error: None,
             shared,
             #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
             overlays: Vec::new(),
@@ -1114,6 +1118,31 @@ impl<S: 'static> App<S> {
     /// ```
     pub fn on_continue_activity(mut self, f: fn(&mut S, &crate::Activity, &mut Tx)) -> Self {
         self.on_continue_activity = Some(f);
+        self
+    }
+
+    /// macOS and iOS: runs on the main thread with the id of a [`SearchItem`](crate::SearchItem)
+    /// the user opened from Spotlight, one [`Tx::index_search_items`](crate::Tx::index_search_items)
+    /// indexed. One that launches the app arrives before the window's first frame. Never called on
+    /// other platforms.
+    ///
+    /// ```no_run
+    /// use rune::{App, AppSpec, el};
+    ///
+    /// let spec = AppSpec::new("Notes", (640.0, 420.0), || None::<String>, |_, _| el());
+    /// let app = App::new(spec).on_open_search_item(|open, id, _| *open = Some(id.to_owned()));
+    /// let _ = app;
+    /// ```
+    pub fn on_open_search_item(mut self, f: fn(&mut S, &str, &mut Tx)) -> Self {
+        self.on_open_search_item = Some(f);
+        self
+    }
+
+    /// Runs on the main thread when the system's search index refuses a request
+    /// [`Tx::index_search_items`](crate::Tx::index_search_items) or a removal made, or when
+    /// Rune drops one ([`SearchIndexError`](crate::SearchIndexError)). Rune also prints each.
+    pub fn on_search_index_error(mut self, f: fn(&mut S, &crate::SearchIndexError, &mut Tx)) -> Self {
+        self.on_search_index_error = Some(f);
         self
     }
 

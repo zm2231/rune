@@ -297,6 +297,7 @@ pub(crate) fn merge(tx: &mut Tx, one: Tx) {
     tx.shares.extend(one.shares);
     if one.quick_look.is_some() { tx.quick_look = one.quick_look; }
     if one.activity.is_some() { tx.activity = one.activity; }
+    tx.search_index.extend(one.search_index);
     if let Some(request) = one.window_frame { tx.window_frame = Some(tx.window_frame.unwrap_or_default().merge(request)); }
     if one.clear_secret && tx.copy.as_ref().is_some_and(crate::ClipboardWrite::is_secret) { tx.copy = None; }
     tx.clear_secret |= one.clear_secret;

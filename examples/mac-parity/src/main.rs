@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use rune::tok::{self, radius, space, type_};
-use rune::{Activity, App, AppSpec, Cx, El, Key, KeyEvent, QuickLook, ServiceInput, Tx, col, el, text};
+use rune::{Activity, App, AppSpec, Cx, El, Key, KeyEvent, QuickLook, SearchIndexError, SearchItem, ServiceInput, Tx, col, el, text};
 
 const VIEWING: &str = "dev.rune.mac-parity.viewing";
 
@@ -13,6 +13,7 @@ struct State {
     selected: usize,
     received: Vec<String>,
     continued: Option<String>,
+    search: String,
 }
 
 fn sample_files() -> Vec<PathBuf> {
@@ -53,10 +54,33 @@ fn on_continue(s: &mut State, activity: &Activity, tx: &mut Tx) {
     if let Some(i) = s.files.iter().position(|f| file_name(f) == name) { select(s, i, tx); }
 }
 
+fn index_files(s: &mut State, tx: &mut Tx) {
+    tx.index_search_items(s.files.iter().map(|f| {
+        SearchItem::new(file_name(f)).with_domain("files").with_title(file_name(f)).with_details(f.display().to_string()).with_keyword("mac parity")
+    }));
+    s.search = format!("Indexed {} files; search Spotlight for \"mac parity\"", s.files.len());
+}
+
+fn on_open_search_item(s: &mut State, id: &str, tx: &mut Tx) {
+    s.search = format!("Opened from Spotlight: {id}");
+    if let Some(i) = s.files.iter().position(|f| file_name(f) == id) { select(s, i, tx); }
+}
+
+fn on_search_index_error(s: &mut State, error: &SearchIndexError, _: &mut Tx) { s.search = error.to_string(); }
+
 fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
     let moved = match ev.key {
         Key::Up => s.selected.saturating_sub(1),
         Key::Down => (s.selected + 1).min(s.files.len().saturating_sub(1)),
+        Key::Text(ref t) if t == "i" => {
+            index_files(s, tx);
+            return true;
+        }
+        Key::Text(ref t) if t == "r" => {
+            tx.remove_search_domain("files");
+            s.search = "Removed the files from Spotlight".into();
+            return true;
+        }
         Key::Text(ref t) if t == " " => {
             if tx.quick_look_open() { tx.close_quick_look(); } else { tx.quick_look(preview(s)); }
             return true;
@@ -97,6 +121,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .child(text(status).key("status").font(type_::LABEL).color(t.text_secondary))
         .children(rows)
         .child(text(match &s.continued { Some(name) => format!("Continued from another device: {name}"), None => "Handoff advertises the selected file".into() }).key("handoff").font(type_::LABEL).color(t.text_secondary))
+        .child(text(if s.search.is_empty() { "I indexes the files in Spotlight, R removes them" } else { &s.search }).key("search").font(type_::LABEL).color(t.text_secondary))
         .child(text("Received from Services").font(type_::SECTION).color(t.text))
         .children(s.received.iter().rev().take(5).map(|line| text(line.clone()).font(type_::LABEL).color(t.text_secondary)))
 }
@@ -106,5 +131,6 @@ fn main() {
         on_key: Some(on_key),
         ..AppSpec::new("Mac Parity", (420.0, 360.0), || State { files: sample_files(), ..State::default() }, view)
     };
-    App::new(spec).on_service(on_service).on_continue_activity(on_continue).run();
+    App::new(spec).on_service(on_service).on_continue_activity(on_continue)
+        .on_open_search_item(on_open_search_item).on_search_index_error(on_search_index_error).run();
 }

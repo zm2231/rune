@@ -39,3 +39,11 @@ Selecting a file advertises `dev.rune.mac-parity.viewing` (listed in `NSUserActi
 Macs signed in to the same Apple Account, Handoff on, and the same file names in the list (the
 samples are), the other Mac's Dock shows the app's Handoff icon; clicking it runs
 `App::on_continue_activity`, which selects that file and shows "Continued from another device".
+
+## Spotlight
+
+Press `I` to index the listed files with `Tx::index_search_items` (domain `files`, keyword
+"mac parity"), then search Spotlight for "mac parity" or a file's name. Opening a result runs
+`App::on_open_search_item` with the item's id, the file name, and selects that file. `R` removes
+them with `Tx::remove_search_domain`. A refusal from the index shows in the status line through
+`App::on_search_index_error`.

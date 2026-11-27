@@ -1115,6 +1115,15 @@ app.run();
   and `/System/Library/CoreServices/pbs -update`; otherwise they appear only after the app's
   first launch. Input comes from another app, so validate it. Never
   called on other platforms.
+- Spotlight (macOS and iOS): `tx.index_search_items([SearchItem::new(id).with_title(..)
+  .with_details(..).with_keyword(..).with_domain(..)])` adds items to Core Spotlight, replacing
+  items with the same ids; `tx.remove_search_items(ids)` and `tx.remove_search_domain(domain)`
+  remove them. One background thread does the work in batches of `SEARCH_INDEX_BATCH`, keeps at
+  most `SEARCH_INDEX_PENDING` items and removals waiting, and leaves out a thumbnail
+  (`with_thumbnail(path)`) over `SEARCH_THUMBNAIL_BYTES`. `App::on_open_search_item(|s, id, tx| ..)`
+  (and `WindowSpec::on_open_search_item`) runs when the user opens a result, before the first
+  frame when that launched the app; `App::on_search_index_error` hears what the index refused or
+  Rune dropped. Ignored on other platforms; headless runs keep the requests.
 - Links and relaunches on Windows: Windows starts a new process for each launch, passing a link
   as an argument. The hook receives the links among the first process's arguments
   (`scheme://…`) like the launching link on macOS. Call `rune::single_instance("com.example.myapp")`

@@ -140,6 +140,7 @@ pub struct Tx {
     pub(crate) quick_look: Option<Option<crate::QuickLook>>,
     pub(crate) quick_look_open: bool,
     pub(crate) activity: Option<Option<crate::Activity>>,
+    pub(crate) search_index: Vec<crate::spotlight::IndexOp>,
     pub(crate) window_frame: Option<crate::window::frame::FrameRequest>,
     /// The mouse button driving this press or drag (`Tx::button`).
     pub(crate) button: crate::PointerButton,

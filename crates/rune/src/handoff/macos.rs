@@ -55,6 +55,9 @@ extern "C" fn continue_activity(_: *mut AnyObject, _: Sel, _: *mut AnyObject, ac
         if activity.kind() == apple::BROWSING_WEB {
             let Some(page) = activity.web_url() else { return false };
             crate::open_url::incoming::receive(page.to_owned());
+        } else if activity.kind() == crate::spotlight::SPOTLIGHT_ACTIVITY {
+            let Some(id) = activity.info(&crate::spotlight::apple::activity_identifier_key()) else { return false };
+            crate::spotlight::opened(id.to_owned());
         } else {
             super::receive(activity);
         }

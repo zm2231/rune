@@ -86,6 +86,7 @@ pub(crate) struct HostState {
     path_requests: Vec<crate::open_path::PathRequest>,
     /// Schemes `AppHandle::register_url_scheme` asked to claim that this runtime left alone (`Runtime::take_url_scheme_requests`).
     url_scheme_requests: Vec<String>,
+    pub(crate) search_index_requests: Vec<crate::spotlight::IndexOp>,
     /// True when attached to a live window, overlay or web canvas, not a headless or scripted run.
     pub(crate) open_urls_natively: bool,
     /// The share sheet asked for (`Tx::share`).
@@ -185,6 +186,7 @@ impl HostState {
             url_requests: Vec::new(),
             path_requests: Vec::new(),
             url_scheme_requests: Vec::new(),
+            search_index_requests: Vec::new(),
             open_urls_natively: false,
             sharing: Default::default(),
             quick_look: Default::default(),
@@ -232,6 +234,11 @@ impl HostState {
     #[inline]
     pub(crate) fn take_url_requests(&mut self) -> Vec<String> {
         std::mem::take(&mut self.url_requests)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_search_index_requests(&mut self) -> Vec<crate::spotlight::IndexOp> {
+        std::mem::take(&mut self.search_index_requests)
     }
 
     #[inline]

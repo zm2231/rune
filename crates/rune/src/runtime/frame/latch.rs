@@ -154,6 +154,7 @@ impl RuntimeCore {
         }
         if let Some(look) = tx.quick_look.take() { self.request_quick_look(look); }
         if let Some(activity) = tx.activity.take() { self.host.activity.set(activity); }
+        self.request_search_index(std::mem::take(&mut tx.search_index));
         if let Some(mode) = tx.font_smoothing.take() { self.set_font_smoothing(mode); }
         if std::mem::take(&mut tx.fonts_added) { self.follow_font_families(); }
         if let Some((sans, mono)) = tx.font_families.take() { self.set_font_families(&sans, &mono); }

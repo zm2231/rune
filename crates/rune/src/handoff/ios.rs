@@ -35,5 +35,9 @@ pub(crate) unsafe fn continued(activity: &AnyObject) {
     // SAFETY: as the caller promises.
     let activity = unsafe { apple::read(activity) };
     if activity.kind() == apple::BROWSING_WEB || activity.kind() == crate::platform::ios::scenes::ACTIVITY { return; }
+    if activity.kind() == crate::spotlight::SPOTLIGHT_ACTIVITY {
+        if let Some(id) = activity.info(&crate::spotlight::apple::activity_identifier_key()) { crate::spotlight::opened(id.to_owned()); }
+        return;
+    }
     super::receive(activity);
 }

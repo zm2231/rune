@@ -1,5 +1,5 @@
 //! Syntax highlighting for code: kinds of token ([`Syntax`]) over byte ranges, coloured by a
-//! [`SyntaxTheme`]. [`Markdown`](crate::Markdown) colours its code fences with it, and the same
+//! [`SyntaxTheme`]. `Markdown` colours its code fences with it, and the same
 //! output paints any other text, such as code in a composer or a diff.
 //!
 //! ```

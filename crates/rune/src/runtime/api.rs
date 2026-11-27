@@ -129,6 +129,24 @@ impl<S: 'static> Runtime<S> {
     #[inline(always)]
     pub fn wake_deadline(&self) -> Option<f64> { self.core().wake_deadline() }
 
+    /// The clock `poll` gets and handlers read as [`Tx::clock`], in seconds: the sum of every
+    /// [`Self::frame`]'s `dt`.
+    #[inline(always)]
+    pub fn clock(&self) -> f64 { self.core().clock }
+
+    /// Time from [`Self::clock`] until the next wake `poll` or motion asked for, to the nearest
+    /// nanosecond but at least one while it is still ahead, and zero once it is due; `None`
+    /// while nothing asked. A headless [`Self::frame`] runs `poll` at every wake inside its
+    /// step, so a test can step past several at once.
+    #[inline(always)]
+    pub fn next_wake(&self) -> Option<std::time::Duration> {
+        let left = self.wake_deadline()? - self.clock();
+        if left <= 0.0 {
+            return Some(std::time::Duration::ZERO);
+        }
+        Some(std::time::Duration::from_secs_f64(left).max(std::time::Duration::from_nanos(1)))
+    }
+
     /// The native window or overlay's frame counts; `None` headless.
     #[inline(always)]
     pub fn surface_stats(&self) -> Option<crate::SurfaceStats> { self.core().surface_stats() }

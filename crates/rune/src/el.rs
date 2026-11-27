@@ -89,6 +89,8 @@ pub use text_spec::LineFill;
 pub use text_spec::TextSpec;
 pub(crate) use tx::{Commit, FocusAsk, FullScreenRequest, MotionSource, SelectRequest, TraceCalls};
 pub use tx::{Shell, Tx};
+#[cfg(feature = "test-support")]
+pub use tx::{FocusKind, FocusRequest, Requested, RevealRequest};
 pub(crate) use visual::VisualFlags;
 pub use visual::{Visual, VisualCold};
 pub(crate) use visuals::{GradientGeometry, RadialGradient};

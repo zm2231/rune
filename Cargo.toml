@@ -45,6 +45,7 @@ members = [
     "examples/knobs",
     "examples/kit-gallery",
     "examples/background",
+    "examples/inbox",
     "examples/live-values",
     "examples/shapes",
     "examples/overlay",

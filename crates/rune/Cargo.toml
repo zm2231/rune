@@ -105,6 +105,9 @@ metal-backend = ["rune-gpu/metal-backend", "rune-media/metal-backend"]
 accessibility = ["dep:accesskit_windows", "dep:accesskit_macos", "dep:accesskit_unix"]
 # Use upstream `taffy::TaffyTree` instead of `rune_taffy::LayoutStore` for A/B benchmarks and parity checks.
 baseline-taffy = ["rune-taffy/baseline-taffy"]
+# `Tx::at` and `Tx::requested`, for calling an app's `poll` and handlers in its tests. Enable it
+# from `[dev-dependencies]` only.
+test-support = []
 # Live GPU resource counters (`Device::get_internal_counters`) for upload tests and `upload_bench`.
 test-gpu-counters = ["wgpu/counters"]
 # GPU-free wgpu noop backend for Linux surface-failure and device-loss tests.

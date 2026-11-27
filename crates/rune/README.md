@@ -4454,6 +4454,40 @@ if let Some(menu) = rt.popup_menu() {
   `rt.accessibility_json()` / `rt.accessibility_tree()`, and `rt.popup_menu()`
   (`PopupMenu::entries()`, `selected_id()`, `find()`).
 
+### Testing `poll` and handlers
+
+An app's `poll` and handlers are plain functions over its state and a `Tx`, so a test can call
+them directly. Enable `test-support` from `[dev-dependencies]` only:
+
+```toml
+[dev-dependencies]
+rune = { git = "...", rev = "...", features = ["test-support"] }
+```
+
+```rust
+let mut s = State::new(); // built for the test: no threads, no connections
+s.sender.send(Message::Select(55)).unwrap();
+let mut tx = Tx::at(1.0); // a Tx as poll gets it at clock 1.0
+assert!(poll(&mut s, 1.0, &mut tx));
+let asked = tx.requested();
+assert_eq!(asked.next_wake(), Some(Duration::from_millis(250)));
+assert_eq!(asked.reveals().next().map(|r| (r.scope, r.key)), Some((Some("list"), "row-55")));
+```
+
+- `Tx::at(clock)` makes a `Tx` whose `Tx::clock` reads `clock` and whose `Tx::wake_at` measures
+  from it. `Tx::requested()` reads what the handler or `poll` asked so far: `wakes`,
+  `next_wake`, `poll` (`Tx::request_poll`), `instant`, `settle`, `animated`, `live_only`,
+  `focus`, `blur`, `reveals` (`scroll_into_view` and kin), `scrolls_to_bottom`, `shell`,
+  `title` and `announcement`.
+- To run the same loop with the view and layout, build a headless runtime with state the test
+  made, and keep anything that starts threads out of the spec the test uses (it runs
+  `spec.setup`): `App::new(spec).init(State::new).headless_runtime(size, env)`. Each
+  `rt.frame(dt)` advances `rt.clock()` by `dt`, running `poll` at every wake it asked for
+  inside the step and once at the end; `rt.next_wake()` is the time until the next one.
+- `examples/inbox` tests both ways: a burst drained in one `poll` rebuilds once, the wake cadence
+  follows the rebuild window, and a selection a background message names scrolls its row into
+  view.
+
 ## Playground
 
 `App::playground` is a storybook built into the window. ⌘⇧D (Ctrl+Shift+D off macOS) opens it;

@@ -119,6 +119,10 @@ pub use el::Cycle;
 pub use el::Direction;
 pub use el::Drag;
 pub use el::El;
+#[cfg(feature = "test-support")]
+pub use el::FocusKind;
+#[cfg(feature = "test-support")]
+pub use el::FocusRequest;
 pub use el::GridRow;
 pub use el::GrowthSpec;
 pub use el::HasPopup;
@@ -135,6 +139,10 @@ pub use el::PillStyle;
 pub use el::PointerEvent;
 pub use el::PointerPress;
 pub use el::RadialRadius;
+#[cfg(feature = "test-support")]
+pub use el::Requested;
+#[cfg(feature = "test-support")]
+pub use el::RevealRequest;
 pub use el::ScrollFade;
 pub use el::ScrollSpec;
 pub use el::SelectionStyle;

@@ -81,7 +81,7 @@ pub(super) fn device(rate: u32, capture: Capture, playback: Playback, signals: S
 fn fault(kind: &str, message: String) -> Signal {
     match kind {
         "changed" => Signal::DevicesChanged,
-        "denied" | "unsupported" => Signal::Lost(Fault::lasting(message)),
+        "denied" | "missing" | "unsupported" => Signal::Lost(Fault::lasting(message)),
         _ => Signal::Lost(Fault::passing(message)),
     }
 }

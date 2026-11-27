@@ -276,3 +276,20 @@ fn a_device_change_while_opening_rebuilds() {
     rig.ran(200, Ok(Opened::AwaitingAudio));
     assert_eq!(rig.step(Event::AudioArrived), vec![Effect::Tell(VoiceEvent::Started)]);
 }
+
+#[test]
+fn passing_losses_while_opening_count_as_tries_and_end_in_failed() {
+    let mut rig = Rig::new();
+    rig.step(Event::Start);
+    for tries in 0..MAX_TRIES {
+        rig.ran(0, Ok(Opened::AwaitingAudio));
+        let effects = rig.step(Event::Lost { fault: Fault::passing("gone"), now: rig.at(0) });
+        if tries + 1 == MAX_TRIES {
+            assert_eq!(effects, vec![Effect::Discard, Effect::Tell(VoiceEvent::Failed("gone".into()))]);
+            break;
+        }
+        let (attempt, due) = rig.wake();
+        assert_eq!(rig.step(Event::RetryDue { attempt, now: due }), vec![Effect::Run]);
+    }
+    assert_eq!(rig.state, State::Failed("gone".into()));
+}

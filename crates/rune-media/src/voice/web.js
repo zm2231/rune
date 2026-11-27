@@ -175,6 +175,8 @@ export function voiceOpen(frames, ended) {
             if (name === 'NotAllowedError' || name === 'SecurityError') {
                 permissionState = 'denied';
                 report('denied', 'microphone access was refused; allow it in the browser\'s site settings');
+            } else if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+                report('missing', 'no microphone was found; connect one and start again');
             } else {
                 report(name === 'NotSupportedError' ? 'unsupported' : 'failed', String((error && error.message) || error));
             }

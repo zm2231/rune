@@ -3506,7 +3506,8 @@ let heard = speaker.played_frames();
   context at another rate gets its own), converted to and from the stream's rate in Rune. Audio
   crosses the page's main thread in 10 ms blocks, so a busy main thread counts
   `VoiceStats::late_frames`. The state stays `Starting` until the first microphone audio
-  arrives, so not while the permission prompt is open. Call `Voice::start` from a click or key
+  arrives, so not while the permission prompt is open. A refused microphone, or none at all,
+  fails the stream with a message saying which; it isn't retried. Call `Voice::start` from a click or key
   handler. Needs HTTPS or `localhost`. `scripts/voice-web-e2e.sh` measures echo in headless
   Firefox or Chromium against a real PulseAudio server in Docker. Not yet run in a browser with
   real speakers.

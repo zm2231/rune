@@ -62,7 +62,8 @@
 //! or key press. The stream stays [`VoiceState::Starting`] until the first microphone audio
 //! arrives, so it isn't [`VoiceState::Running`] while the browser's permission prompt is open.
 //! The first start asks for the microphone; a refusal fails the stream ([`VoiceState::Failed`])
-//! and [`Voice::permission`] then reads [`MicPermission::Denied`]. A change of audio devices
+//! and [`Voice::permission`] then reads [`MicPermission::Denied`]. With no microphone at all the
+//! stream fails too, with a message that says so, rather than retrying. A change of audio devices
 //! rebuilds the stream. Echo cancellation has been measured in headless Firefox and Chromium
 //! against a PulseAudio server whose microphone hears the speaker, at device rates of 44.1 and
 //! 48 kHz; Safari and real speakers haven't been verified yet.

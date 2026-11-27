@@ -226,6 +226,11 @@ mod mac {
         std::thread::sleep(Duration::from_millis(300));
         open_picker(handle);
         std::thread::sleep(Duration::from_millis(300));
+        if TRACKING.load(Ordering::SeqCst) || picker_windows(handle) == 0 {
+            println!("share_macos: the picker isn't a popover window here; skipping the real Escape");
+            click_outside(handle);
+            return;
+        }
         let (count, escapes) = (answers().len(), APP_ESCAPES.load(Ordering::SeqCst));
         println!("share_macos: real Escape: this app frontmost {frontmost}, key window {}", key_window(handle));
         real_escape_key();

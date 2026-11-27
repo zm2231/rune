@@ -60,18 +60,18 @@ thread_local! {
 }
 
 /// Closes the share pickers open over `window` when Escape is pressed there, and holds back that
-/// press and its release: true when the key is the picker's, not the app's.
-pub(crate) fn escape(window: &winit::window::Window, pressed: bool) -> bool {
+/// press, its repeats and its release: true when the key is the picker's, not the app's. A fresh
+/// press drops a hold whose release never came (the window lost focus while Escape was down).
+pub(crate) fn escape(window: &winit::window::Window, pressed: bool, repeat: bool) -> bool {
     let Some(host) = crate::platform::macos::content_view(window).and_then(|view| view.window()) else { return false };
     let mine = |w: &NSWindow| std::ptr::eq(w, &*host);
-    if !pressed {
-        return ESCAPED.with(|escaped| {
-            let mut escaped = escaped.borrow_mut();
-            let held = escaped.iter().any(|w| mine(w));
-            escaped.retain(|w| !mine(w));
-            held
-        });
-    }
+    let held = ESCAPED.with(|escaped| {
+        let mut escaped = escaped.borrow_mut();
+        let held = escaped.iter().any(|w| mine(w));
+        if !pressed || !repeat { escaped.retain(|w| !mine(w)); }
+        held
+    });
+    if !pressed || repeat { return held; }
     let open: Vec<Retained<AnyObject>> = SHOWING.with(|showing| showing.borrow().iter()
         .filter(|s| mine(&s.host) && s.delegate.ivars().borrow().is_some())
         .map(|s| s.picker.clone()).collect());

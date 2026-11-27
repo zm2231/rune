@@ -344,7 +344,7 @@ pub(crate) fn escape_closes_picker(window: &winit::window::Window, event: &winit
     use winit::keyboard::{Key, NamedKey};
     if event.logical_key != Key::Named(NamedKey::Escape) { return false; }
     #[cfg(target_os = "macos")]
-    { macos::escape(window, event.state.is_pressed()) }
+    { macos::escape(window, event.state.is_pressed(), event.repeat) }
     #[cfg(not(target_os = "macos"))]
     { let _ = window; false }
 }

@@ -31,7 +31,7 @@ mod mac {
     use objc2::{class, msg_send, rc::Retained, runtime::{AnyObject, Bool}};
     use objc2_foundation::{NSArray, NSPoint, NSRect, NSString};
     use rune::*;
-    use crate::macos_support::{can_post_events, drag_pasteboard, on_main, release_real_button, wait, warp};
+    use crate::macos_support::{button_down, can_post_events, drag_pasteboard, on_main, release_button_at, release_real_button, wait, warp};
 
     static PRESSES: AtomicUsize = AtomicUsize::new(0);
     static STARTED: AtomicUsize = AtomicUsize::new(0);
@@ -167,6 +167,30 @@ mod mac {
         }
     }
 
+    type End = (&'static str, Box<dyn Fn()>);
+
+    fn end_session(handle: &AppHandle<()>, number: u32, at: (f64, f64)) {
+        let ends: [End; 4] = [
+            ("HID-tap release", Box::new(release_real_button)),
+            ("HID-tap drag, then release", Box::new(|| release_button_at(0, true))),
+            ("session-tap release", Box::new(|| release_button_at(1, false))),
+            ("NSApp postEvent release", Box::new({ let handle = handle.clone(); move || on_main(&handle, move || post(number, &[(UP, at)])) })),
+        ];
+        for (how, end) in ends {
+            println!("macos_overlay_drag_out: trying {how}; the window server holds the button: {}", button_down());
+            end();
+            let start = rune::time::now();
+            while start.elapsed() < Duration::from_secs(2) {
+                if !ENDED.lock().unwrap().is_empty() {
+                    println!("macos_overlay_drag_out: the {how} ended the session");
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            println!("macos_overlay_drag_out: the {how} didn't end the session");
+        }
+    }
+
     /// Whether the session ended (it can't without Accessibility access to post a release).
     fn drive(handle: AppHandle<()>, overlay: OverlayHandle<()>, file: std::path::PathBuf) -> bool {
         wait("the overlay's panel", || overlay.window_number().is_some());
@@ -225,7 +249,7 @@ mod mac {
                 println!("macos_overlay_drag_out: session started, image {image:?}, pasteboard {url}; ending it needs a real button release, which this process may not post (no Accessibility access)");
                 return false;
             }
-            release_real_button();
+            end_session(&handle, number, past);
         }
         // A drop the app refuses slides the image back before the session ends.
         wait("the drag to end", || !ENDED.lock().unwrap().is_empty());

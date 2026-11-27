@@ -2,7 +2,11 @@
 //! window draws is written to FILE as one JSON line, split by stage in nanoseconds: the input
 //! handled since the last frame, the drawable wait, the build (view, commit, layout, text,
 //! paint, apply), the upload, encode, submit and present, the thread's CPU, and how many memos
-//! the view reused (`memo.hit`), built again (`memo.miss`) and built new (`memo.new`). Headless runs
+//! the view reused (`memo.hit`), built again (`memo.miss`) and built new (`memo.new`), how many
+//! memo subtrees flatten took whole from the last commit (`memo.flat_reused`) or laid out again
+//! (`memo.flat_rebuilt`), and the
+//! nodes `apply` skipped as reused and unchanged (`apply_skip`), with why other reused memo spans
+//! weren't skipped. Headless runs
 //! write their own log (`profile::Log`). Ordinary builds compile none of this.
 
 use std::cell::{Cell, RefCell};
@@ -10,6 +14,8 @@ use std::io::Write;
 
 use super::host_clock::now_ns;
 use super::profile::{PHASES, ThreadCpuMark, thread_cpu_mark};
+
+const UNCLEAN: usize = crate::runtime::memo_reuse::Unclean::NAMES.len();
 
 thread_local! {
     static OUT: RefCell<Option<Option<std::io::BufWriter<std::fs::File>>>> = const { RefCell::new(None) };
@@ -26,6 +32,11 @@ thread_local! {
     static MISSED: Cell<([u32; 4], u32)> = const { Cell::new(([0; 4], 0)) };
     /// Memos and regions since the last logged frame: reused, built again, built for the first time.
     static MEMOS: Cell<[u32; 3]> = const { Cell::new([0; 3]) };
+    /// Memo subtrees flatten took whole from the last commit, and those it laid out again.
+    static MEMO_FLAT: Cell<[u32; 2]> = const { Cell::new([0; 2]) };
+    /// Commits since the last logged frame: their nodes, the nodes `apply` skipped as reused and
+    /// unchanged, and why other reused memo spans weren't skipped (`Unclean`).
+    static APPLY_SKIPS: RefCell<(u32, u32, [u32; UNCLEAN])> = const { RefCell::new((0, 0, [0; UNCLEAN])) };
     /// Test-only in-memory capture sink for asserting logged frame records without touching disk.
     #[cfg(all(test, target_os = "windows"))]
     static CAPTURED: RefCell<Option<Vec<serde_json::Value>>> = const { RefCell::new(None) };
@@ -110,6 +121,22 @@ pub(crate) fn memo(kind: usize) {
     let mut m = MEMOS.get();
     m[kind.min(2)] += 1;
     MEMOS.set(m);
+}
+
+/// A memo subtree a commit flattened: taken whole from the last commit, or laid out again.
+pub(crate) fn memo_flattened(reused: bool) {
+    let mut m = MEMO_FLAT.get();
+    m[usize::from(!reused)] += 1;
+    MEMO_FLAT.set(m);
+}
+
+/// A commit's `apply`: its nodes, those it skipped, and why reused memo spans weren't skipped.
+pub(crate) fn apply_skips(nodes: usize, skipped: usize, why: &[u32; UNCLEAN]) {
+    APPLY_SKIPS.with_borrow_mut(|(n, s, w)| {
+        *n += nodes as u32;
+        *s += skipped as u32;
+        for (a, b) in w.iter_mut().zip(why) { *a += b; }
+    });
 }
 
 pub(crate) fn link(event: &'static str, at: &'static std::panic::Location<'static>) {
@@ -211,8 +238,17 @@ pub(crate) fn frame(f: Frame) {
     line["loop_why"] = serde_json::json!(f.loop_why);
     let (missed, reconfigured) = MISSED.replace(([0; 4], 0));
     if missed != [0; 4] || reconfigured > 0 { line["missed"] = serde_json::json!({ "occluded": missed[0], "timeout": missed[1], "outdated": missed[2], "unconfigured": missed[3], "reconfigured": reconfigured }); }
+    let (applied, skipped, unclean) = APPLY_SKIPS.with_borrow_mut(std::mem::take);
+    if applied > 0 {
+        let names = crate::runtime::memo_reuse::Unclean::NAMES;
+        let why: serde_json::Map<String, serde_json::Value> = names.iter().zip(unclean).filter(|(_, n)| *n > 0).map(|(k, n)| ((*k).to_owned(), n.into())).collect();
+        line["apply_skip"] = serde_json::json!({ "nodes": applied, "skipped": skipped, "unclean": why });
+    }
     let memos = MEMOS.replace([0; 3]);
-    if memos != [0; 3] { line["memo"] = serde_json::json!({ "hit": memos[0], "miss": memos[1], "new": memos[2] }); }
+    let flat = MEMO_FLAT.replace([0; 2]);
+    if memos != [0; 3] || flat != [0; 2] {
+        line["memo"] = serde_json::json!({ "hit": memos[0], "miss": memos[1], "new": memos[2], "flat_reused": flat[0], "flat_rebuilt": flat[1] });
+    }
     line["loop_check"] = serde_json::json!(f.loop_check.map(|(n, d)| [n as f64, if d.is_finite() { f64::from(d) } else { -1.0 }]));
     #[cfg(all(test, target_os = "windows"))]
     CAPTURED.with_borrow_mut(|slot| {

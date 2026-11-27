@@ -688,9 +688,12 @@ fn flatten_node<E: FlattenEl>(
     memo_ctx: &mut memo_reuse::MemoFlattenCtx<'_>,
 ) -> (SlotId, bool) {
     let el_ref = el.as_el();
-    if parent_sx.is_none()
-        && let Some(slot) = memo_reuse::try_reuse_memo(el_ref, parent, path_buf, index, motion, in_row, scale, taffy, nodes, memo_ctx)
-    {
+    let reused = if parent_sx.is_none() { memo_reuse::try_reuse_memo(el_ref, parent, path_buf, index, motion, in_row, scale, taffy, nodes, memo_ctx) } else { None };
+    #[cfg(feature = "frame-profile")]
+    if el_ref.memo.is_some() && memo_ctx.committing {
+        crate::frame::live_log::memo_flattened(reused.is_some());
+    }
+    if let Some(slot) = reused {
         return (slot, false);
     }
     if el_ref.flags.has(ElFlags::HAS_VIRTUAL) && el_ref.memo.is_some() {

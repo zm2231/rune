@@ -125,7 +125,9 @@ impl LayerHostCore {
         if transparent && let Some(alpha) = alpha { config.alpha_mode = alpha; }
         crate::window::configure(&surface, &gpu, &config)?;
         let target_format = config.format.remove_srgb_suffix();
+        crate::marks::mark("embed.renderer.begin");
         let mut renderer = Renderer::try_new(&gpu.device, target_format)?;
+        crate::marks::mark("embed.renderer.ready");
         renderer.attach_gpu(&gpu);
         renderer.set_srgb_blend(true);
         let size = (px_w as f32 / scale, px_h as f32 / scale);

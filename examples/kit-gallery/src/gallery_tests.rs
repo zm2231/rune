@@ -141,6 +141,7 @@ fn pure_hover_sweep_commits_only_on_stateful_hover_stories() {
             "STATEFUL_HOVER_STORIES entry {allowed:?} no longer exists in stories::SCENES"
         );
     }
+    ensure_gallery_fonts();
     let mut unexpected = Vec::new();
     for &(id, setup) in stories::SCENES {
         if STATEFUL_HOVER_STORIES.contains(&id) {
@@ -337,6 +338,15 @@ fn hash_story_frame(rt: &rune::Runtime<G>, include_x_width: bool) -> (u64, u64, 
     (layout_h, paint_h, els.len(), chrome_count)
 }
 
+fn ensure_gallery_fonts() {
+    static LOAD_FONTS: std::sync::Once = std::sync::Once::new();
+    LOAD_FONTS.call_once(|| {
+        for &bytes in rune_theme_opencode::FONTS {
+            let _ = rune::text::add_font(bytes);
+        }
+    });
+}
+
 /// Standing guard: pins the default look of every control, container and overlay story across
 /// `rune_theme_opencode` and `Kit::neutral` (light and dark) against the committed baseline
 /// `golden/default-look.txt`. Runs in an ordinary `cargo test -p kit-gallery` with no window.
@@ -344,15 +354,6 @@ fn hash_story_frame(rt: &rune::Runtime<G>, include_x_width: bool) -> (u64, u64, 
 /// To accept an intentional default-look change, run:
 /// `RUNE_BLESS=1 cargo test -p kit-gallery pinned_default_look_baseline`
 /// and review the changed lines in `examples/kit-gallery/golden/default-look.txt`.
-fn ensure_gallery_fonts(rt: &mut rune::Runtime<G>) {
-    static LOAD_FONTS: std::sync::Once = std::sync::Once::new();
-    LOAD_FONTS.call_once(|| {
-        for &bytes in rune_theme_opencode::FONTS {
-            let _ = rt.add_font(bytes);
-        }
-    });
-}
-
 #[test]
 fn pinned_default_look_baseline() {
     let baseline_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("golden/default-look.txt");
@@ -379,7 +380,7 @@ fn pinned_default_look_baseline() {
                     let (sans, mono) = rt.font_families();
                     saved_families = Some((sans.to_owned(), mono.to_owned()));
                 }
-                ensure_gallery_fonts(&mut rt);
+                ensure_gallery_fonts();
                 let (sans, mono) = rune_theme_opencode::FAMILIES;
                 rt.set_font_families(sans, mono);
                 rt.frame(0.0);
@@ -507,7 +508,7 @@ fn overlay_default_metrics_match_explicit_kit_defaults() {
             g.on.insert("recent".into());
         }
         let mut rt = rune::Runtime::new(g, pin_view, (720.0, 480.0), rune::Env::new(dark, 1.0));
-        ensure_gallery_fonts(&mut rt);
+        ensure_gallery_fonts();
         let (sans, mono) = rune_theme_opencode::FAMILIES;
         rt.set_font_families(sans, mono);
         rt.frame(0.0);

@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use rune::{Color, Span};
 
-use crate::tokens::palette::legible;
+use crate::tokens::legible::legible;
 
 /// Spans for a line from its syntax colours and the byte ranges given `bg` (word changes):
 /// cut where either starts or ends, so each piece has one colour and one background.

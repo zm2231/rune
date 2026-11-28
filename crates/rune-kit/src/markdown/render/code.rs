@@ -6,7 +6,7 @@ use std::hash::Hash;
 
 use super::super::*;
 use super::{Renderer, hash_of};
-use crate::tokens::palette::legible;
+use crate::tokens::legible::legible;
 
 type AsciiMetrics = Option<([f32; 95], f32, bool)>;
 

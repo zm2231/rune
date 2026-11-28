@@ -1,7 +1,7 @@
 use rune::Color;
 
 use super::kit::Palette;
-use super::palette::legible;
+use super::legible::{legible_on_all, opaque_over};
 use super::theme::KitEnv;
 
 /// What a run of text means, for the colours [`TextRoles`] gives each.
@@ -119,9 +119,7 @@ impl TextRoles {
         };
         for role in TextRole::ALL {
             let slot = roles.slot_mut(role);
-            for surface in [c.bg_base, c.bg_deep, c.layer_01] {
-                *slot = legible(*slot, surface, floor);
-            }
+            *slot = legible_on_all(opaque_over(*slot, c.bg_base), &c.text_surfaces(), floor);
         }
         roles
     }

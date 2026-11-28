@@ -88,3 +88,68 @@ fn legible_keeps_a_colour_that_reads_and_darkens_one_that_does_not() {
     let navy = hex("#1d3a8a").unwrap();
     assert_eq!(rune_kit::legible(navy, Color::WHITE, 4.5), navy);
 }
+
+fn on_surfaces(base: &str, deep: &str, layer: &str, more: bool) -> Kit {
+    let mut k = rune_theme_opencode::kit(&KitEnv::new(true).increased_contrast(more));
+    k.c.bg_base = hex(base).unwrap();
+    k.c.bg_deep = hex(deep).unwrap();
+    k.c.layer_01 = hex(layer).unwrap();
+    k
+}
+
+#[test]
+fn faint_text_lifted_for_a_dark_base_still_reads_on_it_after_a_lighter_pane() {
+    let mut k = on_surfaces("#000000", "#000000", "#5a5a5a", false);
+    k.c.text_faint = hex("#1e1e1e").unwrap();
+    let held = k.legible_text();
+    for fill in [held.c.bg_base, held.c.bg_deep, held.c.layer_01] {
+        assert!(ratio(held.c.text_faint, fill) >= 3.0, "{:?} on {:?}: {}", held.c.text_faint, fill, ratio(held.c.text_faint, fill));
+    }
+}
+
+#[test]
+fn every_text_colour_reads_on_all_three_surfaces_when_they_mix_dark_and_light() {
+    for more in [false, true] {
+        let mut k = on_surfaces("#000000", "#0a0a0a", "#4a4a4a", more);
+        let served = served(&KitEnv::new(true).increased_contrast(more));
+        k.c.text_strong = served.c.text_strong;
+        k.c.text_base = hex("#1e1e1e").unwrap();
+        k.c.text_weak = hex("#3c3c3c").unwrap();
+        k.c.text_muted = served.c.text_muted;
+        k.c.text_faint = hex("#1e1e1e").unwrap().alpha(0.7);
+        k.c.text_accent = served.c.text_accent;
+        k.roles = served.roles;
+        let held = k.legible_text();
+        for (name, ink, min) in text(&held) {
+            assert!(worst(&held, ink) >= min, "{name} (more {more}): {}", worst(&held, ink));
+        }
+        assert_eq!(held.text_short_of_floor(), []);
+    }
+}
+
+#[test]
+fn text_with_no_colour_reading_on_every_surface_gets_the_most_it_can_and_is_named() {
+    let held = on_surfaces("#1e1e1e", "#f0f0f0", "#f0f0f0", false).legible_text();
+    let short = held.text_short_of_floor();
+    let names: Vec<_> = short.iter().map(|s| s.name).collect();
+    assert!(names.contains(&"text_base") && names.contains(&"link"), "{names:?}");
+    let best = (0..=255u8)
+        .map(|v| hex(&format!("#{v:02x}{v:02x}{v:02x}")).unwrap())
+        .map(|grey| worst(&held, grey))
+        .fold(0.0, f32::max);
+    for s in &short {
+        assert!(s.lowest < s.floor);
+        assert!((s.lowest - worst(&held, s.color)).abs() < 1e-4);
+        assert!(s.lowest >= best - 0.05, "{}: {} where a grey reaches {best}", s.name, s.lowest);
+    }
+}
+
+#[test]
+fn legible_on_all_finds_the_grey_between_black_and_white() {
+    let red = hex("#e53935").unwrap();
+    let held = rune_kit::legible_on_all(red, &[Color::BLACK, Color::WHITE], 4.5);
+    assert!(ratio(held, Color::BLACK) >= 4.5 && ratio(held, Color::WHITE) >= 4.5, "{held:?}");
+    let [_, a, b, _] = red.to_oklab();
+    let [_, ha, hb, _] = held.to_oklab();
+    assert!((b.atan2(a) - hb.atan2(ha)).abs() < 0.1, "keeps its hue");
+}

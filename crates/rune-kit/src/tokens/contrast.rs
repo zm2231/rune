@@ -1,7 +1,9 @@
 use rune::Color;
 
 use super::kit::Kit;
-use super::palette::{contrast, legible, tint};
+use super::kit::Palette;
+use super::legible::legible_on_all;
+use super::palette::{contrast, tint};
 use super::roles::{TextRole, TextRoles};
 
 impl Kit {
@@ -42,10 +44,15 @@ impl Kit {
     /// on the surfaces text sits on (`bg_base`, `bg_deep` and `layer_01`): `text_strong`,
     /// `text_base`, `text_weak`, `text_muted`, `text_accent` and every [`TextRole`] at 4.5:1,
     /// and `text_faint` at 3:1; 7:1 and 4.5:1 on a kit made for
-    /// [`increased_contrast`](Kit::increased_contrast). A colour that already reads at its floor
-    /// is left as it is; one that falls short becomes opaque and moves toward black or white
-    /// along its hue ([`legible`](crate::legible)) until it does. Icons, borders, fills and the
-    /// text drawn on fills (`text_inverse`, `text_contrast`) are left alone.
+    /// [`increased_contrast`](Kit::increased_contrast). Each colour is held on all three
+    /// surfaces at once ([`legible_on_all`](crate::legible_on_all)): one that already reads on
+    /// all of them is left as it is; one that falls short becomes opaque and moves toward black
+    /// or white along its hue until it reads on every one. Icons, borders, fills and the text
+    /// drawn on fills (`text_inverse`, `text_contrast`) are left alone.
+    ///
+    /// Surfaces that mix light and dark can leave no colour that reads at the floor on all of
+    /// them; such a colour gets the most contrast it can, and
+    /// [`text_short_of_floor`](Kit::text_short_of_floor) names it.
     ///
     /// Call it after overriding the colours, and after [`Kit::increased_contrast`], which keeps
     /// roles it did not derive as they are.
@@ -58,26 +65,65 @@ impl Kit {
     /// kit.roles.link = hex("#7aa7ff").unwrap();
     /// let kit = kit.legible_text();
     /// assert_ne!(kit.c.text_base, hex("#9a9a9a").unwrap());
+    /// assert!(kit.text_short_of_floor().is_empty());
     /// ```
     pub fn legible_text(&self) -> Kit {
         let mut k = self.clone();
-        let (body, faint) = if k.increased_contrast { (7.0, 4.5) } else { (4.5, 3.0) };
-        let surfaces = [k.c.bg_base, k.c.bg_deep, k.c.layer_01];
-        let floor = |color: Color, min: f32| {
-            if surfaces.iter().all(|&s| contrast(s.mix(color.alpha(1.0), color.a), s) >= min) {
-                return color;
-            }
-            surfaces.iter().fold(color, |color, &s| legible(color, s, min))
-        };
+        let (body, faint) = k.text_floors();
+        let surfaces = k.c.text_surfaces();
         let c = &mut k.c;
         for token in [&mut c.text_strong, &mut c.text_base, &mut c.text_weak, &mut c.text_muted, &mut c.text_accent] {
-            *token = floor(*token, body);
+            *token = legible_on_all(*token, &surfaces, body);
         }
-        c.text_faint = floor(c.text_faint, faint);
+        c.text_faint = legible_on_all(c.text_faint, &surfaces, faint);
         for role in TextRole::ALL {
-            k.roles.set(role, floor(k.roles.get(role), body));
+            k.roles.set(role, legible_on_all(k.roles.get(role), &surfaces, body));
         }
         k
+    }
+
+    /// The text colours [`legible_text`](Kit::legible_text) holds that read under their floor
+    /// on `bg_base`, `bg_deep` or `layer_01`, in the order that method lists them. After
+    /// `legible_text`, a colour is here only when no colour reaches its floor on all three
+    /// surfaces at once: the surfaces mix light and dark too far apart for it.
+    ///
+    /// ```
+    /// use rune::{Color, color::hex};
+    /// use rune_kit::Kit;
+    /// let mut kit = Kit::neutral(true);
+    /// kit.c.bg_base = hex("#1e1e1e").unwrap();
+    /// kit.c.layer_01 = hex("#f0f0f0").unwrap();
+    /// let short = kit.legible_text().text_short_of_floor();
+    /// assert!(short.iter().any(|s| s.name == "text_base" && s.lowest < s.floor));
+    /// ```
+    pub fn text_short_of_floor(&self) -> Vec<TextShortfall> {
+        let (body, faint) = self.text_floors();
+        let surfaces = self.c.text_surfaces();
+        let c = &self.c;
+        let tokens = [
+            ("text_strong", c.text_strong, body),
+            ("text_base", c.text_base, body),
+            ("text_weak", c.text_weak, body),
+            ("text_muted", c.text_muted, body),
+            ("text_accent", c.text_accent, body),
+            ("text_faint", c.text_faint, faint),
+        ];
+        let roles = TextRole::ALL.map(|role| (role.name(), self.roles.get(role), body));
+        tokens
+            .into_iter()
+            .chain(roles)
+            .filter_map(|(name, color, floor)| {
+                let lowest = surfaces
+                    .iter()
+                    .map(|&fill| contrast(fill.mix(color.alpha(1.0), color.a), fill))
+                    .fold(f32::INFINITY, f32::min);
+                (lowest < floor).then_some(TextShortfall { name, color, lowest, floor })
+            })
+            .collect()
+    }
+
+    fn text_floors(&self) -> (f32, f32) {
+        if self.increased_contrast { (7.0, 4.5) } else { (4.5, 3.0) }
     }
 
     pub(crate) fn text_floor(&self) -> f32 {
@@ -97,6 +143,26 @@ impl Kit {
         let [l, .., alpha] = plain.to_oklab();
         let [_, a, b, _] = deep.to_oklab();
         Color::from_oklab([l, a, b, alpha])
+    }
+}
+
+/// A text colour on a [`Kit`] that reads under its contrast floor on one of the surfaces text
+/// sits on, from [`Kit::text_short_of_floor`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextShortfall {
+    /// The token (`text_base`, `text_faint`, ...) or [`TextRole::name`].
+    pub name: &'static str,
+    /// Its colour.
+    pub color: Color,
+    /// Its lowest contrast on `bg_base`, `bg_deep` and `layer_01`.
+    pub lowest: f32,
+    /// The contrast it is held to.
+    pub floor: f32,
+}
+
+impl Palette {
+    pub(crate) fn text_surfaces(&self) -> [Color; 3] {
+        [self.bg_base, self.bg_deep, self.layer_01]
     }
 }
 

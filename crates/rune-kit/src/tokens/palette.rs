@@ -58,7 +58,7 @@ fn secondary(bg: Color, fg: Color, tint: [f32; 2], amount: f32, minimum: f32) ->
 }
 
 /// `t` of the way from `a` to `b` in OKLab.
-fn mix_oklab(a: Color, b: Color, t: f32) -> Color {
+pub(crate) fn mix_oklab(a: Color, b: Color, t: f32) -> Color {
     let (a, b) = (a.to_oklab(), b.to_oklab());
     Color::from_oklab(std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t))
 }
@@ -68,57 +68,6 @@ fn mix_oklab(a: Color, b: Color, t: f32) -> Color {
 pub(crate) fn tint(base: Color, hue: Color, t: f32) -> Color {
     let [a, b] = [base.to_oklab(), hue.to_oklab()];
     Color::from_oklab([0, 1, 2, 3].map(|i| if i == 3 { a[3] } else { a[i] + (b[i] - a[i]) * t }))
-}
-
-/// `fg` as text on `fill` reading at no less than `min`:1 (WCAG contrast; 4.5 for body text, 7
-/// under Increase Contrast). Translucent `fg` is laid over `fill` and comes back opaque. An
-/// opaque colour that already reads at `min` comes back as it is; one that falls short moves in
-/// OKLab toward black or white, whichever can reach `min`, keeping its hue as far as it can.
-/// When neither black nor white reaches `min` on `fill`, the one with more contrast comes back.
-///
-/// ```
-/// use rune::{Color, color::hex};
-/// let grey = hex("#8a8a8a").unwrap();
-/// let text = rune_kit::legible(grey, Color::WHITE, 4.5);
-/// assert!(text.luminance() < grey.luminance());
-/// assert_eq!(rune_kit::legible(Color::BLACK, Color::WHITE, 4.5), Color::BLACK);
-/// ```
-pub fn legible(fg: Color, fill: Color, min: f32) -> Color {
-    let fg = if fg.a < 1.0 { Color { a: 1.0, ..fill.mix(fg, fg.a) } } else { fg };
-    if contrast(fg, fill) >= min {
-        return fg;
-    }
-    let pole = |dark: bool| if dark { Color::BLACK } else { Color::WHITE };
-    let own_side = fg.luminance() <= fill.luminance();
-    let dark = if contrast(pole(own_side), fill) >= min.min(contrast(pole(!own_side), fill)) { own_side } else { !own_side };
-    let end = pole(dark);
-    if contrast(end, fill) < min {
-        return end;
-    }
-    let at = |t: f32| mix_oklab(fg, end, t);
-    let mut low = 0.0;
-    if dark != own_side {
-        let mut high = 1.0;
-        for _ in 0..24 {
-            let mid = (low + high) * 0.5;
-            if (at(mid).luminance() <= fill.luminance()) == dark {
-                high = mid;
-            } else {
-                low = mid;
-            }
-        }
-    }
-    let goal = (min * 1.01).min(contrast(end, fill));
-    let mut high = 1.0;
-    for _ in 0..24 {
-        let mid = (low + high) * 0.5;
-        if contrast(at(mid), fill) >= goal {
-            high = mid;
-        } else {
-            low = mid;
-        }
-    }
-    at(high)
 }
 
 /// OKLab lightness steps away from `bg` (lighter on dark themes, darker on light ones) per

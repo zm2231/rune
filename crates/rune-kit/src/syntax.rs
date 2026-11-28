@@ -55,7 +55,7 @@ use rune_highlights::{Lang, Stream, Token};
 
 use crate::Kit;
 use crate::budget::Budget;
-use crate::tokens::palette::legible;
+use crate::tokens::legible::{legible_on_all, opaque_over};
 
 pub use paths::lang_for_path;
 
@@ -494,9 +494,7 @@ impl SyntaxTheme {
         s[Syntax::Variable as usize] = c.text_base.mix(c.text_contrast, 0.25);
         let floor = k.text_floor();
         for color in &mut s {
-            for surface in [c.bg_base, c.bg_deep, c.layer_01] {
-                *color = legible(*color, surface, floor);
-            }
+            *color = legible_on_all(opaque_over(*color, c.bg_base), &c.text_surfaces(), floor);
         }
         SyntaxTheme { colors: s, weights: [0; Syntax::COUNT] }
     }

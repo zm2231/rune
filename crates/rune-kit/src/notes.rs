@@ -7,7 +7,8 @@ use std::ops::RangeInclusive;
 
 use rune::{Color, El, Family, Spring, TextStyle, Transition, col, el, row, spacer, text};
 
-use crate::tokens::palette::{legible, tint};
+use crate::tokens::legible::legible;
+use crate::tokens::palette::tint;
 use crate::{Kit, Markdown};
 
 #[cfg(test)]

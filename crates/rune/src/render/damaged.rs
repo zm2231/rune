@@ -43,6 +43,7 @@ pub(crate) type Drawn = Result<KeptDraw, &'static str>;
 pub(super) struct Retained {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
+    view_format: wgpu::TextureFormat,
     current: bool,
 }
 
@@ -82,7 +83,7 @@ impl Renderer {
             d.drawn = Some(Err("clear"));
             return;
         }
-        if d.retained.as_ref().is_none_or(|r| (r.texture.width(), r.texture.height()) != size || r.texture.format() != format) {
+        if d.retained.as_ref().is_none_or(|r| (r.texture.width(), r.texture.height()) != size || r.texture.format() != format || r.view_format != self.format) {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("last frame"),
                 size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
@@ -94,7 +95,7 @@ impl Renderer {
                 view_formats: &[self.format],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor { format: Some(self.format), ..Default::default() });
-            d.retained = Some(Retained { texture, view, current: false });
+            d.retained = Some(Retained { texture, view, view_format: self.format, current: false });
         }
         if clear[3] != 1.0 && d.zeros.is_none() {
             d.zeros = Some(device.create_buffer(&wgpu::BufferDescriptor {

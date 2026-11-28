@@ -223,10 +223,16 @@ fn install_lost_callback(
     clean_drop: Arc<AtomicBool>,
 ) {
     let lost_by_callback = Arc::clone(lost);
+    let removal = rune_staging::health::RemovalReason::watch(device);
     device.set_device_lost_callback(move |reason, message| {
         // Before anything reads it: a lost device's surface can't be configured, and wgpu
         // reports that failure nowhere (`is_lost`).
         lost_by_callback.store(true, Ordering::Release);
+        let message = match removal.read() {
+            Some(why) if message.trim().is_empty() => why,
+            Some(why) => format!("{message} ({why})"),
+            None => message,
+        };
         let destroyed = matches!(reason, wgpu::DeviceLostReason::Destroyed);
         let intentional_drop = destroyed && clean_drop.load(Ordering::Acquire);
         if !intentional_drop {

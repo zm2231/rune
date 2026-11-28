@@ -361,3 +361,10 @@ fn oversized_evicts_after_idle_flushes_and_on_trim_oversized() {
     assert_eq!(kept_oversized(&st2), (0, 0), "trim_oversized drops returned and free oversized chunks");
     assert_eq!(kept_normal_bytes(&st2), CHUNK, "trim_oversized keeps normal <= 4 MiB chunks");
 }
+
+#[test]
+fn a_removal_names_its_dxgi_reason() {
+    assert_eq!(health::removal_name(0x887A_0006_u32 as i32), "DXGI_ERROR_DEVICE_HUNG (0x887A0006)");
+    assert_eq!(health::removal_name(0x887A_0007_u32 as i32), "DXGI_ERROR_DEVICE_RESET (0x887A0007)");
+    assert_eq!(health::removal_name(0x8000_4005_u32 as i32), "0x80004005");
+}

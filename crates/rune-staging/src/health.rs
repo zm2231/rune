@@ -20,6 +20,74 @@ pub fn removed(device: &wgpu::Device) -> bool {
     }
 }
 
+/// Why D3D12 removed a device, read when wgpu reports it lost (whose own reason is `Unknown`):
+/// `DXGI_ERROR_DEVICE_HUNG` (a GPU timeout), `DXGI_ERROR_DEVICE_RESET`,
+/// `DXGI_ERROR_DEVICE_REMOVED`, `DXGI_ERROR_DRIVER_INTERNAL_ERROR` or another `HRESULT`. Holds a
+/// reference to the device's D3D12 interface, so keep it only as long as the `wgpu::Device`
+/// (inside its lost callback). Reads nothing on other backends.
+pub struct RemovalReason {
+    #[cfg(target_os = "windows")]
+    device: Option<RemovedDevice>,
+}
+
+#[cfg(target_os = "windows")]
+struct RemovedDevice(windows::Win32::Graphics::Direct3D12::ID3D12Device);
+#[cfg(target_os = "windows")]
+// SAFETY: ID3D12Device is free-threaded; it is only asked for its removal reason.
+#[allow(unsafe_code)]
+unsafe impl Send for RemovedDevice {}
+#[cfg(target_os = "windows")]
+// SAFETY: as for Send.
+#[allow(unsafe_code)]
+unsafe impl Sync for RemovedDevice {}
+
+impl RemovalReason {
+    /// Watches `device`; on other backends it never reads a reason.
+    #[allow(unsafe_code)]
+    pub fn watch(device: &wgpu::Device) -> RemovalReason {
+        #[cfg(target_os = "windows")]
+        {
+            // SAFETY: the device's D3D12 interface, cloned (a reference count) and only read.
+            let device = unsafe { device.as_hal::<wgpu::hal::api::Dx12>() }.map(|d| RemovedDevice(d.raw_device().clone()));
+            RemovalReason { device }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = device;
+            RemovalReason {}
+        }
+    }
+
+    /// The removal's reason, such as `DXGI_ERROR_DEVICE_HUNG (0x887A0006)`, or None while the
+    /// device is not removed.
+    #[allow(unsafe_code)]
+    pub fn read(&self) -> Option<String> {
+        #[cfg(target_os = "windows")]
+        {
+            let device = self.device.as_ref()?;
+            // SAFETY: a live D3D12 device interface, asked whether it was removed.
+            let error = unsafe { device.0.GetDeviceRemovedReason() }.err()?;
+            Some(removal_name(error.code().0))
+        }
+        #[cfg(not(target_os = "windows"))]
+        None
+    }
+}
+
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+pub(crate) fn removal_name(code: i32) -> String {
+    let name = match code as u32 {
+        0x887A_0005 => "DXGI_ERROR_DEVICE_REMOVED",
+        0x887A_0006 => "DXGI_ERROR_DEVICE_HUNG",
+        0x887A_0007 => "DXGI_ERROR_DEVICE_RESET",
+        0x887A_0020 => "DXGI_ERROR_DRIVER_INTERNAL_ERROR",
+        0x887A_0001 => "DXGI_ERROR_INVALID_CALL",
+        0x8007_000E => "E_OUTOFMEMORY",
+        _ => return format!("0x{:08X}", code as u32),
+    };
+    format!("{name} (0x{:08X})", code as u32)
+}
+
 /// Why `poll` gave no status.
 #[derive(Debug)]
 pub enum PollFailed {

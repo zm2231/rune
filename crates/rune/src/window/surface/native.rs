@@ -32,6 +32,7 @@ pub(in crate::window) struct Native {
     /// The new window's first frames, which may draw before AppKit reports it on screen.
     pub(in crate::window) prime: Prime,
     pub(in crate::window) launch_drawables: super::LaunchDrawables,
+    pub(in crate::window) loop_patch: crate::window::host::loop_patch::LoopPatch,
     /// Forgets the window's traffic-light spot.
     pub(in crate::window) _spot: crate::platform::macos::traffic_lights::Spot,
     /// Forgets the window's drag-destination state.

@@ -281,6 +281,8 @@ pub(super) fn prepare_window_render(
     // An image's pixels changed where its instances didn't: the whole frame draws (`damage`).
     #[cfg(target_os = "windows")]
     let images_changed = host.app.rt().images.pages.iter().any(|p| p.dirty.is_some());
+    #[cfg(target_os = "macos")]
+    let patch = l.native.loop_patch.check(host.app.rt());
     {
         let rt = host.app.rt_mut();
         #[cfg(target_os = "windows")]
@@ -345,6 +347,14 @@ pub(super) fn prepare_window_render(
             }
         }
     };
+    #[cfg(target_os = "macos")]
+    if let Some(p) = looped {
+        let rt = host.app.rt();
+        let armed = if l.alpha.is_some() { Err("alpha") } else if host.app.compositor_draws_own() { Err("compositor") }
+            else if !l.config.usage.contains(wgpu::TextureUsages::COPY_DST) { Err("no copies") } else { patch }
+            .and_then(|()| renderer.arm_loop(&gpu.device, &gpu.queue, rt.paint_count(), &rt.instances, p, rt.clear_color(), size, l.config.format));
+        if let Err(why) = armed { profile.set_loop_why(why); }
+    }
     RenderPrep::Ready(PreparedWindowFrame {
         frame: drawable,
         view,
@@ -400,6 +410,11 @@ pub(super) fn render_window_frame(
         (Ok(crate::render::KeptDraw::Whole), None) => {}
         (Err(why), Some(_)) => profile.set_whole_why(why),
         (Err(_), None) => {}
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(crate::render::KeptDraw::Whole) = renderer.damage_drawn() { profile.set_loop_why("kept behind"); }
+        l.native.loop_patch.drawn(host.app.rt());
     }
     // A client-side frame's rounded bottom corners: faded off the premultiplied composition,
     // before a surface that takes straight alpha converts it.

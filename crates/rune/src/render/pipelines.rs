@@ -178,9 +178,9 @@ impl Renderer {
                 crate::pixels::limit_side(max);
                 max
             },
-            #[cfg(any(target_os = "windows", target_arch = "wasm32"))]
+            #[cfg(any(target_os = "windows", target_os = "macos", target_arch = "wasm32", test))]
             clear_quad: std::sync::OnceLock::new(),
-            #[cfg(any(target_os = "windows", target_arch = "wasm32"))]
+            #[cfg(any(target_os = "windows", target_os = "macos", target_arch = "wasm32", test))]
             damage: Default::default(),
         })
     }

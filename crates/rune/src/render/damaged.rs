@@ -24,7 +24,7 @@ pub(crate) fn clears_in_place(clear: [f32; 4]) -> bool {
 }
 
 /// How `draw_armed` updated the kept frame.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum KeptDraw {
     /// The kept frame was already current, so only the armed rectangles were redrawn and the
@@ -58,7 +58,7 @@ pub(super) struct DamageState {
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     cycle: Option<((u64, (u32, u32)), Result<Cull, &'static str>)>,
     /// The paint and target size `arm_loop` last found the units of, and them.
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos", test))]
     loop_units: Option<((u64, (u32, u32)), Result<std::sync::Arc<Units>, &'static str>)>,
     /// Whether a run of the armed rectangles holds a layer's scope.
     layers_reached: bool,
@@ -66,9 +66,9 @@ pub(super) struct DamageState {
     zeros: Option<wgpu::Buffer>,
     drawn: Option<Drawn>,
     /// The armed rectangles are a loop-only frame's (`arm_loop`), for `RUNE_LOOP_CHECK=2`.
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     pub(super) looped: bool,
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     pub(super) pixel: Option<super::pixel_check::Check>,
 }
 
@@ -159,7 +159,7 @@ impl Renderer {
     /// paint `paint`'s. Arms the pixels they drew on and draw on now, each with only the instances
     /// that reach it (what the rest drew there stays as drawn). Returns those rectangles (x0, y0,
     /// x1, y1) to present, or why this frame draws whole.
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos", test))]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn arm_loop(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, paint: u64, instances: &[Instance], patched: &[u32], clear: [f32; 4], size: (u32, u32), format: wgpu::TextureFormat) -> Result<Vec<[i32; 4]>, &'static str> {
         if !clears_in_place(clear) { return Err("clear"); }
@@ -186,6 +186,7 @@ impl Renderer {
         };
         let (draw, runs, layers) = cull_runs(instances, &units, &rects, patched);
         self.arm_damage(device, queue, &draw, clear, size, format);
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
         if super::pixel_check::on() { self.pixel_check_arm(device, size, format); }
         let mut d = self.damage.lock().unwrap();
         d.runs = runs;
@@ -205,7 +206,7 @@ impl Renderer {
     pub(crate) fn damage_drawn(&self) -> Drawn {
         let mut d = self.damage.lock().unwrap();
         d.armed.clear();
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
         {
             d.looped = false;
             if let Some(c) = d.pixel.as_mut() { c.frame_ended(); }
@@ -237,7 +238,7 @@ impl Renderer {
     pub(crate) fn draw_armed(&self, encoder: &mut wgpu::CommandEncoder, dst: &wgpu::Texture) -> bool {
         let mut guard = self.damage.lock().unwrap();
         let d = &mut *guard;
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
         let looped = std::mem::take(&mut d.looped);
         if d.armed.is_empty() { return false; }
         if !clears_in_place(d.clear) {
@@ -268,9 +269,9 @@ impl Renderer {
             self.submit_uploads();
             // frame-profile, `RUNE_LOOP_CHECK_SPOIL=1`: a loop-only frame skips its redraw, so the kept
             // picture goes stale and `RUNE_LOOP_CHECK=2` must find it (its failing row).
-            #[cfg(all(target_os = "windows", feature = "frame-profile"))]
+            #[cfg(all(any(target_os = "windows", target_os = "macos"), feature = "frame-profile"))]
             let spoil = looped && super::pixel_check::spoiled();
-            #[cfg(not(all(target_os = "windows", feature = "frame-profile")))]
+            #[cfg(not(all(any(target_os = "windows", target_os = "macos"), feature = "frame-profile")))]
             let spoil = false;
             let opaque = clear[3] == 1.0;
             if !opaque && !spoil {
@@ -314,7 +315,7 @@ impl Renderer {
             kept.current = true;
         }
         // `RUNE_LOOP_CHECK=2`: this loop-only frame's picture, and the whole frame's beside it.
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
         if looped && partial && let Some(c) = d.pixel.as_mut() { self.pixel_check_encode(encoder, c, &kept.texture, clear, &rects); }
         let whole = wgpu::Extent3d { width: dst.width(), height: dst.height(), depth_or_array_layers: 1 };
         encoder.copy_texture_to_texture(kept.texture.as_image_copy(), dst.as_image_copy(), whole);

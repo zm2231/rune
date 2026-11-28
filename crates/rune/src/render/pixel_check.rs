@@ -1,4 +1,4 @@
-//! `RUNE_LOOP_CHECK=2` (Windows): a loop-only frame's picture against the whole frame's. After a
+//! `RUNE_LOOP_CHECK=2` (Windows, macOS): a loop-only frame's picture against the whole frame's. After a
 //! loop-only frame redraws its rectangles into the kept texture (`draw_armed`), the same instances
 //! are drawn whole into a scratch texture in the same encoder and both are copied out; the next
 //! frame of any kind (`damage_drawn`, once the encoding frame was submitted), or the next loop-only

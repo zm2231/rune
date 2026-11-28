@@ -27,6 +27,8 @@ pub(in crate::window) mod draw;
 pub(in crate::window) mod events;
 pub(in crate::window) mod gpu_loss;
 pub(in crate::window) mod lifecycle;
+#[cfg(target_os = "macos")]
+pub(in crate::window) mod loop_patch;
 pub(in crate::window) mod paint;
 pub(in crate::window) mod pointer;
 pub(in crate::window) mod render;

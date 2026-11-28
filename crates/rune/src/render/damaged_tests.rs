@@ -181,7 +181,6 @@ fn surface_to_empty_surface_catchup_requests_whole_present() {
     assert_eq!(step(&mut rt, [0, 0, 16, 16]), Ok(KeptDraw::Partial));
 }
 
-#[cfg(target_os = "windows")]
 mod loop_frames {
     use super::*;
     use crate::{Cycle, ScrollSpec, col, oklch, row};

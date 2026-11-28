@@ -5,7 +5,7 @@ use crate::text::{ATLAS_SIZE, Atlas};
 
 mod backdrop_blur;
 mod breaker;
-#[cfg(any(target_os = "windows", target_arch = "wasm32"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_arch = "wasm32", test))]
 mod damaged;
 mod device;
 mod dxbc;
@@ -23,7 +23,7 @@ mod pass;
 mod pipelines;
 mod renderer_kind;
 // The kept frame it checks exists only where partial frames do (`damaged`).
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 mod pixel_check;
 #[cfg(target_os = "macos")]
 mod prewarm;
@@ -80,8 +80,10 @@ mod webgl_shader_tests;
 
 use pass::{ActivePass, Backdrop};
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+pub(crate) use damaged::KeptDraw;
 #[cfg(target_os = "windows")]
-pub(crate) use damaged::{KeptDraw, MAX_RECTS, clears_in_place};
+pub(crate) use damaged::{MAX_RECTS, clears_in_place};
 pub(crate) use shader_check::ShaderError;
 pub(crate) use surface_setup::SurfaceSetupError;
 #[cfg(not(target_arch = "wasm32"))]
@@ -164,12 +166,12 @@ pub use warmup::warm_gpu_with;
 pub(crate) const ATLAS_START_ROWS: u32 = 256;
 
 /// `RUNE_LOOP_CHECK=2` found a picture that differed from the whole frame's (`pixel_check`), so the
-/// process's exit code is 3. Never on macOS and Linux, which have no loop-only frames.
+/// process's exit code is 3. Never on Linux, whose windows draw loop-only frames whole.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn loop_pixel_check_failed() -> bool {
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     return pixel_check::failed();
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     false
 }
 
@@ -382,10 +384,10 @@ pub struct Renderer {
     /// limit from JavaScript (about 35 µs), which a frame's layers used to pay.
     max_texture_dim: u32,
     /// The one instance per rectangle that clears a damaged one (`arm_damage`), made on first use.
-    #[cfg(any(target_os = "windows", target_arch = "wasm32"))]
+    #[cfg(any(target_os = "windows", target_os = "macos", target_arch = "wasm32", test))]
     clear_quad: std::sync::OnceLock<wgpu::Buffer>,
     /// The kept frame and the rectangles the next `draw` may redraw alone (`damaged`).
-    #[cfg(any(target_os = "windows", target_arch = "wasm32"))]
+    #[cfg(any(target_os = "windows", target_os = "macos", target_arch = "wasm32", test))]
     damage: std::sync::Mutex<damaged::DamageState>,
 }
 
@@ -698,7 +700,7 @@ impl Renderer {
     }
 
     pub fn draw(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, clear: [f32; 4]) {
-        #[cfg(any(target_os = "windows", target_arch = "wasm32"))]
+        #[cfg(any(target_os = "windows", target_os = "macos", target_arch = "wasm32", test))]
         if self.armed() && self.draw_armed(encoder, &view.texture()) { return; }
         self.draw_timed(encoder, view, clear, None);
     }

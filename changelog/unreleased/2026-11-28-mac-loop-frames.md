@@ -1,0 +1,1 @@
+- macOS windows draw a loop-only frame (a spinner's next dot, a shimmer's next step) by redrawing only the pixels its loops cover into the kept last frame and copying that to the drawable, instead of encoding the whole window; a frame whose glyph atlas, images, clear colour, layers or compositor changed still draws whole.

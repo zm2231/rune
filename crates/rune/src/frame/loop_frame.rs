@@ -1,7 +1,8 @@
 //! A frame only a loop asked for: a spinner's next dot, a shimmer's next step. The runtime
 //! samples the loops into the instances they drew and nothing else runs (`Runtime::loop_step`:
 //! no poll, view, layout or paint). A Windows window redraws and presents only where they draw
-//! (`Renderer::arm_loop`); other windows and iOS views draw the whole frame from those
+//! (`Renderer::arm_loop`); a macOS window redraws only there, into its kept last frame, and
+//! copies that to the drawable; other windows and iOS views draw the whole frame from those
 //! instances. Anything that reached the window or view since its last frame (input, a request,
 //! an assistive client's action) makes the next one an ordinary frame, so nothing waits behind
 //! a loop. An app wake or a due timer runs the app's poll first, and only a poll that changed

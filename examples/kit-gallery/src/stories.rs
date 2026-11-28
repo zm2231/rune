@@ -31,6 +31,7 @@ mod shell_rows;
 pub(crate) mod sidebar;
 mod split_view;
 mod table;
+mod text_scales;
 
 use controls::{button_all_states, button_focus, button_icon, button_playground, button_shortcuts, button_sizes, button_variants, checkbox_basic, checkbox_custom_icon, checkbox_hidden_label, checkbox_states, icon_button_all_states, icon_button_playground, icon_button_sizes, icon_button_variants, radio_basic, radio_controlled, radio_states, radio_surfaces, slider_basic, slider_sizes, slider_states, switch_appearances, switch_basic, switch_hidden_label, switch_sizes, switch_states, switch_web};
 use display::{a11y_aria_properties, accordion_basic, accordion_multiple, accordion_single, badge_accent, badge_appearances, badge_basic, badge_high_contrast, badge_subtle, card_error, card_info, card_normal, card_success, card_warning, collapsible_basic, collapsible_ghost, keybind_all, keybind_keep_case, keybind_multiple, keybind_playground, keybind_symbols, keybind_variants, list_active_icon, list_basic, list_delegated_a11y, list_divider, list_empty, list_grouped, list_no_search, list_with_add, loader_basic, loader_sizes, progress_basic, progress_indeterminate, progress_no_label, rolling_text_basic, scroll_view_thumb, segmented_basic, segmented_controlled, segmented_rich, spinner_basic, spinner_sizes};
@@ -376,6 +377,9 @@ stories! {
     "rune-sidebar--two-line" => shell_rows::sidebar_two_line,
     "rune-tab-strip--status" => shell_rows::tab_status,
     "rune-avatar--rows" => shell_rows::avatar_rows,
+    "rune-toolbar--text-scales" => text_scales::toolbar,
+    "rune-tab-strip--text-scales" => text_scales::tab_strip,
+    "rune-textarea--placeholder-text-scales" => text_scales::textarea_placeholder,
     "components-file-icon--samples" => icons::file_icon_samples,
     "components-file-icon--folder" => icons::file_icon_folder,
     "ui-icon--gallery" => icons::icon_gallery,

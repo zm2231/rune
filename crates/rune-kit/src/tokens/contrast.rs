@@ -12,9 +12,13 @@ impl Kit {
     /// lifts with faint text) and reads at 7:1 on the surfaces text sits on; a role the theme or
     /// app set keeps its colour, so one already picked for increased contrast
     /// ([`RoleColor`](crate::RoleColor)) is not lifted again. Code then reads at 7:1 on what it
-    /// sits on, and diffs tint added and removed lines more deeply.
+    /// sits on, and diffs tint added and removed lines more deeply. A kit already made for
+    /// increased contrast comes back unchanged.
     pub fn increased_contrast(&self) -> Kit {
         let mut k = self.clone();
+        if k.increased_contrast {
+            return k;
+        }
         let before = TextRoles::legible_on(&k.c, k.text_floor());
         k.increased_contrast = true;
         let c = &mut k.c;

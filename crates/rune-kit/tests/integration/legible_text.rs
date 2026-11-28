@@ -16,6 +16,7 @@ fn served(env: &KitEnv) -> Kit {
     let mut k = rune_theme_opencode::kit(env);
     let [quiet, accent, role] =
         if env.dark { ["#5c5c66", "#3a5fcd", "#7a3b3b"] } else { ["#a8a8b0", "#8fb3ff", "#e0b060"] }.map(|c| hex(c).unwrap());
+    k.c.text_strong = quiet;
     k.c.text_base = quiet;
     k.c.text_weak = quiet;
     k.c.text_muted = quiet;
@@ -30,6 +31,7 @@ fn served(env: &KitEnv) -> Kit {
 fn text(k: &Kit) -> Vec<(&'static str, Color, f32)> {
     let (body, faint) = if k.increased_contrast { (7.0, 4.5) } else { (4.5, 3.0) };
     let mut out = vec![
+        ("text_strong", k.c.text_strong, body),
         ("text_base", k.c.text_base, body),
         ("text_weak", k.c.text_weak, body),
         ("text_muted", k.c.text_muted, body),
@@ -52,7 +54,6 @@ fn an_apps_served_text_colours_fall_short_until_held_to_the_kits_floor() {
             for (name, ink, min) in text(&held) {
                 assert!(worst(&held, ink) >= min, "{name} (dark {dark}, more {more}): {}", worst(&held, ink));
             }
-            assert_eq!(held.c.text_strong, app.c.text_strong, "text that already reads stays");
             assert_eq!(held.c.icon_base, app.c.icon_base);
             let again = held.legible_text();
             assert_eq!(format!("{:?}", again.c), format!("{:?}", held.c), "palette (dark {dark}, more {more})");
@@ -67,9 +68,11 @@ fn text_an_app_set_that_already_reads_is_left_as_it_is() {
         let mut k = rune_theme_opencode::kit(&KitEnv::new(dark));
         let ink = if dark { Color::WHITE } else { Color::BLACK };
         k.c.text_muted = ink.alpha(0.95);
+        k.c.text_strong = ink;
         k.roles.link = ink;
         let held = k.legible_text();
         assert_eq!(held.c.text_muted, k.c.text_muted);
+        assert_eq!(held.c.text_strong, ink);
         assert_eq!(held.roles.link, ink);
     }
 }

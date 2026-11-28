@@ -71,10 +71,10 @@ pub(crate) fn tint(base: Color, hue: Color, t: f32) -> Color {
 }
 
 /// `fg` as text on `fill` reading at no less than `min`:1 (WCAG contrast; 4.5 for body text, 7
-/// under Increase Contrast). A colour that already reads at `min` comes back as it is. One that
-/// falls short comes back opaque, moved in OKLab toward black or white, whichever can reach
-/// `min`, keeping its hue as far as it can; translucent `fg` is first laid over `fill`. When
-/// neither black nor white reaches `min` on `fill`, the one with more contrast comes back.
+/// under Increase Contrast). Translucent `fg` is laid over `fill` and comes back opaque. An
+/// opaque colour that already reads at `min` comes back as it is; one that falls short moves in
+/// OKLab toward black or white, whichever can reach `min`, keeping its hue as far as it can.
+/// When neither black nor white reaches `min` on `fill`, the one with more contrast comes back.
 ///
 /// ```
 /// use rune::{Color, color::hex};

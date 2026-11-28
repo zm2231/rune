@@ -73,7 +73,7 @@ fn style() -> DiagramStyle {
 
 fn fresh(_: &(), _: &mut Cx<()>) -> El {
     let paint = style();
-    el().size(SIZE[0] as f32, SIZE[1] as f32).fill(paint.surface).child(rune_mermaid::render_drawing(FLOW, &paint, Hover::Edges, paint.text).expect("draws").el)
+    el().size(SIZE[0] as f32, SIZE[1] as f32).fill(paint.surface).child(rune_mermaid::render_drawing(FLOW, &paint, Hover::Edges, paint.text).map_or_else(el, |d| d.el))
 }
 
 fn prepared(m: &DrawingModel, _: &mut Cx<DrawingModel>) -> El {
@@ -90,6 +90,6 @@ fn a_prepared_drawing_draws_in_the_blend_of_the_window_showing_it() {
         let got = render(&gpu, model, prepared, SIZE, srgb);
         let off = want.iter().zip(&got).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
         assert!(off <= 1, "srgb {srgb}: a drawing prepared in the other blend differs from a fresh one by {off}");
-        assert!(want.chunks_exact(4).any(|p| p[..3] != want[..3]), "srgb {srgb}: the diagram drew");
+        assert!(want.as_chunks::<4>().0.iter().any(|p| p[..3] != want[..3]), "srgb {srgb}: the diagram drew");
     }
 }

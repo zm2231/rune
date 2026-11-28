@@ -3,9 +3,10 @@ use std::cell::Cell;
 use crate::time::Instant;
 
 #[derive(Clone, Copy)]
-pub(crate) enum Part { Prepare, Layers, Pass, Compositor }
+#[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
+pub(crate) enum Part { Prepare, Layers, Pass, Compositor, Arm, Kept, Copy }
 
-pub(crate) const PARTS: usize = 4;
+pub(crate) const PARTS: usize = 7;
 
 thread_local! {
     static NS: Cell<[u64; PARTS]> = const { Cell::new([0; PARTS]) };

@@ -55,6 +55,8 @@ pub(in crate::window) struct FrameProfile {
     pub(super) frame: Option<crate::frame::live_log::Frame>,
     #[cfg(feature = "frame-profile")]
     pub(super) encode_parts: [u64; crate::frame::encode_parts::PARTS],
+    #[cfg(all(target_os = "macos", feature = "frame-profile"))]
+    pub(super) armed: Option<Vec<[i32; 4]>>,
 }
 
 impl FrameProfile {
@@ -156,7 +158,9 @@ impl FrameProfile {
         let damage_seen = host.win.as_ref().and_then(|l| l.native.damage.seen);
         #[cfg(not(target_os = "windows"))]
         let damage_seen = None;
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
+        let damage = self.armed.take();
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         let damage = None;
         self.build_frame_core(host.app.rt_mut(), damage_seen, animating, looped, damage);
     }
@@ -353,7 +357,13 @@ pub(super) fn prepare_window_render(
         let armed = if l.alpha.is_some() { Err("alpha") } else if host.app.compositor_draws_own() { Err("compositor") }
             else if !l.config.usage.contains(wgpu::TextureUsages::COPY_DST) { Err("no copies") } else { patch }
             .and_then(|()| renderer.arm_loop(&gpu.device, &gpu.queue, rt.paint_count(), &rt.instances, p, rt.clear_color(), size, l.config.format));
-        if let Err(why) = armed { profile.set_loop_why(why); }
+        match armed {
+            #[cfg(feature = "frame-profile")]
+            Ok(rects) => profile.armed = Some(rects),
+            #[cfg(not(feature = "frame-profile"))]
+            Ok(_) => {}
+            Err(why) => profile.set_loop_why(why),
+        }
     }
     RenderPrep::Ready(PreparedWindowFrame {
         frame: drawable,

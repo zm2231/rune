@@ -163,6 +163,8 @@ impl Renderer {
     #[cfg(any(target_os = "windows", target_os = "macos", test))]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn arm_loop(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, paint: u64, instances: &[Instance], patched: &[u32], clear: [f32; 4], size: (u32, u32), format: wgpu::TextureFormat) -> Result<Vec<[i32; 4]>, &'static str> {
+        #[cfg(feature = "frame-profile")]
+        let _part = crate::frame::encode_parts::Scope::new(crate::frame::encode_parts::Part::Arm);
         if !clears_in_place(clear) { return Err("clear"); }
         self.redraws_in_place()?;
         let held = self.held_instances(paint, instances.len()).ok_or("buffer")?;
@@ -261,6 +263,8 @@ impl Renderer {
             return false;
         }
         let partial = kept.current;
+        #[cfg(feature = "frame-profile")]
+        let kept_part = crate::frame::encode_parts::Scope::new(crate::frame::encode_parts::Part::Kept);
         if kept.current {
             // No layer reaches the rectangles: their targets aren't drawn from, nor made again.
             // The uploads go into this encoder ahead of the pass either way (`encode_layers_timed`
@@ -318,6 +322,10 @@ impl Renderer {
         // `RUNE_LOOP_CHECK=2`: this loop-only frame's picture, and the whole frame's beside it.
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         if looped && partial && let Some(c) = d.pixel.as_mut() { self.pixel_check_encode(encoder, c, &kept.texture, clear, &rects); }
+        #[cfg(feature = "frame-profile")]
+        drop(kept_part);
+        #[cfg(feature = "frame-profile")]
+        let _part = crate::frame::encode_parts::Scope::new(crate::frame::encode_parts::Part::Copy);
         let whole = wgpu::Extent3d { width: dst.width(), height: dst.height(), depth_or_array_layers: 1 };
         encoder.copy_texture_to_texture(kept.texture.as_image_copy(), dst.as_image_copy(), whole);
         d.drawn = Some(Ok(if partial { KeptDraw::Partial } else { KeptDraw::Whole }));

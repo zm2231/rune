@@ -24,12 +24,11 @@ pub(super) fn toolbar(_: &G, k: &Kit, _: &mut Vec<El>) -> El {
 
 pub(super) fn tab_strip(_: &G, k: &Kit, _: &mut Vec<El>) -> El {
     at_scales(k, |k, scale| {
-        let width = 760.0;
+        let width = k.text_size(460.0);
         let tabs = TabStrip::<G>::new(format!("tabs-scale-{scale}"), TabOrientation::Horizontal)
             .tabs([
                 TabItem::new("notes", "Release notes draft").icon(&ic::PENCIL_LINE).closable(true),
                 TabItem::new("build", "Build the release").status(Some(TabItemStatus::Busy)),
-                TabItem::new("review", "Review comments"),
             ])
             .active(Some("notes"))
             .viewport_width(Some(width))

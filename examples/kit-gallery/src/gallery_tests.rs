@@ -626,3 +626,25 @@ fn the_sidebar_and_tab_row_stories_show_every_row_at_every_text_size() {
         }
     }
 }
+
+#[test]
+fn the_tab_strip_text_scale_story_widens_its_tabs_with_the_text() {
+    let &(_, setup) = stories::SCENES.iter().find(|&&(s, _)| s == "rune-tab-strip--text-scales").expect("the story");
+    let mut g = init();
+    setup(&mut g);
+    let mut rt = rune::Runtime::new(g, view, (1400.0, 1000.0), rune::Env::new(true, 1.0));
+    rt.frame(0.0);
+    rt.settle_all();
+    rt.frame(0.0);
+    let els = rt.elements();
+    for scale in [1.0f32, 1.6, 2.5] {
+        let strip = format!("tabs-scale-{scale}/");
+        let tabs: Vec<_> = els.iter().filter(|e| e.role == "tab" && e.path.contains(&strip)).collect();
+        assert_eq!(tabs.len(), 2, "{strip}");
+        for t in tabs {
+            assert!((t.rect[2] - 224.0 * scale).abs() < 0.5, "{scale}x: {} is {} wide", t.path, t.rect[2]);
+            let cut = els.iter().any(|e| e.key.as_deref() == Some("label") && e.path.starts_with(&format!("{}/", t.path)) && e.text_cut);
+            assert!(!cut, "{scale}x: {}'s title is cut", t.path);
+        }
+    }
+}

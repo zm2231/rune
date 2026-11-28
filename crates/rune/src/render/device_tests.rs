@@ -23,6 +23,18 @@ fn fallback_instance_descriptor_allows_noncompliant_adapters() {
     assert!(!desc.flags.contains(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL));
 }
 
+#[test]
+fn a_dx12_instance_compiles_optimized_shaders_in_every_build() {
+    let all = wgpu::InstanceFlags::debugging() | wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL;
+    let dx12 = Gpu::instance_flags(wgpu::Backends::DX12, all);
+    assert!(!dx12.contains(wgpu::InstanceFlags::DEBUG));
+    assert!(dx12.contains(wgpu::InstanceFlags::VALIDATION));
+    assert!(!dx12.contains(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL));
+    let others = Gpu::instance_flags(wgpu::Backends::VULKAN | wgpu::Backends::GL, all);
+    assert!(others.contains(wgpu::InstanceFlags::DEBUG | wgpu::InstanceFlags::VALIDATION));
+    assert!(!others.contains(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL));
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 #[ignore]

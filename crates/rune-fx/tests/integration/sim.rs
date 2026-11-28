@@ -72,10 +72,12 @@ fn simulated_fire_matches_wgpus_frame_for_frame() {
     let got = frames(&gpu.device, &gpu.queue);
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
     if cfg!(target_os = "windows") {
-        // Match Gpu::headless()'s DX12 + FXC configuration; FXC and DXC round differently across
-        // the 72-step warmup, and wgpu's default descriptor also loads Vulkan/dxcompiler.dll.
+        // Match Gpu::headless()'s DX12 + FXC configuration, optimized: FXC and DXC, and FXC with
+        // and without optimization, round differently across the 72-step warmup, and wgpu's
+        // default descriptor also loads Vulkan/dxcompiler.dll.
         desc.backends = wgpu::Backends::DX12;
         desc.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
+        desc.flags = (desc.flags - wgpu::InstanceFlags::DEBUG).with_env();
     }
     let Some(wgpu) = Gpu::test_on(wgpu::Instance::new(desc)) else { return };
     let want = frames(&wgpu.device, &wgpu.queue);

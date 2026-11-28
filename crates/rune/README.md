@@ -1234,7 +1234,9 @@ Staying fast afterwards is "Fast apps" (`site/src/FastApps.tsx`) and "Smooth scr
   `uber_windfoil_ios.metallib` on a device and the `_ios_sim` ones on the simulator, built from
   the same MSL as macOS's. On Windows, DX12 loads precompiled DXBC uber shaders
   (`uber.vs.dxbc`, `uber.fs.dxbc`; set `RUNE_DISABLE_DXBC=1` to disable). `WGPU_ADAPTER_NAME`
-  and `WGPU_POWER_PREF` (`low`, `high` or `none`) override GPU adapter selection.
+  and `WGPU_POWER_PREF` (`low`, `high` or `none`) override GPU adapter selection. DX12 compiles
+  optimized shaders in debug builds too; `WGPU_DEBUG=1` compiles them unoptimized for PIX shader
+  debugging, and `WGPU_VALIDATION=0` leaves out the D3D12 debug layer debug builds load.
   `WGPU_DX12_PRESENTATION_SYSTEM` (`visual` or `hwnd`) overrides the DX12 swap-chain presentation
   system. By default Windows uses DirectComposition (`DxgiFromVisual`) with no automatic fallback
   to an HWND swap chain (following Chromium CL 6215560 / CL 6324950); set

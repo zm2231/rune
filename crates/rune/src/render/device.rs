@@ -391,6 +391,14 @@ impl Gpu {
     /// validation pipeline wgpu would build for them costs every device a shader compile (about
     /// 40 ms on a Mac's first launch after an install or update). Indirect draws a compositor
     /// records on Rune's device still work; wgpu just doesn't check their argument buffers.
+    ///
+    /// A DX12 instance also leaves out `InstanceFlags::DEBUG`, which wgpu sets in debug builds and
+    /// which makes FXC compile every shader with `D3DCOMPILE_SKIP_OPTIMIZATION`. Unoptimized
+    /// bytecode makes WARP's shader compiler and rasterizer many times slower on the larger effect
+    /// shaders, and makes debug builds and tests run different shaders from the release build.
+    /// `WGPU_DEBUG=1` sets it again (for PIX source-level shader debugging), and `WGPU_VALIDATION=0`
+    /// turns off the D3D12 debug layer that debug builds load; both apply to every wgpu instance,
+    /// not to the native Metal one.
     pub fn instance() -> wgpu::Instance {
         #[cfg(all(target_vendor = "apple", feature = "metal-backend"))]
         if crate::gpu::metal::enabled() { return crate::gpu::metal::instance(); }
@@ -512,7 +520,7 @@ impl Gpu {
     ) -> wgpu::InstanceDescriptor {
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         descriptor.backends = backends;
-        descriptor.flags.remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
+        descriptor.flags = Self::instance_flags(backends, descriptor.flags).with_env();
         if allow_noncompliant {
             descriptor.flags.insert(wgpu::InstanceFlags::ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER);
         }
@@ -527,6 +535,14 @@ impl Gpu {
         // shader compile (Hex #587).
         descriptor.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
         descriptor
+    }
+
+    fn instance_flags(backends: wgpu::Backends, defaults: wgpu::InstanceFlags) -> wgpu::InstanceFlags {
+        let mut flags = defaults - wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL;
+        if backends == wgpu::Backends::DX12 {
+            flags.remove(wgpu::InstanceFlags::DEBUG);
+        }
+        flags
     }
 
     /// Builds a conformant-only instance first and returns it whenever it sees at least one

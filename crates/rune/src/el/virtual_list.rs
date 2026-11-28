@@ -9,7 +9,9 @@ use taffy::style::{Display, FlexDirection, FlexWrap, LengthPercentage, LengthPer
 use crate::El;
 use crate::runtime::HashSet;
 
+pub(crate) mod items;
 mod places;
+pub(crate) mod rows;
 use places::Places;
 
 #[derive(Debug, Default)]

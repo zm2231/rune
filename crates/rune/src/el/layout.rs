@@ -2,6 +2,13 @@
 
 use super::*;
 
+pub(super) mod anchor;
+pub(super) mod direction;
+mod growth;
+mod pixel_snap;
+mod ride_trailing;
+pub(crate) mod watch;
+
 impl El {
     #[inline]
     pub fn w(mut self, w: f32) -> Self {

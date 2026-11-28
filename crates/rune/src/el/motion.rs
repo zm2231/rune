@@ -2,6 +2,9 @@
 
 use super::*;
 
+mod child_exit;
+mod enter_delay;
+
 /// Authored motion traits for [`El::motion_intent`], inherited by descendants. Motion checks
 /// (`rune::motion_gate` and `--trace`) read these marks so deliberate overshoots, kicks, shakes
 /// and discrete typing cuts pass without broad allowlist rules.

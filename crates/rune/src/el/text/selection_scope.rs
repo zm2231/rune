@@ -2,7 +2,7 @@
 //! ([`El::selection_enabled`](crate::El::selection_enabled)), with a way back in for the values
 //! under it that people should still be able to copy.
 
-use super::*;
+use crate::el::*;
 
 impl El {
     /// Whether the [`El::selectable`] texts in this element and everything under it select,
@@ -55,7 +55,7 @@ pub(crate) fn apply_selection_off(
     if !t.selectable { return; }
     let t: &mut TextSpec = t;
     t.selectable = false;
-    if t.flags.has(crate::el::text_spec::TextFlags::SELECTABLE_CURSOR) && handlers.cursor == Some(Cursor::Text) {
+    if t.flags.has(crate::el::text::spec::TextFlags::SELECTABLE_CURSOR) && handlers.cursor == Some(Cursor::Text) {
         handlers.cursor = None;
     }
 }

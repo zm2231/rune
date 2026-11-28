@@ -1,6 +1,6 @@
 //! `El::dir_by_paragraph`: each paragraph of a text in the direction of its own words, as CSS's
 //! `unicode-bidi: plaintext` lays a block's paragraphs out.
-use super::*;
+use crate::el::*;
 use rune_text::paragraph_ranges as paragraphs;
 
 impl El {
@@ -68,7 +68,7 @@ impl El {
         // The I-beam `El::selectable` gave stays its own on every piece, so an
         // `El::selection_enabled(false)` subtree still takes it back; the column, which keeps no
         // text, drops it.
-        let given = t.flags.has(crate::el::text_spec::TextFlags::SELECTABLE_CURSOR) && cursor == Some(Cursor::Text);
+        let given = t.flags.has(crate::el::text::spec::TextFlags::SELECTABLE_CURSOR) && cursor == Some(Cursor::Text);
         if given { self.handlers.cursor = None; }
         let a11y_disabled = self.cold.a11y.disabled;
         let focus_disabled = self.cold.focus.disabled;
@@ -82,7 +82,7 @@ impl El {
             }
             let links = paragraph(&t, k, range, k == last, &mut e);
             if let Some(c) = cursor { e = e.cursor(c); }
-            if given && let Some(pt) = &mut e.text { pt.flags.set(crate::el::text_spec::TextFlags::SELECTABLE_CURSOR, true); }
+            if given && let Some(pt) = &mut e.text { pt.flags.set(crate::el::text::spec::TextFlags::SELECTABLE_CURSOR, true); }
             if a11y_disabled { e.cold_mut().a11y.disabled = true; }
             if focus_disabled || focus_opt_out {
                 let f = &mut *e.cold_mut().focus;

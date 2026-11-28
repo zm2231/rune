@@ -10,7 +10,7 @@ use crate::el::{El, SelectionCopy, TextSpec};
 /// and the list kept by index. One or the other, never both.
 pub(crate) enum Source {
     /// `El::virtual_rows`: a row is built when selection needs it.
-    Rebuild(std::rc::Rc<crate::el::virtual_rows::RowSource>),
+    Rebuild(std::rc::Rc<crate::el::virtual_list::rows::RowSource>),
     /// Rows the view built; the ones outside the window are kept in
     /// [`PinnedSelection::stored`].
     Stored,
@@ -24,7 +24,7 @@ impl Default for Source {
 
 impl Source {
     /// The row builder, when rows are built by index.
-    pub(crate) fn rebuild(&self) -> Option<&std::rc::Rc<crate::el::virtual_rows::RowSource>> {
+    pub(crate) fn rebuild(&self) -> Option<&std::rc::Rc<crate::el::virtual_list::rows::RowSource>> {
         match self {
             Source::Rebuild(rows) => Some(rows),
             Source::Stored => None,

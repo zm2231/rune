@@ -45,7 +45,7 @@ fn collected(key: &str) -> (Vec<(String, String)>, Vec<String>) {
 
 fn source(name: &'static str) -> Source {
     match name {
-        "rebuild" => Source::Rebuild(Rc::new(crate::el::virtual_rows::RowSource::new::<()>(
+        "rebuild" => Source::Rebuild(Rc::new(crate::el::virtual_list::rows::RowSource::new::<()>(
             0,
             |_, _| "".into(),
             |_, _| crate::el(),

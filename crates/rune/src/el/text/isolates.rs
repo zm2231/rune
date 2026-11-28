@@ -2,7 +2,7 @@
 //! HTML's `<bdi>` and CSS's `unicode-bidi: isolate` keep a name, a path or a command whole.
 use std::ops::Range;
 
-use super::*;
+use crate::el::*;
 
 /// UTF-8 length of each isolate mark (LRI, RLI, FSI and PDI are all three bytes).
 const MARK: u32 = 3;

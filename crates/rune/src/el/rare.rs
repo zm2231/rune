@@ -86,7 +86,7 @@ pub(crate) struct ElCold {
     pub(crate) growth: Option<Box<GrowthSpec>>,
     pub(crate) virtual_estimate: Option<f32>,
     /// Rows `El::virtual_rows` builds at layout time, in place of `children`.
-    pub(crate) virtual_rows: Option<Rc<crate::el::virtual_rows::RowSource>>,
+    pub(crate) virtual_rows: Option<Rc<crate::el::virtual_list::rows::RowSource>>,
     /// [`El::virtual_rows_version`](crate::El::virtual_rows_version), hashed.
     pub(crate) virtual_rows_version: Option<u64>,
     /// [`El::virtual_rows_append_only`](crate::El::virtual_rows_append_only).
@@ -94,7 +94,7 @@ pub(crate) struct ElCold {
     /// [`El::virtual_overscan`](crate::El::virtual_overscan), clamped `(overscan, edge)` in viewports.
     pub(crate) virtual_overscan: Option<(f32, f32)>,
     /// [`El::virtual_items`](crate::El::virtual_items): app-windowed keyed item source.
-    pub(crate) virtual_items: Option<Rc<dyn crate::el::items::VirtualItems>>,
+    pub(crate) virtual_items: Option<Rc<dyn crate::el::virtual_list::items::VirtualItems>>,
     /// The memo this element was expanded from (`El::expand_memo`) to mount virtual rows.
     pub(crate) expanded_memo: Option<Rc<crate::memo::Built>>,
     pub(crate) glide: Option<crate::growth::FoldGlide>,
@@ -115,7 +115,7 @@ pub(crate) struct ElCold {
     /// `El::level` and `El::expanded`.
     pub(crate) a11y: A11y,
     /// `El::data`: one value per type.
-    pub(crate) data: Vec<crate::el::data::ElData>,
+    pub(crate) data: Vec<crate::el::handlers::data::ElData>,
     /// `El::selection_enabled`: `Some(false)` turns off the selectable texts in this subtree,
     /// `Some(true)` turns them back on under an ancestor's `false`; `None` inherits.
     pub(crate) selection_enabled: Option<bool>,

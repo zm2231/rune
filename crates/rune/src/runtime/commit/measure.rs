@@ -715,7 +715,7 @@ impl Measurement<'_> {
         &mut self,
         el: &mut El,
         path: &str,
-        source: Option<Rc<crate::el::virtual_rows::RowSource>>,
+        source: Option<Rc<crate::el::virtual_list::rows::RowSource>>,
         inert: bool,
         selection_off: bool,
         group: Option<&str>,

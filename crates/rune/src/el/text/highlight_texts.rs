@@ -1,6 +1,6 @@
 //! `El::highlight_texts`: paint-only highlights on every text a subtree holds, such as the
 //! matches of a search, without wrapping each `text` or `rich` call that builds them.
-use super::*;
+use crate::el::*;
 
 impl El {
     /// Calls `f` with what each [`text`](crate::text()) and [`rich`] element in this subtree

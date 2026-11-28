@@ -13,7 +13,7 @@ pub struct Picked {
     rect: [f32; 4],
     local: [f32; 2],
     /// [`El::data`] values from the picked element up to the root, nearest first.
-    data: Vec<crate::el::data::ElData>,
+    data: Vec<crate::el::handlers::data::ElData>,
 }
 
 impl std::fmt::Debug for Picked {
@@ -309,7 +309,7 @@ impl RuntimeCore {
     }
 
     /// `El::data` values from node `i` up to the root, nearest first.
-    fn data_path(&self, i: usize) -> Vec<crate::el::data::ElData> {
+    fn data_path(&self, i: usize) -> Vec<crate::el::handlers::data::ElData> {
         let mut data = Vec::new();
         let mut at = Some(i);
         while let Some(j) = at {

@@ -1,7 +1,7 @@
 //! Growth stacks and their rows: `El::growth`, `El::streaming` and `El::arrives_whole`. The
 //! heights are tracked in `crate::growth` and stepped in the runtime.
 
-use super::*;
+use crate::el::*;
 
 impl El {
     /// The keyed face of a complete growth row. Consecutive such rows hold the seam

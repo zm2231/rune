@@ -3,7 +3,7 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use super::El;
+use crate::el::El;
 
 /// One value attached with [`El::data`].
 pub(crate) type ElData = Arc<dyn Any + Send + Sync>;

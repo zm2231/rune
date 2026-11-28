@@ -1,7 +1,7 @@
 //! Visual builders: fill, corners, borders, shadows, gradients, opacity, blur, transforms,
 //! clips and hover groups.
 
-use super::*;
+use crate::el::*;
 
 impl El {
     #[inline]

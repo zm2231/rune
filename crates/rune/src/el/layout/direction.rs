@@ -14,7 +14,7 @@
 //! Each element's direction resolves as one step down the tree ([`step`]), from its parent's
 //! [`Flow`] and its own [`DirEvent`]. Nothing is mirrored in a window that sets no
 //! right-to-left direction: layout reads one small enum per element.
-use super::*;
+use crate::el::*;
 
 pub use rune_text::Direction;
 pub(crate) use rune_text::Flow;

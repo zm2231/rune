@@ -10,6 +10,11 @@ use crate::el::{Outline, RadialGradient, Shadow};
 use crate::shape::Shape;
 use crate::text::Icon;
 
+mod backdrop;
+pub(super) mod builders;
+pub(crate) mod effect;
+mod live_colors;
+
 /// Rarely set visual extras shared behind `Cold<VisualCold>` so common boxes and text pay 8 bytes.
 #[doc(hidden)]
 #[derive(Clone, Debug)]
@@ -72,7 +77,7 @@ pub struct VisualCold {
     /// Opt-in image context menu (`El::image_menu`).
     pub(crate) image_menu: Option<Rc<crate::ImageMenu>>,
     /// An effect slot (`El::effect`).
-    pub(crate) effect: Option<crate::el::effect::EffectSlot>,
+    pub(crate) effect: Option<crate::el::visual::effect::EffectSlot>,
     /// Backdrop blur standard deviation in points (`El::backdrop_blur`); 0 is off.
     pub(crate) backdrop_blur: f32,
     /// The hover track's enter and exit curves (default: snappy spring both ways).

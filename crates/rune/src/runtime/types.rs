@@ -67,7 +67,7 @@ pub(crate) struct NodeCold {
     /// `El::help_open`.
     pub(super) help_open: bool,
     /// `El::data`.
-    pub(super) data: Vec<crate::el::data::ElData>,
+    pub(super) data: Vec<crate::el::handlers::data::ElData>,
     #[cfg(debug_assertions)]
     pub(super) scroll_source: Option<&'static std::panic::Location<'static>>,
 }

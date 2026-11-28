@@ -27,7 +27,7 @@ struct ListPlan {
     mounted_rows: HashMap<String, (usize, usize)>,
     focused: Option<usize>,
     pinned: Vec<usize>,
-    rows: Rc<crate::el::virtual_rows::RowSource>,
+    rows: Rc<crate::el::virtual_list::rows::RowSource>,
     list_group: Option<String>,
     inert: bool,
     selection_off: bool,
@@ -162,7 +162,7 @@ fn move_slice(
 }
 
 fn build_indexed_row(
-    rows: &crate::el::virtual_rows::RowSource,
+    rows: &crate::el::virtual_list::rows::RowSource,
     state: crate::states::StatesRef<'_>,
     path: &str,
     key: &str,

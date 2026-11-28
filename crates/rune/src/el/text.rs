@@ -3,6 +3,15 @@
 
 use super::*;
 
+mod highlight_texts;
+pub(super) mod input;
+mod isolates;
+mod paragraphs;
+pub(super) mod pills;
+pub(super) mod selection_scope;
+pub(super) mod selection_style;
+pub(super) mod spec;
+
 impl El {
     /// Keeps this text's height its lines' own, unrounded (22.4 points for a line at a 22.4
     /// line height, 24.375 device pixels for a 19.5 point line at 1.25x), as a browser lays out
@@ -40,7 +49,7 @@ impl El {
             if redacted {
                 t.replace_content(content);
                 if let Some(mut src) = t.source.take() {
-                    text_spec::wipe_string(&mut src.text);
+                    spec::wipe_string(&mut src.text);
                 }
             } else {
                 t.content = content;
@@ -50,7 +59,7 @@ impl El {
             t.spans.clear();
             if let Some(cold) = t.cold.get_mut_if_some() {
                 if redacted {
-                    text_spec::wipe_links(&mut cold.links);
+                    spec::wipe_links(&mut cold.links);
                 } else {
                     cold.links.clear();
                 }
@@ -89,7 +98,7 @@ impl El {
             inp.decorations = spans;
             self.sync_input_rich();
         } else if let Some(t) = &mut self.text {
-            t.spans = crate::el::pills::with_pill_colors(&spans, &t.cold.pills);
+            t.spans = crate::el::text::pills::with_pill_colors(&spans, &t.cold.pills);
         }
         self
     }
@@ -569,7 +578,7 @@ impl El {
     /// still streaming in, whose last lines would move as each word arrives.
     pub fn wrap_greedy(mut self) -> Self {
         if let Some(t) = &mut self.text {
-            t.flags.set(crate::el::text_spec::TextFlags::GREEDY, true);
+            t.flags.set(crate::el::text::spec::TextFlags::GREEDY, true);
         }
         self
     }
@@ -896,13 +905,13 @@ impl El {
             t.selectable = on;
             if on && self.handlers.cursor.is_none() {
                 self.handlers.cursor = Some(Cursor::Text);
-                t.flags.set(crate::el::text_spec::TextFlags::SELECTABLE_CURSOR, true);
+                t.flags.set(crate::el::text::spec::TextFlags::SELECTABLE_CURSOR, true);
             } else if !on
-                && t.flags.has(crate::el::text_spec::TextFlags::SELECTABLE_CURSOR)
+                && t.flags.has(crate::el::text::spec::TextFlags::SELECTABLE_CURSOR)
                 && self.handlers.cursor == Some(Cursor::Text)
             {
                 self.handlers.cursor = None;
-                t.flags.set(crate::el::text_spec::TextFlags::SELECTABLE_CURSOR, false);
+                t.flags.set(crate::el::text::spec::TextFlags::SELECTABLE_CURSOR, false);
             }
         }
         self
@@ -1261,5 +1270,4 @@ impl El {
 }
 
 #[cfg(test)]
-#[path = "text_tests.rs"]
 mod tests;

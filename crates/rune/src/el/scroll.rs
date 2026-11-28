@@ -3,6 +3,8 @@
 
 use super::*;
 
+pub(super) mod sticky;
+
 impl El {
     /// A vertical scroll viewport over its children.
     ///
@@ -445,5 +447,4 @@ pub(crate) type AtBottomFn = Rc<dyn Fn(crate::states::States<'_>, bool) -> bool>
 pub(crate) type VisibleRowsFn = Rc<dyn Fn(crate::states::States<'_>, std::ops::Range<usize>) -> bool>;
 
 #[cfg(test)]
-#[path = "scroll_tests.rs"]
 mod tests;

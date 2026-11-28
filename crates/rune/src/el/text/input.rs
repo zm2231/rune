@@ -1,6 +1,6 @@
 //! Text-field construction, security and editing callbacks.
 
-use super::*;
+use crate::el::*;
 
 /// A text field bound to a [`TextEdit`] in app state.
 #[derive(Clone)]

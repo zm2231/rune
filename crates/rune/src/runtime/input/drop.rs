@@ -3,7 +3,7 @@
 //! `El::on_drop_rejected_hover`, `El::on_drop_hover_within` and `El::on_drop_move_within`.
 use super::*;
 use crate::el::{DropHoverFn, PointerEvent};
-use crate::el::drop::DropMoveFn;
+use crate::el::handlers::drop::DropMoveFn;
 use std::path::PathBuf;
 use std::rc::Rc;
 

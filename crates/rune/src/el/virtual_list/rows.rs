@@ -234,13 +234,13 @@ impl RowSource {
 }
 
 #[cfg(test)]
-#[path = "virtual_rows_tests.rs"]
+#[path = "rows_tests.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "virtual_rows_append_tests.rs"]
+#[path = "rows_append_tests.rs"]
 mod append_tests;
 
 #[cfg(test)]
-#[path = "virtual_rows_overscan_tests.rs"]
+#[path = "rows_overscan_tests.rs"]
 mod overscan_tests;

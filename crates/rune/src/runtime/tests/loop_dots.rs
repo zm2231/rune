@@ -143,3 +143,23 @@ fn an_ambient_period_paces_a_loop_until_input_steers_it() {
     }
     assert!((interval(&host) - 1.0 / 30.0).abs() < 1e-6, "steps past the steered window pace again: {}", interval(&host));
 }
+
+#[test]
+fn a_one_hertz_ambient_period_still_steps_the_loop_without_a_paint() {
+    let (mut framed, mut stepped) = (Host::new(Spin::default()), Host::new(Spin::default()));
+    for host in [&mut framed, &mut stepped] {
+        host.rt.core_mut().set_ambient_period(Some(std::time::Duration::from_secs(1)));
+        host.frame();
+    }
+    for second in 0..3 {
+        let paints = stepped.rt.paint_count();
+        for host in [&mut framed, &mut stepped] {
+            host.frames += 118;
+        }
+        framed.frame();
+        let patched = stepped.step().expect("a wake a whole ambient period later is due, not late");
+        assert_eq!(patched.len(), dots().len(), "second {second}");
+        assert_eq!(stepped.rt.paint_count(), paints, "second {second}: the step paints nothing");
+        assert_same(&stepped.dots(), &framed.dots(), &format!("second {second}"));
+    }
+}

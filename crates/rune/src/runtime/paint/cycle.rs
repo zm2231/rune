@@ -265,7 +265,7 @@ impl RuntimeCore {
             else if loops != self.motion.loops_len() { self.loop_refusal() }
             else if keep.mixed || keep.generation != self.commit.commits { "other motion or a commit" }
             else if (self.wall_start.is_none() && !virtual_check) || self.reduced_motion || self.time_scale <= 0.0 || !self.live_visible() || self.tracing() { "not live" }
-            else if dt < 0.0 || (!has_icons && dt > crate::frame::clock::MAX_GAP) { "late" }
+            else if dt < 0.0 || (!has_icons && dt > crate::frame::clock::MAX_GAP.max(2.0 * self.ambient.map_or(0.0, |a| self.motion.paced(f64::from(a), wall)))) { "late" }
             else if timer_due && poll.is_none() { "timer due" }
             else if self.commit.virtual_fill.resuming(wall) || self.commit.virtual_items.fill_resuming(wall) { "a list filling" }
             else if let Some(work) = self.waiting_work() { work }

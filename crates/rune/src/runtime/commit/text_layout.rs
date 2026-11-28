@@ -499,15 +499,25 @@ pub(in crate::runtime) fn compute_layout(taffy: &mut LayoutEngine, root: SlotId,
             {
                 lw = lw.min(a);
             }
-            Size {
-                width: known.width.unwrap_or(lw),
-                height: known.height.unwrap_or(match laid.single() {
-                    Some(l) => clamped_height(l, spec, scale),
-                    None => l.spec_height(spec.style, scale, spec.exact_lines),
-                } / scale),
+            let mut h = match laid.single() {
+                Some(l) => clamped_height(l, spec, scale),
+                None => l.spec_height(spec.style, scale, spec.exact_lines),
+            };
+            if let Some(inp) = nodes[i].input.as_deref() {
+                h = h.max(placeholder_height(text, inp, spec, scale, w.map(|w| w * scale + FIT_SLACK)));
             }
+            Size { width: known.width.unwrap_or(lw), height: known.height.unwrap_or(h / scale) }
         })
     });
+}
+
+fn placeholder_height(text: &mut TextSystem, inp: &crate::el::InputSpec, spec: &TextSpec, scale: f32, wrap: Option<f32>) -> f32 {
+    if inp.single_line || inp.placeholder.is_empty() || !inp.edit.text.is_empty() || inp.edit.preedit().is_some() {
+        return 0.0;
+    }
+    let style = inp.placeholder_style.unwrap_or(spec.style);
+    let l = text.layout_rich_with(&inp.placeholder, &[], style, scale, wrap, crate::text::RichLayoutOptions::new());
+    crate::text::spec_height(&l, style, scale, spec.exact_lines)
 }
 
 /// A measured picture's size (`flatten::Picture::Measured`): the side it's given, and the other

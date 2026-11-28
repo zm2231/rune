@@ -5,3 +5,4 @@ mod in_layer;
 mod lazy_pipelines;
 mod motion_blur;
 mod sim;
+mod warp_timing;

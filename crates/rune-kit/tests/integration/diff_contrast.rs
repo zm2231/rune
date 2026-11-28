@@ -21,6 +21,10 @@ fn view(s: &App, _: &mut Cx<App>) -> El {
     col().w_full().h_full().child(diff.build(s, &s.kit))
 }
 
+fn linear_syntax(kit: &Kit) -> SyntaxTheme {
+    rune::theme::with_blend(false, || SyntaxTheme::from_kit(kit))
+}
+
 fn code_on_tints(kit: &Kit, syntax: SyntaxTheme) -> Vec<Glyph> {
     let mut diff = DiffState::new(vec![FileDiff::from_texts("src/serve.rs", OLD, NEW)]);
     diff.set_mode(DiffMode::Unified);
@@ -41,8 +45,8 @@ fn code_on_change_tints_and_word_pills_reaches_text_contrast_in_every_built_in_t
     for (name, kit) in built_in_kits() {
         let floor = text_floor(&kit);
         for (theme_name, syntax) in [
-            ("kit syntax", SyntaxTheme::from_kit(&kit)),
-            ("pale amber numbers", SyntaxTheme::from_kit(&kit).with(Syntax::Number, pale_amber)),
+            ("kit syntax", linear_syntax(&kit)),
+            ("pale amber numbers", linear_syntax(&kit).with(Syntax::Number, pale_amber)),
         ] {
             let glyphs = code_on_tints(&kit, syntax);
             for g in &glyphs {
@@ -58,7 +62,7 @@ fn code_on_change_tints_and_word_pills_reaches_text_contrast_in_every_built_in_t
 fn increased_contrast_draws_change_tints_further_from_the_background() {
     let standing = |kit: &Kit| {
         let bg = kit.c.bg_base.to_oklab();
-        let fills: BTreeSet<[u32; 4]> = code_on_tints(kit, SyntaxTheme::from_kit(kit)).iter().map(|g| g.fill.map(f32::to_bits)).collect();
+        let fills: BTreeSet<[u32; 4]> = code_on_tints(kit, linear_syntax(kit)).iter().map(|g| g.fill.map(f32::to_bits)).collect();
         let distance = |f: &[u32; 4]| {
             let [r, g, b, _] = f.map(f32::from_bits);
             let lab = Color { r, g, b, a: 1.0 }.to_oklab();

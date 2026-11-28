@@ -72,7 +72,7 @@ pub fn legible_on_all(fg: Color, fills: &[Color], min: f32) -> Color {
     let Some(&first) = fills.first() else {
         return fg;
     };
-    if fills.iter().all(|&fill| contrast(fill.mix(fg.alpha(1.0), fg.a), fill) >= min) {
+    if lowest_contrast(fg, fills) >= min {
         return fg;
     }
     let start = opaque_over(fg, first);
@@ -88,7 +88,7 @@ pub fn legible_on_all(fg: Color, fills: &[Color], min: f32) -> Color {
     let lighter = open.iter().map(|w| w.0).filter(|&lo| lo > y).reduce(f32::min);
     let darker = darker.map(|hi| toward(start, Color::BLACK, |c| c.luminance() <= hi));
     let lighter = lighter.map(|lo| toward(start, Color::WHITE, |c| c.luminance() >= lo));
-    match (darker, lighter) {
+    let chosen = match (darker, lighter) {
         (Some(d), Some(l)) => {
             if distance(start, d) <= distance(start, l) {
                 d
@@ -98,7 +98,21 @@ pub fn legible_on_all(fg: Color, fills: &[Color], min: f32) -> Color {
         }
         (Some(c), None) | (None, Some(c)) => c,
         (None, None) => start,
+    };
+    if lowest_contrast(chosen, fills) >= min {
+        return chosen;
     }
+    (-256..=256).map(|step| scaled(chosen, 1.0 + step as f32 * f32::EPSILON / 4.0)).fold(chosen, |best, c| {
+        if lowest_contrast(c, fills) > lowest_contrast(best, fills) { c } else { best }
+    })
+}
+
+pub(crate) fn lowest_contrast(fg: Color, fills: &[Color]) -> f32 {
+    fills.iter().map(|&fill| contrast(opaque_over(fg, fill), fill)).fold(f32::INFINITY, f32::min)
+}
+
+fn scaled(c: Color, by: f32) -> Color {
+    Color { r: (c.r * by).min(1.0), g: (c.g * by).min(1.0), b: (c.b * by).min(1.0), a: c.a }
 }
 
 pub(crate) fn opaque_over(fg: Color, fill: Color) -> Color {

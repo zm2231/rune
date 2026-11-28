@@ -152,4 +152,15 @@ fn legible_on_all_finds_the_grey_between_black_and_white() {
     let [_, a, b, _] = red.to_oklab();
     let [_, ha, hb, _] = held.to_oklab();
     assert!((b.atan2(a) - hb.atan2(ha)).abs() < 0.1, "keeps its hue");
+    assert_eq!(rune_kit::legible_on_all(red, &[], 4.5), red);
+}
+
+#[test]
+fn text_reaches_the_floor_when_one_lightness_alone_meets_it_on_every_fill() {
+    let light = Color { r: 0.9625, g: 0.9625, b: 0.9625, a: 1.0 };
+    let held = rune_kit::legible_on_all(Color::BLACK, &[Color::BLACK, light], 4.5);
+    for fill in [Color::BLACK, light] {
+        let (a, b) = (held.luminance() + 0.05, fill.luminance() + 0.05);
+        assert!(a.max(b) / a.min(b) >= 4.5, "{held:?} on {fill:?}: {}", a.max(b) / a.min(b));
+    }
 }

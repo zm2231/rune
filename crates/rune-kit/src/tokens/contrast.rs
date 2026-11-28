@@ -2,7 +2,7 @@ use rune::Color;
 
 use super::kit::Kit;
 use super::kit::Palette;
-use super::legible::legible_on_all;
+use super::legible::{legible_on_all, lowest_contrast};
 use super::palette::{contrast, tint};
 use super::roles::{TextRole, TextRoles};
 
@@ -113,10 +113,7 @@ impl Kit {
             .into_iter()
             .chain(roles)
             .filter_map(|(name, color, floor)| {
-                let lowest = surfaces
-                    .iter()
-                    .map(|&fill| contrast(fill.mix(color.alpha(1.0), color.a), fill))
-                    .fold(f32::INFINITY, f32::min);
+                let lowest = lowest_contrast(color, &surfaces);
                 (lowest < floor).then_some(TextShortfall { name, color, lowest, floor })
             })
             .collect()

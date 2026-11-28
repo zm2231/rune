@@ -110,7 +110,7 @@ fn a_renderer_kept_across_a_text_scale_step_draws_what_a_fresh_one_draws() {
         let mut fresh = window(*path.last().unwrap());
         drawn(&mut fresh, 30 * (path.len() - 1), &gpu, &mut fresh_renderer, &fresh_target);
         let want = drawn(&mut fresh, 30, &gpu, &mut fresh_renderer, &fresh_target);
-        let diff = px.chunks_exact(4).zip(want.chunks_exact(4)).position(|(a, b)| a != b);
+        let diff = px.as_chunks::<4>().0.iter().zip(want.as_chunks::<4>().0).position(|(a, b)| a != b);
         assert!(diff.is_none(), "{path:?}: first differing pixel at {:?}", diff.map(|n| (n % 840, n / 840)));
     }
 }

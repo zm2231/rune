@@ -125,7 +125,7 @@ mod app_shape {
         cx.with_text_scale(&s.scale, |cx| {
             cx.with_kit(&s.theme, |cx| {
                 let k = cx.kit();
-                let side_state = s.sidebar.clone();
+                let side_state = s.sidebar;
                 memo_with_hash("frame", 7, move || {
                     let rows = (0..8).fold(col().key("sessions").w_full(), |c, i| {
                         c.child(
@@ -161,7 +161,7 @@ mod app_shape {
 }
 
 fn shape_paint(rt: &Runtime<app_shape::S>) -> Vec<String> {
-    rt.instances.iter().map(|i| format!("{:?} {:?} {:?} {:?} {:?} {:?}", i.rect, i.radii, i.border, i.params[0..3].to_vec(), i.clip, i.fade)).collect()
+    rt.instances.iter().map(|i| format!("{:?} {:?} {:?} {:?} {:?} {:?} {:?}", i.rect, i.radii, i.fill, i.border, i.params[0..3].to_vec(), i.clip, i.fade)).collect()
 }
 
 #[test]

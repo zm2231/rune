@@ -26,6 +26,7 @@ mod image_zoom;
 mod interactive;
 mod keybind;
 mod kit_metrics;
+mod legible_blend;
 mod legible_text;
 mod list_keyboard;
 mod menu_description;

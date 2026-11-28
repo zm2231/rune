@@ -3,9 +3,15 @@ use rune::Color;
 use super::palette::{contrast, mix_oklab};
 
 /// `fg` as text on `fill` reading at no less than `min`:1 (WCAG contrast; 4.5 for body text, 7
-/// under Increase Contrast). Translucent `fg` is laid over `fill` and comes back opaque. An
-/// opaque colour that already reads at `min` comes back as it is; one that falls short moves in
-/// OKLab toward black or white, whichever can reach `min`, keeping its hue as far as it can.
+/// under Increase Contrast). Translucent `fg` is laid over `fill` and comes back opaque, as the
+/// pixel the window draws: blended in sRGB encoding in a window that blends that way (the
+/// default on every backend, as a browser and Core Animation blend), and in linear light in one
+/// that sets `App::srgb_blend(false)` ([`rune::theme::blends_srgb`], the mode of the window or
+/// [`KitEnv`](crate::KitEnv) the view is built for). Text drawn straight onto a transparent part
+/// of a translucent window blends over whatever the OS composites behind it, which `fill` can't
+/// stand for. An opaque colour that already reads at `min` comes back as it is; one that falls
+/// short moves in OKLab toward black or white, whichever can reach `min`, keeping its hue as far
+/// as it can.
 /// When neither black nor white reaches `min` on `fill`, the one with more contrast comes back.
 ///
 /// ```
@@ -152,7 +158,7 @@ fn scaled(c: Color, by: f32) -> Color {
 }
 
 pub(crate) fn opaque_over(fg: Color, fill: Color) -> Color {
-    if fg.a < 1.0 { Color { a: 1.0, ..fill.mix(fg, fg.a) } } else { fg }
+    if fg.a < 1.0 { Color { a: 1.0, ..crate::over(fg, fill) } } else { fg }
 }
 
 fn windows(lum: &[f32], min: f32) -> Vec<(f32, f32)> {

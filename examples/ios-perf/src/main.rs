@@ -202,6 +202,7 @@ fn on_encoded(f: &FrameEncoded, started: &mut Option<std::sync::mpsc::Sender<()>
         if !r.first_encoded {
             r.first_encoded = true;
             trace::step("first_encoded", || format!("seq={}", f.seq()));
+            if let Some(target) = f.presents_at() { say_first_frame(probe::wall_of(target), "link_target", r.main_wall); }
         }
         if !r.driving { return; }
         r.seqs = Some(r.seqs.map_or((f.seq(), f.seq()), |(first, _)| (first, f.seq())));
@@ -233,6 +234,12 @@ fn on_presented(p: &FramePresented) {
     say(format!("PERF marks{marks}"));
 }
 
+fn gpu_mib() -> String {
+    #[cfg(target_os = "ios")]
+    if args().mode != Mode::Native { return format!(" gpu_allocated_mib={:.2}", uikit::gpu_allocated_mib()); }
+    String::new()
+}
+
 fn say_first_frame(at: SystemTime, source: &str, main_wall: Option<SystemTime>) {
     let main_ms = main_wall.and_then(probe::since_start_ms);
     say(format!("PERF first_frame_ms={} main_ms={} mode={:?} source={source}", ms(probe::since_start_ms(at)), ms(main_ms), args().mode).to_lowercase());
@@ -258,7 +265,7 @@ fn link_extra(hz: &[f64]) -> String {
 }
 
 fn finish() {
-    say(format!("PERF after_scroll_footprint_mib={:.2}", probe::footprint_mib()));
+    say(format!("PERF after_scroll_footprint_mib={:.2}{}", probe::footprint_mib(), gpu_mib()));
     trace::step("finish", || format!("exit={}", args().exit));
     if args().exit { std::process::exit(0); }
 }
@@ -329,7 +336,7 @@ fn start_drive(s: &mut State) {
 fn say_display() {
     let (max_fps, plist) = uikit::display();
     stats::set_max_fps(u32::try_from(max_fps).unwrap_or(120));
-    say(format!("PERF display max_fps={max_fps} disable_min_frame_duration={plist}"));
+    say(format!("PERF display max_fps={max_fps} disable_min_frame_duration={plist} reduce_motion={}", uikit::reduce_motion()));
 }
 
 fn on_ready() {
@@ -391,7 +398,7 @@ fn main() {
         trace::step("idle_wait", String::new);
         std::thread::sleep(Duration::from_secs_f64(args().idle));
         trace::step("idle_sample", String::new);
-        say(format!("PERF idle_footprint_mib={:.2} idle_s={}", probe::footprint_mib(), args().idle));
+        say(format!("PERF idle_footprint_mib={:.2} idle_s={}{}", probe::footprint_mib(), args().idle, gpu_mib()));
         if args().auto_scroll {
             trace::step("drive_asked", String::new);
             handle.update(|s, _| start_drive(s));

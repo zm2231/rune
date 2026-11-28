@@ -203,6 +203,7 @@ impl RuneView {
     /// screen's scale and hears the system's notifications. Out of one it hears only a memory
     /// warning.
     pub(super) fn moved_to_window(&self) {
+        crate::marks::mark("ios.view.window");
         // SAFETY: `UIView.window` is a nullable object, a window's screen is never nil and its
         // `nativeScale` is a `CGFloat`, the notification centre is a singleton, each selector
         // is a method of this class that takes the notification, and a notification's object

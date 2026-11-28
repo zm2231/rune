@@ -216,6 +216,31 @@ pub fn stop_link(link: &AnyObject) {
     let _: () = unsafe { msg_send![link, invalidate] };
 }
 
+#[link(name = "UIKit", kind = "framework")]
+unsafe extern "C" {
+    fn UIAccessibilityIsReduceMotionEnabled() -> bool;
+}
+
+#[link(name = "Metal", kind = "framework")]
+unsafe extern "C" {
+    fn MTLCreateSystemDefaultDevice() -> *mut AnyObject;
+}
+
+pub fn gpu_allocated_mib() -> f64 {
+    // SAFETY: `MTLCreateSystemDefaultDevice` answers a +1 `MTLDevice` or null, the device Rune
+    // draws with; `currentAllocatedSize` is an `NSUInteger` safe to read from any thread.
+    unsafe {
+        let Some(device) = Retained::from_raw(MTLCreateSystemDefaultDevice()) else { return f64::NAN };
+        let bytes: usize = msg_send![&*device, currentAllocatedSize];
+        bytes as f64 / (1024.0 * 1024.0)
+    }
+}
+
+pub fn reduce_motion() -> bool {
+    // SAFETY: a UIKit function that takes nothing and answers a `BOOL`, read on the main thread.
+    unsafe { UIAccessibilityIsReduceMotionEnabled() }
+}
+
 pub fn display() -> (isize, bool) {
     // SAFETY: `maximumFramesPerSecond` is an `NSInteger`; an Info.plist boolean is an `NSNumber`.
     unsafe {

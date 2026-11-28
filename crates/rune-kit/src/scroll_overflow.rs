@@ -2,8 +2,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::f32::consts::FRAC_PI_2;
 use std::rc::Rc;
+use std::time::Duration;
 
-use rune::{Anim, Color, Curve, El, Live, ScrollPos, ScrollSource, Spring, Tx, el, icon, row};
+use rune::{Anim, Color, Curve, Drag, El, Live, Phase, ScrollPos, ScrollSource, Spring, Tx, el, icon, row};
 
 use crate::Kit;
 
@@ -12,6 +13,8 @@ const WIDTH: f32 = 28.0;
 const GLYPH: f32 = 16.0;
 const FADE: Anim = Anim::new(Curve::Spring(Spring::new(0.15, 0.0)));
 const KEPT: usize = 128;
+const PAGE_DELAY: Duration = Duration::from_millis(400);
+const PAGE_EVERY: Duration = Duration::from_millis(250);
 
 struct Edges {
     pos: Cell<ScrollPos>,
@@ -76,6 +79,11 @@ fn hidden(at: ScrollPos) -> [f32; 2] {
 /// edge is the left one, or right to left ([`El::dir`]) the right one. The chevrons are pointer
 /// affordances, neither focusable nor in the accessibility tree: keyboard focus and screen
 /// readers reach what's past an edge themselves, and a focused element scrolls into view.
+/// Holding a chevron keeps paging, as a held scroll arrow does.
+///
+/// [`Self::reveal`] names the element the viewport keeps in view (a strip's selected tab): it
+/// scrolls into view when the viewport first lays out, as a tab bar opens on its selected tab,
+/// and again whenever the wrapper moves or resizes.
 ///
 /// Size the element it returns as the viewport would be sized: the viewport shrinks to fit in
 /// it and otherwise keeps its own size, so give it `.w_full()` to fill a wider wrapper. The
@@ -84,16 +92,24 @@ pub struct ScrollOverflow {
     key: String,
     viewport: El,
     fill: Option<Color>,
+    reveal: Option<String>,
 }
 
 impl ScrollOverflow {
     pub fn new(key: impl Into<String>, viewport: El) -> Self {
-        ScrollOverflow { key: key.into(), viewport, fill: None }
+        ScrollOverflow { key: key.into(), viewport, fill: None, reveal: None }
     }
 
     /// The colour behind the chevrons: the surface the viewport sits on.
     pub fn fill(mut self, fill: Color) -> Self {
         self.fill = Some(fill);
+        self
+    }
+
+    /// The element inside the viewport, by key, to bring into view when the viewport first lays
+    /// out and when the wrapper moves or resizes; `None` keeps none.
+    pub fn reveal(mut self, key: Option<String>) -> Self {
+        self.reveal = key;
         self
     }
 
@@ -114,13 +130,23 @@ impl ScrollOverflow {
             let edges = kept(area);
             patch.on_scroll_offset(move |at| edges.follow(at));
         });
-        row().key(format!("{key}-overflow")).items_stretch().child(viewport).bind_path(move |area, patch| {
+        let scope = Rc::new(RefCell::new(String::new()));
+        let found = scope.clone();
+        let wrapper = row().key(format!("{key}-overflow")).items_stretch().child(viewport).bind_path(move |area, patch| {
             let edges = kept(area);
             let target = rune::child_path(area, &key);
+            found.borrow_mut().clone_from(&target);
             for end in [false, true] {
                 patch.child(chevron(&look, &edges, end, target.clone()));
             }
-        })
+        });
+        match self.reveal {
+            Some(reveal) => wrapper.on_layout_any(move |_, tx| {
+                tx.live_only();
+                tx.scroll_into_view_in(scope.borrow().clone(), reveal.clone());
+            }),
+            None => wrapper,
+        }
     }
 }
 
@@ -156,7 +182,14 @@ fn chevron(look: &Look, edges: &Rc<Edges>, end: bool, target: String) -> El {
     };
     let glyph = icon(look.chevron, look.glyph).rotate(if end { -FRAC_PI_2 } else { FRAC_PI_2 }).mirror_in_rtl().color(look.ink).group_color(look.hover);
     let edges = edges.clone();
-    backing.child(glyph).on_press_tx_any(move |tx| edges.page(end, w, &target, tx))
+    backing.child(glyph).on_drag_any(move |d: &mut Drag, tx: &mut Tx| {
+        tx.live_only();
+        let again = tx.drag_repeat();
+        if d.phase == Phase::Down || again {
+            edges.page(end, w, &target, tx);
+            tx.drag_repeat_after(if again { PAGE_EVERY } else { PAGE_DELAY });
+        }
+    })
 }
 
 #[cfg(test)]

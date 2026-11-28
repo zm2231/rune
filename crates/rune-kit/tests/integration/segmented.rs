@@ -298,9 +298,13 @@ fn an_inset_leaves_a_groove_around_the_pill_and_a_gap_between_segments() {
 const SECTIONS: [&str; 6] = ["General", "Appearance", "Notifications", "Privacy", "Accounts", "Advanced"];
 
 fn sections(tabs: &bool, _: &mut Cx<bool>) -> El {
+    section_tabs(*tabs, 0)
+}
+
+fn section_tabs(tabs: bool, selected: usize) -> El {
     let k = Kit::neutral(true).with_text_scale(2.5);
-    let control = SegmentedControl::new(&SECTIONS, Some(0)).fit();
-    let control = if *tabs { control.as_tabs() } else { control };
+    let control = SegmentedControl::new(&SECTIONS, Some(selected)).fit();
+    let control = if tabs { control.as_tabs() } else { control };
     rune::col().size(600.0, 200.0).child(rune::col().w(400.0).child(control.build(&k)))
 }
 
@@ -332,4 +336,12 @@ fn a_radio_group_keeps_its_segments_unscrolled() {
     let mut rt = Runtime::new(false, sections, (600.0, 200.0), Env::new(true, 1.0));
     rt.frame(0.0);
     assert!(rt.elements().into_iter().all(|e| e.key.as_deref() != Some("segments")));
+}
+
+#[test]
+fn tabs_open_on_the_selected_one_past_the_edge() {
+    let mut rt = Runtime::new(true, |_: &bool, _: &mut Cx<bool>| section_tabs(true, 5), (600.0, 200.0), Env::new(true, 1.0));
+    for _ in 0..3 { rt.frame(1.0 / 60.0); }
+    let (tab, viewport) = (at(&rt, "segment5"), at(&rt, "segments"));
+    assert!(tab[0] >= viewport[0] - 0.5 && tab[0] + tab[2] <= viewport[0] + viewport[2] + 0.5, "the selected tab {tab:?} shows in {viewport:?}");
 }

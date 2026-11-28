@@ -380,7 +380,7 @@ impl<'a> TabStripCore<'a> {
             let list = row().key(st.list_key.clone()).role("tablist").label(self.label).focus_group().gap(gap).center_y().children(tabs);
             let scroll = row().key(st.scroll_key.clone()).h(st.row_height).shrink().min_w(0.0).scroll_x().scroll_fade(ScrollFade::strength(fade).linear().full_at(0.1)).child(list);
             let scroll = auto_scroll::watch(scroll, &st.auto);
-            let scroll = if self.chevrons { ScrollOverflow::new(st.scroll_key.clone(), scroll).fill(st.base).build(k).h(st.row_height).shrink().min_w(0.0) } else { scroll };
+            let scroll = if self.chevrons { ScrollOverflow::new(st.scroll_key.clone(), scroll).fill(st.base).reveal(active.map(|id| format!("t-{id}"))).build(k).h(st.row_height).shrink().min_w(0.0) } else { scroll };
             // It grows into the space it's given, so its width is what the tabs may share.
             row().key(self.key).grow(1.0).shrink().min_w(0.0).gap(gap).center_y().child(scroll).children(self.trailing)
         };

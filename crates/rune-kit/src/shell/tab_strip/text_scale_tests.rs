@@ -135,3 +135,11 @@ fn end_reaches_the_last_tab_at_large_text_and_scrolls_it_into_view() {
     let (last, viewport) = (rect(&rt, "t-t7"), rect(&rt, "strip-scroll"));
     assert!(last[0] >= viewport[0] - 0.5 && last[0] + last[2] <= viewport[0] + viewport[2] + 0.5, "the last tab {last:?} shows in {viewport:?}");
 }
+
+#[test]
+fn a_strip_opens_on_its_selected_tab_when_that_tab_starts_past_the_edge() {
+    let mut rt = lay_out_strip(Strip { tabs: 8, selected: "t7".into(), ..Strip::new(2.5, 400.0) });
+    rt.frame(1.0 / 60.0);
+    let (last, viewport) = (rect(&rt, "t-t7"), rect(&rt, "strip-scroll"));
+    assert!(last[0] >= viewport[0] - 0.5 && last[0] + last[2] <= viewport[0] + viewport[2] + 0.5, "the selected tab {last:?} shows in {viewport:?}");
+}

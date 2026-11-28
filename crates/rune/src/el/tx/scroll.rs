@@ -59,7 +59,9 @@ impl Tx {
     }
     /// [`Tx::scroll_into_view`] for row `key` inside the element keyed `scope` only, scrolling
     /// only viewports at or inside `scope` so lists that key their rows alike (a file tree and a
-    /// diff, both by path) don't reveal each other's rows and outer viewports stay put.
+    /// diff, both by path) don't reveal each other's rows and outer viewports stay put. `scope`
+    /// may also be an element's full tree path, which tells apart components that key their
+    /// viewports alike.
     pub fn scroll_into_view_in(&mut self, scope: impl Into<String>, key: impl Into<String>) {
         self.scroll_to.push(crate::runtime::ScrollReveal::into_view(Some(scope.into()), key.into()));
     }

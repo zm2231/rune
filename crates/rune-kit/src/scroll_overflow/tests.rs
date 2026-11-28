@@ -6,6 +6,7 @@ use super::*;
 struct App {
     pressed: Vec<usize>,
     rtl: bool,
+    reveal: Option<usize>,
 }
 
 fn view(s: &App, cx: &mut rune::Cx<App>) -> El {
@@ -13,8 +14,8 @@ fn view(s: &App, cx: &mut rune::Cx<App>) -> El {
     let k = Kit::neutral(true);
     let items = (0..10).map(|i| el().key(format!("item{i}")).role("button").w(100.0).h(28.0).on_press(move |s: &mut App| s.pressed.push(i)));
     let viewport = row().scroll_x().child(row().key("list").children(items));
-    let strip = ScrollOverflow::new("strip", viewport).build(&k).w(300.0).h(28.0);
-    col().size(300.0, 100.0).child(if s.rtl { strip.dir(rune::Direction::Rtl) } else { strip })
+    let strip = ScrollOverflow::new("strip", viewport).reveal(s.reveal.map(|i| format!("item{i}"))).build(&k).w_full().h(28.0);
+    col().child(if s.rtl { strip.dir(rune::Direction::Rtl) } else { strip })
 }
 
 fn app(reduced_motion: bool) -> Runtime<App> {
@@ -129,4 +130,46 @@ fn right_to_left_the_start_chevron_stands_at_the_right() {
     assert!((start[0] + start[2] - (strip[0] + strip[2])).abs() < 0.5 && (end[0] - strip[0]).abs() < 0.5, "start {start:?} end {end:?} in {strip:?}");
     assert_eq!(opacity(&rt, "overflow-start"), 0.0, "nothing is past the start");
     assert!(opacity(&rt, "overflow-end") > 0.99, "the end, on the left, has content past it");
+}
+
+#[test]
+fn holding_a_chevron_keeps_paging_until_let_go() {
+    let mut rt = app(false);
+    let r = rect(&rt, "overflow-end");
+    let (x, y) = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    rt.pointer_move(x, y);
+    rt.pointer_down(x, y);
+    for _ in 0..60 {
+        rt.frame(1.0 / 60.0);
+    }
+    let page = 300.0 - 2.0 * WIDTH;
+    assert!(scrolled(&rt) > 2.0 * page - 0.5, "a second held for paging goes on past two pages: {}", scrolled(&rt));
+    rt.pointer_up(x, y);
+    settle(&mut rt);
+    let landed = scrolled(&rt);
+    settle(&mut rt);
+    assert_eq!(scrolled(&rt), landed, "letting go stops it");
+    assert!(rt.state.pressed.is_empty());
+}
+
+#[test]
+fn a_view_opens_on_the_element_it_reveals() {
+    let rt = mount(App { reveal: Some(8), ..App::default() }, false);
+    let (item, strip) = (rect(&rt, "item8"), rect(&rt, "strip"));
+    assert!(item[0] >= strip[0] - 0.5 && item[0] + item[2] <= strip[0] + strip[2] + 0.5, "item8 {item:?} shows in {strip:?}");
+    assert!(opacity(&rt, "overflow-start") > 0.99, "and the start chevron says what's before it");
+}
+
+#[test]
+fn a_window_grown_to_fit_drops_the_chevrons_and_the_scroll() {
+    let mut rt = app(false);
+    press(&mut rt, "overflow-end");
+    settle(&mut rt);
+    assert!(scrolled(&rt) > 0.0);
+    rt.set_viewport((1200.0, 100.0), 1.0);
+    settle(&mut rt);
+    assert_eq!(scrolled(&rt), 0.0, "everything fits, so nothing is scrolled");
+    assert_eq!((opacity(&rt, "overflow-start"), opacity(&rt, "overflow-end")), (0.0, 0.0), "and no chevron shows");
+    press(&mut rt, "item9");
+    assert_eq!(rt.state.pressed, [9], "the hidden chevron leaves the last item its presses");
 }

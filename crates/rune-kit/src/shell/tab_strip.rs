@@ -406,7 +406,10 @@ impl<S: 'static> TabBind for TabHandlers<S> {
 ///
 /// Horizontal tabs are 28 points tall with 6 between them, share the strip from 224 points
 /// down to 28 (at text scale 1; above it, down to [`Self::title_floor`]) and then scroll, with a
-/// chevron over each edge that has tabs past it ([`Self::overflow_chevrons`]); a 1.5 point separator stands between neighbours that aren't
+/// chevron over each edge that has tabs past it ([`Self::overflow_chevrons`]). A strip opens on
+/// its active tab, scrolled into view however far along it stands. At the title floor a long
+/// title still fades out at its end: the floor keeps a few words readable, not the whole title.
+/// A 1.5 point separator stands between neighbours that aren't
 /// active or hovered. In a `.window_drag()` titlebar the gaps between tabs, the bands above and
 /// below them and the space after the trailing action move the window, as only the tabs and
 /// buttons take presses. Vertical tabs fill the row with 3 points between them, each reaching
@@ -463,8 +466,9 @@ impl<'a, S: 'static> TabStrip<'a, S> {
     /// [`TabOverflow::VERTICAL_DEFAULT`]).
     pub fn overflow(mut self, policy: TabOverflow) -> Self { self.core.overflow = Some(policy); self }
     /// The narrowest a horizontal tab gets at large text, in points at text scale 1 (default
-    /// [`TabOverflow::TITLE_FLOOR`]; see [`TabOverflow::with_title_floor`]). `None` lets tabs
-    /// shrink to the policy's `min_width` at every text size.
+    /// [`TabOverflow::TITLE_FLOOR`]; see [`TabOverflow::with_title_floor`]). A title longer than
+    /// the floor leaves room for fades out at its end. `None` lets tabs shrink to the policy's
+    /// `min_width` at every text size.
     pub fn title_floor(mut self, points: Option<f32>) -> Self { self.core.title_floor = points; self }
     /// Whether a horizontal strip shows a chevron over each edge with tabs past it, which pages
     /// the strip that way when pressed ([`ScrollOverflow`](crate::ScrollOverflow)); default on.

@@ -275,8 +275,8 @@ impl SegmentedControl {
     /// chevron over each edge that has segments past it ([`ScrollOverflow`](crate::ScrollOverflow)),
     /// rather than spill past it. On by default for [`Self::as_tabs`] with [`Self::fit`], so a
     /// tab row at large text scrolls instead of running out of its pane; a radio group never
-    /// scrolls unless asked, as native segmented controls don't. The scroll viewport is keyed
-    /// `segments`.
+    /// scrolls unless asked, as native segmented controls don't. The control opens on its
+    /// selected segment, scrolled into view. The scroll viewport is keyed `segments`.
     pub fn scrolls(mut self, on: bool) -> Self {
         self.scrolls = Some(on);
         self
@@ -295,8 +295,9 @@ impl SegmentedControl {
             return groove(self.control(k), k);
         }
         let radius = k.segmented_metrics().radius;
+        let reveal = self.selected.map(|i| format!("segment{i}"));
         let viewport = row().scroll_x().clip_rounded(radius).child(self.control(k));
-        groove(ScrollOverflow::new("segments", viewport).fill(k.c.layer_01).build(k).shrink().min_w(0.0).clip_rounded(radius), k)
+        groove(ScrollOverflow::new("segments", viewport).fill(k.c.layer_01).reveal(reveal).build(k).shrink().min_w(0.0).clip_rounded(radius), k)
     }
 
     fn control(self, k: &Kit) -> El {

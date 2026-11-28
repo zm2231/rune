@@ -216,6 +216,16 @@ pub fn stop_link(link: &AnyObject) {
     let _: () = unsafe { msg_send![link, invalidate] };
 }
 
+#[link(name = "UIKit", kind = "framework")]
+unsafe extern "C" {
+    fn UIAccessibilityIsReduceMotionEnabled() -> bool;
+}
+
+pub fn reduce_motion() -> bool {
+    // SAFETY: a UIKit function that takes nothing and answers a `BOOL`, read on the main thread.
+    unsafe { UIAccessibilityIsReduceMotionEnabled() }
+}
+
 pub fn display() -> (isize, bool) {
     // SAFETY: `maximumFramesPerSecond` is an `NSInteger`; an Info.plist boolean is an `NSNumber`.
     unsafe {

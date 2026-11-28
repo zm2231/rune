@@ -329,7 +329,7 @@ fn start_drive(s: &mut State) {
 fn say_display() {
     let (max_fps, plist) = uikit::display();
     stats::set_max_fps(u32::try_from(max_fps).unwrap_or(120));
-    say(format!("PERF display max_fps={max_fps} disable_min_frame_duration={plist}"));
+    say(format!("PERF display max_fps={max_fps} disable_min_frame_duration={plist} reduce_motion={}", uikit::reduce_motion()));
 }
 
 fn on_ready() {

@@ -5,4 +5,4 @@
   at once; opening, the spring carries the row to the window's edge and the rest lands there, so
   a 2,000 pt group shuts as fast as a 200 pt one. Its feather rides the spring and ends with it.
   Implies `El::arrives_whole`. The growth-stack builders (`growth`, `streaming`,
-  `arrives_whole`) moved from `el.rs` to `el/growth.rs`.
+  `arrives_whole`) moved from `el.rs` to `el/layout/growth.rs`.

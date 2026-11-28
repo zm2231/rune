@@ -116,6 +116,7 @@ fn frame_step_buttons_keys_and_readout_work_and_stay_accessible() {
 }
 
 #[test]
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), ignore = "video playback isn't supported on this platform yet, so no key can start a clip")]
 fn hardware_media_keys_toggle_playback_only_when_opted_in() {
     let clip = Player::file(concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/rune/tests/fixtures/rgbw.mp4"));
     clip.set_muted(true);

@@ -1146,9 +1146,12 @@ impl<S: 'static> App<S> {
     /// tails wake on their timer at `reveal_fps` while any concurrent unsteered animation (such as
     /// timeline growth or scroll following a stream) paces at `ambient_fps`.
     ///
-    /// Enforced on macOS `DisplayLink` windows today; Windows, Linux, web, overlays, and
-    /// headless runs ignore it (matching [`App::on_frame_presented`] and
-    /// [`App::exclude_from_capture`]).
+    /// **Where it applies.** Loops that wake on their own steps (a spinner's dots, a
+    /// [`Cycle`](crate::Cycle) or a rotation with `fps`) wake at most `fps` times a second on
+    /// every desktop window, macOS, Windows and Linux, from 600 ms after the last input. On
+    /// macOS `DisplayLink` windows the cap also paces display-rate motion, with the steered
+    /// runs above; Windows and Linux draw display-rate motion uncapped. The web, overlays and
+    /// headless runs ignore it.
     ///
     /// ```no_run
     /// use rune::{App, AppSpec, text};

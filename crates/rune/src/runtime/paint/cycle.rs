@@ -492,7 +492,7 @@ impl RuntimeCore {
             // differ from what it holds.
             patched.push(s.at as u32);
         }
-        if let (Some((due, phase)), Some(dt)) = (self.motion.loop_wake(), self.ambient.map(f64::from)) && self.clock + WAKE_SLACK >= due {
+        if let (Some((due, phase)), Some(dt)) = (self.motion.loop_wake(), self.ambient.map(|a| self.motion.paced(f64::from(a), self.clock))) && self.clock + WAKE_SLACK >= due {
             self.motion.set_loop_wake((self.clock + dt, phase + (self.clock + dt - due) * f64::from(self.time_scale)));
         }
     }

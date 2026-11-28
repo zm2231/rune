@@ -1,0 +1,1 @@
+- **`App::ambient_fps` paces stepped loops on every desktop window.** A spinner's dots, a stepped `Cycle` or a rotation with `fps` wake at most `ambient_fps` times a second on Windows and Linux as on macOS, from 600 ms after the last input reaches the window; input lifts the cap at once. Display-rate motion is still paced on macOS only.

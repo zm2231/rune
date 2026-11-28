@@ -33,6 +33,15 @@ impl RuntimeCore {
         self.motion.set_reveal_fps(fps);
     }
 
+    pub(crate) fn set_ambient_period(&mut self, period: Option<std::time::Duration>) {
+        self.motion.set_ambient_period(period);
+    }
+
+    pub(crate) fn note_steering_input(&mut self) {
+        let now = self.now_clock();
+        self.motion.note_steering_input(now);
+    }
+
     /// Wake-rate cap (Hz) used when `El::reveal` word fades are the only active animation, or
     /// `0.0` for uncapped display rate.
     #[inline]

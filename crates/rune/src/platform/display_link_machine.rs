@@ -13,9 +13,7 @@ use crate::time::Instant;
 /// 120 Hz.
 pub(crate) const LOW_POWER_FRAME: Duration = Duration::from_nanos(1_000_000_000 / 60);
 
-/// How long after the last live user input motion stays at full display rate even if no
-/// unbroken run of presents started immediately after that input.
-pub(crate) const STEERED_IDLE: Duration = Duration::from_millis(600);
+pub(crate) use crate::frame::clock::STEERED_IDLE;
 /// Maximum gap between the last input and the first present of a steered run, and between
 /// consecutive presents in that run.
 pub(crate) const STEERED_RUN_GAP: Duration = Duration::from_millis(100);

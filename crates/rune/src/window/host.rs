@@ -291,7 +291,6 @@ impl Host {
         );
         #[cfg(target_os = "macos")]
         let on_frame_presented = app.on_frame_presented.take();
-        #[cfg(target_os = "macos")]
         let ambient_period = app.ambient_period;
         let macos_window = std::mem::take(&mut app.macos_window);
         let windows_window = std::mem::take(&mut app.windows_window);
@@ -324,6 +323,7 @@ impl Host {
         if let Some(attach) = attach_playground { attach(&mut rt, playground, &spec, args.playground.clone(), args.variant.clone(), true); }
         rt.configure(runtime);
         rt.core_mut().set_window_key(&key);
+        rt.core_mut().set_ambient_period(ambient_period);
         if let Some(seed) = layout_seed.clone() { rt.core_mut().offer_layout_seed(seed); }
         shared.core.connect(prepared.waker.clone());
         if let Some(member) = &member { member.connect(prepared.waker.clone()); }
@@ -598,6 +598,7 @@ impl Host {
     /// Notes live user input reaching this window so an opt-in `App::ambient_fps` cap lifts
     /// immediately on the next display refresh.
     pub(in crate::window) fn note_input(&mut self, at: Instant) {
+        self.app.rt_mut().note_steering_input();
         #[cfg(target_os = "macos")]
         if let Some(w) = &mut self.win
             && let Some(pacing) = &mut w.native.pacing

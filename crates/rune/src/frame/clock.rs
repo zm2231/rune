@@ -24,6 +24,10 @@ use crate::runtime::{AppDriver, RuntimeCore};
 /// spent idle.
 pub(crate) const RESUME_STEP: f64 = 1.0 / 120.0;
 
+/// How long after the last live user input motion stays at full display rate even if no
+/// unbroken run of presents started immediately after that input.
+pub(crate) const STEERED_IDLE: std::time::Duration = std::time::Duration::from_millis(600);
+
 /// The longest gap, in seconds, charged to running motion. A hitch someone sees lasts a few
 /// frames; 250 ms is 30 frames at 120 Hz, past any hitch worth keeping time through and still
 /// shorter than a typical spring takes to settle. A longer gap means the host was suspended

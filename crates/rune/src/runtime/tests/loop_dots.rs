@@ -125,3 +125,21 @@ fn a_dots_loop_wakes_at_its_cycles_rate_and_rests_under_reduced_motion() {
     let host = Host::new(Spin { reduced: true, ..Spin::default() });
     assert_eq!(host.rt.wake_deadline(), None, "reduced motion holds each dot still");
 }
+
+#[test]
+fn an_ambient_period_paces_a_loop_until_input_steers_it() {
+    let mut host = Host::new(Spin::default());
+    host.rt.core_mut().set_ambient_period(Some(std::time::Duration::from_secs_f64(1.0 / 30.0)));
+    let interval = |host: &Host| host.rt.core().motion_wake_deadline().unwrap() - host.rt.clock();
+    host.frame();
+    assert!((interval(&host) - 1.0 / 30.0).abs() < 1e-6, "an unsteered loop wakes at the ambient rate: {}", interval(&host));
+    host.rt.core_mut().note_steering_input();
+    host.frame();
+    assert!((interval(&host) - 1.0 / 60.0).abs() < 1e-6, "input lifts the cap: {}", interval(&host));
+    assert!(host.step().is_ok());
+    assert!((interval(&host) - 1.0 / 60.0).abs() < 1e-6, "a step while steered keeps the loop's rate: {}", interval(&host));
+    for _ in 0..40 {
+        assert!(host.step().is_ok(), "only the loop is due");
+    }
+    assert!((interval(&host) - 1.0 / 30.0).abs() < 1e-6, "steps past the steered window pace again: {}", interval(&host));
+}

@@ -28,6 +28,8 @@ impl Cause {
 
 /// Of a slow frame that worked `work_ms`, using `cpu_ms` of the thread's CPU when measured, the
 /// watchdog's samples, and whether the machine is `overloaded` (load average at its core count).
+/// `cpu_ms` is the OS's thread CPU clock: on a Linux guest without steal accounting it counts time
+/// the hypervisor took the core away, so a frame stalled on a busy host can come out `Cpu`.
 pub(crate) fn cause(work_ms: f64, slow_ms: f64, cpu_ms: Option<f64>, stacks: Option<&Stacks>, overloaded: bool) -> Cause {
     if work_ms <= slow_ms { return Cause::Queued; }
     let sampled = stacks.filter(|s| s.taken > 0);

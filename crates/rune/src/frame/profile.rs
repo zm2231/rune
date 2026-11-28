@@ -227,6 +227,8 @@ impl ThreadCpuMark {
 /// This thread's CPU clock now, raw; `None` where there is none or it can't be read. On Windows it
 /// also starts measuring the cycles' rate (no wait).
 pub fn thread_cpu_mark() -> Option<ThreadCpuMark> {
+    #[cfg(test)]
+    if let Some(ns) = test_cpu::now() { return Some(ThreadCpuMark(ns)); }
     #[cfg(windows)]
     super::host_clock::cycles_per_ns();
     #[cfg(any(unix, windows))]
@@ -238,6 +240,8 @@ pub fn thread_cpu_mark() -> Option<ThreadCpuMark> {
 /// Nanoseconds of this thread's CPU time since `mark` (taken on this thread); `None` until the
 /// rate is known (Windows, the first 20 ms) or when the clock can't be read.
 pub fn thread_cpu_since(mark: ThreadCpuMark) -> Option<f64> {
+    #[cfg(test)]
+    if let Some(ns) = test_cpu::now() { return Some(ns.saturating_sub(mark.0) as f64); }
     #[cfg(any(unix, windows))]
     return super::host_clock::thread_cpu().and_then(|now| super::host_clock::cpu_ns(now.saturating_sub(mark.0)));
     #[cfg(not(any(unix, windows)))]
@@ -300,3 +304,31 @@ pub(crate) fn install_text_hook() {
 #[cfg(all(test, feature = "frame-profile"))]
 #[path = "profile_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+pub(crate) mod test_cpu {
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    thread_local! {
+        static NOW_NS: Cell<Option<u64>> = const { Cell::new(None) };
+    }
+
+    pub(super) fn now() -> Option<u64> { NOW_NS.get() }
+
+    #[must_use]
+    pub(crate) fn install() -> Installed {
+        NOW_NS.set(Some(0));
+        Installed(())
+    }
+
+    pub(crate) fn spend(spent: Duration) {
+        NOW_NS.set(NOW_NS.get().map(|ns| ns + spent.as_nanos() as u64));
+    }
+
+    pub(crate) struct Installed(());
+
+    impl Drop for Installed {
+        fn drop(&mut self) { NOW_NS.set(None); }
+    }
+}

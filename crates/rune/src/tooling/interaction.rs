@@ -18,7 +18,9 @@
 //! names the functions its time went to (`rune.hot`, `rune.stack`), and a slow frame no input
 //! caused (a timer, a poll, an animation) goes as `ui.frame`. Each slow one says whose time it
 //! took (`cause`): a frame that waited for a core on a busy machine is `scheduler_wait`, not the
-//! app's.
+//! app's. On a Linux guest whose kernel doesn't account steal time (no
+//! `CONFIG_PARAVIRT_TIME_ACCOUNTING`), the thread's CPU clock includes time the hypervisor ran
+//! other guests, so a frame stalled on a busy host can read as `cpu`.
 
 mod cause;
 #[cfg(not(target_arch = "wasm32"))]

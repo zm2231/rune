@@ -4,6 +4,7 @@ use std::time::Duration;
 use super::names::normalize;
 use super::rollup::Rollup;
 use super::*;
+use crate::frame::profile::test_cpu;
 use crate::{Cx, El, Env, Ime, Runtime, TextEdit, TextStyle, col, el, text_input};
 
 thread_local! {
@@ -91,7 +92,10 @@ fn view(s: &App, _: &mut Cx<App>) -> El {
     col().key("settings").w_full().h_full()
         .child(el().key("save-42").size(80.0, 30.0).on_press(|s: &mut App| {
             s.presses += 1;
-            if s.slow { std::thread::sleep(Duration::from_millis(25)); }
+            if s.slow {
+                std::thread::sleep(Duration::from_millis(25));
+                test_cpu::spend(HANDLER_CPU);
+            }
         }))
         .child(text_input(&s.note, TextStyle::new(14.0, 400.0)).single_line().key("note").size(200.0, 24.0).on_edit(|s: &mut App| &mut s.note))
         .child(el().key("count").child(crate::text(format!("{}", s.presses))))
@@ -99,6 +103,7 @@ fn view(s: &App, _: &mut Cx<App>) -> El {
 }
 
 const NEVER_SLOW_MS: f64 = 60_000.0;
+const HANDLER_CPU: Duration = Duration::from_millis(2);
 
 fn runtime(slow: bool) -> Runtime<App> {
     force_on();
@@ -143,11 +148,13 @@ fn a_slow_click_names_its_page_and_control() {
 
 #[test]
 fn a_slow_click_says_whose_time_it_took() {
+    let _cpu = test_cpu::install();
     let mut rt = runtime(true);
+    test_cpu::spend(Duration::from_millis(40));
     click(&mut rt, "save-42");
     let s = SENT.take().pop().unwrap();
     assert_eq!(s.cause, Cause::Blocked, "the handler slept: little CPU on an idle machine");
-    assert!(s.cpu_ms.is_some_and(|cpu| cpu < 25.0), "the frame's CPU, without the sleep: {:?}", s.cpu_ms);
+    assert_eq!(s.cpu_ms, Some(HANDLER_CPU.as_secs_f64() * 1000.0), "the frame's CPU, without the sleep or the CPU spent before the click");
     let rolls = rt.interaction_tracker().rollup.take();
     assert_eq!((rolls[0].slow, rolls[0].contended), (1, 0));
 

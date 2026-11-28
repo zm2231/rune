@@ -11,16 +11,18 @@ enum ScrollXChild {
 #[derive(Clone, Copy, Default)]
 pub(super) struct ViewportChild {
     sx: Option<ScrollXChild>,
+    sy: bool,
     safe_self: bool,
 }
 
 impl ViewportChild {
     pub(super) fn restyles(self, style: &CompactStyle) -> bool {
-        self.sx.is_some() || (self.safe_self && style.align_self().is_some_and(|a| safe_items(a) != a))
+        self.sx.is_some() || (self.sy && follows_viewport_height(style)) || (self.safe_self && style.align_self().is_some_and(|a| safe_items(a) != a))
     }
 
     pub(super) fn apply(self, style: &mut CompactStyle) {
         if let Some(sx) = self.sx { apply_scroll_x_child(style, sx); }
+        if self.sy && follows_viewport_height(style) { content_height(style); }
         if self.safe_self && let Some(a) = style.align_self() { style.set_align_self(Some(safe_items(a))); }
     }
 }
@@ -31,7 +33,17 @@ pub(super) fn viewport(style: &mut CompactStyle, axes: ScrollAxes, children: usi
     let (main, cross) = if row { (axes.x(), axes.y()) } else { (axes.y(), axes.x()) };
     if main { style.set_justify_content(safe_content(style.justify_content())); }
     if cross { style.set_align_items(safe_items(style.align_items())); }
-    ViewportChild { sx, safe_self: cross }
+    ViewportChild { sx, sy: axes.y(), safe_self: cross }
+}
+
+fn follows_viewport_height(style: &CompactStyle) -> bool {
+    style.size().height == Dimension::percent(1.0) && !matches!(style.position(), Position::Absolute | Position::Fixed)
+}
+
+fn content_height(style: &mut CompactStyle) {
+    style.set_height(Dimension::max_content());
+    if style.min_size().height.is_auto() { style.set_min_height(percent(1.0)); }
+    style.set_flex_shrink(0.0);
 }
 
 fn safe_items(a: AlignItems) -> AlignItems {

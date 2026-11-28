@@ -96,6 +96,52 @@ fn a_full_width_centring_column_in_a_horizontal_viewport_centres_its_tabs_or_sta
     assert_near(rect(&wide, "tabs")[0], 0.0, "overflowing tabs start at the left edge");
 }
 
+#[test]
+fn a_full_height_child_of_a_vertical_viewport_grows_to_content_taller_than_the_viewport() {
+    fn view(h: &f32, _: &mut Cx<f32>) -> El {
+        let page = |k: &'static str, m: &'static str| col().key(k).w(80.0).h_full().justify_center().child(el().key(m).w(50.0).h(*h));
+        let column = col().key("column").w_full().h(100.0).scroll(vertical()).child(page("column-page", "a"));
+        let rows = row().key("rows").w_full().h(100.0).scroll(vertical()).child(page("rows-page", "b"));
+        let both = col().key("both").w_full().h(100.0).scroll_xy().child(page("both-page", "c"));
+        col().w_full().child(column).child(rows).child(both)
+    }
+    let fits = laid_out(40.0, view, 300.0);
+    for (viewport, page, content) in [("column", "column-page", "a"), ("rows", "rows-page", "b"), ("both", "both-page", "c")] {
+        let top = rect(&fits, viewport)[1];
+        assert_near(rect(&fits, page)[3] - rect(&fits, page)[1], 100.0, "the page fills the viewport while its content fits");
+        assert_near(rect(&fits, content)[1], top + 30.0, "content that fits is centred in the viewport");
+    }
+    let tall = laid_out(300.0, view, 300.0);
+    for (viewport, page, content) in [("column", "column-page", "a"), ("rows", "rows-page", "b"), ("both", "both-page", "c")] {
+        let top = rect(&tall, viewport)[1];
+        assert_near(rect(&tall, page)[3] - rect(&tall, page)[1], 300.0, "the page grows to its content");
+        assert_near(rect(&tall, content)[1], top, "taller content starts at the viewport's top");
+    }
+}
+
+#[test]
+fn a_full_height_box_inside_a_vertical_viewports_full_height_child_grows_with_it() {
+    fn view(h: &f32, _: &mut Cx<f32>) -> El {
+        let empty = col().key("empty").w_full().h_full().justify_center().child(el().key("message").w(50.0).h(*h));
+        col().w_full().child(col().key("list").w_full().h(100.0).scroll(vertical()).child(col().w_full().h_full().child(empty)))
+    }
+    let fits = laid_out(40.0, view, 300.0);
+    assert_near(rect(&fits, "message")[1], 30.0, "an empty state that fits sits centred in the viewport");
+    let tall = laid_out(300.0, view, 300.0);
+    assert_near(rect(&tall, "message")[1], 0.0, "a taller empty state starts at the top");
+    assert_near(rect(&tall, "empty")[3], 300.0, "and its box grows to it");
+}
+
+#[test]
+fn an_absolute_full_height_child_of_a_vertical_viewport_keeps_the_viewports_height() {
+    fn view(_: &(), _: &mut Cx<()>) -> El {
+        let scrim = el().key("scrim").absolute(0.0, 0.0).w_full().h_full().child(el().w(50.0).h(300.0));
+        col().w_full().child(col().w_full().h(100.0).scroll(vertical()).child(el().w(50.0).h(300.0)).child(scrim))
+    }
+    let rt = laid_out((), view, 300.0);
+    assert_near(rect(&rt, "scrim")[3] - rect(&rt, "scrim")[1], 100.0, "an absolute h_full box stays the viewport's height");
+}
+
 #[cfg(debug_assertions)]
 fn warns<S: 'static>(state: S, view: fn(&S, &mut Cx<S>) -> El) -> bool {
     let _warnings = super::super::layout_diagnostics::scope();
@@ -105,12 +151,15 @@ fn warns<S: 'static>(state: S, view: fn(&S, &mut Cx<S>) -> El) -> bool {
 
 #[cfg(debug_assertions)]
 #[test]
-fn content_a_fixed_or_viewport_sized_box_pushes_before_the_start_warns_in_debug_builds() {
+fn content_a_fixed_size_box_pushes_before_the_start_warns_in_debug_builds() {
     fn fixed_width(_: &(), _: &mut Cx<()>) -> El {
         col().w_full().child(row().w_full().scroll_x().child(col().w(300.0).items_center().child(el().key("wide").w(500.0).h(20.0))))
     }
     fn viewport_height(_: &(), _: &mut Cx<()>) -> El {
         col().w_full().child(col().w_full().h(100.0).scroll(vertical()).child(col().w_full().h_full().justify_center().child(el().h(300.0))))
+    }
+    fn fixed_height(_: &(), _: &mut Cx<()>) -> El {
+        col().w_full().child(col().w_full().h(100.0).scroll(vertical()).child(col().w_full().h(100.0).justify_center().child(el().h(300.0))))
     }
     fn clipped_crop(_: &(), _: &mut Cx<()>) -> El {
         let thumb = row().size(40.0, 40.0).center().clip_rounded(4.0).child(el().size(80.0, 80.0));
@@ -128,7 +177,8 @@ fn content_a_fixed_or_viewport_sized_box_pushes_before_the_start_warns_in_debug_
     assert!(warns((), fixed_width), "a fixed-width box centring wider content");
     assert!(warns((), right_to_left_fixed_width), "the same right to left");
     assert!(!warns((), right_to_left), "right-to-left content overflowing to the left");
-    assert!(warns((), viewport_height), "a viewport-tall box centring taller content");
+    assert!(warns((), fixed_height), "a fixed-height box centring taller content");
+    assert!(!warns((), viewport_height), "a full-height box grows to the content it centres");
     assert!(!warns((), clipped_crop), "a centred crop inside a clipped box");
     assert!(!warns((), safe), "a viewport's own centring is safe");
 }

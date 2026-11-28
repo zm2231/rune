@@ -18,10 +18,14 @@ impl El {
     /// `safe center` is: content that fits sits centred (`justify_center`) or at the end
     /// (`justify_end`, a short chat sitting at the bottom), and content taller than the
     /// viewport starts at its top, where scrolling reaches all of it. A child's own
-    /// `self_center` or `self_end` across a scrolled axis behaves the same. A box inside the
-    /// content with a fixed size or `.h_full()` still centres as it is told and can push what
-    /// it centres above the viewport's top; debug builds warn once per call site when content
-    /// starts before its leading edge.
+    /// `self_center` or `self_end` across a scrolled axis behaves the same.
+    ///
+    /// A `.h_full()` child is at least as tall as the viewport and grows with taller content
+    /// (CSS `height: max-content; min-height: 100%`), so `.h_full().center()` content sits
+    /// centred while it fits and starts at the top once it doesn't. An absolutely positioned
+    /// `.h_full()` child stays the viewport's height. A box inside the content with a fixed
+    /// size still centres as it is told and can push what it centres above the viewport's
+    /// top; debug builds warn once per call site when content starts before its leading edge.
     #[cfg_attr(debug_assertions, track_caller)]
     #[inline]
     pub fn scroll(mut self, spec: ScrollSpec) -> Self {
@@ -81,7 +85,7 @@ impl El {
     /// the axis it starts on, as AppKit's predominant-axis scrolling does. It keeps the
     /// `stick_bottom` of an earlier [`El::scroll`] call. Needs a bounded height like
     /// [`El::scroll`]. The content takes its natural width as in [`El::scroll_x`] and its
-    /// natural height. Centring on it is safe on both axes, as on [`El::scroll`].
+    /// natural height; `.h_full()` content grows past the viewport as on [`El::scroll`]. Centring on it is safe on both axes, as on [`El::scroll`].
     #[cfg_attr(debug_assertions, track_caller)]
     #[inline]
     pub fn scroll_xy(mut self) -> Self {

@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use crate::el::ElFlags;
 
 use super::*;
+use super::viewport::{self, ScrollXChild, apply_scroll_x_child};
 
 /// An `aspect_fit` element's first layout: it takes the free space along its parent's main axis
 /// and the whole cross side, within its max sizes, as the room its fitted box must fit. Its
@@ -136,32 +137,6 @@ fn resolve_path_and_id(
     *memo_ctx.next_id += 1;
     memo_ctx.path_ids.insert(path.clone(), id);
     (path, id)
-}
-
-#[derive(Clone, Copy)]
-enum ScrollXChild {
-    Single { vertical: bool },
-    Many { vertical: bool },
-}
-
-fn apply_scroll_x_child(style: &mut CompactStyle, sx: ScrollXChild) {
-    match sx {
-        ScrollXChild::Single { vertical } => unwrapped_width(style, vertical),
-        ScrollXChild::Many { vertical } => {
-            let w = style.size().width;
-            let w_full = w == Dimension::percent(1.0);
-            if w.is_auto() || w_full {
-                style.set_width(Dimension::max_content());
-                if w_full && style.min_size().width.is_auto() {
-                    style.set_min_width(percent(1.0));
-                }
-            }
-            style.set_flex_shrink(0.0);
-            if vertical && style.align_self().is_none() {
-                style.set_align_self(Some(AlignSelf::FLEX_START));
-            }
-        }
-    }
 }
 
 fn prepare_text(
@@ -772,19 +747,9 @@ fn flatten_node<E: FlattenEl>(
     let child_sx = {
         let r = el.as_el();
         let c = &*r.cold;
-        if c.scroll.is_some() && c.scroll_axes.x() {
-            let scroll_axes = c.scroll_axes;
-            let total_children = r.memo.as_ref().map_or(0, |b| b.children.children.len()) + r.children.len();
-            if total_children == 1 {
-                el.style_mut(&mut s).set_flex_direction(FlexDirection::Row);
-                Some(ScrollXChild::Single { vertical: scroll_axes.y() })
-            } else {
-                if !scroll_axes.y() { el.style_mut(&mut s).set_flex_direction(FlexDirection::Row); }
-                Some(ScrollXChild::Many { vertical: scroll_axes.y() })
-            }
-        } else {
-            None
-        }
+        let total_children = r.memo.as_ref().map_or(0, |b| b.children.children.len()) + r.children.len();
+        let (scrolls, axes) = (c.scroll.is_some(), c.scroll_axes);
+        if scrolls { viewport::scroll_x_viewport(el.style_mut(&mut s), axes, total_children) } else { None }
     };
     let el_r = el.as_el();
     let role = el_r.role_name();

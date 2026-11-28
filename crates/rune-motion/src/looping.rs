@@ -1,11 +1,14 @@
 //! Clock-driven periodic and finite motion. Visibility is a renderer decision, not a second clock.
-use crate::{Animated, Beat, Cycle, Easing, Sequence, PropClass, Spring};
+use crate::{Animated, Beat, Cycle, CycleDot, Easing, Sequence, PropClass, Spring};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LoopKind {
     Opacity { low: f32, high: f32 },
     /// Piecewise-linear, wall-clock opacity sampled at display rate or a fixed cadence.
     OpacityCycle(Cycle),
+    /// Dots drawn by the element itself, each fading on its own wall-clock [`Cycle`]: one
+    /// element in place of a child per dot. It draws its fill colour as the dots, not as a box.
+    Dots(&'static [CycleDot]),
     /// Finite opacity/scale/translate/rotate choreography; holds its last pose at rest.
     Sequence(Sequence),
     /// A turn once a period, clockwise. `fps` steps it at a fixed cadence
@@ -31,6 +34,12 @@ impl LoopSpec {
     }
     pub fn cycle(cycle: Cycle) -> Self {
         Self { period: f64::from(cycle.period), delay: 0.0, kind: LoopKind::OpacityCycle(cycle) }
+    }
+    /// An element that draws `dots` in its fill colour, each on its own cycle. The dots wake
+    /// the window at the fastest of their cycles' rates.
+    pub fn dots(dots: &'static [CycleDot]) -> Self {
+        let period = dots.iter().map(|d| d.cycle.period).fold(0.0f32, f32::max);
+        Self { period: f64::from(if period > 0.0 { period } else { 1.0 }), delay: 0.0, kind: LoopKind::Dots(dots) }
     }
     pub const fn opacity(period: f64, delay: f64, low: f32, high: f32) -> Self {
         Self { period, delay, kind: LoopKind::Opacity { low, high } }
@@ -249,6 +258,7 @@ impl LoopTrack {
     pub fn frame_interval(&self) -> Option<f64> {
         match self.spec.kind {
             LoopKind::OpacityCycle(c) => c.frame_interval(),
+            LoopKind::Dots(dots) => dots.iter().map(|d| d.cycle.frame_interval()).try_fold(f64::INFINITY, |m, i| i.map(|i| m.min(i))).filter(|m| m.is_finite()),
             LoopKind::Rotation { fps } => crate::cycle::step_interval(fps),
             _ => None,
         }
@@ -266,7 +276,7 @@ impl LoopTrack {
                 (wall / self.spec.period).rem_euclid(1.0) as f32 * core::f32::consts::TAU
             }
             LoopKind::Rotation { .. } => phase * core::f32::consts::TAU,
-            LoopKind::Slide { .. } | LoopKind::SlideEased { .. } => 1.0,
+            LoopKind::Slide { .. } | LoopKind::SlideEased { .. } | LoopKind::Dots(_) => 1.0,
             LoopKind::Opacity { low, high } => {
                 let triangle = if phase < 0.5 { phase * 2.0 } else { (1.0 - phase) * 2.0 };
                 low + (high - low) * Easing::EASE_IN_OUT.eval(triangle) * self.amplitude.sample(now)

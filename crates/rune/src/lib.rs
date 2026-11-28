@@ -123,6 +123,7 @@ pub use el::AutoComplete;
 pub use el::Cursor;
 pub use el::CursorImage;
 pub use el::Cycle;
+pub use el::CycleDot;
 pub use el::Direction;
 pub use el::Drag;
 pub use el::El;

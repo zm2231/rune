@@ -71,6 +71,7 @@ pub use curve::Curve;
 pub use curve::Decay;
 pub use curve::Velocity;
 pub use cycle::Cycle;
+pub use cycle::CycleDot;
 pub use easing::CubicBezier;
 pub use easing::Easing;
 pub use easing::StepPosition;

@@ -36,3 +36,14 @@ impl Cycle {
         v0 + (v1 - v0) * (x - x0) / (x1 - x0).max(1e-6)
     }
 }
+
+/// One dot of a [`LoopKind::Dots`](crate::LoopKind::Dots) loop: a rounded rect placed in
+/// fractions of its element's box (x, y, width, height), its corner radius a fraction of its
+/// shorter side, and the opacity curve it follows. A dot that never changes takes a one-stop
+/// cycle.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CycleDot {
+    pub rect: [f32; 4],
+    pub radius: f32,
+    pub cycle: Cycle,
+}

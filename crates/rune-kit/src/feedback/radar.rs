@@ -5,12 +5,14 @@
 
 use std::sync::OnceLock;
 
-use rune::Cycle;
+use rune::{Cycle, CycleDot};
 
 const SPAN: i32 = 5;
 /// Dot side and pitch, in a 16-unit box.
 const SIZE: f64 = 2.0;
 const PITCH: f64 = 3.0;
+const BOX: f64 = 16.0;
+const RADIUS: f32 = 0.24;
 /// Seconds per loop at 1×.
 pub(super) const LOOP: f32 = 1.8;
 /// Resting opacity of an unlit dot.
@@ -20,24 +22,14 @@ const FADE: [f64; 13] = [1.0, 0.987, 0.934, 0.812, 0.599, 0.384, 0.238, 0.143, 0
 /// Wakes while only spinners move: a display's rate, as the compositor runs Desktop's.
 const FPS: f32 = 60.0;
 
-/// One dot in the 16-unit box: where it sits, its opacity under reduced motion (the sweep frozen
-/// a fifth of the way in) and, unless it's the steady centre, its loop.
-pub(super) struct Dot {
-    pub x: f32,
-    pub y: f32,
-    pub size: f32,
-    pub still: f32,
-    pub cycle: Option<Cycle>,
-}
-
-pub(super) fn dots() -> &'static [Dot] {
-    static DOTS: OnceLock<Vec<Dot>> = OnceLock::new();
+pub(super) fn dots() -> &'static [CycleDot] {
+    static DOTS: OnceLock<Vec<CycleDot>> = OnceLock::new();
     DOTS.get_or_init(layout)
 }
 
 type Stops = Vec<(f64, f64)>;
 
-fn layout() -> Vec<Dot> {
+fn layout() -> Vec<CycleDot> {
     let trail = trail();
     let cells: Vec<(i32, i32)> = (0..SPAN * SPAN).map(|i| (i % SPAN - (SPAN - 1) / 2, i / SPAN - (SPAN - 1) / 2)).collect();
     let steady = |c: (i32, i32)| c == (0, 0);
@@ -78,15 +70,16 @@ fn layout() -> Vec<Dot> {
             // The steady centre glows like the fresh trail, so the head stays the brightest dot.
             let level = if steady(c) { trail[0].1 } else { level_at(&shapes[shape], frac(0.22 - at) * 100.0) };
             let still = round(DIM + (1.0 - DIM) * level) as f32;
-            Dot {
-                x: round(8.0 + f64::from(c.0) * PITCH - SIZE / 2.0) as f32,
-                y: round(8.0 + f64::from(c.1) * PITCH - SIZE / 2.0) as f32,
-                size: SIZE as f32,
-                still,
-                // Every dot shares one loop on the wall clock, so all spinners on screen stay in
-                // phase (`syncSpinPhase`); a dot lights `at` of the way around.
-                cycle: key.map(|_| Cycle { period: LOOP, phase: round(at) as f32, stops: frames[shape], still, fps: FPS }),
-            }
+            let x = round(8.0 + f64::from(c.0) * PITCH - SIZE / 2.0) as f32;
+            let y = round(8.0 + f64::from(c.1) * PITCH - SIZE / 2.0) as f32;
+            let side = (SIZE / BOX) as f32;
+            // Every dot shares one loop on the wall clock, so all spinners on screen stay in
+            // phase (`syncSpinPhase`); a dot lights `at` of the way around.
+            let cycle = match key {
+                Some(_) => Cycle { period: LOOP, phase: round(at) as f32, stops: frames[shape], still, fps: FPS },
+                None => Cycle { period: LOOP, phase: 0.0, stops: Box::leak(Box::new([(0.0, still)])), still, fps: FPS },
+            };
+            CycleDot { rect: [x / BOX as f32, y / BOX as f32, side, side], radius: RADIUS, cycle }
         })
         .collect()
 }

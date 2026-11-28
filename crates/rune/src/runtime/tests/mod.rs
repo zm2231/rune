@@ -23,6 +23,7 @@ mod layout_hover;
 mod layout_reads;
 mod layout_rows;
 mod line_fills;
+mod loop_dots;
 mod loop_sleep;
 mod loop_turn;
 mod matched_in_place;

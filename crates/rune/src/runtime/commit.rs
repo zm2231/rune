@@ -20,6 +20,7 @@ mod prune_tests;
 pub(super) mod relayout;
 pub(super) mod remount;
 pub(super) mod text_layout;
+pub(super) mod viewport;
 pub(super) mod watch;
 pub(super) mod why;
 
@@ -616,21 +617,4 @@ impl RuntimeCore {
     pub(super) fn discard_measured(&mut self, measured: Measured) {
         self.commit.discard_measured(&mut self.tree.nodes, &mut self.tree.spare_nodes, measured);
     }
-}
-
-/// A horizontal scroll viewport's content without a width of its own, or one filling the
-/// viewport (`w_full`), takes its natural one, unwrapped, and at least the viewport's (CSS
-/// `width: max-content; min-width: 100%`). Any other width stays as set, narrower than the
-/// viewport too. The content never shrinks. The viewport lays it out as a row, where taffy
-/// measures a max-content main size unwrapped (a column measures its height wrapped at the
-/// viewport's width). With vertical scrolling too it keeps its natural height instead of
-/// stretching to the viewport's.
-pub(super) fn unwrapped_width(style: &mut CompactStyle, vertical: bool) {
-    let w = style.size().width;
-    if w.is_auto() || w == Dimension::percent(1.0) {
-        style.set_width(Dimension::max_content());
-        if style.min_size().width.is_auto() { style.set_min_width(percent(1.0)); }
-    }
-    style.set_flex_shrink(0.0);
-    if vertical && style.align_self().is_none() { style.set_align_self(Some(AlignSelf::FLEX_START)); }
 }

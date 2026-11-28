@@ -341,7 +341,10 @@ impl Measurement<'_> {
         }
         self.stats.layout_nodes = nodes.len();
         #[cfg(debug_assertions)]
-        layout_diagnostics::collapsed_scrolls(&taffy, &nodes);
+        {
+            layout_diagnostics::collapsed_scrolls(&taffy, &nodes);
+            layout_diagnostics::unreachable_content(&taffy, &nodes);
+        }
 
         self.place(&taffy, &mut nodes);
         let mut above_fit_styles = Vec::new();

@@ -11,6 +11,15 @@ impl El {
     /// ancestor and the viewport needs `.min_h(0.0)`, or it grows to fit the content and the
     /// viewport never overflows. Debug builds warn once per call site when a viewport inside a
     /// `.grow()` container resolves to 0 pt tall while its content is not.
+    ///
+    /// Centring or end-aligning on a viewport is safe along each axis it scrolls, as CSS
+    /// `safe center` is: content that fits sits centred (`justify_center`) or at the end
+    /// (`justify_end`, a short chat sitting at the bottom), and content taller than the
+    /// viewport starts at its top, where scrolling reaches all of it. A child's own
+    /// `self_center` or `self_end` across a scrolled axis behaves the same. A box inside the
+    /// content with a fixed size or `.h_full()` still centres as it is told and can push what
+    /// it centres above the viewport's top; debug builds warn once per call site when content
+    /// starts before its leading edge.
     #[cfg_attr(debug_assertions, track_caller)]
     #[inline]
     pub fn scroll(mut self, spec: ScrollSpec) -> Self {
@@ -49,6 +58,10 @@ impl El {
     /// nor do Page Up and Page Down. [`El::scroll_edge_fade`] fades its left and right edges,
     /// and [`Tx::scroll_into_view`] scrolls it to show a row. `El::virtualize` and
     /// `El::virtual_rows` window vertical lists only.
+    ///
+    /// Its `justify_center` (or `center`) is safe as on [`El::scroll`]: content narrower than
+    /// the viewport sits centred, and wider content starts at its left edge (its right edge
+    /// right to left) instead of half of it sitting out of reach.
     #[cfg_attr(debug_assertions, track_caller)]
     #[inline]
     pub fn scroll_x(mut self) -> Self {
@@ -66,7 +79,7 @@ impl El {
     /// the axis it starts on, as AppKit's predominant-axis scrolling does. It keeps the
     /// `stick_bottom` of an earlier [`El::scroll`] call. Needs a bounded height like
     /// [`El::scroll`]. The content takes its natural width as in [`El::scroll_x`] and its
-    /// natural height.
+    /// natural height. Centring on it is safe on both axes, as on [`El::scroll`].
     #[cfg_attr(debug_assertions, track_caller)]
     #[inline]
     pub fn scroll_xy(mut self) -> Self {

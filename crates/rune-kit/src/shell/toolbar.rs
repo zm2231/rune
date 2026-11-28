@@ -9,10 +9,18 @@ use crate::Kit;
 pub const TOOLBAR_HEIGHT: f32 = 48.0;
 /// Padding at the band's ends.
 const PAD: f32 = 12.0;
+const LEADING_MIN: f32 = 96.0;
+const TRAILING_FADE: f32 = 16.0;
+const RING_ROOM: f32 = 4.0;
+const TRAILING_SHRINK: f32 = 1e-4;
 
 /// A toolbar: `Toolbar::new().leading(..).title("..").trailing(..).build(&kit)`. The band is a
 /// window drag region (buttons in it keep their presses) and its centre slot sits in the
 /// middle of the band whatever the sides hold.
+///
+/// When the sides don't fit, a long leading title truncates down to 96 points (at the kit's
+/// [`Kit::text_scale`]) and keeps that much; past it the trailing slot gives way: items in it
+/// that shrink do, and the rest run off its leading edge under a fade.
 pub struct Toolbar {
     leading: Vec<El>,
     center: Option<El>,
@@ -79,12 +87,26 @@ impl Toolbar {
                 row().key("center").pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).center().px(96.0).child(center),
             );
         }
+        let leading_min = if self.leading.is_empty() { 0.0 } else { k.text_size(LEADING_MIN) };
         band = band
-            // The leading slot gives way first, so a long title truncates instead of pushing the
-            // trailing controls off the band.
-            .child(row().key("leading").gap(4.0).center_y().shrink().min_w(0.0).children(self.leading))
+            .child(row().key("leading").gap(4.0).center_y().shrink().min_w(leading_min).children(self.leading))
             .child(row().key("spacer").grow(1.0).a11y_hidden())
-            .child(row().key("trailing").gap(4.0).center_y().children(self.trailing));
+            .child(
+                row()
+                    .key("trailing")
+                    .gap(4.0)
+                    .center_y()
+                    .justify_end()
+                    .self_stretch()
+                    .shrink_by(TRAILING_SHRINK)
+                    .min_w(0.0)
+                    .pl(TRAILING_FADE + RING_ROOM)
+                    .ml(-TRAILING_FADE - RING_ROOM)
+                    .pr(RING_ROOM)
+                    .mr(-RING_ROOM)
+                    .clip_fade_linear(TRAILING_FADE, 0.0, 0.0, 0.0)
+                    .children(self.trailing),
+            );
         if let Some(m) = self.material {
             band = band.system_material(m).fill(c.bg_base);
         }
@@ -97,3 +119,7 @@ impl Default for Toolbar {
         Self::new()
     }
 }
+
+#[cfg(test)]
+#[path = "toolbar_tests.rs"]
+mod tests;

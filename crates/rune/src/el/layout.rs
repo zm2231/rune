@@ -675,7 +675,36 @@ impl El {
     /// while preserving any explicit [`El::min_w`] and leaving `min-height` untouched.
     #[inline]
     pub fn set_shrink(&mut self) -> &mut Self {
-        self.style.set_flex_shrink(1.0);
+        self.set_shrink_by(1.0)
+    }
+    /// [`El::shrink`] with `flex-shrink: factor`. Siblings give way in proportion to their
+    /// factor times their size, so a sibling with a tiny factor keeps its size until the others
+    /// reach their minimums.
+    ///
+    /// ```
+    /// use rune::{Env, Runtime, el, row};
+    ///
+    /// let mut rt = Runtime::new(
+    ///     (),
+    ///     |_: &(), _| row().w(300.0)
+    ///         .child(el().key("title").w(300.0).min_w(80.0).shrink())
+    ///         .child(el().key("tools").w(100.0).shrink_by(0.001)),
+    ///     (300.0, 100.0),
+    ///     Env::new(true, 1.0),
+    /// );
+    /// rt.frame(0.0);
+    /// assert!((rt.presented("title").unwrap().0[2] - 200.0).abs() < 0.5);
+    /// assert!((rt.presented("tools").unwrap().0[2] - 100.0).abs() < 0.5);
+    /// ```
+    #[inline]
+    pub fn shrink_by(mut self, factor: f32) -> Self {
+        self.set_shrink_by(factor);
+        self
+    }
+    /// [`El::shrink_by`] in place.
+    #[inline]
+    pub fn set_shrink_by(&mut self, factor: f32) -> &mut Self {
+        self.style.set_flex_shrink(factor.max(0.0));
         if self.style.min_size().width.is_auto() {
             self.style.set_min_width(length(0.0));
         }

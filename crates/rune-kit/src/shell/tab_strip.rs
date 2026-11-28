@@ -15,6 +15,8 @@ mod layout;
 mod tab;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod text_scale_tests;
 
 pub use drag::{TabDragMode, TabDragPhase, TabDragState, TearOutSpec};
 
@@ -31,7 +33,8 @@ pub enum TabOrientation {
     Vertical,
 }
 
-/// How much a horizontal tab shows, from its width ([`TabOverflow::density_for`]).
+/// How much a horizontal tab shows, from its width ([`TabOverflow::density_for`]). The widths
+/// below are at text scale 1 and scale with the kit's [`Kit::text_scale`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TabDensity {
     /// Over 64 points: avatar, title fading at its end, and the status or close slot.
@@ -44,7 +47,9 @@ pub enum TabDensity {
     IconOnly,
 }
 
-/// What a strip does when its tabs don't fit.
+/// What a strip does when its tabs don't fit. Its tab widths are points at text scale 1: a
+/// strip scales them by its kit's [`Kit::text_scale`] ([`TabOverflow::at_text_scale`]), so a
+/// title shows as much of itself at every text size.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TabOverflow {
     /// Horizontal tabs share the strip equally, from `max_width` down to `min_width`, then the
@@ -64,6 +69,17 @@ impl TabOverflow {
     /// OpenCode's side tabs: 16 point fades.
     pub const VERTICAL_DEFAULT: Self = Self::Scroll { fade_width: 16.0 };
 
+    /// This policy with its tab widths `scale` times as wide; its fades stay.
+    pub fn at_text_scale(self, scale: f32) -> Self {
+        match self {
+            Self::ShrinkThenScroll { min_width, max_width, pinned_width, fade_width } => {
+                Self::ShrinkThenScroll { min_width: min_width * scale, max_width: max_width * scale, pinned_width: pinned_width * scale, fade_width }
+            }
+            Self::Scroll { .. } => self,
+        }
+    }
+
+    /// The density of a tab `width` points wide at text scale 1.
     pub fn density_for(width: f32) -> TabDensity {
         if width <= 44.0 {
             TabDensity::IconOnly
@@ -369,7 +385,7 @@ impl<S: 'static> TabBind for TabHandlers<S> {
 /// .active(..).drag_state(&s.drag, |s| &mut s.drag).on_select(..).build(&kit)`.
 ///
 /// Horizontal tabs are 28 points tall with 6 between them, share the strip from 224 points
-/// down to 28 and then scroll; a 1.5 point separator stands between neighbours that aren't
+/// down to 28 (at text scale 1) and then scroll; a 1.5 point separator stands between neighbours that aren't
 /// active or hovered. In a `.window_drag()` titlebar the gaps between tabs, the bands above and
 /// below them and the space after the trailing action move the window, as only the tabs and
 /// buttons take presses. Vertical tabs fill the row with 3 points between them, each reaching
@@ -445,8 +461,9 @@ impl<'a, S: 'static> TabStrip<'a, S> {
     /// An element right after the last horizontal tab (the new-tab button), outside the
     /// scrolling, with the space past it left bare.
     pub fn trailing_action(mut self, action: El) -> Self { self.core.trailing = Some(action); self }
-    /// The trailing action's width, which the tabs leave it (default 28, a large icon button).
-    pub fn trailing_width(mut self, points: f32) -> Self { self.core.trailing_width = points.max(0.0); self }
+    /// The trailing action's width, which the tabs leave it (default a large icon button's, 28 at
+    /// text scale 1).
+    pub fn trailing_width(mut self, points: f32) -> Self { self.core.trailing_width = Some(points.max(0.0)); self }
     /// The strip's gestures, kept in the app's state; `access` finds them there. Without it the
     /// tabs select and close but don't drag, and closing doesn't lock their width.
     pub fn drag_state(mut self, state: &TabDragState, access: impl for<'s> Fn(&'s mut S) -> &'s mut TabDragState + 'static) -> Self {

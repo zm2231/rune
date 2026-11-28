@@ -127,7 +127,7 @@ pub(super) struct TabStripCore<'a> {
     pub matched: Option<&'a str>,
     pub spring: Spring,
     pub trailing: Option<El>,
-    pub trailing_width: f32,
+    pub trailing_width: Option<f32>,
     pub drag: Option<TabDragState>,
     pub fill: Option<Color>,
     pub close_icon: Option<&'static Icon>,
@@ -156,7 +156,7 @@ impl<'a> TabStripCore<'a> {
             matched: None,
             spring: rune_motion::motion::SNAP,
             trailing: None,
-            trailing_width: 28.0,
+            trailing_width: None,
             drag: None,
             fill: None,
             close_icon: None,
@@ -170,7 +170,7 @@ impl<'a> TabStripCore<'a> {
 
     pub(super) fn assemble(mut self, k: &Kit, mut layer: Option<&mut Vec<El>>, bind: &dyn TabBind) -> El {
         let vertical = self.orientation == TabOrientation::Vertical;
-        let overflow = self.overflow.unwrap_or(if vertical { TabOverflow::VERTICAL_DEFAULT } else { TabOverflow::HORIZONTAL_DEFAULT });
+        let overflow = self.overflow.unwrap_or(if vertical { TabOverflow::VERTICAL_DEFAULT } else { TabOverflow::HORIZONTAL_DEFAULT }).at_text_scale(k.text_scale);
         let gap = self.gap.unwrap_or(if vertical { 3.0 } else { 6.0 });
         // Tabs given whole take the lazy path too: each is built once, in order.
         let (slots, mut build): (Vec<TabSlot<'a>>, Build<'a>) = match self.lazy.take() {
@@ -206,7 +206,7 @@ impl<'a> TabStripCore<'a> {
             broken[b.before] = true;
             room[b.before] += pad[0] + b.length + pad[1];
         }
-        let trailing = if self.trailing.is_some() { self.trailing_width + gap } else { 0.0 };
+        let trailing = if self.trailing.is_some() { self.trailing_width.unwrap_or_else(|| k.icon_button_metrics(crate::ControlSize::Large).size) + gap } else { 0.0 };
         // What a horizontal strip's tabs don't share: the trailing action and the breaks.
         let taken = trailing + room.iter().sum::<f32>();
         // A tab coming in from another strip takes its share already, so it lands in its gap as is.
@@ -335,7 +335,7 @@ impl<'a> TabStripCore<'a> {
                 index: i,
                 lane: Lane { index: i, lo, hi, pitch: pitches[i], pinned: pin, tear },
                 width,
-                density: if pin { TabDensity::IconOnly } else { width.map_or(TabDensity::Full, TabOverflow::density_for) },
+                density: if pin { TabDensity::IconOnly } else { width.map_or(TabDensity::Full, |w| TabOverflow::density_for(w / k.text_scale)) },
                 active: quiet(i),
                 separator: !vertical && i > 0 && !quiet(i) && !quiet(i - 1) && !broken[i],
                 reach: [i > 0 || broken[0], i + 1 < count || broken[count]],

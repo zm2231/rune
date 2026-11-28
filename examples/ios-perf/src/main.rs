@@ -229,9 +229,6 @@ fn on_presented(p: &FramePresented) {
     });
     let Some((Some(at), main_wall)) = first else { return };
     say_first_frame(probe::wall_of(at), "presented", main_wall);
-    let marks: String = rune::marks::marks().into_iter()
-        .map(|(name, at)| format!(" {name}={}", ms(probe::since_start_ms(probe::wall_of(at))))).collect();
-    say(format!("PERF marks{marks}"));
 }
 
 fn gpu_mib() -> String {
@@ -399,6 +396,9 @@ fn main() {
         std::thread::sleep(Duration::from_secs_f64(args().idle));
         trace::step("idle_sample", String::new);
         say(format!("PERF idle_footprint_mib={:.2} idle_s={}{}", probe::footprint_mib(), args().idle, gpu_mib()));
+        let marks: String = rune::marks::marks().into_iter()
+            .map(|(name, at)| format!(" {name}={}", ms(probe::since_start_ms(probe::wall_of(at))))).collect();
+        say(format!("PERF marks{marks}"));
         if args().auto_scroll {
             trace::step("drive_asked", String::new);
             handle.update(|s, _| start_drive(s));

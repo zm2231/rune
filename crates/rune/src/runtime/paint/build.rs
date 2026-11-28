@@ -422,7 +422,7 @@ impl RuntimeCore {
             let press_gliding = snaps && !steps && press_off_by != [0.0; 2];
             let gliding = snaps && (rest.is_some() || press_gliding || !unscaled);
             let (mut r, snap_rest) = if !snaps {
-                (r_exact, None)
+                (self.paint.slide_box_rect(&self.tree.nodes, &self.motion, &self.scene, s, self.reduced_motion, self.root_inh(), i, rect_pt, r_exact, if unscaled { 1.0 } else { sc }, clip, vp), None)
             } else if rest.is_none() && !press_gliding && unscaled {
                 self.paint.pixel_snap.at_rest(n.id, r_exact, rigid, pcold.snap_parent)
             } else {

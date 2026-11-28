@@ -2,7 +2,7 @@
 //! ordinary paint records the instances each eligible loop drew: a spinner's dot (a hidden,
 //! decorative leaf with one plain fill and an opacity cycle, nothing else about it moving), each
 //! dot of a dots loop (`LoopKind::Dots`), a loader's turning icon (one glyph whose turn is all
-//! that moves), and a shimmer's sliding window (`slide.rs`). A step samples the loops into those
+//! that moves), a shimmer's sliding window and a box sliding on its own (`slide.rs`). A step samples the loops into those
 //! instances, and nothing else runs. Every paint starts the record again; a subtree paint keep
 //! copies brings its dots' record along, sampled at the paint's clock. The host draws only what
 //! changed (`Renderer::arm_cycle` on the web, `Renderer::arm_loop` in a window).
@@ -30,6 +30,8 @@ pub(in crate::runtime) struct CyclePaint {
     loops: usize,
     turns: Vec<Turn>,
     pub(super) slides: Vec<super::slide::Slide>,
+    pub(super) boxes: Vec<super::slide::SlideBox>,
+    pub(super) open_box: Option<usize>,
     pub(super) icons: Vec<IconSlot>,
     mixed: bool,
     /// The node paint last reached, and how many instances it had drawn by then.
@@ -95,8 +97,10 @@ impl CyclePaint {
         self.loops = 0;
         self.turns.clear();
         self.slides.clear();
+        self.boxes.clear();
         self.icons.clear();
         self.open = None;
+        self.open_box = None;
         self.missed = None;
         self.opened = (usize::MAX, 0);
         self.mixed = false;
@@ -133,6 +137,10 @@ impl CyclePaint {
         for sl in &mut self.slides {
             if sl.instances.start > marker { sl.instances.start -= 1; }
             if sl.instances.end > marker { sl.instances.end -= 1; }
+        }
+        for b in &mut self.boxes {
+            if b.instances.start > marker { b.instances.start -= 1; }
+            if b.instances.end > marker { b.instances.end -= 1; }
         }
     }
 
@@ -258,7 +266,7 @@ impl RuntimeCore {
         let mut wall = if virtual_check { self.clock + dt } else { self.now_clock() };
         let timer_due = self.poll_wake_deadline().is_some_and(|d| d <= wall);
         let keep = &self.paint.keep.cycles;
-        let loops = keep.loops + keep.turns.len() + 2 * keep.slides.len() + self.unseen_loops();
+        let loops = keep.loops + keep.turns.len() + 2 * keep.slides.len() + keep.boxes.len() + self.unseen_loops();
         let has_icons = !keep.icons.is_empty();
         let why = if self.motion.loops_is_empty() && !has_icons { "no loop" }
             else if has_icons && !self.motion.loops_is_empty() { "an animated icon beside a loop" }
@@ -304,6 +312,7 @@ impl RuntimeCore {
         if !self.slots_hold() || (due && self.ambient.is_none()) { return Err("a slot moved"); }
         let t = self.t + dt * f64::from(self.time_scale);
         let poses = self.paint.slide_poses(&self.tree.nodes, &self.motion, &self.scene, &self.instances, self.t, self.reduced_motion, t)?;
+        let boxes = self.paint.box_poses(&self.tree.nodes, &self.motion, &self.scene, &self.instances, self.t, self.reduced_motion, t)?;
         let turns = self.turn_poses(t, wall)?;
         if checking() {
             // What the step would draw, for the ordinary frame that runs instead (`loop_checked`).
@@ -315,6 +324,9 @@ impl RuntimeCore {
             }
             for (sl, &(clip, fade)) in self.paint.keep.cycles.slides.iter().zip(&poses) {
                 for q in &mut predicted[sl.instances.clone()] { q.clip = clip; q.fade = fade; }
+            }
+            for (b, &rect) in self.paint.keep.cycles.boxes.iter().zip(&boxes) {
+                for q in &mut predicted[b.instances.clone()] { q.rect = rect; }
             }
             for (s, &turn) in self.paint.keep.cycles.turns.iter().zip(&turns) { predicted[s.at].params[0] = turn; }
             self.paint.keep.cycles.check = Some(predicted);
@@ -332,6 +344,7 @@ impl RuntimeCore {
             patched.push(s.at as u32);
         }
         self.paint.apply_slides(&poses, &mut self.instances, &mut patched);
+        self.paint.apply_boxes(&boxes, &mut self.instances, &mut patched);
         patched.sort_unstable();
         Ok(patched)
     }
@@ -372,10 +385,14 @@ impl RuntimeCore {
         for id in self.motion.loop_ids() {
             let Some(&i) = self.tree.node_index.get(&id) else { continue };
             if !self.paint.seen.get(i).copied().unwrap_or(false) { continue; }
-            if c.slots.iter().any(|s| s.node == i) || c.turns.iter().any(|s| s.node == i) || c.slides.iter().any(|s| s.window == i || s.counter == i) { continue; }
+            if c.slots.iter().any(|s| s.node == i) || c.turns.iter().any(|s| s.node == i) || c.slides.iter().any(|s| s.window == i || s.counter == i)
+                || c.boxes.iter().any(|b| b.node == i) { continue; }
             let n = &self.tree.nodes[i];
             if let Some(rune_motion::LoopKind::Rotation { .. }) = n.looping.as_ref().map(|l| l.kind) {
                 return if n.vis.icon.is_none() { "a rotation that isn't an icon" } else { "a rotation paint didn't record" };
+            }
+            if let Some(rune_motion::LoopKind::Slide { .. } | rune_motion::LoopKind::SlideEased { .. }) = n.looping.as_ref().map(|l| l.kind) {
+                return "a slide that isn't a window or a box";
             }
             let Some(rune_motion::LoopKind::OpacityCycle(_)) = n.looping.as_ref().map(|l| l.kind) else { return "a loop that isn't a cycle or a window" };
             let parent = n.parent.map_or_else(|| self.root_inh(), |p| self.paint.inh_scratch[p]);

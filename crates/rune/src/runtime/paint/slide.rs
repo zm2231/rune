@@ -44,6 +44,16 @@ pub(in crate::runtime) struct Slide {
 /// What a step draws the window's instances with: their clip and packed fade.
 type Pose = ([f32; 4], [u32; 4]);
 
+pub(in crate::runtime) struct SlideBox {
+    pub(super) node: usize,
+    pub(super) instances: Range<usize>,
+    anchor: Anchor,
+    painted: [f32; 2],
+    clip: [f32; 4],
+    vp: [f32; 4],
+    checked: Option<bool>,
+}
+
 /// Where a sliding window is posed from, kept across paints while its laid-out place holds: its
 /// rect (points) at a slide offset, and the rect's points per offset point, scale and grid size.
 /// Paint and a loop-only step both pose the window from it at the offset they draw (`pose_rect`),
@@ -99,8 +109,9 @@ fn sideways(spec: Option<&rune_motion::LoopSpec>) -> bool {
 }
 
 /// Paint's test for whether a box at `r` (x0, y0, x1, y1) under `clip` shows (`build`).
-fn shows(r: [f32; 4], clip: [f32; 4], vp: [f32; 4]) -> bool {
-    let m = 2.0;
+fn shows(r: [f32; 4], clip: [f32; 4], vp: [f32; 4]) -> bool { shows_within(r, clip, vp, 2.0) }
+
+fn shows_within(r: [f32; 4], clip: [f32; 4], vp: [f32; 4], m: f32) -> bool {
     clip[2] > clip[0] && clip[3] > clip[1]
         && r[2] >= clip[0].max(vp[0]) - m && r[0] <= clip[2].min(vp[2]) + m
         && r[3] >= clip[1].max(vp[1]) - m && r[1] <= clip[3].min(vp[3]) + m
@@ -108,11 +119,11 @@ fn shows(r: [f32; 4], clip: [f32; 4], vp: [f32; 4]) -> bool {
 
 impl paint_state::PaintState {
     /// Node `i`'s loop glides: its edges land where the slide puts them, not on whole pixels, as
-    /// a browser's compositor moves a transformed layer, so that a loop-only step (which moves
-    /// only the clip and soft edges) and an ordinary frame draw the same picture. Only for what a
-    /// step can move, on the platform that steps it (Windows): a window sliding sideways over
-    /// content that slides back inside it, and that content. What the content holds still snaps.
-    /// Any other slide, and every slide elsewhere, snaps as before.
+    /// a browser's compositor moves a transformed layer, so that a loop-only step and an ordinary
+    /// frame draw the same picture. Only for what a step can move, on the platform that steps it
+    /// (Windows): a window sliding sideways over content that slides back inside it, and that
+    /// content, or a box sliding sideways on its own (`slide_box`). What the content holds still
+    /// snaps. Any other slide, and every slide elsewhere, snaps as before.
     #[inline]
     pub(in crate::runtime::paint) fn slide_glides(
         nodes: &[Node],
@@ -120,10 +131,23 @@ impl paint_state::PaintState {
         reduced_motion: bool,
         i: usize,
     ) -> bool {
-        if !cfg!(target_os = "windows") || reduced_motion { return false; }
+        if reduced_motion { return false; }
         let n = &nodes[i];
         if !slides(n.looping.as_deref()) || !motion.has_loop(n.id) { return false; }
-        Self::slide_pair(nodes, motion, i) || n.parent.is_some_and(|p| p + 1 == i && Self::slide_pair(nodes, motion, p))
+        (cfg!(any(target_os = "windows", test)) && Self::slide_box(nodes, motion, i))
+            || (cfg!(target_os = "windows") && (Self::slide_pair(nodes, motion, i)
+                || n.parent.is_some_and(|p| p + 1 == i && Self::slide_pair(nodes, motion, p))))
+    }
+
+    #[inline]
+    pub(in crate::runtime::paint) fn slide_box(
+        nodes: &[Node],
+        motion: &crate::runtime::tracks::MotionState,
+        i: usize,
+    ) -> bool {
+        let n = &nodes[i];
+        sideways(n.looping.as_deref()) && motion.has_loop(n.id) && subtree_end(nodes, i) == i + 1
+            && !n.parent.is_some_and(|p| p + 1 == i && Self::slide_pair(nodes, motion, p))
     }
 
     /// Node `i` is a window a step could move, by its shape alone: it clips and slides sideways,
@@ -145,6 +169,7 @@ impl paint_state::PaintState {
 
     /// Paint reached node `i`: a window whose subtree it has passed is complete.
     pub(super) fn slide_node_opens(&mut self, i: usize, instances_len: usize, scale: f32) {
+        self.close_slide_box(instances_len);
         let c = &mut self.keep.cycles;
         c.opened = (i, instances_len);
         // A subtree paints in one run, in tree order or the layers' (`update_layer_paint_order`),
@@ -174,7 +199,7 @@ impl paint_state::PaintState {
         r: [f32; 4],
         k: f32,
     ) -> [f32; 4] {
-        if !Self::slide_glides(nodes, motion, reduced_motion, i) || !Self::slide_pair(nodes, motion, i) { return r; }
+        if !Self::slide_glides(nodes, motion, reduced_motion, i) || !(Self::slide_pair(nodes, motion, i) || Self::slide_box(nodes, motion, i)) { return r; }
         let n = &nodes[i];
         let ow = scene.get(n.id, prop::OFFSET).unwrap_or(rune_motion::Vec2::ZERO);
         let ow = [ow.x, ow.y];
@@ -291,8 +316,73 @@ impl paint_state::PaintState {
         Ok((counter, end, f))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::runtime::paint) fn slide_box_rect(
+        &mut self,
+        nodes: &[Node],
+        motion: &crate::runtime::tracks::MotionState,
+        scene: &Scene,
+        s: f32,
+        reduced_motion: bool,
+        root_inh: Inh,
+        i: usize,
+        rect: [f32; 4],
+        exact: [f32; 4],
+        k: f32,
+        clip: [f32; 4],
+        vp: [f32; 4],
+    ) -> [f32; 4] {
+        if !Self::slide_glides(nodes, motion, reduced_motion, i) || !Self::slide_box(nodes, motion, i) { return exact; }
+        let r = self.slide_anchor(nodes, motion, scene, s, reduced_motion, i, rect, exact, exact, k);
+        let anchor = match (self.keep.cycles.anchor, self.slide_box_fits(nodes, motion, scene, root_inh, i)) {
+            (Some((j, a)), Ok(())) if j == i => a,
+            (_, Err(why)) => { self.keep.cycles.missed = Some(why); return r; }
+            _ => return r,
+        };
+        let o = scene.get(nodes[i].id, prop::OFFSET).unwrap_or(rune_motion::Vec2::ZERO);
+        let c = &mut self.keep.cycles;
+        let at = if c.opened.0 == i { c.opened.1 } else { return r };
+        c.open_box = Some(c.boxes.len());
+        c.boxes.push(SlideBox { node: i, instances: at..at, anchor, painted: [o.x, o.y], clip, vp, checked: None });
+        r
+    }
+
+    fn slide_box_fits(
+        &self,
+        nodes: &[Node],
+        motion: &crate::runtime::tracks::MotionState,
+        scene: &Scene,
+        root_inh: Inh,
+        i: usize,
+    ) -> Result<(), &'static str> {
+        let c = &self.keep.cycles;
+        if !motion.flying.is_empty() { return Err("a slide while something flies"); }
+        if c.open.is_some() { return Err("a slide inside a slide"); }
+        let n = &nodes[i];
+        if n.scroll.is_some() || self.row_h[i] >= 0.0 || self.row_mask[i] >= 0.0 { return Err("a slide that scrolls or folds"); }
+        let parent = n.parent.map_or(root_inh, |p| self.inh_scratch[p]);
+        if parent.in_cache() || parent.skip_paint() || parent.turn != 0 || self.inh_cold_of(&parent).blur != 0.0 { return Err("a slide in a layer"); }
+        if n.handlers.get().is_some() || n.focus.get().is_some() || n.vis_flags.hit() || n.input.is_some() || n.sticky.is_some()
+            || n.vis.effect.is_some() || n.help.is_some() || n.above.is_some() || n.matched.is_some() || n.vis_flags.raise() {
+            return Err("a slide over input");
+        }
+        if !scene.presented(n.id).is_some_and(|p| p.blur == 0.0 && p.mask.is_none() && p.transform.rotate == 0.0) { return Err("a slide over clips or motion"); }
+        Ok(())
+    }
+
+    fn close_slide_box(&mut self, len: usize) {
+        let c = &mut self.keep.cycles;
+        let Some(k) = c.open_box.take() else { return };
+        c.boxes[k].instances.end = len;
+        if c.boxes[k].instances.is_empty() {
+            c.boxes.pop();
+            c.missed = Some("a sliding box out of sight");
+        }
+    }
+
     /// The open window's subtree is painted: its instances, and what each node under it showed.
     pub(super) fn close_slide(&mut self, len: usize, s: f32) {
+        self.close_slide_box(len);
         let Some(k) = self.keep.cycles.open.take() else { return };
         let (drawn, seen) = (&self.drawn, &self.seen);
         let sl = &mut self.keep.cycles.slides[k];
@@ -316,6 +406,52 @@ impl paint_state::PaintState {
         Some((clip, crate::render::pack_fade(fade, origin, clip)))
     }
 
+    fn box_pose(b: &SlideBox, ow: [f32; 2], inside: f32) -> Option<[f32; 4]> {
+        let r = pose_rect(&b.anchor, ow);
+        let at = [r[0], r[1], r[2].max(r[0]), r[3].max(r[1])];
+        (shows_within(at, b.clip, b.vp, inside) && shows_within(at, b.clip, b.vp, 3.0)).then_some([r[0], r[1], r[2] - r[0], r[3] - r[1]])
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn box_poses(
+        &mut self,
+        nodes: &[Node],
+        motion: &crate::runtime::tracks::MotionState,
+        scene: &Scene,
+        instances: &[Instance],
+        now_t: f64,
+        reduced_motion: bool,
+        t: f64,
+    ) -> Result<Vec<[f32; 4]>, &'static str> {
+        let mut poses = Vec::with_capacity(self.keep.cycles.boxes.len());
+        for k in 0..self.keep.cycles.boxes.len() {
+            if !self.box_checked(k, instances) { return Err("a sliding box drew otherwise"); }
+            let b = &self.keep.cycles.boxes[k];
+            let ow = offset_at(nodes, motion, scene, now_t, reduced_motion, t, b.node).ok_or("a slide stopped")?;
+            poses.push(Self::box_pose(b, ow, -2.0).ok_or("a sliding box shows or hides")?);
+        }
+        Ok(poses)
+    }
+
+    fn box_checked(&mut self, k: usize, instances: &[Instance]) -> bool {
+        let b = &self.keep.cycles.boxes[k];
+        if let Some(ok) = b.checked { return ok; }
+        let ok = b.instances.end <= instances.len() && Self::box_pose(b, b.painted, 1.0).is_some_and(|rect| {
+            instances[b.instances.clone()].iter().all(|q| q.params[1] == crate::render::KIND_RECT && q.rect == rect)
+        });
+        self.keep.cycles.boxes[k].checked = Some(ok);
+        ok
+    }
+
+    pub(super) fn apply_boxes(&self, poses: &[[f32; 4]], instances: &mut [Instance], patched: &mut Vec<u32>) {
+        for (b, &rect) in self.keep.cycles.boxes.iter().zip(poses) {
+            for at in b.instances.clone() {
+                instances[at].rect = rect;
+                patched.push(at as u32);
+            }
+        }
+    }
+
     /// The pose each window's instances take at the loops' offsets at animation time `t`, or
     /// why a step can't draw one of them.
     #[allow(clippy::too_many_arguments)]
@@ -329,14 +465,7 @@ impl paint_state::PaintState {
         reduced_motion: bool,
         t: f64,
     ) -> Result<Vec<Pose>, &'static str> {
-        let at = |j: usize| -> Option<[f32; 2]> {
-            let n = &nodes[j];
-            let store = scene.store();
-            let time = store.node_time(n.id) + (t - now_t) * f64::from(store.node_time_scale(n.id));
-            if !motion.loop_active(n.id, time) { return None; }
-            let [x, y] = motion.loop_offset(n.id, time, reduced_motion)?;
-            Some([x * n.local.w, y * n.local.h])
-        };
+        let at = |j: usize| offset_at(nodes, motion, scene, now_t, reduced_motion, t, j);
         let mut poses = Vec::with_capacity(self.keep.cycles.slides.len());
         for k in 0..self.keep.cycles.slides.len() {
             if !self.slide_checked(k, instances) { return Err("a slide drew otherwise"); }
@@ -375,4 +504,13 @@ impl paint_state::PaintState {
             }
         }
     }
+}
+
+fn offset_at(nodes: &[Node], motion: &crate::runtime::tracks::MotionState, scene: &Scene, now_t: f64, reduced_motion: bool, t: f64, j: usize) -> Option<[f32; 2]> {
+    let n = &nodes[j];
+    let store = scene.store();
+    let time = store.node_time(n.id) + (t - now_t) * f64::from(store.node_time_scale(n.id));
+    if !motion.loop_active(n.id, time) { return None; }
+    let [x, y] = motion.loop_offset(n.id, time, reduced_motion)?;
+    Some([x * n.local.w, y * n.local.h])
 }

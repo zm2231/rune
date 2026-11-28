@@ -202,6 +202,7 @@ fn on_encoded(f: &FrameEncoded, started: &mut Option<std::sync::mpsc::Sender<()>
         if !r.first_encoded {
             r.first_encoded = true;
             trace::step("first_encoded", || format!("seq={}", f.seq()));
+            if let Some(target) = f.presents_at() { say_first_frame(probe::wall_of(target), "link_target", r.main_wall); }
         }
         if !r.driving { return; }
         r.seqs = Some(r.seqs.map_or((f.seq(), f.seq()), |(first, _)| (first, f.seq())));

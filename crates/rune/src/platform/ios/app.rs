@@ -112,6 +112,7 @@ define_class!(
     impl SceneDelegate {
         #[unsafe(method(scene:willConnectToSession:options:))]
         fn will_connect(&self, scene: &AnyObject, session: &AnyObject, options: &AnyObject) {
+            crate::marks::mark("ios.scene.connected");
             guarded("scene:willConnectToSession:options:", || {
                 // The links a launch carries arrive here, in the connection's options.
                 // SAFETY: `options` is a `UISceneConnectionOptions`, whose `URLContexts` is an

@@ -500,7 +500,6 @@ impl Host {
             media_keys,
             prime,
             launch_drawables,
-            loop_patch: Default::default(),
             _spot: crate::platform::macos::traffic_lights::Spot::new(&window),
             _drop: drop_target,
             _dock: crate::taskbar::dock::DockCount::new(u64::from(window.id())),

@@ -1,4 +1,4 @@
-//! Precompiled Metal library (`.metallib`) for Rune's uber shader on macOS.
+//! Precompiled Metal libraries (`.metallib`) for Rune's uber shader on macOS and iOS.
 //!
 //! `wgpu` 30's Metal backend otherwise translates `shader.wgsl` through Naga to MSL and calls
 //! `[MTLDevice newLibraryWithSource:options:error:]` on the XPC `MTLCompilerService` during
@@ -12,8 +12,9 @@
 //!   `CompiledShader::sized_bindings` empty.
 //! - `layer_blur` specializes WGSL `override` constants (`MODE`, `ADDITIVE`) per pipeline, which
 //!   `ShaderModuleSource::Passthrough` does not evaluate.
-//! - iOS (`target_os = "ios"`) uses a distinct `MTLB` platform tag (`ios` vs `ios-simulator` vs
-//!   `macos`) and stays on WGSL for now.
+//! - iOS libraries carry their own `MTLB` platform tag (`ios` vs `ios-simulator` vs `macos`), so
+//!   iOS loads `uber_ios.metallib` on a device and `uber_ios_sim.metallib` on the simulator,
+//!   built from the same MSL as macOS's. One that is empty or stale compiles from WGSL.
 //!
 //! Note on `MTLBinaryArchive`: `wgpu-hal` 30's Metal `PipelineCache` implementation is a no-op, so
 //! precompiling `.metallib` eliminates front-end MSL->AIR compilation while the final AIR->GPU ISA
@@ -28,6 +29,10 @@ include!("uber/metallib_hash.rs");
 
 #[cfg(any(test, target_os = "macos"))]
 const UBER_METALLIB: &[u8] = include_bytes!("../shaders/uber.metallib");
+#[cfg(any(test, all(target_os = "ios", not(target_abi = "sim"))))]
+const UBER_IOS_METALLIB: &[u8] = include_bytes!("../shaders/uber_ios.metallib");
+#[cfg(any(test, all(target_os = "ios", target_abi = "sim")))]
+const UBER_IOS_SIM_METALLIB: &[u8] = include_bytes!("../shaders/uber_ios_sim.metallib");
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 const UBER_NATIVE_METALLIB: &[u8] = include_bytes!("../shaders/uber_native.metallib");
 
@@ -47,7 +52,7 @@ pub(super) const NATIVE_METAL_COMPILE_FLAGS: &str =
 #[cfg(all(test, target_os = "macos", feature = "metal-backend"))]
 const NATIVE_MSL_VERSION: (u8, u8) = (3, 0);
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 std::thread_local! {
     static FORCE_METALLIB: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
     static METALLIB_LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -112,18 +117,18 @@ pub(super) const fn uber_primitive() -> wgpu::PrimitiveState {
 
 // Descriptor values shared with Renderer::create, not their source spelling or labels.
 // WGSL, generated MSL, and the actual Naga options have separate fingerprints below.
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(test, target_os = "macos", target_os = "ios"))]
 pub(super) const fn uber_abi_hash() -> u64 {
     layout_hash(&uber_bind_entries(), &uber_vertex_layout(), uber_primitive())
 }
 
 /// [`uber_abi_hash`] for another set of uber bindings (the Windfoil variant's).
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows"))]
 pub(super) const fn abi_hash_of(entries: &[wgpu::BindGroupLayoutEntry]) -> u64 {
     layout_hash(entries, &uber_vertex_layout(), uber_primitive())
 }
 
-#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+#[cfg(any(test, target_os = "macos", target_os = "ios", target_os = "windows"))]
 const fn layout_hash(entries: &[wgpu::BindGroupLayoutEntry], vertex: &wgpu::VertexBufferLayout<'_>, primitive: wgpu::PrimitiveState) -> u64 {
     // The normal uber pipeline has one group and no immediates; the springs pipeline has a
     // second group and never uses the precompiled shaders.
@@ -134,7 +139,7 @@ const fn layout_hash(entries: &[wgpu::BindGroupLayoutEntry], vertex: &wgpu::Vert
 /// immediate size that decides what a precompiled uber shader binds. A `const fn`: the build
 /// knows the layout's hash, so a launch compares nothing. Destructured whole, so a field wgpu
 /// adds doesn't compile until it's hashed too.
-#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+#[cfg(any(test, target_os = "macos", target_os = "ios", target_os = "windows"))]
 const fn descriptor_hash(entries: &[wgpu::BindGroupLayoutEntry], vertex: &wgpu::VertexBufferLayout<'_>, primitive: wgpu::PrimitiveState, groups: usize, immediate_size: u32) -> u64 {
     let mut h = Fnv(0xcbf29ce484222325).word(entries.len() as u64);
     let mut i = 0;
@@ -172,10 +177,10 @@ const fn descriptor_hash(entries: &[wgpu::BindGroupLayoutEntry], vertex: &wgpu::
 }
 
 /// FNV-1a, a word at a time, for constants.
-#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+#[cfg(any(test, target_os = "macos", target_os = "ios", target_os = "windows"))]
 struct Fnv(u64);
 
-#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+#[cfg(any(test, target_os = "macos", target_os = "ios", target_os = "windows"))]
 impl Fnv {
     const fn word(self, value: u64) -> Fnv {
         let (mut h, mut i) = (self.0, 0);
@@ -209,9 +214,9 @@ pub(super) fn uber_shader_and_pipeline(
 ) -> Result<(super::dxbc::Shaders, wgpu::RenderPipeline), super::shader_check::ShaderError> {
     #[cfg(test)]
     let refuse_classic = super::shader_check::refuse_classic();
-    #[cfg(all(not(test), target_os = "macos"))]
+    #[cfg(all(not(test), any(target_os = "macos", target_os = "ios")))]
     let refuse_classic = false;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     if !refuse_classic
         && metallib_enabled()
         && let Some((shader, pipeline)) = try_uber_metallib(device, uber_metallib(device), UBER_WGSL_BLAKE3, |shader| make_pipeline(&super::dxbc::Shaders::one(shader.clone())))
@@ -231,7 +236,7 @@ pub(super) fn uber_shader_and_pipeline(
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub(super) fn metallib_enabled() -> bool {
     if let Some(forced) = FORCE_METALLIB.with(std::cell::Cell::get) {
         return forced;
@@ -245,7 +250,7 @@ pub(super) fn thread_loads() -> usize {
 }
 
 /// Whether `device` is Rune's own Metal backend's.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 fn native(device: &wgpu::Device) -> bool {
     #[cfg(feature = "metal-backend")]
     { crate::gpu::metal::raw_device(device).is_some() }
@@ -254,20 +259,32 @@ fn native(device: &wgpu::Device) -> bool {
 }
 
 /// The library built for `device`'s backend.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 fn uber_metallib(device: &wgpu::Device) -> &'static [u8] {
-    #[cfg(feature = "metal-backend")]
+    #[cfg(all(target_os = "macos", feature = "metal-backend"))]
     if native(device) { return UBER_NATIVE_METALLIB; }
-    #[cfg(not(feature = "metal-backend"))]
+    #[cfg(target_os = "ios")]
+    if native(device) { return &[]; }
+    #[cfg(all(target_os = "macos", not(feature = "metal-backend")))]
     let _ = device;
-    UBER_METALLIB
+    #[cfg(target_os = "macos")]
+    return UBER_METALLIB;
+    #[cfg(all(target_os = "ios", not(target_abi = "sim")))]
+    return UBER_IOS_METALLIB;
+    #[cfg(all(target_os = "ios", target_abi = "sim"))]
+    return UBER_IOS_SIM_METALLIB;
 }
 
 /// Whether the libraries were built for this build's uber layout.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 const ABI_MATCHES: bool = uber_abi_hash() == UBER_ABI_FNV64;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(test, target_os = "macos", target_os = "ios"))]
+fn usable(metallib: &[u8], abi_matches: bool, expected_wgsl_hash: &str) -> bool {
+    !metallib.is_empty() && abi_matches && super::uber_wgsl::same(super::uber_wgsl::CLASSIC_BLAKE3, expected_wgsl_hash)
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 #[allow(unsafe_code)]
 fn try_uber_metallib<T>(
     device: &wgpu::Device,
@@ -279,17 +296,14 @@ fn try_uber_metallib<T>(
     if !native(device) && !device.features().contains(wgpu::Features::PASSTHROUGH_SHADERS) {
         return None;
     }
-    if metallib != uber_metallib(device) || !ABI_MATCHES {
-        return None;
-    }
     // The build hashed the WGSL it joined (render/uber_wgsl.rs), so nothing is hashed here.
-    if !super::uber_wgsl::same(super::uber_wgsl::CLASSIC_BLAKE3, expected_wgsl_hash) {
+    if metallib != uber_metallib(device) || !usable(metallib, ABI_MATCHES, expected_wgsl_hash) {
         return None;
     }
     let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
-    // SAFETY: only our embedded macOS library is accepted, never caller-provided shader code.
+    // SAFETY: only our embedded library for this platform is accepted, never caller-provided shader code.
     // Its validated Naga MSL retains bounds checks and loop bounding; the ABI fingerprint above
     // covers the renderer's bindings, immediates and vertex/primitive layout. Freshness tests
     // cover the generator's actual MSL/options; pixel equivalence guards backend patch updates.

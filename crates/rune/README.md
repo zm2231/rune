@@ -1228,7 +1228,9 @@ Staying fast afterwards is "Fast apps" (`site/src/FastApps.tsx`) and "Smooth scr
   when the adapter lacks passthrough support, when `RUNE_DISABLE_METALLIB=1`, when the fingerprint
   doesn't match or when Metal rejects the library. On iOS, native Metal loads precompiled
   `builtin_native_ios.metallib` / `builtin_native_ios_sim.metallib` (including the uber shader),
-  while iOS on wgpu compiles WGSL at launch. On Windows, DX12 loads precompiled DXBC uber shaders
+  and iOS on wgpu, the iOS default, loads Classic and Windfoil from `uber_ios.metallib` /
+  `uber_windfoil_ios.metallib` on a device and the `_ios_sim` ones on the simulator, built from
+  the same MSL as macOS's. On Windows, DX12 loads precompiled DXBC uber shaders
   (`uber.vs.dxbc`, `uber.fs.dxbc`; set `RUNE_DISABLE_DXBC=1` to disable). `WGPU_ADAPTER_NAME`
   and `WGPU_POWER_PREF` (`low`, `high` or `none`) override GPU adapter selection.
   `WGPU_DX12_PRESENTATION_SYSTEM` (`visual` or `hwnd`) overrides the DX12 swap-chain presentation
@@ -1244,7 +1246,7 @@ Staying fast afterwards is "Fast apps" (`site/src/FastApps.tsx`) and "Smooth scr
   `clip.wgsl` or `shader.wgsl`, run
   `cargo test -p rune --lib --features metal-backend precompiled_uber_metallib_is_fresh` on a Mac;
   if the MSL, flags or library hash changed, run `scripts/precompile-metal-shaders.sh` (needs
-  Xcode's Metal toolchain) and commit the updated libraries and hash files. Metal binary archives on
+  Xcode's Metal toolchain with the iOS platform) and commit the updated libraries and hash files. Metal binary archives on
   wgpu's backend would need `wgpu-hal` support.
 - **Startup CPU-first policy (`CpuFirst`, `App::cpu_first`, `WindowSpec::cpu_first`).** On Windows,
   Linux, and full-window web pages, opaque windows open on Rune's live CPU renderer (`CpuPainter`

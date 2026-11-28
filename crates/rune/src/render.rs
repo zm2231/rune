@@ -45,7 +45,7 @@ mod vulkan_icd;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod warm_machine;
 pub(crate) mod warmup;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 mod windfoil_metallib;
 
 #[cfg(not(target_arch = "wasm32"))]

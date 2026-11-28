@@ -149,6 +149,34 @@ fn precompiled_builtin_and_windfoil_metallibs_match_rune_wgsl() {
 }
 
 #[test]
+fn precompiled_ios_uber_metallibs_are_fresh() {
+    for (name, library, recorded) in [
+        ("uber_ios.metallib", UBER_IOS_METALLIB, UBER_IOS_METALLIB_FNV64),
+        ("uber_ios_sim.metallib", UBER_IOS_SIM_METALLIB, UBER_IOS_SIM_METALLIB_FNV64),
+    ] {
+        assert!(library.starts_with(b"MTLB") && library.len() > 1024,
+            "crates/rune/src/shaders/{name} must be a Metal library; run scripts/precompile-metal-shaders.sh on a Mac");
+        assert_eq!(fnv1a64(library), recorded,
+            "crates/rune/src/shaders/{name} does not match recorded hash; run scripts/precompile-metal-shaders.sh");
+    }
+    for (name, library) in [
+        ("uber_windfoil_ios.metallib", include_bytes!("../shaders/uber_windfoil_ios.metallib").as_slice()),
+        ("uber_windfoil_ios_sim.metallib", include_bytes!("../shaders/uber_windfoil_ios_sim.metallib").as_slice()),
+    ] {
+        assert!(library.starts_with(b"MTLB") && library.len() > 1024,
+            "crates/rune/src/shaders/{name} must be a Metal library; run scripts/precompile-metal-shaders.sh on a Mac");
+    }
+}
+
+#[test]
+fn a_stale_empty_or_relaid_library_compiles_from_wgsl() {
+    assert!(usable(UBER_METALLIB, true, UBER_WGSL_BLAKE3), "the committed library is used when its WGSL and layout match");
+    assert!(!usable(UBER_METALLIB, true, "stale-hash"), "a library built from other WGSL compiles from WGSL");
+    assert!(!usable(UBER_METALLIB, false, UBER_WGSL_BLAKE3), "a library built for another layout compiles from WGSL");
+    assert!(!usable(&[], true, UBER_WGSL_BLAKE3), "an empty library, one no Mac has built, compiles from WGSL");
+}
+
+#[test]
 fn semantic_fingerprint_tracks_descriptors_not_source_text() {
     let entries = uber_bind_entries();
     let vertex = uber_vertex_layout();

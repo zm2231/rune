@@ -106,7 +106,7 @@ pub(crate) const fn windfoil_bind_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
 }
 
 /// Windfoil's pipeline ABI, as `metallib::uber_abi_hash` hashes Classic's.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows"))]
 pub(crate) const fn windfoil_abi_hash() -> u64 {
     metallib::abi_hash_of(&windfoil_bind_entries())
 }
@@ -342,7 +342,7 @@ impl Renderer {
         if let Some((shader, pipeline)) = dxbc::uber(device, make_pipeline) {
             return Ok(Built { bind_layout, layout, shader, pipeline, source: Source::Precompiled });
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
         if let Some((shader, pipeline)) = windfoil_metallib::load(device, make_pipeline) {
             return Ok(Built { bind_layout, layout, shader: dxbc::Shaders::one(shader), pipeline, source: Source::Precompiled });
         }

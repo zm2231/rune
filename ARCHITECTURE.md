@@ -135,8 +135,8 @@ Most UI elements draw through one instanced uber-quad pipeline consuming 128-byt
 
 `crates/rune/src/render/variant.rs` manages uber-shader selection as an explicit state machine (`Uber`, plus `Lcd`):
 
-- **`Classic`**: `crates/rune/src/shaders/shader.wgsl` alone (glyphs sampled from the R8 glyph atlas). Ships precompiled bytecode (`uber.metallib`, `uber_native.metallib` on macOS; DXBC on Windows).
-- **`Windfoil`**: `shader.wgsl` joined with `crates/rune/src/shaders/outline.wgsl` (plus binding 4 outline texture), evaluating glyph coverage directly from banded quadratic outlines. Ships precompiled bytecode (`uber_windfoil.metallib`, `uber_windfoil_native.metallib`, DXBC) where supported.
+- **`Classic`**: `crates/rune/src/shaders/shader.wgsl` alone (glyphs sampled from the R8 glyph atlas). Ships precompiled bytecode (`uber.metallib`, `uber_native.metallib` on macOS; `uber_ios.metallib`, `uber_ios_sim.metallib` for wgpu on iOS; DXBC on Windows).
+- **`Windfoil`**: `shader.wgsl` joined with `crates/rune/src/shaders/outline.wgsl` (plus binding 4 outline texture), evaluating glyph coverage directly from banded quadratic outlines. Ships precompiled bytecode (`uber_windfoil.metallib`, `uber_windfoil_native.metallib`, `uber_windfoil_ios.metallib`, `uber_windfoil_ios_sim.metallib`, DXBC) where supported.
 - **`Lcd`**: a dual-source-blending subpixel variant of `Windfoil` (`dual_wgsl()`), built on demand when subpixel text (`FontSmoothing::WindfoilRgb` or `ClearType`) is drawn on a supporting device.
 
 Companion shaders in `crates/rune/src/shaders/`:

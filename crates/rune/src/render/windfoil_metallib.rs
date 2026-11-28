@@ -1,14 +1,23 @@
-//! macOS: the Windfoil uber shader's precompiled libraries (render/variant.rs), which
+//! macOS and iOS: the Windfoil uber shader's precompiled libraries (render/variant.rs), which
 //! `scripts/precompile-metal-shaders.sh` builds beside Classic's: `uber_windfoil.metallib` for
-//! wgpu's Metal backend and `uber_windfoil_native.metallib` for Rune's. Only a Windfoil renderer
-//! loads them, so they never touch Classic, the Mac's default. One that's missing or stale (its
+//! wgpu's Metal backend on macOS and `uber_windfoil_native.metallib` for Rune's, and
+//! `uber_windfoil_ios.metallib` and `uber_windfoil_ios_sim.metallib` for wgpu's on an iOS device
+//! and simulator, where Windfoil is the shader every renderer starts with. Only a Windfoil
+//! renderer loads them, so they never touch Classic, the Mac's default. One that's missing or stale (its
 //! WGSL or layout hash differs) is skipped with a log line, and Windfoil compiles from WGSL.
 
 include!("uber/windfoil_hash.rs");
 
+#[cfg(target_os = "macos")]
 const LIBRARY: &[u8] = include_bytes!("../shaders/uber_windfoil.metallib");
-#[cfg(feature = "metal-backend")]
+#[cfg(all(target_os = "ios", not(target_abi = "sim")))]
+const LIBRARY: &[u8] = include_bytes!("../shaders/uber_windfoil_ios.metallib");
+#[cfg(all(target_os = "ios", target_abi = "sim"))]
+const LIBRARY: &[u8] = include_bytes!("../shaders/uber_windfoil_ios_sim.metallib");
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 const NATIVE_LIBRARY: &[u8] = include_bytes!("../shaders/uber_windfoil_native.metallib");
+#[cfg(all(target_os = "ios", feature = "metal-backend"))]
+const NATIVE_LIBRARY: &[u8] = &[];
 
 /// Whether the libraries were built from the WGSL this build joined (render/uber_wgsl.rs).
 const WGSL_MATCHES: bool = super::uber_wgsl::same(super::uber_wgsl::WINDFOIL_BLAKE3, WINDFOIL_WGSL_BLAKE3);

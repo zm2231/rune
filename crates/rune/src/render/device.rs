@@ -224,8 +224,8 @@ impl Gpu {
     fn device_on(adapter: &wgpu::Adapter, wanted: wgpu::Features) -> Result<(wgpu::Device, wgpu::Queue), String> {
         // Dual-source blending is for subpixel text (`FontSmoothing::WindfoilRgb`, `ClearType`).
         let optional_features = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::DUAL_SOURCE_BLENDING | wanted | crate::gpu::backend::free_features(adapter);
-        // Precompiled uber shaders: a metallib on macOS, DXBC on Windows.
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        // Precompiled uber shaders: a metallib on macOS and iOS, DXBC on Windows.
+        #[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows"))]
         let optional_features = optional_features | wgpu::Features::PASSTHROUGH_SHADERS;
         let required_features = adapter.features() & optional_features;
         // A compositor that asks for immediates (`Compositor::features`) gets all the adapter has.

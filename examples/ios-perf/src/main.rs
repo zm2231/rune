@@ -234,6 +234,13 @@ fn on_presented(p: &FramePresented) {
     say(format!("PERF marks{marks}"));
 }
 
+fn gpu_mib() -> String {
+    #[cfg(target_os = "ios")]
+    return format!(" gpu_allocated_mib={:.2}", uikit::gpu_allocated_mib());
+    #[cfg(not(target_os = "ios"))]
+    String::new()
+}
+
 fn say_first_frame(at: SystemTime, source: &str, main_wall: Option<SystemTime>) {
     let main_ms = main_wall.and_then(probe::since_start_ms);
     say(format!("PERF first_frame_ms={} main_ms={} mode={:?} source={source}", ms(probe::since_start_ms(at)), ms(main_ms), args().mode).to_lowercase());
@@ -259,7 +266,7 @@ fn link_extra(hz: &[f64]) -> String {
 }
 
 fn finish() {
-    say(format!("PERF after_scroll_footprint_mib={:.2}", probe::footprint_mib()));
+    say(format!("PERF after_scroll_footprint_mib={:.2}{}", probe::footprint_mib(), gpu_mib()));
     trace::step("finish", || format!("exit={}", args().exit));
     if args().exit { std::process::exit(0); }
 }
@@ -392,7 +399,7 @@ fn main() {
         trace::step("idle_wait", String::new);
         std::thread::sleep(Duration::from_secs_f64(args().idle));
         trace::step("idle_sample", String::new);
-        say(format!("PERF idle_footprint_mib={:.2} idle_s={}", probe::footprint_mib(), args().idle));
+        say(format!("PERF idle_footprint_mib={:.2} idle_s={}{}", probe::footprint_mib(), args().idle, gpu_mib()));
         if args().auto_scroll {
             trace::step("drive_asked", String::new);
             handle.update(|s, _| start_drive(s));

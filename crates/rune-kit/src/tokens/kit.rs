@@ -253,6 +253,10 @@ pub struct Kit {
     /// rest, focus and invalid stay apart in the theme's few colours (`text-input.css`,
     /// opencode#65100).
     pub forced: Option<Color>,
+    /// Whether this kit is for a system that asks for more contrast ([`Kit::increased_contrast`]
+    /// sets it). Code then reads at 7:1 rather than 4.5:1 on what it sits on, and a diff's
+    /// added and removed lines draw deeper tints.
+    pub increased_contrast: bool,
     /// Component metrics a theme sets in place of the built-in ones (button and switch sizes,
     /// field box, text area type, checkbox colours). `Metrics::default()` keeps them all.
     pub metrics: crate::Metrics,

@@ -779,7 +779,7 @@ impl View {
             .collect();
         let word = l.tints(c.kind).map(|t| t.word);
         let spans = layer(c.text.len(), &syntax, word.map_or(&[][..], |_| c.changes), word);
-        let spans = if fill == l.bg { spans } else { legible_on(spans, fill, l.text) };
+        let spans = if fill == l.bg { spans } else { legible_on(spans, fill, l.text, l.floor) };
         let (shown, spans, pads) = tabbed(c.text, spans, st.wraps());
         let mut t = rich(shown, spans).font(l.font).color(l.text).key("text");
         t = if st.wraps() { t.w_full() } else { t.single_line() };

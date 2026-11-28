@@ -139,6 +139,7 @@ impl Kit {
             ring: None,
             invalid_text: false,
             forced: None,
+            increased_contrast: false,
             metrics: crate::Metrics::default(),
             text_scale: 1.0,
             roles,

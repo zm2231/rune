@@ -1,4 +1,7 @@
+use rune::Color;
+
 use super::kit::Kit;
+use super::palette::{contrast, tint};
 use super::roles::{TextRole, TextRoles};
 
 impl Kit {
@@ -7,9 +10,11 @@ impl Kit {
     /// the base ink, and borders move a third of the way to it, more opaque as they go. A text
     /// role still at the colour [`TextRoles::from_palette`] gives it follows its token (so `meta`
     /// lifts with faint text); a role the theme or app set keeps its colour, so one already picked
-    /// for increased contrast ([`RoleColor`](crate::RoleColor)) is not lifted again.
+    /// for increased contrast ([`RoleColor`](crate::RoleColor)) is not lifted again. Code then
+    /// reads at 7:1 on what it sits on, and diffs tint added and removed lines more deeply.
     pub fn increased_contrast(&self) -> Kit {
         let mut k = self.clone();
+        k.increased_contrast = true;
         let before = TextRoles::from_palette(&k.c);
         let c = &mut k.c;
         c.text_muted = c.text_muted.mix(c.text_base, 0.5);
@@ -27,7 +32,29 @@ impl Kit {
         }
         k
     }
+
+    pub(crate) fn text_floor(&self) -> f32 {
+        if self.increased_contrast { 7.0 } else { 4.5 }
+    }
+
+    pub(crate) fn change_tint(&self, base: Color, hue: Color, t: f32) -> Color {
+        let plain = tint(base, hue, t);
+        if !self.increased_contrast {
+            return plain;
+        }
+        let deep = tint(base, hue, t * CHANGE_TINT_INCREASED);
+        let ink = if self.dark { Color::WHITE } else { Color::BLACK };
+        if contrast(ink, deep) >= self.text_floor() * CHANGE_TINT_HEADROOM {
+            return deep;
+        }
+        let [l, .., alpha] = plain.to_oklab();
+        let [_, a, b, _] = deep.to_oklab();
+        Color::from_oklab([l, a, b, alpha])
+    }
 }
+
+const CHANGE_TINT_INCREASED: f32 = 1.6;
+const CHANGE_TINT_HEADROOM: f32 = 1.5;
 
 #[cfg(test)]
 #[path = "contrast_tests.rs"]

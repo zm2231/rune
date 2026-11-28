@@ -4,7 +4,7 @@ use rune::{Cx, El, Env, Runtime, col};
 use rune_kit::markdown::MarkdownStyle;
 use rune_kit::{Kit, Markdown, Note};
 
-use crate::contrast::{built_in_kits, glyphs_on_fills};
+use crate::contrast::{built_in_kits, glyphs_on_fills, text_floor};
 
 const NOTE: &str = "```rust title=\"serve.rs\"\nfn serve() {\n-    let port = 8080;\n+    let port = 9090;\n}\n```";
 const PATCH: &str = "```diff\n-let port = 8080;\n+let port = 9090;\n```";
@@ -28,7 +28,7 @@ fn note_code_and_markdown_diff_lines_reach_text_contrast_on_their_tints_in_every
         }
         let glyphs = glyphs_on_fills(&rt.instances, &[[0.0, 0.0, 640.0, 480.0]], &plain);
         for g in &glyphs {
-            assert!(g.ratio >= 4.5, "{name}: glyph at {:?} is {:.2}:1 on its tint", g.at, g.ratio);
+            assert!(g.ratio >= text_floor(&kit), "{name}: glyph at {:?} is {:.2}:1, under {}:1, on its tint", g.at, g.ratio, text_floor(&kit));
         }
         let fills: BTreeSet<[u32; 4]> = glyphs.iter().map(|g| g.fill.map(f32::to_bits)).collect();
         assert!(fills.len() >= 4, "{name}: glyphs checked on both blocks' added and removed lines, saw {} fills", fills.len());

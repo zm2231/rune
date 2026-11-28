@@ -6,7 +6,7 @@ use std::hash::Hash;
 
 use super::super::*;
 use super::{Renderer, hash_of};
-use crate::tokens::palette::{TEXT_CONTRAST, legible};
+use crate::tokens::palette::legible;
 
 type AsciiMetrics = Option<([f32; 95], f32, bool)>;
 
@@ -389,8 +389,8 @@ impl Renderer {
             let header = ["@@", "diff ", "index ", "--- ", "+++ "].iter().any(|p| line.starts_with(p));
             let (tint, color) = match line.as_bytes().first() {
                 _ if header => (None, s.diff_hunk),
-                Some(b'+') => (Some(s.diff_add), legible(s.diff_add_text, s.diff_add, TEXT_CONTRAST)),
-                Some(b'-') => (Some(s.diff_remove), legible(s.diff_remove_text, s.diff_remove, TEXT_CONTRAST)),
+                Some(b'+') => (Some(s.diff_add), legible(s.diff_add_text, s.diff_add, s.text_floor)),
+                Some(b'-') => (Some(s.diff_remove), legible(s.diff_remove_text, s.diff_remove, s.text_floor)),
                 _ => (None, s.text),
             };
             let shown = if line.is_empty() { " " } else { line };

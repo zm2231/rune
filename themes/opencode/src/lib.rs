@@ -266,6 +266,7 @@ fn build(dark: bool) -> Kit {
         ring: None,
         invalid_text: true,
         forced: None,
+        increased_contrast: false,
         metrics: rune_kit::Metrics::default(),
         text_scale: 1.0,
         roles,

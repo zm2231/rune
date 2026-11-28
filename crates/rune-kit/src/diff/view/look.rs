@@ -44,6 +44,7 @@ pub(super) struct Look {
     pub(super) triangle_down: &'static Icon,
     pub(super) triangle_right: &'static Icon,
     pub(super) syntax: SyntaxTheme,
+    pub(super) floor: f32,
     /// Changes when anything above does, for memoised rows.
     pub(super) version: u64,
 }
@@ -64,8 +65,9 @@ fn resolve_line_height(font: TextStyle) -> TextStyle {
 impl<S: 'static> DiffView<S> {
     /// Override the syntax highlighting palette (by default [`SyntaxTheme::from_kit`]). On an
     /// added or removed line, a word-change highlight or a selected row, a colour under 4.5:1
-    /// contrast on what it sits on draws moved toward black or white along its hue until it
-    /// reaches it; unchanged lines draw the theme's colours as given.
+    /// contrast on what it sits on (7:1 with the kit's
+    /// [`increased_contrast`](crate::Kit::increased_contrast)) draws moved toward black or white
+    /// along its hue until it reaches it; unchanged lines draw the theme's colours as given.
     ///
     /// ```
     /// # use rune_kit::{Kit, diff::{DiffState, DiffView}};
@@ -126,9 +128,9 @@ impl Look {
         let bg = c.bg_base;
         let dark = k.dark;
         let tints = |hue: Color, fg: Color| Tints {
-            line: tint(bg, hue, if dark { 0.13 } else { 0.1 }),
-            gutter: tint(bg, hue, if dark { 0.2 } else { 0.17 }),
-            word: tint(bg, hue, if dark { 0.32 } else { 0.27 }),
+            line: k.change_tint(bg, hue, if dark { 0.13 } else { 0.1 }),
+            gutter: k.change_tint(bg, hue, if dark { 0.2 } else { 0.17 }),
+            word: k.change_tint(bg, hue, if dark { 0.32 } else { 0.27 }),
             number: tint(c.text_muted, hue, 0.7),
             bar: hue,
             count: fg,
@@ -165,13 +167,15 @@ impl Look {
             triangle_down: k.glyph.triangle_down,
             triangle_right: k.glyph.triangle_right,
             syntax: spec.syntax_theme.unwrap_or_else(|| SyntaxTheme::from_kit(k)),
+            floor: k.text_floor(),
             version: 0,
         };
         let mut h = std::hash::DefaultHasher::new();
-        for c in [look.bg, look.text, look.add.bar, look.del.bar, look.accent, look.header_bg] {
+        for c in [look.bg, look.text, look.add.bar, look.add.line, look.del.bar, look.del.line, look.accent, look.header_bg] {
             [c.r, c.g, c.b, c.a].map(f32::to_bits).hash(&mut h);
         }
         look.font.hash(&mut h);
+        look.floor.to_bits().hash(&mut h);
         [rows.header, rows.gap, rows.note].map(f32::to_bits).hash(&mut h);
         look.syntax.hash(&mut h);
         look.version = h.finish();

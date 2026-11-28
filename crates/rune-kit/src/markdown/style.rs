@@ -95,6 +95,7 @@ pub struct MarkdownStyle {
     pub(super) diff_remove_text: Color,
     pub(super) diff_hues: [Color; 2],
     pub(super) diff_hunk: Color,
+    pub(super) text_floor: f32,
     pub(super) syntax: SyntaxTheme,
     pub(super) highlight: bool,
     pub(super) selection: Color,
@@ -251,12 +252,13 @@ impl MarkdownStyle {
             math_scale: 2.0,
             link_icon: None,
             broken_glyph: k.text_size(16.0),
-            diff_add: tint(c.layer_01, k.roles.added, if k.dark { 0.11 } else { 0.14 }),
-            diff_remove: tint(c.layer_01, k.roles.removed, if k.dark { 0.11 } else { 0.14 }),
+            diff_add: k.change_tint(c.layer_01, k.roles.added, if k.dark { 0.11 } else { 0.14 }),
+            diff_remove: k.change_tint(c.layer_01, k.roles.removed, if k.dark { 0.11 } else { 0.14 }),
             diff_add_text: c.text_base,
             diff_remove_text: c.text_base,
             diff_hues: [k.roles.added, k.roles.removed],
             diff_hunk: c.text_muted,
+            text_floor: k.text_floor(),
             syntax: SyntaxTheme::from_kit(k),
             highlight: true,
             selection: k.selection(),
@@ -555,8 +557,9 @@ impl MarkdownStyle {
         self
     }
     /// The text colours of a diff's added and removed lines (the body text colour by default).
-    /// A colour under 4.5:1 contrast on its line's tint draws moved toward black or white along
-    /// its hue until it reaches it.
+    /// A colour under 4.5:1 contrast on its line's tint (7:1 with the kit's
+    /// [`increased_contrast`](crate::Kit::increased_contrast)) draws moved toward black or white
+    /// along its hue until it reaches it.
     pub fn diff_text(mut self, added: Color, removed: Color) -> Self {
         self.diff_add_text = added;
         self.diff_remove_text = removed;
@@ -764,6 +767,7 @@ impl std::hash::Hash for MarkdownStyle {
             diff_remove_text,
             diff_hues,
             diff_hunk,
+            text_floor,
             syntax,
             highlight,
             selection,
@@ -796,7 +800,7 @@ impl std::hash::Hash for MarkdownStyle {
                 }
             }
         }
-        (diff_add, diff_remove, diff_add_text, diff_remove_text, diff_hues, diff_hunk, syntax, highlight, selection).hash(state);
+        (diff_add, diff_remove, diff_add_text, diff_remove_text, diff_hues, diff_hunk, f32_bits(text_floor), syntax, highlight, selection).hash(state);
         (
             highlight_bg,
             highlight_fg,

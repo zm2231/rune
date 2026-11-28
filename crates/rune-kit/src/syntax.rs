@@ -55,6 +55,7 @@ use rune_highlights::{Lang, Stream, Token};
 
 use crate::Kit;
 use crate::budget::Budget;
+use crate::tokens::palette::legible;
 
 pub use paths::lang_for_path;
 
@@ -101,7 +102,27 @@ pub enum Syntax {
 }
 
 impl Syntax {
-    pub(crate) const COUNT: usize = 17;
+    /// Every kind, in declaration order.
+    pub const ALL: [Syntax; 17] = [
+        Syntax::Keyword,
+        Syntax::String,
+        Syntax::Number,
+        Syntax::Comment,
+        Syntax::Type,
+        Syntax::Function,
+        Syntax::Property,
+        Syntax::Punctuation,
+        Syntax::Inserted,
+        Syntax::Deleted,
+        Syntax::Parameter,
+        Syntax::Heading,
+        Syntax::Link,
+        Syntax::Operator,
+        Syntax::Regex,
+        Syntax::Attribute,
+        Syntax::Variable,
+    ];
+    pub(crate) const COUNT: usize = Syntax::ALL.len();
 }
 
 /// What colours a highlighted range: a kind of token, coloured by the [`SyntaxTheme`] in use,
@@ -441,7 +462,10 @@ impl SyntaxTheme {
     /// Muted token colours: the familiar hues (violet keywords, green strings, orange numbers,
     /// teal types, blue functions, rose properties) at one lightness a step from the text's, so
     /// contrast follows the theme. Comments and punctuation are the theme's quieter text greys,
-    /// and a diff's lines its success and danger colours.
+    /// and a diff's lines its success and danger colours. Each colour reads at 4.5:1 on the
+    /// surfaces code sits on (`bg_base`, `bg_deep` and `layer_01`), or 7:1 with the kit's
+    /// [`increased_contrast`](Kit::increased_contrast): one that would fall short moves toward
+    /// black or white along its hue until it does.
     ///
     /// The hues are fixed rather than taken from the theme's status colours: those vary too much
     /// between themes (OpenCode's "info" is magenta) to keep the token kinds apart.
@@ -468,6 +492,12 @@ impl SyntaxTheme {
         s[Syntax::Regex as usize] = paint(170.0);
         s[Syntax::Attribute as usize] = paint(40.0);
         s[Syntax::Variable as usize] = c.text_base.mix(c.text_contrast, 0.25);
+        let floor = k.text_floor();
+        for color in &mut s {
+            for surface in [c.bg_base, c.bg_deep, c.layer_01] {
+                *color = legible(*color, surface, floor);
+            }
+        }
         SyntaxTheme { colors: s, weights: [0; Syntax::COUNT] }
     }
 

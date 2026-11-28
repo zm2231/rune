@@ -13,7 +13,7 @@ pub struct PaletteSeed {
     pub accent: Color,
 }
 
-fn contrast(a: Color, b: Color) -> f32 {
+pub(crate) fn contrast(a: Color, b: Color) -> f32 {
     let (a, b) = (a.luminance(), b.luminance());
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
@@ -70,8 +70,6 @@ pub(crate) fn tint(base: Color, hue: Color, t: f32) -> Color {
     Color::from_oklab([0, 1, 2, 3].map(|i| if i == 3 { a[3] } else { a[i] + (b[i] - a[i]) * t }))
 }
 
-pub(crate) const TEXT_CONTRAST: f32 = 4.5;
-
 pub(crate) fn legible(fg: Color, fill: Color, min: f32) -> Color {
     let fg = if fg.a < 1.0 { Color { a: 1.0, ..fill.mix(fg, fg.a) } } else { fg };
     if contrast(fg, fill) >= min {
@@ -79,7 +77,7 @@ pub(crate) fn legible(fg: Color, fill: Color, min: f32) -> Color {
     }
     let pole = |dark: bool| if dark { Color::BLACK } else { Color::WHITE };
     let own_side = fg.luminance() <= fill.luminance();
-    let dark = if contrast(pole(own_side), fill) >= min { own_side } else { !own_side };
+    let dark = if contrast(pole(own_side), fill) >= min.min(contrast(pole(!own_side), fill)) { own_side } else { !own_side };
     let end = pole(dark);
     if contrast(end, fill) < min {
         return end;

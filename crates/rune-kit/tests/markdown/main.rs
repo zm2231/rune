@@ -16,3 +16,4 @@ mod markdown_select;
 mod markdown_stream_tail;
 mod markdown_table_card;
 mod sibling_roots;
+mod syntax_contrast;

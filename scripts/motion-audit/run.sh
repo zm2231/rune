@@ -38,6 +38,7 @@ run gallery-scroll-bar 4.0 $B/kit-gallery --scene rune-scroll-bar--basic --scrip
 run gallery-scroll-bar-hover 3.2 $B/kit-gallery --scene rune-scroll-bar--basic --script $S/gallery-scroll-bar-hover.json
 run gallery-scroll-bar-grow 2.4 $B/kit-gallery --scene rune-scroll-bar--grow --scroll-bars always --script $S/gallery-scroll-bar-grow.json
 run gallery-modal     5.5 $B/kit-gallery --scene motion-focus-modal --script examples/kit-gallery/scripts/motion-focus-modal.json
+run gallery-spinner-sizes 2.0 $B/kit-gallery --scene components-spinner--sizes
 run gallery-stagger-list 3.0 $B/kit-gallery --scene motion-stagger-list --script examples/kit-gallery/scripts/motion-stagger-list.json
 run gallery-mermaid-stream 4.5 $B/kit-gallery --scene rune-markdown--mermaid-streaming --size 1100x1400 --script $S/gallery-mermaid-stream.json
 run gallery-markdown-stream-tail 3.0 $B/kit-gallery --scene rune-markdown--stream-tail --script $S/gallery-markdown-stream-tail.json

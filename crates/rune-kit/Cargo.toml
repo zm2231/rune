@@ -71,6 +71,10 @@ name = "scroll_bench"
 required-features = ["markdown", "frame-profile"]
 
 [[example]]
+name = "spinner_frames"
+required-features = ["frame-profile"]
+
+[[example]]
 name = "layout_text_cost"
 required-features = ["markdown", "frame-profile"]
 

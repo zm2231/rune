@@ -845,6 +845,12 @@ impl El {
     pub fn cycle(self, c: Cycle) -> Self {
         self.looping(rune_motion::LoopSpec::cycle(c))
     }
+    /// Draws `dots` in its fill colour instead of a filled box, each fading on its own
+    /// wall-clock cycle; reduced motion holds each at its `still`. One element and one loop,
+    /// however many dots, so an activity indicator costs one node.
+    pub fn cycle_dots(self, dots: &'static [crate::CycleDot]) -> Self {
+        self.looping(rune_motion::LoopSpec::dots(dots))
+    }
 }
 
 /// A CSS-style box shadow. Outer shadows draw behind the element; `inset` ones draw inside its

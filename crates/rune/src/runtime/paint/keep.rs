@@ -336,6 +336,7 @@ impl RuntimeCore {
         if !k.on {
             return;
         }
+        k.cycles.resample_prev(&mut k.instances, self.clock, self.reduced_motion);
         k.moved_at.clear();
         k.moved_at.resize(n, false);
         for id in &k.moved {
@@ -450,8 +451,13 @@ impl RuntimeCore {
                 }
                 return None;
             }
+            let at = self.instances.len();
             self.keep_copy(i, o, end, glyph_count);
+            self.paint.keep.cycles.carry(o, end - i, i, r.inst[0] as usize, at);
             return Some(end - i);
+        }
+        if self.paint.keep.cycles.holds_dots_in(o, end - i) {
+            return None;
         }
         let plan = shift::plan(self, o, pinh, pcold, inh, inh_base)?;
         if cfg!(debug_assertions) && !force_copy {
@@ -556,7 +562,7 @@ impl RuntimeCore {
         }
         let k = &mut self.paint.keep;
         let start = k.recs[i].inst[0] as usize;
-        let mut ok = painted_ok;
+        let mut ok = painted_ok && cycle::dots(&self.tree.nodes[i]).is_none_or(|d| k.cycles.holds_dots(i, d.len()));
         for q in &self.instances[start..] {
             let kind = q.params[1];
             if kind == KIND_IMAGE || kind == KIND_EFFECT || kind == crate::render::KIND_BACKDROP_BLUR || (kind == KIND_GLYPH && q.radii[3] > 0.0) {
@@ -781,7 +787,7 @@ fn static_unfit(n: &Node) -> Option<&'static str> {
     let why = if n.input.is_some() { "input" }
         else if n.ime_cursor { "ime cursor" }
         else if n.scroll.is_some() { "scroll" }
-        else if n.looping.is_some() { "looping" }
+        else if n.looping.is_some() && cycle::dots(n).is_none() { "looping" }
         else if !n.live.is_empty() { "live value" }
         else if n.vis.surface.is_some() { "surface" }
         else if n.material.is_some() { "material" }
@@ -814,7 +820,7 @@ fn dynamic_unfit(rt: &RuntimeCore, i: usize, sel: &[(usize, usize, usize)], mark
         else if marks.iter().any(|r| r.0 == i) { "text marks" }
         else if rt.caret_browse_collapsed_on(i).is_some() { "caret" }
         else if rt.motion.reveal_fading(id) { "reveal" }
-        else if rt.motion.has_loop(id) { "loop" }
+        else if rt.motion.has_loop(id) && cycle::dots(&rt.tree.nodes[i]).is_none() { "loop" }
         else if !rt.paint.static_scales.is_empty() && rt.paint.static_scales.contains_key(&id) { "settling scale" }
         else if rt.paint.row_mask[i] >= 0.0 { "row mask" }
         else if rt.scroll.hold_of(&rt.tree.nodes[i].path).is_some() { "sticky hold" }
@@ -826,3 +832,6 @@ fn dynamic_unfit(rt: &RuntimeCore, i: usize, sel: &[(usize, usize, usize)], mark
 #[cfg(test)]
 #[path = "keep_tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "keep_dots_tests.rs"]
+mod dots_tests;

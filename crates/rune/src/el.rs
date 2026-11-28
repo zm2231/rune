@@ -77,6 +77,7 @@ pub use pills::{InlineIcon, InlineImage};
 pub use rare::OptionAsAlt;
 pub(crate) use rare::{ElCold, ElFlags, RoleTag};
 pub use rune_motion::Cycle;
+pub use rune_motion::CycleDot;
 pub(crate) use scroll::FadeStyle;
 pub use scroll::ScrollFade;
 pub use scroll::ScrollSpec;

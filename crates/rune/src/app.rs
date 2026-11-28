@@ -1146,9 +1146,9 @@ impl<S: 'static> App<S> {
     /// tails wake on their timer at `reveal_fps` while any concurrent unsteered animation (such as
     /// timeline growth or scroll following a stream) paces at `ambient_fps`.
     ///
-    /// Enforced on macOS `DisplayLink` windows today; Windows, Linux, web, overlays, and
-    /// headless runs ignore it (matching [`App::on_frame_presented`] and
-    /// [`App::exclude_from_capture`]).
+    /// Stepped loops (a spinner, a [`Cycle`](crate::Cycle), a rotation with `fps`) are paced on
+    /// every desktop window from 600 ms after input; display-rate motion only on macOS
+    /// `DisplayLink` windows. The web, overlays and headless runs ignore it.
     ///
     /// ```no_run
     /// use rune::{App, AppSpec, text};

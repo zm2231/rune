@@ -1044,8 +1044,8 @@ impl<S: 'static> WindowSpec<S> {
         /// Cap frame pacing (Hz) for motion no recent user input is steering in this window
         /// (`0.0`, default = uncapped display rate), like [`App::ambient_fps`].
         ///
-        /// Enforced on macOS `DisplayLink` windows today; ignored on Windows, Linux, web,
-        /// overlays, and headless runs.
+        /// Stepped loops are paced on every desktop window, display-rate motion on macOS only;
+        /// the web, overlays and headless runs ignore it.
         ///
         /// ```no_run
         /// use rune::{AppSpec, WindowSpec, text};

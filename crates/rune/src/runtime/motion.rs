@@ -13,6 +13,7 @@ pub(super) mod landing_hold;
 pub(super) mod live_check;
 pub(super) mod live_latch;
 pub(super) mod loop_clock;
+pub(super) mod loop_pace;
 pub(super) mod motion_elements;
 pub(super) mod props;
 pub(super) mod reveal_phase;

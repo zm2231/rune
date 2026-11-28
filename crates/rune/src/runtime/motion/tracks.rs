@@ -58,6 +58,7 @@ pub(crate) struct MotionState {
     /// `El::matched` handovers completed during the current frame, cleared when the next frame begins.
     handovers: Vec<RecordedHandover>,
     pub(super) loop_clock: loop_clock::LoopClock,
+    pub(super) loop_pace: loop_pace::LoopPace,
     /// `motion_elements`' per-node scratch, kept so a frame doesn't allocate.
     pub(in crate::runtime) motion_scratch: std::cell::RefCell<Vec<(u32, u16, bool)>>,
     /// The recorder `Tx::record_rewind` attached (`runtime/motion/rewind.rs`).
@@ -97,6 +98,7 @@ impl MotionState {
             matched: Vec::new(),
             handovers: Vec::new(),
             loop_clock: Default::default(),
+            loop_pace: Default::default(),
             motion_scratch: Default::default(),
             rewind: None,
             #[cfg(debug_assertions)]

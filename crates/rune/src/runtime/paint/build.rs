@@ -1,6 +1,7 @@
 //! Frame paint pass: `Scene` presented poses, clips, layers and text → GPU `Instance`s.
 use super::*;
 
+mod dots;
 mod layers;
 pub(in crate::runtime) mod pose;
 mod primitives;
@@ -199,6 +200,14 @@ impl RuntimeCore {
                 self.keep_or_paint(i, &pinh, &cold_copy, is_default, &mut glyph_count)
             } {
                 skip_to = paint_index + len;
+                if self.frame.live.visible() && !self.reduced_motion {
+                    for c in 0..self.paint.keep.cycles.carried.len() {
+                        let id = self.tree.nodes[self.paint.keep.cycles.carried[c]].id;
+                        let lnow = self.scene.store().node_time(id);
+                        self.motion.schedule_loop_wake(&mut self.paint, &self.scene, self.clock, self.time_scale, id, lnow, now, &mut ambient);
+                    }
+                }
+                self.paint.keep.cycles.carried.clear();
                 continue;
             }
             if raised {

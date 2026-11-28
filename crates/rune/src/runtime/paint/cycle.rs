@@ -1,14 +1,22 @@
 //! A loop-only step: what a loop changes on screen, without the scene being built again. The
 //! ordinary paint records the instances each eligible loop drew: a spinner's dot (a hidden,
-//! decorative leaf with one plain fill and an opacity cycle, nothing else about it moving), a
-//! loader's turning icon (one glyph whose turn is all that moves), and a shimmer's sliding window
-//! (`slide.rs`). A step samples the loops into those instances, and nothing else runs. Every
-//! paint starts the record again. The host draws only what changed
-//! (`Renderer::arm_cycle` on the web, `Renderer::arm_loop` in a window).
+//! decorative leaf with one plain fill and an opacity cycle, nothing else about it moving), each
+//! dot of a dots loop (`LoopKind::Dots`), a loader's turning icon (one glyph whose turn is all
+//! that moves), and a shimmer's sliding window (`slide.rs`). A step samples the loops into those
+//! instances, and nothing else runs. Every paint starts the record again; a subtree paint keep
+//! copies brings its dots' record along, sampled at the paint's clock. The host draws only what
+//! changed (`Renderer::arm_cycle` on the web, `Renderer::arm_loop` in a window).
 
 use super::*;
 
 const WAKE_SLACK: f64 = 1e-6;
+
+pub(super) fn dots(n: &Node) -> Option<&'static [rune_motion::CycleDot]> {
+    match n.looping.as_ref().map(|l| l.kind) {
+        Some(rune_motion::LoopKind::Dots(d)) => Some(d),
+        _ => None,
+    }
+}
 
 #[derive(Default)]
 pub(in crate::runtime) struct CyclePaint {
@@ -17,6 +25,9 @@ pub(in crate::runtime) struct CyclePaint {
     paint: u64,
     generation: u64,
     slots: Vec<Slot>,
+    prev: Vec<Slot>,
+    pub(in crate::runtime) carried: Vec<usize>,
+    loops: usize,
     turns: Vec<Turn>,
     pub(super) slides: Vec<super::slide::Slide>,
     pub(super) icons: Vec<IconSlot>,
@@ -39,6 +50,7 @@ pub(in crate::runtime) struct CyclePaint {
     pub(super) anchor: Option<(usize, super::slide::Anchor)>,
 }
 
+#[derive(Clone, Copy)]
 struct Slot {
     node: usize,
     at: usize,
@@ -47,6 +59,7 @@ struct Slot {
     /// What else fades it: its own and its ancestors' opacity besides the cycle.
     scale: f32,
     rect: [f32; 4],
+    whole: bool,
 }
 
 struct Turn {
@@ -74,7 +87,12 @@ impl CyclePaint {
     pub(in crate::runtime) fn begin(&mut self, generation: u64) {
         self.paint += 1;
         self.generation = generation;
+        std::mem::swap(&mut self.slots, &mut self.prev);
         self.slots.clear();
+        self.prev.retain(|s| !s.whole);
+        self.prev.sort_unstable_by_key(|s| (s.node, s.at));
+        self.carried.clear();
+        self.loops = 0;
         self.turns.clear();
         self.slides.clear();
         self.icons.clear();
@@ -89,7 +107,14 @@ impl CyclePaint {
     pub(in crate::runtime) fn other_deadline(&mut self) { self.mixed = true; }
 
     pub(in crate::runtime) fn record(&mut self, node: usize, at: usize, curve: crate::Cycle, (ink, scale): ([f32; 4], f32), rect: [f32; 4]) {
-        self.slots.push(Slot { node, at, curve, ink, scale, rect });
+        self.slots.push(Slot { node, at, curve, ink, scale, rect, whole: true });
+        self.loops += 1;
+    }
+
+    pub(in crate::runtime) fn loop_recorded(&mut self) { self.loops += 1; }
+
+    pub(in crate::runtime) fn record_dot(&mut self, node: usize, at: usize, curve: crate::Cycle, (ink, scale): ([f32; 4], f32), rect: [f32; 4]) {
+        self.slots.push(Slot { node, at, curve, ink, scale, rect, whole: false });
     }
 
     pub(in crate::runtime) fn folded(&mut self, marker: usize, opacity: f32) {
@@ -108,6 +133,43 @@ impl CyclePaint {
         for sl in &mut self.slides {
             if sl.instances.start > marker { sl.instances.start -= 1; }
             if sl.instances.end > marker { sl.instances.end -= 1; }
+        }
+    }
+
+    pub(in crate::runtime) fn holds_dots(&self, node: usize, dots: usize) -> bool {
+        dots > 0 && self.slots.len() >= dots && self.slots[self.slots.len() - dots..].iter().all(|s| s.node == node && !s.whole)
+    }
+
+    fn prev_in(&self, o: usize, len: usize) -> std::ops::Range<usize> {
+        self.prev.partition_point(|s| s.node < o)..self.prev.partition_point(|s| s.node < o + len)
+    }
+
+    pub(in crate::runtime) fn holds_dots_in(&self, o: usize, len: usize) -> bool {
+        !self.prev_in(o, len).is_empty()
+    }
+
+    pub(in crate::runtime) fn resample_prev(&self, instances: &mut [Instance], wall: f64, reduced: bool) {
+        for s in &self.prev {
+            if let Some(q) = instances.get_mut(s.at) {
+                let a = if reduced { s.curve.still } else { s.curve.sample(wall) } * s.scale;
+                q.fill = s.ink.map(|v| v * a);
+                q.params[3] = a;
+            }
+        }
+    }
+
+    pub(in crate::runtime) fn carry(&mut self, o: usize, len: usize, i: usize, from: usize, to: usize) {
+        let range = self.prev_in(o, len);
+        let mut last = usize::MAX;
+        for k in range {
+            let s = self.prev[k];
+            let node = s.node - o + i;
+            if node != last {
+                self.loops += 1;
+                self.carried.push(node);
+                last = node;
+            }
+            self.slots.push(Slot { node, at: s.at - from + to, ..s });
         }
     }
 
@@ -157,7 +219,7 @@ impl RuntimeCore {
         let wall = self.now_clock();
         let keep = &self.paint.keep.cycles;
         if wall + WAKE_SLACK < due || keep.mixed || !keep.icons.is_empty() || keep.generation != self.commit.commits || keep.slots.is_empty()
-            || keep.slots.len() + self.unseen_loops() != self.motion.loops_len() || self.reduced_motion || self.time_scale <= 0.0
+            || keep.loops + self.unseen_loops() != self.motion.loops_len() || self.reduced_motion || self.time_scale <= 0.0
             || !self.live_visible() || !self.rests_except_loop() || self.tracing()
             || self.poll_wake_deadline().is_some_and(|d| d <= wall)
         { return false; }
@@ -196,14 +258,14 @@ impl RuntimeCore {
         let mut wall = if virtual_check { self.clock + dt } else { self.now_clock() };
         let timer_due = self.poll_wake_deadline().is_some_and(|d| d <= wall);
         let keep = &self.paint.keep.cycles;
-        let loops = keep.slots.len() + keep.turns.len() + 2 * keep.slides.len() + self.unseen_loops();
+        let loops = keep.loops + keep.turns.len() + 2 * keep.slides.len() + self.unseen_loops();
         let has_icons = !keep.icons.is_empty();
         let why = if self.motion.loops_is_empty() && !has_icons { "no loop" }
             else if has_icons && !self.motion.loops_is_empty() { "an animated icon beside a loop" }
             else if loops != self.motion.loops_len() { self.loop_refusal() }
             else if keep.mixed || keep.generation != self.commit.commits { "other motion or a commit" }
             else if (self.wall_start.is_none() && !virtual_check) || self.reduced_motion || self.time_scale <= 0.0 || !self.live_visible() || self.tracing() { "not live" }
-            else if dt < 0.0 || (!has_icons && dt > crate::frame::clock::MAX_GAP) { "late" }
+            else if dt < 0.0 || (!has_icons && dt > crate::frame::clock::MAX_GAP.max(2.0 * self.ambient.map_or(0.0, |a| self.motion.paced(f64::from(a), wall)))) { "late" }
             else if timer_due && poll.is_none() { "timer due" }
             else if self.commit.virtual_fill.resuming(wall) || self.commit.virtual_items.fill_resuming(wall) { "a list filling" }
             else if let Some(work) = self.waiting_work() { work }
@@ -421,14 +483,16 @@ impl RuntimeCore {
             let q = &mut self.instances[s.at];
             q.fill = s.ink.map(|v| v * a);
             q.params[3] = a;
-            let inh = &mut self.paint.inh_scratch[s.node];
-            inh.opacity = a; inh.paint_opacity = a; inh.hit_opacity = a;
+            if s.whole {
+                let inh = &mut self.paint.inh_scratch[s.node];
+                inh.opacity = a; inh.paint_opacity = a; inh.hit_opacity = a;
+            }
             // Every dot, moved or not: what the screen shows is the renderer's to know (a frame
             // that missed its drawable drew nothing), and `arm_loop` redraws only those that
             // differ from what it holds.
             patched.push(s.at as u32);
         }
-        if let (Some((due, phase)), Some(dt)) = (self.motion.loop_wake(), self.ambient.map(f64::from)) && self.clock + WAKE_SLACK >= due {
+        if let (Some((due, phase)), Some(dt)) = (self.motion.loop_wake(), self.ambient.map(|a| self.motion.paced(f64::from(a), self.clock))) && self.clock + WAKE_SLACK >= due {
             self.motion.set_loop_wake((self.clock + dt, phase + (self.clock + dt - due) * f64::from(self.time_scale)));
         }
     }

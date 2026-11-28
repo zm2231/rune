@@ -368,6 +368,7 @@ impl crate::runtime::tracks::MotionState {
             let node_k = scene.store().node_time_scale(node_id) as f64;
             if let Some(dt) = track.frame_interval().filter(|_| track.active(lnow)) {
                 *ambient = Some(ambient.map_or(dt as f32, |a| a.min(dt as f32)));
+                let dt = self.paced(dt, clock);
                 let wake = clock + dt;
                 self.arm_loop_wake(wake, now + dt * time_scale as f64);
             } else if time_scale > 0.0 && node_k > 0.0 {

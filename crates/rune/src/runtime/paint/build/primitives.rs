@@ -284,7 +284,12 @@ impl RuntimeCore {
         // Dimmed, an opaque fill and its gradient draw as one opaque gradient, so they fade
         // together as a layer at that opacity would (CSS `opacity`), not one through the other.
         let flat = layered && o < 1.0 && base[3] >= 1.0 && n.vis.gradient.is_some();
-        if layered {
+        if let Some(rune_motion::LoopKind::Dots(dots)) = n.looping.as_ref().map(|l| l.kind) {
+            let stepped = !isolate && !in_cache && !skip_paint && loop_vis && base_opacity >= 1.0 / 255.0 && pinh.paint_opacity > 0.0
+                && n.vis.layer_opacity == 1.0 && n.vis.paint_alpha == 1.0 && !turned && cover.is_none();
+            let b = super::dots::DotsBox { rect: [r[0], r[1], w, h], fill: resolved_fill, opacity: o, clip, fade, stepped, srgb, wall: self.clock, reduced: self.reduced_motion };
+            super::dots::paint(&mut self.instances, &mut self.paint.keep.cycles, i, dots, b);
+        } else if layered {
             // Fill, gradient and overlays first, then the border on top, as in CSS.
             if has_area && fill[3] > 0.0005 && !flat {
                 self.instances.push(Instance {

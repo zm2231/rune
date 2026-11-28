@@ -30,11 +30,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::cpu_frame::{Cpu, RetiredCpu};
-use crate::gpu::fallback::Policy;
 use crate::machine::Effects;
 use crate::render::{Gpu, Instance, Renderer};
 use crate::time::Instant;
-use crate::window::CpuFirst;
 use crate::window::WakeEvent;
 use crate::window::host::Host;
 use crate::window::surface::Win;
@@ -186,13 +184,6 @@ impl Pick {
     }
 }
 
-/// Whether an idle hand-over leaves a software GPU (`wgpu::DeviceType::Cpu`) alone: under
-/// `CpuFirst::Auto` with the adapter Rune's own choice. A named adapter (`Policy::Pinned`) is
-/// what was asked for, and `Only` starts no idle hand-over at all.
-pub(super) fn defers_software(mode: CpuFirst, policy: Policy) -> bool {
-    mode == CpuFirst::Auto && policy == Policy::Automatic
-}
-
 /// A failed try is made again after this long.
 const RETRY_AFTER: Duration = Duration::from_secs(30);
 /// Tries in all before the window stays on the CPU.
@@ -259,7 +250,7 @@ impl Host {
 
     /// Whether a hand-over started on idle (or retried) leaves a software GPU alone.
     fn idle_defers_software(&self) -> bool {
-        defers_software(self.effective_cpu_first(), crate::gpu::pick::env_policy())
+        self.effective_cpu_first().idle_defers_software(crate::gpu::pick::env_policy(), self.app.has_compositor())
     }
 
     /// A frame needs what only the GPU draws: the GPU starts now if it hasn't, software or not.
@@ -285,7 +276,7 @@ impl Host {
         let Some(w) = self.win.as_ref() else { return false };
         let SurfaceMode::Cpu { job: GpuJob::Waiting { retry_at, .. }, .. } = &w.native.mode else { return false };
         let due = w.first_frame.ready() && retry_at.is_none_or(|at| at <= crate::time::now());
-        self.effective_cpu_first().gpu_owed(due)
+        self.effective_cpu_first().gpu_owed(due, self.app.has_compositor())
     }
 
     /// Starts making the GPU for this window on a thread. `defer`: a software GPU leaves the

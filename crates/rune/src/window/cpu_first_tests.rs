@@ -63,13 +63,32 @@ fn desktop_opens_on_cpu_decision_matrix() {
 fn desktop_gpu_owed_decision_matrix() {
     // Not ready or retry backoff still active: never owed in any mode.
     for mode in [CpuFirst::Auto, CpuFirst::Only, CpuFirst::Off] {
-        assert!(!mode.gpu_owed(false), "{mode:?} not due");
+        for compositor in [false, true] {
+            assert!(!mode.gpu_owed(false, compositor), "{mode:?} not due");
+        }
     }
 
     // Ready and due: Auto starts background handover, Only suppresses it, Off does not suppress.
-    assert!(CpuFirst::Auto.gpu_owed(true));
-    assert!(!CpuFirst::Only.gpu_owed(true));
-    assert!(CpuFirst::Off.gpu_owed(true));
+    assert!(CpuFirst::Auto.gpu_owed(true, false));
+    assert!(!CpuFirst::Only.gpu_owed(true, false));
+    assert!(CpuFirst::Off.gpu_owed(true, false));
+
+    // A compositor draws nothing on the CPU renderer, so even Only hands over.
+    for mode in [CpuFirst::Auto, CpuFirst::Only, CpuFirst::Off] {
+        assert!(mode.gpu_owed(true, true), "{mode:?} with a compositor");
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn only_an_automatic_auto_hand_over_without_a_compositor_leaves_a_software_gpu_alone() {
+    use crate::gpu::fallback::Policy;
+
+    assert!(CpuFirst::Auto.idle_defers_software(Policy::Automatic, false));
+    assert!(!CpuFirst::Auto.idle_defers_software(Policy::Automatic, true));
+    assert!(!CpuFirst::Auto.idle_defers_software(Policy::Pinned, false));
+    assert!(!CpuFirst::Only.idle_defers_software(Policy::Automatic, false));
+    assert!(!CpuFirst::Off.idle_defers_software(Policy::Automatic, false));
 }
 
 #[cfg(not(target_arch = "wasm32"))]

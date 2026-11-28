@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
 
-use super::{GpuJob, Pick, PickEffect, PickEvent, PickState, SurfaceMode, defers_software, step_pick};
+use super::{GpuJob, Pick, PickEffect, PickEvent, PickState, SurfaceMode, step_pick};
 use crate::gpu::fallback::Policy;
 use crate::window::CpuFirst;
 use crate::platform::cpu_frames::Put;
@@ -130,14 +130,6 @@ fn only_a_window_that_switched_goes_back() {
     assert!(!mode.switch_back(GpuJob::Failed));
     assert!(matches!(mode, SurfaceMode::Cpu { job: GpuJob::Building { tries: 1, .. }, .. }));
     assert!(!SurfaceMode::Gpu.switch_back(GpuJob::Failed));
-}
-
-#[test]
-fn only_an_automatic_auto_hand_over_leaves_a_software_gpu_alone() {
-    assert!(defers_software(CpuFirst::Auto, Policy::Automatic));
-    assert!(!defers_software(CpuFirst::Auto, Policy::Pinned));
-    assert!(!defers_software(CpuFirst::Only, Policy::Automatic));
-    assert!(!defers_software(CpuFirst::Off, Policy::Automatic));
 }
 
 #[test]

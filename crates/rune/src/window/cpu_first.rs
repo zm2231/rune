@@ -32,14 +32,17 @@
 ///   `FontSmoothing::Slug`, Slug outline glyphs, unknown instance kinds, or a mismatched target
 ///   hold the previous frame until the GPU takes over, and frame 1 stays cloaked until drawn.
 ///   Hardware GPU machines, transparent windows, overlays, pinned `WGPU_ADAPTER_NAME` adapters, and
-///   [`CpuFirst::Off`] are unchanged.
+///   [`CpuFirst::Off`] are unchanged. A window with an [`App::compositor`](crate::App::compositor)
+///   hands over after its first frame in every mode, to WARP too: the CPU renderer never draws
+///   what a compositor draws.
 /// - **Linux**: applies to visible opaque windows that do not already hold a GPU device. Under
 ///   [`CpuFirst::Only`], background GPU handover does not start on idle unless a frame requires a
 ///   GPU-only feature. Under [`CpuFirst::Auto`] with `WGPU_ADAPTER_NAME` unset, the background GPU
 ///   still starts on idle, but when its adapter is a software one (`wgpu::DeviceType::Cpu`:
 ///   lavapipe, llvmpipe) the window stays on `CpuPainter` instead of handing over to it; a frame
 ///   that later needs a GPU-only feature hands over to it, keeping the previous frame until the
-///   GPU draws. Transparent windows open on the GPU whenever a GPU surface can be made; under
+///   GPU draws. A window with an [`App::compositor`](crate::App::compositor) hands over after its
+///   first frame in every mode, to a software GPU too. Transparent windows open on the GPU whenever a GPU surface can be made; under
 ///   [`CpuFirst::Auto`] or [`CpuFirst::Only`] with automatic adapter selection (`WGPU_ADAPTER_NAME`
 ///   unset), if pre-swapchain GPU startup fails (for example, no Vulkan driver is installed), a
 ///   visible transparent window falls back to `CpuPainter` with alpha buffers (`wl_shm` ARGB8888
@@ -70,14 +73,16 @@ pub enum CpuFirst {
     /// On Windows machines whose only adapters are software ones (WARP), and on Linux when the GPU
     /// made in the background is a software one (lavapipe, llvmpipe), with `WGPU_ADAPTER_NAME`
     /// unset, stays on `CpuPainter` at idle and hands over lazily on the first frame that needs the
-    /// GPU. Opt out with `App::cpu_first(CpuFirst::Off)`, `RUNE_CPU_FIRST=0`, or
-    /// `WGPU_ADAPTER_NAME`.
+    /// GPU. A window with an [`App::compositor`](crate::App::compositor) hands over to a software
+    /// GPU too, since only the GPU draws what a compositor draws. Opt out with
+    /// `App::cpu_first(CpuFirst::Off)`, `RUNE_CPU_FIRST=0`, or `WGPU_ADAPTER_NAME`.
     #[default]
     Auto,
     /// Open opaque windows on the CPU renderer and do not start background GPU handover on idle.
     ///
-    /// On Windows and Linux, a frame that hits a GPU-only feature still triggers GPU handover so
-    /// the frame can render; transparent windows (unless Linux pre-swapchain GPU startup fails
+    /// On Windows and Linux, a frame that hits a GPU-only feature, or a window with an
+    /// [`App::compositor`](crate::App::compositor), still triggers GPU handover so the frame can
+    /// render; transparent windows (unless Linux pre-swapchain GPU startup fails
     /// with no pinned adapter) and windows that already have a GPU keep using the GPU. On
     /// full-window web pages, stays on the 2D CPU canvas without requesting WebGPU or WebGL2.
     Only,
@@ -135,8 +140,14 @@ impl CpuFirst {
     /// Whether a CPU-opened desktop window should start background GPU handover on idle once its
     /// first frame is ready and any retry backoff has elapsed.
     #[cfg_attr(not(any(target_os = "windows", target_os = "linux", test)), allow(dead_code))]
-    pub(crate) const fn gpu_owed(self, ready_and_due: bool) -> bool {
-        ready_and_due && !matches!(self, Self::Only)
+    pub(crate) const fn gpu_owed(self, ready_and_due: bool, compositor: bool) -> bool {
+        ready_and_due && (compositor || !matches!(self, Self::Only))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(not(any(target_os = "windows", target_os = "linux", test)), allow(dead_code))]
+    pub(crate) const fn idle_defers_software(self, policy: crate::gpu::fallback::Policy, compositor: bool) -> bool {
+        !compositor && matches!(self, Self::Auto) && matches!(policy, crate::gpu::fallback::Policy::Automatic)
     }
 
     /// Whether a Linux visible transparent window whose pre-swapchain GPU startup failed may fall

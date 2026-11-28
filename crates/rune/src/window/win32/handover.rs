@@ -122,12 +122,13 @@ pub(super) fn idle_handover_action(
     mode: CpuFirst,
     policy: Policy,
     ready_and_due: bool,
+    compositor: bool,
     probe_hardware_dxgi: impl FnOnce() -> Option<bool>,
 ) -> IdleHandover {
-    if !mode.gpu_owed(ready_and_due) {
+    if !mode.gpu_owed(ready_and_due, compositor) {
         return IdleHandover::Skip;
     }
-    if mode == CpuFirst::Auto && policy == Policy::Automatic {
+    if mode.idle_defers_software(policy, compositor) {
         if probe_hardware_dxgi() == Some(false) {
             return IdleHandover::DeferSoftware;
         }
@@ -259,6 +260,7 @@ impl Host {
             self.effective_cpu_first(),
             crate::gpu::pick::env_policy(),
             due,
+            self.app.has_compositor(),
             crate::gpu::pick::dxgi_has_hardware_adapter,
         ) {
             IdleHandover::Skip => {}
@@ -278,7 +280,7 @@ impl Host {
     pub(in crate::window) fn gpu_owed(&self) -> bool {
         let now = crate::time::now();
         let due = self.win.as_ref().is_some_and(|w| matches!(w.native.mode, SurfaceMode::Cpu { job: GpuJob::Waiting { retry_at, .. }, .. } if retry_at.is_none_or(|at| at <= now)) && w.first_frame.ready());
-        self.effective_cpu_first().gpu_owed(due)
+        self.effective_cpu_first().gpu_owed(due, self.app.has_compositor())
     }
 
     /// Starts or escalates GPU handover when a frame hits `NeedsGpu`: allows software adapters,

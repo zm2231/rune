@@ -86,7 +86,7 @@ fn simulate_handover(
 
     // Idle turn after frame 1 (plain frame).
     if needs_gpu_event.is_none() || needs_gpu_event.is_some_and(|(ready, _)| ready) {
-        match super::idle_handover_action(mode, policy, true, || Some(has_hardware_dxgi_in(&dxgi_list))) {
+        match super::idle_handover_action(mode, policy, true, false, || Some(has_hardware_dxgi_in(&dxgi_list))) {
             super::IdleHandover::Skip => {}
             super::IdleHandover::DeferSoftware => {
                 job_state = "software_deferred";
@@ -218,6 +218,21 @@ fn windows_handover_state_machine_matrix_software_deferred_and_hardware_bit_iden
     assert_eq!(s_only_ng, "handed");
     assert_eq!(a_only_ng, Some(super::NeedsGpuFrameAction::PaintDegraded));
     assert!(c_only_ng.committed);
+}
+
+#[test]
+fn a_compositor_window_hands_over_to_a_software_gpu_at_idle() {
+    use crate::gpu::fallback::Policy;
+    use crate::window::CpuFirst;
+
+    for mode in [CpuFirst::Auto, CpuFirst::Only] {
+        let action = super::idle_handover_action(mode, Policy::Automatic, true, true, || Some(false));
+        assert!(matches!(action, super::IdleHandover::Start { defer_software: false }), "{mode:?}");
+    }
+    assert!(matches!(
+        super::idle_handover_action(CpuFirst::Auto, Policy::Automatic, false, true, || Some(false)),
+        super::IdleHandover::Skip
+    ));
 }
 
 #[test]

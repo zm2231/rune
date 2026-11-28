@@ -145,6 +145,7 @@ fn chevron(look: &Look, edges: &Rc<Edges>, end: bool, target: String) -> El {
         .center()
         .hover_group()
         .a11y_hidden()
+        .focusable(false)
         .live_opacity(edges.shown[usize::from(end)].smooth_with(FADE));
     backing = if look.solid {
         let side = if end { [0.0, 0.0, 0.0, 1.0] } else { [0.0, 1.0, 0.0, 0.0] };

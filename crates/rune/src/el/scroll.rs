@@ -18,7 +18,7 @@ impl El {
     /// viewport starts at its top, where scrolling reaches all of it. A child's own
     /// `self_center` or `self_end` across a scrolled axis behaves the same. A box inside the
     /// content with a fixed size or `.h_full()` still centres as it is told and can push what
-    /// it centres above the viewport's top; debug builds warn once per viewport when content
+    /// it centres above the viewport's top; debug builds warn once per call site when content
     /// starts before its leading edge.
     #[cfg_attr(debug_assertions, track_caller)]
     #[inline]

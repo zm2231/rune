@@ -648,3 +648,33 @@ fn the_tab_strip_text_scale_story_widens_its_tabs_with_the_text() {
         }
     }
 }
+
+#[test]
+fn the_overflow_stories_hint_at_what_is_past_the_edge() {
+    for id in ["rune-tab-strip--overflow-text-scales", "rune-segmented-control--tabs-text-scales", "rune-scroll-overflow--text-scales"] {
+        let &(_, setup) = stories::SCENES.iter().find(|&&(s, _)| s == id).unwrap_or_else(|| panic!("missing story {id:?}"));
+        let mut g = init();
+        setup(&mut g);
+        let mut rt = rune::Runtime::new(g, view, (1400.0, 1000.0), rune::Env::new(true, 1.0));
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        let els = rt.elements();
+        let ends: Vec<_> = els.iter().filter(|e| e.key.as_deref() == Some("overflow-end")).collect();
+        assert_eq!(ends.len(), 3, "{id}: one row at each text size");
+        for end in ends {
+            let key_path = end.path.rsplitn(3, '/').take(2).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("/");
+            let shown = rt.presented(&key_path).map_or(-1.0, |(_, o)| o);
+            let shrinks = id == "rune-tab-strip--overflow-text-scales" && end.path.contains("tabs-overflow-1/");
+            if shrinks {
+                assert_eq!(shown, 0.0, "{id}: at text scale 1 the tabs shrink to fit, with nothing past the end");
+            } else {
+                assert!(shown > 0.99, "{id}: {} hints at more past the end", end.path);
+            }
+        }
+        if id == "rune-segmented-control--tabs-text-scales" {
+            let cut: Vec<_> = els.iter().filter(|e| e.key.as_deref() == Some("label") && e.text_cut).map(|e| e.path.clone()).collect();
+            assert!(cut.is_empty(), "{id}: cut titles {cut:?}");
+        }
+    }
+}

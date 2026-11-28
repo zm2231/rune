@@ -244,7 +244,16 @@ accessible descriptions (`.description(i, text)`), `aria-controls` wiring (`.con
 and WAI-ARIA Tabs semantics (`.as_tabs()`, switching `radiogroup`/`radio` to horizontal
 `tablist`/`tab` with `aria-selected`); empty segment labels omit the text element for
 icon-only switchers whose `help` supplies the accessible name (see `rune-segmented-control--rich`
-in `kit-gallery`).
+in `kit-gallery`). Segments that don't fit scroll sideways with edge chevrons (`.scrolls(true)`),
+on by default for `.as_tabs().fit()` so a tab row at large text scrolls rather than spilling out of
+its pane (`rune-segmented-control--tabs-text-scales`).
+
+`ScrollOverflow::new(key, viewport).build(&k)` puts a chevron over each edge of a sideways scroll
+viewport (`El::scroll_x`) that has content past it, which pages the viewport that way when
+pressed: a fade alone reads as the end of the content, and an overlay scroll bar is hidden at rest
+under a trackpad. A horizontal `TabStrip` shows them by default, and above text scale 1 its tabs
+stop shrinking at `TabStrip::title_floor` so their titles stay readable while the strip scrolls
+(`rune-tab-strip--overflow-text-scales`, `rune-scroll-overflow--text-scales`).
 
 `Keybind::new(&["g"])` upper-cases single-character keycaps by default (`"G"`); call
 `.keep_case()` to preserve authored letter case verbatim (for example Vim-style `g` vs

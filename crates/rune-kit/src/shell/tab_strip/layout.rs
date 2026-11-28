@@ -7,7 +7,7 @@ use rune::{Color, El, Icon, ScrollFade, ScrollSpec, Spring, col, el, row};
 
 use super::drag::{Lane, TabDragState, TearOutSpec};
 use super::{BAND_PAST, TabDensity, TabItemStatus, TabOrientation, TabOverflow, TabSlot, TabWords, auto_scroll, tab};
-use crate::{IconButton, Kit, Spinner};
+use crate::{IconButton, Kit, ScrollOverflow, Spinner};
 
 pub(super) type Wrap<'a> = Box<dyn FnOnce(El, TabDensity) -> El + 'a>;
 pub(super) type Build<'a> = Box<dyn FnMut(usize) -> TabItemCore<'a> + 'a>;
@@ -120,6 +120,8 @@ pub(super) struct TabStripCore<'a> {
     pub active: Option<&'a str>,
     pub viewport: Option<f32>,
     pub overflow: Option<TabOverflow>,
+    pub title_floor: Option<f32>,
+    pub chevrons: bool,
     pub gap: Option<f32>,
     pub row_height: Option<f32>,
     pub select_on_drag_start: Option<bool>,
@@ -149,6 +151,8 @@ impl<'a> TabStripCore<'a> {
             active: None,
             viewport: None,
             overflow: None,
+            title_floor: Some(TabOverflow::TITLE_FLOOR),
+            chevrons: true,
             gap: None,
             row_height: None,
             select_on_drag_start: None,
@@ -171,6 +175,7 @@ impl<'a> TabStripCore<'a> {
     pub(super) fn assemble(mut self, k: &Kit, mut layer: Option<&mut Vec<El>>, bind: &dyn TabBind) -> El {
         let vertical = self.orientation == TabOrientation::Vertical;
         let overflow = self.overflow.unwrap_or(if vertical { TabOverflow::VERTICAL_DEFAULT } else { TabOverflow::HORIZONTAL_DEFAULT }).at_text_scale(k.text_scale);
+        let overflow = self.title_floor.map_or(overflow, |floor| overflow.with_title_floor(floor, k.text_scale));
         let gap = self.gap.unwrap_or(if vertical { 3.0 } else { 6.0 });
         // Tabs given whole take the lazy path too: each is built once, in order.
         let (slots, mut build): (Vec<TabSlot<'a>>, Build<'a>) = match self.lazy.take() {
@@ -375,6 +380,7 @@ impl<'a> TabStripCore<'a> {
             let list = row().key(st.list_key.clone()).role("tablist").label(self.label).focus_group().gap(gap).center_y().children(tabs);
             let scroll = row().key(st.scroll_key.clone()).h(st.row_height).shrink().min_w(0.0).scroll_x().scroll_fade(ScrollFade::strength(fade).linear().full_at(0.1)).child(list);
             let scroll = auto_scroll::watch(scroll, &st.auto);
+            let scroll = if self.chevrons { ScrollOverflow::new(st.scroll_key.clone(), scroll).fill(st.base).reveal(active.map(|id| format!("t-{id}"))).build(k).h(st.row_height).shrink().min_w(0.0) } else { scroll };
             // It grows into the space it's given, so its width is what the tabs may share.
             row().key(self.key).grow(1.0).shrink().min_w(0.0).gap(gap).center_y().child(scroll).children(self.trailing)
         };

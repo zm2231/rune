@@ -4,6 +4,8 @@ use super::*;
 
 const SCALES: [f32; 3] = [1.0, 1.6, 2.5];
 
+const OVERFLOW_WIDTH: f32 = 420.0;
+
 fn at_scales(k: &Kit, mut f: impl FnMut(&Kit, f32) -> El) -> El {
     let mut c = col().gap(16.0).items_start();
     for scale in SCALES {
@@ -34,6 +36,34 @@ pub(super) fn tab_strip(_: &G, k: &Kit, _: &mut Vec<El>) -> El {
             .viewport_width(Some(width))
             .build(k);
         el().w(width).child(tabs)
+    })
+}
+
+pub(super) fn tab_strip_overflow(_: &G, k: &Kit, _: &mut Vec<El>) -> El {
+    at_scales(k, |k, scale| {
+        let titles = ["Release notes draft", "Build the release", "Design review", "Quarterly plan", "Bug triage", "Onboarding guide", "Billing", "Roadmap"];
+        let tabs = TabStrip::<G>::new(format!("tabs-overflow-{scale}"), TabOrientation::Horizontal)
+            .tabs(titles.iter().enumerate().map(|(i, t)| TabItem::new(format!("t{i}"), *t).closable(true)))
+            .active(Some("t0"))
+            .viewport_width(Some(OVERFLOW_WIDTH))
+            .build(k);
+        el().w(OVERFLOW_WIDTH).child(tabs)
+    })
+}
+
+pub(super) fn segmented_tabs(_: &G, k: &Kit, _: &mut Vec<El>) -> El {
+    at_scales(k, |k, _| {
+        let sections = ["General", "Appearance", "Notifications", "Privacy", "Accounts", "Advanced"];
+        col().w(OVERFLOW_WIDTH).child(SegmentedControl::new(&sections, Some(0)).label("Settings sections").as_tabs().fit().build(k))
+    })
+}
+
+pub(super) fn scroll_overflow_chips(_: &G, k: &Kit, _: &mut Vec<El>) -> El {
+    at_scales(k, |k, scale| {
+        let chips = ["All", "Unread", "Mentions", "Drafts", "Starred", "Shared with me", "Archived", "Snoozed", "Sent"]
+            .map(|label| Badge::new(label).build(k));
+        let viewport = row().scroll_x().scroll_edge_fade(16.0).child(row().gap(6.0).py(4.0).children(chips));
+        el().w(OVERFLOW_WIDTH).fill(k.c.bg_base).child(ScrollOverflow::new(format!("chips-{scale}"), viewport).build(k).w_full())
     })
 }
 

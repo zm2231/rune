@@ -155,9 +155,10 @@ pub(crate) fn segment_matches_key(seg: &str, key: &str) -> bool {
     seg.starts_with(ESCAPE_PREFIX) && decode_key_segment(seg).is_some_and(|k| k == key)
 }
 
-/// Whether `path` lies inside an element keyed `scope` (always, without one).
+/// Whether `path` lies inside an element keyed `scope`, or at or under the element whose full
+/// path is `scope` (always, without one).
 pub(crate) fn in_scope(path: &str, scope: Option<&str>) -> bool {
-    scope.is_none_or(|s| path.split('/').any(|seg| segment_matches_key(seg, s)))
+    scope.is_none_or(|s| path.split('/').any(|seg| segment_matches_key(seg, s)) || path.strip_prefix(s).is_some_and(|rest| rest.is_empty() || rest.starts_with('/')))
 }
 
 /// Whether `path`'s keyed segments (ignoring unkeyed `#n` indices) end with a contiguous suffix

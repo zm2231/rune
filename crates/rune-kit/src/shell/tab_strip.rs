@@ -49,7 +49,9 @@ pub enum TabDensity {
 
 /// What a strip does when its tabs don't fit. Its tab widths are points at text scale 1: a
 /// strip scales them by its kit's [`Kit::text_scale`] ([`TabOverflow::at_text_scale`]), so a
-/// title shows as much of itself at every text size.
+/// title shows as much of itself at every text size. Above text scale 1 a horizontal strip also
+/// stops shrinking its tabs where their titles would hide ([`TabStrip::title_floor`]) and
+/// scrolls instead.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TabOverflow {
     /// Horizontal tabs share the strip equally, from `max_width` down to `min_width`, then the
@@ -77,6 +79,24 @@ impl TabOverflow {
             }
             Self::Scroll { .. } => self,
         }
+    }
+
+    /// The narrowest a horizontal tab gets at large text, in points at text scale 1, unless
+    /// [`TabStrip::title_floor`] says otherwise: room for the avatar and a few words of title.
+    pub const TITLE_FLOOR: f32 = 96.0;
+
+    /// This policy (already [`Self::at_text_scale`]) with its narrowest tab raised toward
+    /// `floor` points at text scale 1 as the text grows past `scale` 1, reaching it by 1.3, so
+    /// at large text tabs keep their titles and the strip scrolls instead. Unchanged at text
+    /// scale 1 and below, and for `Scroll`.
+    pub fn with_title_floor(self, floor: f32, scale: f32) -> Self {
+        let Self::ShrinkThenScroll { min_width, max_width, pinned_width, fade_width } = self else { return self };
+        let ramp = ((scale - 1.0) / 0.3).clamp(0.0, 1.0);
+        if ramp.is_nan() || ramp <= 0.0 || !floor.is_finite() {
+            return self;
+        }
+        let raised = min_width + (floor * scale - min_width) * ramp;
+        Self::ShrinkThenScroll { min_width: min_width.max(raised), max_width, pinned_width, fade_width }
     }
 
     /// The density of a tab `width` points wide at text scale 1.
@@ -385,7 +405,11 @@ impl<S: 'static> TabBind for TabHandlers<S> {
 /// .active(..).drag_state(&s.drag, |s| &mut s.drag).on_select(..).build(&kit)`.
 ///
 /// Horizontal tabs are 28 points tall with 6 between them, share the strip from 224 points
-/// down to 28 (at text scale 1) and then scroll; a 1.5 point separator stands between neighbours that aren't
+/// down to 28 (at text scale 1; above it, down to [`Self::title_floor`]) and then scroll, with a
+/// chevron over each edge that has tabs past it ([`Self::overflow_chevrons`]). A strip opens on
+/// its active tab, scrolled into view however far along it stands. At the title floor a long
+/// title still fades out at its end: the floor keeps a few words readable, not the whole title.
+/// A 1.5 point separator stands between neighbours that aren't
 /// active or hovered. In a `.window_drag()` titlebar the gaps between tabs, the bands above and
 /// below them and the space after the trailing action move the window, as only the tabs and
 /// buttons take presses. Vertical tabs fill the row with 3 points between them, each reaching
@@ -441,6 +465,14 @@ impl<'a, S: 'static> TabStrip<'a, S> {
     /// The overflow policy (default [`TabOverflow::HORIZONTAL_DEFAULT`] or
     /// [`TabOverflow::VERTICAL_DEFAULT`]).
     pub fn overflow(mut self, policy: TabOverflow) -> Self { self.core.overflow = Some(policy); self }
+    /// The narrowest a horizontal tab gets at large text, in points at text scale 1 (default
+    /// [`TabOverflow::TITLE_FLOOR`]; see [`TabOverflow::with_title_floor`]). A title longer than
+    /// the floor leaves room for fades out at its end. `None` lets tabs shrink to the policy's
+    /// `min_width` at every text size.
+    pub fn title_floor(mut self, points: Option<f32>) -> Self { self.core.title_floor = points; self }
+    /// Whether a horizontal strip shows a chevron over each edge with tabs past it, which pages
+    /// the strip that way when pressed ([`ScrollOverflow`](crate::ScrollOverflow)); default on.
+    pub fn overflow_chevrons(mut self, on: bool) -> Self { self.core.chevrons = on; self }
     /// Points between tabs (default 6 horizontal, 3 vertical).
     pub fn gap(mut self, points: f32) -> Self { self.core.gap = Some(points.max(0.0)); self }
     /// A tab's height (default 28 at the kit's [`Kit::text_scale`]).

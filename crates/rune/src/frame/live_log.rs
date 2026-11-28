@@ -240,8 +240,8 @@ pub(crate) fn frame(f: Frame) {
     line["focus"] = serde_json::json!(ns(p[8]));
     line["looped"] = serde_json::json!(f.looped);
     if let Some(loops) = f.loops { line["loops"] = serde_json::json!(loops); }
-    let [prepare, layers, pass, compositor] = f.encode_parts;
-    line["encode_parts"] = serde_json::json!({ "prepare": prepare, "layers": layers, "pass": pass, "compositor": compositor });
+    let [prepare, layers, pass, compositor, arm, kept, copy] = f.encode_parts;
+    line["encode_parts"] = serde_json::json!({ "prepare": prepare, "layers": layers, "pass": pass, "compositor": compositor, "arm": arm, "kept": kept, "copy": copy });
     line["loop_why"] = serde_json::json!(f.loop_why);
     line["painter"] = serde_json::json!(f.painter);
     let (missed, reconfigured) = MISSED.replace(([0; 4], 0));

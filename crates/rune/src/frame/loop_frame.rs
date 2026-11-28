@@ -2,7 +2,8 @@
 //! samples the loops into the instances they drew and nothing else runs (`Runtime::loop_step`:
 //! no poll, view, layout or paint). A Windows window redraws and presents only where they draw
 //! (`Renderer::arm_loop`); other windows and iOS views draw the whole frame from those
-//! instances. Anything that reached the window or view since its last frame (input, a request,
+//! instances. A macOS window draws whole too: Metal can't keep a drawable's pixels, and the
+//! render pass into a kept frame plus its copy cost more than drawing the window again. Anything that reached the window or view since its last frame (input, a request,
 //! an assistive client's action) makes the next one an ordinary frame, so nothing waits behind
 //! a loop. An app wake or a due timer runs the app's poll first, and only a poll that changed
 //! something takes an ordinary frame.

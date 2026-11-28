@@ -181,7 +181,6 @@ fn surface_to_empty_surface_catchup_requests_whole_present() {
     assert_eq!(step(&mut rt, [0, 0, 16, 16]), Ok(KeptDraw::Partial));
 }
 
-#[cfg(target_os = "windows")]
 mod loop_frames {
     use super::*;
     use crate::{Cycle, ScrollSpec, col, oklch, row};
@@ -209,41 +208,40 @@ mod loop_frames {
         col().key("list").w_full().h_full().fill(ground).scroll(ScrollSpec::default()).children(rows)
     }
 
-    fn target(gpu: &Gpu) -> wgpu::Texture {
+    fn target(gpu: &Gpu, format: wgpu::TextureFormat, view_format: wgpu::TextureFormat) -> wgpu::Texture {
         gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("loop-frame-target"),
             size: wgpu::Extent3d { width: SIZE.0, height: SIZE.1, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: OFFSCREEN_FORMAT,
+            format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
+            view_formats: &[view_format],
         })
     }
 
     fn draw(gpu: &Gpu, renderer: &mut Renderer, rt: &mut Runtime<String>, patched: Option<&[u32]>) -> (Vec<u8>, Drawn, usize) {
-        let texture = target(gpu);
-        let view = texture.create_view(&Default::default());
+        draw_on(gpu, renderer, rt, patched, OFFSCREEN_FORMAT)
+    }
+
+    fn draw_on(gpu: &Gpu, renderer: &mut Renderer, rt: &mut Runtime<String>, patched: Option<&[u32]>, format: wgpu::TextureFormat) -> (Vec<u8>, Drawn, usize) {
+        let texture = target(gpu, format, renderer.format());
+        let view = texture.create_view(&wgpu::TextureViewDescriptor { format: Some(renderer.format()), ..Default::default() });
         let readback = rune_staging::Readback::new(&gpu.device, "loop-frame-readback", SIZE.0, SIZE.1, 4);
         let clear = rt.clear_color();
         renderer.next_instances(rt.paint_count(), patched.map(<[u32]>::to_vec));
         match patched {
-            Some(p) => { renderer.arm_loop(&gpu.device, &gpu.queue, rt.paint_count(), &rt.instances, p, clear, SIZE, OFFSCREEN_FORMAT).expect("a loop frame arms its rectangles"); }
-            None => renderer.arm_damage(&gpu.device, &gpu.queue, &[[0, 0, SIZE.0, SIZE.1]], clear, SIZE, OFFSCREEN_FORMAT),
+            Some(p) => { renderer.arm_loop(&gpu.device, &gpu.queue, rt.paint_count(), &rt.instances, p, clear, SIZE, format).expect("a loop frame arms its rectangles"); }
+            None => renderer.arm_damage(&gpu.device, &gpu.queue, &[[0, 0, SIZE.0, SIZE.1]], clear, SIZE, format),
         }
-        let drawn_instances = {
-            let d = renderer.damage.lock().unwrap();
-            let mut drawn = vec![d.runs.is_empty(); rt.instances.len()];
-            for run in d.runs.iter().flatten() { drawn[run.start as usize..run.end as usize].fill(true); }
-            drawn.iter().filter(|&&on| on).count()
-        };
+        let armed_area: usize = renderer.damage.lock().unwrap().armed.iter().map(|r| (r[2] * r[3]) as usize).sum();
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
         crate::frame::host_step::draw_ui(renderer, gpu, &mut encoder, &view, rt.core_mut(), SIZE, clear);
         let drawn = renderer.damage_drawn();
         readback.copy_from(&mut encoder, &texture);
         renderer.submit(&gpu.queue, encoder);
-        (readback.read(&gpu.device), drawn, drawn_instances)
+        (readback.read(&gpu.device), drawn, armed_area)
     }
 
     fn whole(gpu: &Gpu, rt: &mut Runtime<String>) -> Vec<u8> {
@@ -264,24 +262,50 @@ mod loop_frames {
         panic!("no spinner stepped in half a second");
     }
 
+    fn board_runtime(look: &str) -> Runtime<String> {
+        let mut rt = Runtime::new(look.to_owned(), board, (SIZE.0 as f32, SIZE.1 as f32), Env::new(true, 1.0));
+        rt.core_mut().transparent = look == "glass";
+        rt.wall_start = Some(crate::time::now());
+        rt.frame.set_test_clock(crate::ManualClock::new(60.0));
+        rt.frame(0.0);
+        rt.frame(crate::frame::clock::RESUME_STEP);
+        rt
+    }
+
+    #[test]
+    fn a_loop_frame_after_a_blend_switch_on_an_srgb_only_surface_catches_up_whole() {
+        let Some(gpu) = Gpu::test_headless() else { return };
+        let mut rt = board_runtime("solid");
+        let mut renderer = Renderer::new(&gpu.device, OFFSCREEN_FORMAT);
+        renderer.set_srgb_blend(true);
+        assert_eq!(draw_on(&gpu, &mut renderer, &mut rt, None, OFFSCREEN_FORMAT_LINEAR).1, Ok(KeptDraw::Whole));
+        let patched = step(&mut rt);
+        assert_eq!(draw_on(&gpu, &mut renderer, &mut rt, Some(&patched), OFFSCREEN_FORMAT_LINEAR).1, Ok(KeptDraw::Partial));
+        renderer.try_set_format(&gpu.device, OFFSCREEN_FORMAT_LINEAR).expect("the renderer rebuilds for the sRGB view");
+        renderer.set_srgb_blend(false);
+        let patched = step(&mut rt);
+        assert_eq!(draw_on(&gpu, &mut renderer, &mut rt, Some(&patched), OFFSCREEN_FORMAT_LINEAR).1, Ok(KeptDraw::Whole));
+        let patched = step(&mut rt);
+        let (pixels, drawn, _) = draw_on(&gpu, &mut renderer, &mut rt, Some(&patched), OFFSCREEN_FORMAT_LINEAR);
+        assert_eq!(drawn, Ok(KeptDraw::Partial));
+        rt.core_mut().text.atlas.invalidate();
+        let mut fresh = Renderer::new(&gpu.device, OFFSCREEN_FORMAT_LINEAR);
+        assert!(pixels == draw_on(&gpu, &mut fresh, &mut rt, None, OFFSCREEN_FORMAT_LINEAR).0, "the patched frame differs from a fresh whole frame");
+    }
+
     #[test]
     fn a_loop_frame_on_a_solid_or_transparent_window_redraws_part_and_matches_a_whole_frame() {
         let Some(gpu) = Gpu::test_headless() else { return };
         for look in ["solid", "glass"] {
-            let mut rt = Runtime::new(look.to_owned(), board, (SIZE.0 as f32, SIZE.1 as f32), Env::new(true, 1.0));
-            rt.core_mut().transparent = look == "glass";
-            rt.wall_start = Some(crate::time::now());
-            rt.frame.set_test_clock(crate::ManualClock::new(60.0));
-            rt.frame(0.0);
-            rt.frame(crate::frame::clock::RESUME_STEP);
+            let mut rt = board_runtime(look);
             assert_eq!(rt.clear_color()[3], if look == "glass" { 0.0 } else { 1.0 });
             let mut renderer = Renderer::new(&gpu.device, OFFSCREEN_FORMAT);
             assert_eq!(draw(&gpu, &mut renderer, &mut rt, None).1, Ok(KeptDraw::Whole));
             for n in 0..3 {
                 let patched = step(&mut rt);
-                let (pixels, drawn, drawn_instances) = draw(&gpu, &mut renderer, &mut rt, Some(&patched));
+                let (pixels, drawn, armed_area) = draw(&gpu, &mut renderer, &mut rt, Some(&patched));
                 assert_eq!(drawn, Ok(KeptDraw::Partial), "{look} loop frame {n}");
-                assert!(drawn_instances < rt.instances.len(), "{look} loop frame {n} drew all {drawn_instances} instances");
+                assert!(armed_area * 10 < (SIZE.0 * SIZE.1) as usize, "{look} loop frame {n} redrew {armed_area} pixels");
                 assert!(pixels == whole(&gpu, &mut rt), "{look} loop frame {n} differs from the whole frame");
             }
         }

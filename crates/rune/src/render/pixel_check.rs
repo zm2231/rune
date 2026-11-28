@@ -4,7 +4,7 @@
 //! frame of any kind (`damage_drawn`, once the encoding frame was submitted), or the next loop-only
 //! frame (`arm_loop`), or the renderer going away, reads them back and compares every pixel, so the
 //! last check of a run is compared too. This reaches what the
-//! instance comparison (`RUNE_LOOP_CHECK=1`) can't: `arm_loop`'s rectangles, the culled redraw
+//! instance comparison (`RUNE_LOOP_CHECK=1`) can't: `arm_loop`'s rectangles, the clipped redraw
 //! inside them, and so the present rectangles, which are the same rectangles. Stalls on the
 //! readback; a diagnostic only. Unset, it costs one `OnceLock` read per loop-only frame.
 //!
@@ -38,6 +38,7 @@ pub(super) struct Check {
     device: wgpu::Device,
     size: (u32, u32),
     format: wgpu::TextureFormat,
+    view_format: wgpu::TextureFormat,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     kept: rune_staging::Readback,
@@ -64,7 +65,7 @@ impl Check {
         let view = texture.create_view(&wgpu::TextureViewDescriptor { format: Some(view_format), ..Default::default() });
         let kept = rune_staging::Readback::new(device, "loop pixel check: kept", size.0, size.1, 4);
         let whole = rune_staging::Readback::new(device, "loop pixel check: whole", size.0, size.1, 4);
-        Check { device: device.clone(), size, format, texture, view, kept, whole, pending: None, checks: 0, differ: 0 }
+        Check { device: device.clone(), size, format, view_format, texture, view, kept, whole, pending: None, checks: 0, differ: 0 }
     }
 
     /// Reads back and compares what the last loop-only frame left, if anything.
@@ -136,7 +137,7 @@ impl Renderer {
     pub(super) fn pixel_check_arm(&self, device: &wgpu::Device, size: (u32, u32), format: wgpu::TextureFormat) {
         let mut d = self.damage.lock().unwrap();
         if let Some(c) = d.pixel.as_mut() { c.resolve(); }
-        if d.pixel.as_ref().is_none_or(|c| c.size != size || c.format != format) { d.pixel = Some(Check::new(device, size, format, self.format)); }
+        if d.pixel.as_ref().is_none_or(|c| c.size != size || c.format != format || c.view_format != self.format) { d.pixel = Some(Check::new(device, size, format, self.format)); }
         d.looped = true;
     }
 

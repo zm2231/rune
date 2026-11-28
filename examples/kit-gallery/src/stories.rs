@@ -31,8 +31,11 @@ mod shell_rows;
 pub(crate) mod sidebar;
 mod split_view;
 mod table;
+#[path = "stories/text/roles.rs"]
 mod text_roles;
+#[path = "stories/text/samples.rs"]
 mod text_samples;
+#[path = "stories/text/scales.rs"]
 mod text_scales;
 
 pub(crate) use text_samples::{NOWRAP_CODE, focus_caret_sample};

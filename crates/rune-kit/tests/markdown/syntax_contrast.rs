@@ -44,7 +44,7 @@ fn every_syntax_token_reaches_text_contrast_on_code_blocks_and_unchanged_diff_li
     let new = format!("{}\nend 2\n", words());
     for (name, kit) in built_in_kits() {
         let floor = text_floor(&kit);
-        let theme = SyntaxTheme::from_kit(&kit);
+        let theme = rune::theme::with_blend(false, || SyntaxTheme::from_kit(&kit));
         let tokens: BTreeMap<[u32; 4], Syntax> = Syntax::ALL.iter().map(|&s| (theme.color(s).premul(1.0).map(f32::to_bits), s)).collect();
         assert_eq!(tokens.len(), Syntax::ALL.len(), "{name}: every kind keeps its own colour");
         let mut diff = DiffState::new(vec![FileDiff::from_texts("src/tokens.txt", &old, &new)]);

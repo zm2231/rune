@@ -261,7 +261,8 @@ fn prepare_text(
         ^ (u64::from(t.wrap_anywhere) << 4) ^ (u64::from(t.greedy()) << 5) ^ (u64::from(t.by_line) << 6)
         ^ ((t.elide as u64) << 7)
         ^ if t.cold.text_indent == 0.0 { 0 } else { u64::from(t.cold.text_indent.to_bits()).wrapping_mul(0x517c_c1b7_2722_0a95) }
-        ^ t.cold.advance_in.as_ref().map_or(0, |(run, at)| run.hash.rotate_left(3) ^ (*at as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)));
+        ^ t.cold.advance_in.as_ref().map_or(0, |(run, at)| run.hash.rotate_left(3) ^ (*at as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15))
+        ^ super::text_layout::placeholder_measure_key(input).rotate_left(29));
     // Secure leaves remeasure without retaining a content-derived dictionary oracle.
     let secure_measure = text.as_ref().is_some_and(|t| t.redacted);
     let measure = if secure_measure { Some(0) } else { measure };

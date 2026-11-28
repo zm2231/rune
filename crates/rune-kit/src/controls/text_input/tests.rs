@@ -63,6 +63,7 @@ const HINT: &str = "Describe what changed, why it changed, and how a reviewer ca
 struct Form {
     scale: f32,
     filled: bool,
+    hint: &'static str,
 }
 
 fn form(s: &Form, _: &mut rune::Cx<Form>) -> El {
@@ -70,12 +71,12 @@ fn form(s: &Form, _: &mut rune::Cx<Form>) -> El {
     let edit = TextEdit::new(if s.filled { HINT } else { "" });
     rune::col()
         .items_start()
-        .child(TextArea::new(&edit).placeholder(HINT).width(Some(200.0)).build(&k).key("area"))
+        .child(TextArea::new(&edit).placeholder(s.hint).width(Some(200.0)).build(&k).key("area"))
         .child(rune::el().key("below").size(200.0, 20.0))
 }
 
 fn area_and_below(scale: f32, filled: bool) -> ([f32; 4], [f32; 4]) {
-    let mut rt = rune::Runtime::new(Form { scale, filled }, form, (400.0, 2000.0), rune::Env::new(true, 1.0));
+    let mut rt = rune::Runtime::new(Form { scale, filled, hint: HINT }, form, (400.0, 2000.0), rune::Env::new(true, 1.0));
     rt.frame(0.0);
     let rect = |key: &str| rt.elements().into_iter().find(|e| e.key.as_deref() == Some(key)).unwrap_or_else(|| panic!("no {key}")).rect;
     (rect("area"), rect("below"))
@@ -92,4 +93,21 @@ fn an_empty_text_area_grows_to_hold_its_wrapped_placeholder_at_every_text_scale(
         assert!(below[1] >= area[1] + area[3], "{scale}: the row below overlaps the area: {area:?} {below:?}");
     }
     assert!(area_and_below(2.5, false).0[3] > 80.0, "the test's placeholder should outgrow the minimum at 2.5");
+}
+
+#[test]
+fn an_empty_text_area_measures_again_when_its_placeholder_changes() {
+    let mut rt = rune::Runtime::new(Form { scale: 2.5, filled: false, hint: "Notes" }, form, (400.0, 2000.0), rune::Env::new(true, 1.0));
+    rt.frame(0.0);
+    let height = |rt: &rune::Runtime<Form>| rt.elements().into_iter().find(|e| e.key.as_deref() == Some("area")).expect("the area").rect[3];
+    let short = height(&rt);
+    rt.update(|s, _| s.hint = HINT);
+    rt.frame(1.0 / 60.0);
+    rt.settle_all();
+    let long = height(&rt);
+    assert!(long > short, "a longer placeholder left the area at {short}");
+    rt.update(|s, _| s.hint = "Notes");
+    rt.frame(2.0 / 60.0);
+    rt.settle_all();
+    assert_eq!(height(&rt), short);
 }

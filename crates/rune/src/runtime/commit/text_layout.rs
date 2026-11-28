@@ -511,8 +511,21 @@ pub(in crate::runtime) fn compute_layout(taffy: &mut LayoutEngine, root: SlotId,
     });
 }
 
+fn measures_placeholder(inp: &crate::el::InputSpec) -> bool {
+    !inp.single_line && !inp.placeholder.is_empty() && inp.edit.text.is_empty() && inp.edit.preedit().is_none()
+}
+
+pub(in crate::runtime) fn placeholder_measure_key(inp: Option<&crate::el::InputSpec>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let Some(inp) = inp.filter(|i| measures_placeholder(i)) else { return 0 };
+    let mut h = rustc_hash::FxHasher::default();
+    inp.placeholder.hash(&mut h);
+    inp.placeholder_style.hash(&mut h);
+    h.finish() | 1
+}
+
 fn placeholder_height(text: &mut TextSystem, inp: &crate::el::InputSpec, spec: &TextSpec, scale: f32, wrap: Option<f32>) -> f32 {
-    if inp.single_line || inp.placeholder.is_empty() || !inp.edit.text.is_empty() || inp.edit.preedit().is_some() {
+    if !measures_placeholder(inp) {
         return 0.0;
     }
     let style = inp.placeholder_style.unwrap_or(spec.style);

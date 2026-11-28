@@ -55,7 +55,9 @@ impl Kit {
     /// [`text_short_of_floor`](Kit::text_short_of_floor) names it.
     ///
     /// Call it after overriding the colours, and after [`Kit::increased_contrast`], which keeps
-    /// roles it did not derive as they are.
+    /// roles it did not derive as they are. Translucent colours are measured in the blend mode
+    /// [`legible`](crate::legible) describes: a kit built outside its window's view or its
+    /// [`KitEnv`](crate::KitEnv) for a linear-light window calls this inside [`rune::theme::with_blend`].
     ///
     /// ```
     /// use rune::color::hex;

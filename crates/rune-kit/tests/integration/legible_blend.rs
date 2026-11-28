@@ -49,6 +49,8 @@ fn translucent_text_is_measured_as_the_renderer_draws_it_in_either_blend() {
             let measured = rune::theme::with_blend(srgb, || rune_kit::legible(grey(), fill, 1.0));
             let (want, got) = (ratio(drawn, fill), ratio(measured, fill));
             assert!((got / want - 1.0).abs() < 0.02, "srgb {srgb} over {fill:?}: measured {got:.3}:1 ({}), drawn {want:.3}:1 ({})", measured.hex(), drawn.hex());
+            let see_through = rune::theme::with_blend(srgb, || rune_kit::legible(grey(), fill.alpha(0.5), 1.0));
+            assert_eq!(see_through, measured, "srgb {srgb}: a fill is measured as the opaque surface it names");
         }
     }
 }

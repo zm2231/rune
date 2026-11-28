@@ -294,3 +294,42 @@ fn an_inset_leaves_a_groove_around_the_pill_and_a_gap_between_segments() {
         }
     }
 }
+
+const SECTIONS: [&str; 6] = ["General", "Appearance", "Notifications", "Privacy", "Accounts", "Advanced"];
+
+fn sections(tabs: &bool, _: &mut Cx<bool>) -> El {
+    let k = Kit::neutral(true).with_text_scale(2.5);
+    let control = SegmentedControl::new(&SECTIONS, Some(0)).fit();
+    let control = if *tabs { control.as_tabs() } else { control };
+    rune::col().size(600.0, 200.0).child(rune::col().w(400.0).child(control.build(&k)))
+}
+
+fn at(rt: &Runtime<bool>, key: &str) -> [f32; 4] {
+    rt.elements().into_iter().find(|e| e.key.as_deref() == Some(key)).unwrap_or_else(|| panic!("no {key}")).rect
+}
+
+#[test]
+fn tabs_that_overflow_at_large_text_scroll_with_their_titles_whole() {
+    let mut rt = Runtime::new(true, sections, (600.0, 200.0), Env::new(true, 1.0));
+    for _ in 0..30 { rt.frame(1.0 / 60.0); }
+    let viewport = at(&rt, "segments");
+    assert!(viewport[2] <= 400.0 + 0.5, "the tab row stays in its 400 point pane: {viewport:?}");
+    let label = rt.elements().into_iter().filter(|e| e.text.as_deref() == Some("Notifications")).map(|e| e.rect[2]).next().unwrap();
+    assert!(at(&rt, "segment2")[2] >= label, "a title shows whole");
+    assert_eq!(rt.presented("overflow-start").unwrap().1, 0.0);
+    assert!(rt.presented("overflow-end").unwrap().1 > 0.99, "a chevron says there's more past the end");
+    let before = at(&rt, "segment5")[0];
+    let (x, y) = rt.find("overflow-end").unwrap();
+    rt.pointer_move(x, y);
+    rt.pointer_down(x, y);
+    rt.pointer_up(x, y);
+    for _ in 0..90 { rt.frame(1.0 / 60.0); }
+    assert!(at(&rt, "segment5")[0] < before - 100.0, "the chevron pages the row");
+}
+
+#[test]
+fn a_radio_group_keeps_its_segments_unscrolled() {
+    let mut rt = Runtime::new(false, sections, (600.0, 200.0), Env::new(true, 1.0));
+    rt.frame(0.0);
+    assert!(rt.elements().into_iter().all(|e| e.key.as_deref() != Some("segments")));
+}

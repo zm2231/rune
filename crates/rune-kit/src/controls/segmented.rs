@@ -4,7 +4,7 @@
 use rune::{El, Icon, Orientation, TextStyle, Tx, el, icon, row, text};
 
 use super::actions::{compose_help, format_shortcut};
-use crate::{Kit, State};
+use crate::{Kit, ScrollOverflow, State};
 
 /// How wide the control is.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -54,6 +54,7 @@ pub struct SegmentedControl {
     states: Vec<State>,
     segments: Vec<Segment>,
     as_tabs: bool,
+    scrolls: Option<bool>,
     pick: Option<Pick>,
     label: Option<String>,
 }
@@ -67,6 +68,7 @@ impl SegmentedControl {
             states: Vec::new(),
             segments: Vec::new(),
             as_tabs: false,
+            scrolls: None,
             pick: None,
             label: None,
         }
@@ -269,6 +271,16 @@ impl SegmentedControl {
         self.as_tabs = true;
         self
     }
+    /// Whether segments that don't fit the space the control is given scroll sideways, with a
+    /// chevron over each edge that has segments past it ([`ScrollOverflow`](crate::ScrollOverflow)),
+    /// rather than spill past it. On by default for [`Self::as_tabs`] with [`Self::fit`], so a
+    /// tab row at large text scrolls instead of running out of its pane; a radio group never
+    /// scrolls unless asked, as native segmented controls don't. The scroll viewport is keyed
+    /// `segments`.
+    pub fn scrolls(mut self, on: bool) -> Self {
+        self.scrolls = Some(on);
+        self
+    }
     pub fn on_pick<S: 'static>(mut self, f: impl Fn(&mut S, usize, &mut Tx) + Clone + 'static) -> Self {
         self.pick = Some(Box::new(move |i| {
             let f = f.clone();
@@ -278,6 +290,16 @@ impl SegmentedControl {
     }
 
     pub fn build(self, k: &Kit) -> El {
+        let scrolls = self.scrolls.unwrap_or(self.as_tabs && self.width == Width::Fit);
+        if !scrolls {
+            return groove(self.control(k), k);
+        }
+        let radius = k.segmented_metrics().radius;
+        let viewport = row().scroll_x().clip_rounded(radius).child(self.control(k));
+        groove(ScrollOverflow::new("segments", viewport).fill(k.c.layer_01).build(k).shrink().min_w(0.0).clip_rounded(radius), k)
+    }
+
+    fn control(self, k: &Kit) -> El {
         let c = &k.c;
         let m = k.segmented_metrics();
         let (height, radius, padding_x) = (m.height, m.radius, m.padding_x);
@@ -291,15 +313,8 @@ impl SegmentedControl {
             .focus_group()
             .h(height)
             .center_y()
-            .radius(radius)
-            .fill(c.layer_01)
             .padding(inset)
-            .gap(gap)
-            .box_shadow(rune::Shadow {
-                spread: 0.5,
-                color: c.border_base,
-                ..Default::default()
-            });
+            .gap(gap);
         if self.as_tabs {
             root = root.orientation(Orientation::Horizontal);
         }
@@ -431,4 +446,8 @@ impl SegmentedControl {
         }
         root
     }
+}
+
+fn groove(e: El, k: &Kit) -> El {
+    e.radius(k.segmented_metrics().radius).fill(k.c.layer_01).box_shadow(rune::Shadow { spread: 0.5, color: k.c.border_base, ..Default::default() })
 }

@@ -215,3 +215,24 @@ fn reorder_tx_preserves_listitem_role_set_position_and_keyboard_navigation() {
     assert_eq!(node(&tree, "Alpha")["position"], 2);
     assert!(has(node(&tree, "Alpha"), "selected"));
 }
+
+fn crowded_tabs(_: &App, _: &mut Cx<App>) -> El {
+    let k = kit();
+    let tabs = (0..10).map(|i| rune_kit::shell::TabItem::new(format!("tab{i}"), format!("Session {i}")));
+    let strip = rune_kit::shell::TabStrip::<App>::new("strip", rune_kit::shell::TabOrientation::Horizontal)
+        .tabs(tabs)
+        .active(Some("tab0"))
+        .viewport_width(Some(300.0))
+        .build(&k);
+    col().child(col().w(300.0).child(strip))
+}
+
+#[test]
+fn overflow_chevrons_stay_out_of_the_accessibility_tree() {
+    let rt = mount(App::default(), crowded_tabs);
+    assert!(rt.presented("overflow-end").is_some_and(|(_, o)| o > 0.99), "the strip overflows and shows its chevron");
+    let tree = rt.accessibility_json();
+    assert!(find(&tree, "overflow-start").is_none() && find(&tree, "overflow-end").is_none(), "{tree}");
+    assert!(with_role(&tree, "button").is_empty(), "nothing but tabs is read in the strip: {tree}");
+    assert_eq!(with_role(&tree, "tab").len(), 10, "every tab is read, scrolled out of view or not");
+}

@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use crate::el::ElFlags;
 
 use super::*;
-use super::viewport::{self, ScrollXChild, apply_scroll_x_child};
+use super::viewport::{self, ViewportChild};
 
 /// An `aspect_fit` element's first layout: it takes the free space along its parent's main axis
 /// and the whole cross side, within its max sizes, as the room its fitted box must fit. Its
@@ -417,7 +417,7 @@ impl StyleBuf for Cow<'_, CompactStyle> {
 }
 
 #[derive(Clone, Copy)]
-struct ChildEnv { me: usize, motion: Spring, in_row: RowLayout, row: bool, sx: Option<ScrollXChild>, attach_taffy: bool }
+struct ChildEnv { me: usize, motion: Spring, in_row: RowLayout, row: bool, vp: ViewportChild, attach_taffy: bool }
 
 struct RefScratch<'a> {
     style: Cow<'a, CompactStyle>,
@@ -555,13 +555,13 @@ impl FlattenEl for El {
         let shared_len = memo.as_ref().map_or(0, |b| b.children.children.len());
         if let Some(built) = &memo {
             for (i, c) in built.children.children.iter().enumerate() {
-                let (kid, kid_dirty) = flatten_ref(c, Some(env.me), path_buf, i, env.motion, env.in_row, env.row, env.sx, taffy, nodes, scale, memo_ctx);
+                let (kid, kid_dirty) = flatten_ref(c, Some(env.me), path_buf, i, env.motion, env.in_row, env.row, env.vp, taffy, nodes, scale, memo_ctx);
                 if env.attach_taffy { taffy.push_child(kid); }
                 children_dirty |= kid_dirty;
             }
         }
         for (j, c) in children.into_iter().enumerate() {
-            let (kid, kid_dirty) = flatten_owned(c, Some(env.me), path_buf, shared_len + j, env.motion, env.in_row, env.row, env.sx, taffy, nodes, scale, memo_ctx);
+            let (kid, kid_dirty) = flatten_owned(c, Some(env.me), path_buf, shared_len + j, env.motion, env.in_row, env.row, env.vp, taffy, nodes, scale, memo_ctx);
             if env.attach_taffy { taffy.push_child(kid); }
             children_dirty |= kid_dirty;
         }
@@ -605,7 +605,7 @@ impl<'e> FlattenEl for &'e El {
     ) -> bool {
         let mut children_dirty = false;
         for (i, c) in el.all_children().enumerate() {
-            let (kid, kid_dirty) = flatten_ref(c, Some(env.me), path_buf, i, env.motion, env.in_row, env.row, env.sx, taffy, nodes, scale, memo_ctx);
+            let (kid, kid_dirty) = flatten_ref(c, Some(env.me), path_buf, i, env.motion, env.in_row, env.row, env.vp, taffy, nodes, scale, memo_ctx);
             if env.attach_taffy { taffy.push_child(kid); }
             children_dirty |= kid_dirty;
         }
@@ -623,7 +623,7 @@ pub(in crate::runtime) fn flatten_with_buf(
     memo_ctx: &mut memo_reuse::MemoFlattenCtx<'_>,
 ) -> (SlotId, bool) {
     if path_buf.capacity() < path_buf.len() + 128 { path_buf.reserve(128); }
-    flatten_owned(el, parent, path_buf, index, motion, in_row, parent_row, None, taffy, nodes, scale, memo_ctx)
+    flatten_owned(el, parent, path_buf, index, motion, in_row, parent_row, ViewportChild::default(), taffy, nodes, scale, memo_ctx)
 }
 
 // Keep both monomorphizations in this module's codegen unit alongside its private helpers
@@ -633,12 +633,12 @@ pub(in crate::runtime) fn flatten_with_buf(
 #[allow(clippy::too_many_arguments)]
 fn flatten_owned(
     el: El, parent: Option<usize>, path_buf: &mut String, index: usize, motion: Spring,
-    in_row: RowLayout, parent_row: bool, parent_sx: Option<ScrollXChild>,
+    in_row: RowLayout, parent_row: bool, parent_vp: ViewportChild,
     taffy: &mut LayoutEngine, nodes: &mut Vec<Node>, scale: f32,
     memo_ctx: &mut memo_reuse::MemoFlattenCtx<'_>,
 ) -> (SlotId, bool) {
     rune_taffy::maybe_grow(|| {
-        flatten_node(el, parent, path_buf, index, motion, in_row, parent_row, parent_sx, taffy, nodes, scale, memo_ctx)
+        flatten_node(el, parent, path_buf, index, motion, in_row, parent_row, parent_vp, taffy, nodes, scale, memo_ctx)
     })
 }
 
@@ -646,12 +646,12 @@ fn flatten_owned(
 #[allow(clippy::too_many_arguments)]
 fn flatten_ref(
     el: &El, parent: Option<usize>, path_buf: &mut String, index: usize, motion: Spring,
-    in_row: RowLayout, parent_row: bool, parent_sx: Option<ScrollXChild>,
+    in_row: RowLayout, parent_row: bool, parent_vp: ViewportChild,
     taffy: &mut LayoutEngine, nodes: &mut Vec<Node>, scale: f32,
     memo_ctx: &mut memo_reuse::MemoFlattenCtx<'_>,
 ) -> (SlotId, bool) {
     rune_taffy::maybe_grow(|| {
-        flatten_node(el, parent, path_buf, index, motion, in_row, parent_row, parent_sx, taffy, nodes, scale, memo_ctx)
+        flatten_node(el, parent, path_buf, index, motion, in_row, parent_row, parent_vp, taffy, nodes, scale, memo_ctx)
     })
 }
 
@@ -659,12 +659,13 @@ fn flatten_ref(
 #[allow(clippy::too_many_arguments)]
 fn flatten_node<E: FlattenEl>(
     mut el: E, parent: Option<usize>, path_buf: &mut String, index: usize, motion: Spring,
-    in_row: RowLayout, parent_row: bool, parent_sx: Option<ScrollXChild>,
+    in_row: RowLayout, parent_row: bool, parent_vp: ViewportChild,
     taffy: &mut LayoutEngine, nodes: &mut Vec<Node>, scale: f32,
     memo_ctx: &mut memo_reuse::MemoFlattenCtx<'_>,
 ) -> (SlotId, bool) {
     let el_ref = el.as_el();
-    let reused = if parent_sx.is_none() { memo_reuse::try_reuse_memo(el_ref, parent, path_buf, index, motion, in_row, scale, taffy, nodes, memo_ctx) } else { None };
+    let restyled = parent_vp.restyles(&el_ref.style);
+    let reused = if !restyled { memo_reuse::try_reuse_memo(el_ref, parent, path_buf, index, motion, in_row, scale, taffy, nodes, memo_ctx) } else { None };
     #[cfg(feature = "frame-profile")]
     if el_ref.memo.is_some() && memo_ctx.committing {
         crate::frame::live_log::memo_flattened(reused.is_some());
@@ -675,7 +676,7 @@ fn flatten_node<E: FlattenEl>(
     if el_ref.flags.has(ElFlags::HAS_VIRTUAL) && el_ref.memo.is_some() {
         memo_ctx.missed_virtual_memo = true;
     }
-    let record_built = parent_sx.is_none().then(|| {
+    let record_built = (!restyled).then(|| {
         let built = el_ref.memo_built().filter(|b| b.reusable && memo_reuse::same_root_el(el_ref, b, false))
             .or_else(|| el_ref.cold.expanded_memo.as_ref().filter(|b| b.reusable && memo_reuse::same_root_el(el_ref, b, true)))?;
         let (inherited, hover_within) = memo_reuse::inherited_for(parent, nodes, motion, in_row, scale, memo_ctx.foreground, memo_ctx.bold_text);
@@ -706,7 +707,7 @@ fn flatten_node<E: FlattenEl>(
     let selection_off = crate::el::selection_off(el_ref.cold.selection_enabled, parent.is_some_and(|p| nodes[p].selection_off));
     let mirror = dir_effect == crate::el::DirEffect::Mirror;
     let (mut s, mut input) = el.new_scratch();
-    if let Some(sx) = parent_sx { apply_scroll_x_child(el.style_mut(&mut s), sx); }
+    if restyled { parent_vp.apply(el.style_mut(&mut s)); }
     if memo_ctx.bold_text && let Some(text) = el.text_mut(&mut s) {
         super::bold_text::embolden(text);
     }
@@ -744,12 +745,12 @@ fn flatten_node<E: FlattenEl>(
             Box::new((af, el.replace_style(&mut s, room)))
         })
     };
-    let child_sx = {
+    let child_vp = {
         let r = el.as_el();
         let c = &*r.cold;
         let total_children = r.memo.as_ref().map_or(0, |b| b.children.children.len()) + r.children.len();
         let (scrolls, axes) = (c.scroll.is_some(), c.scroll_axes);
-        if scrolls { viewport::scroll_x_viewport(el.style_mut(&mut s), axes, total_children) } else { None }
+        if scrolls { viewport::viewport(el.style_mut(&mut s), axes, total_children) } else { ViewportChild::default() }
     };
     let el_r = el.as_el();
     let role = el_r.role_name();
@@ -830,10 +831,10 @@ fn flatten_node<E: FlattenEl>(
     let row = matches!(style.as_ref().flex_direction(), FlexDirection::Row | FlexDirection::RowReverse);
     let attach_taffy = nodes[me].text.as_ref().is_none_or(|t| t.cold.inline_boxes.is_empty());
     let child_mark = taffy.begin_children();
-    let env = ChildEnv { me, motion, in_row: child_in_row, row, sx: child_sx, attach_taffy };
+    let env = ChildEnv { me, motion, in_row: child_in_row, row, vp: child_vp, attach_taffy };
     let mut children_dirty = E::flatten_children(children, env, path_buf, taffy, nodes, scale, memo_ctx);
     for (k, extra) in extra_children.into_iter().enumerate() {
-        let (kid, kid_dirty) = flatten_owned(extra, Some(env.me), path_buf, child_count + k, env.motion, env.in_row, env.row, env.sx, taffy, nodes, scale, memo_ctx);
+        let (kid, kid_dirty) = flatten_owned(extra, Some(env.me), path_buf, child_count + k, env.motion, env.in_row, env.row, env.vp, taffy, nodes, scale, memo_ctx);
         if attach_taffy { taffy.push_child(kid); }
         children_dirty |= kid_dirty;
     }

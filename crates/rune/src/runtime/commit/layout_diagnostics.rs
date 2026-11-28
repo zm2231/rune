@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use std::sync::Mutex;
 
 use rune_taffy::prelude::*;
+use taffy::CoreStyle;
 
 use super::Node;
 
@@ -88,6 +89,48 @@ pub(in crate::runtime) fn collapsed_scrolls(taffy: &LayoutEngine, nodes: &[Node]
              bounded parent leaves: bound an ancestor's height (.h(..), .h_full()) or set .min_h(..), \
              and put .min_h(0.0) on nested flex columns. (debug builds only)",
             n.path,
+        );
+    }
+}
+
+pub(in crate::runtime) fn unreachable_content(taffy: &LayoutEngine, nodes: &[Node]) {
+    if !nodes.iter().any(|n| n.scroll.is_some()) { return; }
+    let mut at = vec![[0.0_f32; 2]; nodes.len()];
+    let mut owner: Vec<Option<usize>> = vec![None; nodes.len()];
+    for (j, n) in nodes.iter().enumerate() {
+        let l = taffy.box_layout(n.taffy);
+        let Some(p) = n.parent else {
+            at[j] = [l.x, l.y];
+            continue;
+        };
+        at[j] = [at[p][0] + l.x, at[p][1] + l.y];
+        let parent = &nodes[p];
+        let clips = parent.vis.clip.is_some() || parent.vis.clip_radius.is_some() || taffy.style(parent.taffy).overflow() != taffy::Point { x: taffy::Overflow::Visible, y: taffy::Overflow::Visible };
+        owner[j] = if !n.in_flow || parent.text.is_some() {
+            None
+        } else if parent.scroll.is_some() {
+            Some(p)
+        } else if clips {
+            None
+        } else {
+            owner[p]
+        };
+        let Some(v) = owner[j] else { continue };
+        if n.text.is_some() { continue; }
+        let viewport = &nodes[v];
+        let lead = if viewport.flow == crate::el::Flow::Rtl { "right of" } else { "left of" };
+        let left = (viewport.scroll_axes.x(), at[v][0] - at[j][0], lead);
+        let above = (viewport.scroll_axes.y(), at[v][1] - at[j][1], "above");
+        let past = [left, above].into_iter().find(|&(axis, d, _)| axis && d > 0.5).map(|(_, d, side)| (d, side));
+        let Some((d, side)) = past else { continue };
+        let site = viewport.scroll_source.map_or_else(|| viewport.path.clone(), |s| s.to_string());
+        if !mark_warned(format!("unreachable:{site}")) { continue; }
+        eprintln!(
+            "rune: {:?} starts {d} pt {side} scroll viewport {:?} (scroll viewport at {site}), where scrolling \
+             never reaches. A box whose size is fixed or follows the viewport's (.w(..), .h(..), .h_full()) \
+             centres or end-aligns content larger than itself past its start: let that box \
+             take its content's size, or align its content to the start. (debug builds only)",
+            n.path, viewport.path,
         );
     }
 }

@@ -345,3 +345,17 @@ fn tabs_open_on_the_selected_one_past_the_edge() {
     let (tab, viewport) = (at(&rt, "segment5"), at(&rt, "segments"));
     assert!(tab[0] >= viewport[0] - 0.5 && tab[0] + tab[2] <= viewport[0] + viewport[2] + 0.5, "the selected tab {tab:?} shows in {viewport:?}");
 }
+
+#[test]
+fn two_tab_rows_keyed_alike_each_open_on_their_own_selection() {
+    let view = |_: &bool, _: &mut Cx<bool>| rune::col().size(600.0, 400.0).child(rune::col().w(400.0).key("first").child(section_tabs(true, 5))).child(rune::col().w(400.0).key("second").child(section_tabs(true, 1)));
+    let mut rt = Runtime::new(true, view, (600.0, 400.0), Env::new(true, 1.0));
+    for _ in 0..3 { rt.frame(1.0 / 60.0); }
+    let shown = |rt: &Runtime<bool>, row: &str, i: usize| {
+        let tab = rt.presented(&format!("{row}/segments-overflow/segments/segment{i}")).unwrap().0;
+        let viewport = rt.presented(&format!("{row}/segments-overflow/segments")).unwrap().0;
+        tab[0] >= viewport[0] - 0.5 && tab[0] + tab[2] <= viewport[0] + viewport[2] + 0.5
+    };
+    assert!(shown(&rt, "first", 5), "the first row opens on its last tab");
+    assert!(shown(&rt, "second", 1) && !shown(&rt, "second", 5), "the second row shows its own selection, not the first row's");
+}

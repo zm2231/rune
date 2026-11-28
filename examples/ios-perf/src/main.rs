@@ -236,8 +236,7 @@ fn on_presented(p: &FramePresented) {
 
 fn gpu_mib() -> String {
     #[cfg(target_os = "ios")]
-    return format!(" gpu_allocated_mib={:.2}", uikit::gpu_allocated_mib());
-    #[cfg(not(target_os = "ios"))]
+    if args().mode != Mode::Native { return format!(" gpu_allocated_mib={:.2}", uikit::gpu_allocated_mib()); }
     String::new()
 }
 

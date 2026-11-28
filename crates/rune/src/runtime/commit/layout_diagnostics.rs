@@ -127,7 +127,7 @@ pub(in crate::runtime) fn unreachable_content(taffy: &LayoutEngine, nodes: &[Nod
         if !mark_warned(format!("unreachable:{site}")) { continue; }
         eprintln!(
             "rune: {:?} starts {d} pt {side} scroll viewport {:?} (scroll viewport at {site}), where scrolling \
-             never reaches. A box whose size is fixed or follows the viewport's (.w(..), .h(..), .h_full()) \
+             never reaches. A box with a fixed size (.w(..), .h(..)) \
              centres or end-aligns content larger than itself past its start: let that box \
              take its content's size, or align its content to the start. (debug builds only)",
             n.path, viewport.path,

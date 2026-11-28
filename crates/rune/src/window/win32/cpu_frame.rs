@@ -24,6 +24,7 @@ use crate::time::Instant;
 use crate::window::chrome::{self, sync_chrome_core, sync_platform_core};
 use crate::window::handle::native_window_number;
 use crate::window::host::Host;
+use crate::window::host::render::FrameProfile;
 use crate::window::host::stepping::FrameMove;
 use crate::window::state::FirstFrame;
 use crate::window::surface::{
@@ -113,12 +114,13 @@ fn copy_last(cpu: &Cpu, window: &Window) {
 
 /// The first frame, painted while the window was hidden, into the window that now shows, whole
 /// (nothing composes the window before its cloak lifts).
-fn copy_first(cpu: &mut Cpu, window: &Window, size: (u32, u32)) {
-    let (Shown::Waiting, Buffer::Ready(dib)) = (&cpu.shown, &cpu.buffer) else { return };
-    let Some(hwnd) = crate::platform::win32::hwnd(window) else { return };
+fn copy_first(cpu: &mut Cpu, window: &Window, size: (u32, u32)) -> bool {
+    let (Shown::Waiting, Buffer::Ready(dib)) = (&cpu.shown, &cpu.buffer) else { return false };
+    let Some(hwnd) = crate::platform::win32::hwnd(window) else { return false };
     dib.present(hwnd, size, Blit::All);
     cpu.shown = Shown::Copied(size);
     crate::marks::mark("frame.first.copied");
+    true
 }
 
 /// Threads the CPU renderer paints on: the UI thread and up to five workers that park between
@@ -292,6 +294,8 @@ impl Host {
             hidden: false,
             now: None,
             encoded: None,
+            profile: FrameProfile::default(),
+            whole: None,
         };
         host_step::run(&mut frame);
     }
@@ -304,6 +308,8 @@ struct CpuWindowFrame<'a> {
     hidden: bool,
     now: Option<Instant>,
     encoded: Option<Instant>,
+    profile: FrameProfile,
+    whole: Option<&'static str>,
 }
 
 impl FrameHost for CpuWindowFrame<'_> {
@@ -311,6 +317,7 @@ impl FrameHost for CpuWindowFrame<'_> {
     type Prepared = Option<Vec<[u32; 4]>>;
 
     fn gate(&mut self) -> Gate {
+        self.profile.mark_entry();
         // The system threw away what the window showed (it was covered whole, then came back) and
         // asks for it again: the window is in sight, whatever the occlusion tracker said last, so
         // this frame is drawn and copied whole. Skipped, the system would count it painted, and the
@@ -359,6 +366,7 @@ impl FrameHost for CpuWindowFrame<'_> {
     }
 
     fn before_acquire(&mut self) {
+        self.profile.mark_start();
         if !self.hidden && !self.resizing { self.host.step_frame(crate::time::now()); }
         let Some(l) = self.host.win.as_mut() else { return };
         l.backoff_step(BackoffEvent::Lapsed);
@@ -368,7 +376,10 @@ impl FrameHost for CpuWindowFrame<'_> {
         }
     }
 
-    fn acquire(&mut self) -> Acquire<()> { Acquire::Ready(()) }
+    fn acquire(&mut self) -> Acquire<()> {
+        self.profile.mark_acquired();
+        Acquire::Ready(())
+    }
 
     fn step_runtime(&mut self) -> StepInfo {
         let now = crate::time::now();
@@ -384,6 +395,7 @@ impl FrameHost for CpuWindowFrame<'_> {
         };
         if self.hidden && let Some(l) = self.host.win.as_mut() { l.hidden_pace.rendered(now); }
         crate::marks::mark_once(&FIRST_LAYOUT, "frame.first.layout");
+        self.profile.mark_built();
         StepInfo { runtime_animating: animating, animating, dt, update_ms: 0.0, presents_at: None }
     }
 
@@ -412,6 +424,7 @@ impl FrameHost for CpuWindowFrame<'_> {
         let (SurfaceMode::Cpu { cpu, .. } | SurfaceMode::HandingOver { cpu, .. }) = &mut l.native.mode else { return RenderPrep::Abort };
         cpu.painter.fill_masks(&mut rt.text.atlas);
         crate::marks::mark_once(&FIRST_MASKS, "frame.first.masks");
+        self.profile.mark_uploaded();
         let scene = Scene::new(&rt.instances, &rt.text.atlas, &rt.images, (width, height), rt.clear_color())
             .srgb_blend(rt.srgb_blend())
             .fade_stops(rt.fade_stops())
@@ -477,6 +490,7 @@ impl FrameHost for CpuWindowFrame<'_> {
     }
 
     fn render(&mut self, prepared: &mut Option<Vec<[u32; 4]>>, _info: &StepInfo) -> bool {
+        self.profile.mark_encoded();
         let Some(rects) = prepared.as_deref() else { return false };
         let Some(l) = self.host.win.as_mut() else { return false };
         let (width, height) = (l.config.width, l.config.height);
@@ -485,6 +499,7 @@ impl FrameHost for CpuWindowFrame<'_> {
             cpu.shown = match std::mem::replace(&mut cpu.shown, Shown::Nothing) {
                 Shown::Copied(size) => {
                     let blit = if size == (width, height) && !self.owed { Blit::Bounds(rects) } else { Blit::All };
+                    if matches!(blit, Blit::All) { self.whole = Some(if self.owed { "repaint owed" } else { "size" }); }
                     if let Some(hwnd) = crate::platform::win32::hwnd(&l.window) { dib.present(hwnd, (width, height), blit); }
                     Shown::Copied((width, height))
                 }
@@ -503,19 +518,21 @@ impl FrameHost for CpuWindowFrame<'_> {
                 l.window.set_visible(true);
                 crate::marks::mark("window.visible");
             }
-            copy_first(cpu, &l.window, (width, height));
+            if copy_first(cpu, &l.window, (width, height)) { self.whole = Some("first copy"); }
             l.native.cloak.lift(&l.window);
             crate::marks::mark("window.shown");
         } else if l.window.is_visible() == Some(true) {
             // A frame after the show that came before the first copy.
-            copy_first(cpu, &l.window, (width, height));
+            if copy_first(cpu, &l.window, (width, height)) { self.whole = Some("first copy"); }
         }
+        self.profile.mark_submitted();
         false
     }
 
     fn submit_and_present(&mut self, prepared: Option<Vec<[u32; 4]>>, info: &StepInfo) -> Instant {
         self.encoded = self.host.frame_reports.stamp();
         crate::window::frame_presented();
+        if let Some(rects) = &prepared { self.profile.build_cpu_frame(self.host.app.rt_mut(), info.animating, rects, self.whole); }
         if prepared.is_some() && let Some(l) = self.host.win.as_mut() {
             crate::marks::mark_once(&FIRST_CPU, "frame.first.cpu");
             if !l.first_frame.ready() { l.first_frame.gpu_done(); }
@@ -562,6 +579,7 @@ impl FrameHost for CpuWindowFrame<'_> {
             l.stop_pacing();
             self.host.meter.set_pacing(l.pacing_state(false));
         }
+        self.profile.flush(self.host, info.animating, next_tick);
     }
 }
 

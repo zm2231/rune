@@ -25,6 +25,7 @@ use crate::time::Instant;
 use crate::window::chrome::{sync_chrome_core, sync_platform_core};
 use crate::window::handle::native_window_number;
 use crate::window::host::Host;
+use crate::window::host::render::FrameProfile;
 use crate::window::host::stepping::FrameMove;
 use crate::window::state::FirstFrame;
 use crate::window::warm_frame::warm_instances;
@@ -241,7 +242,7 @@ impl Host {
     /// A frame drawn by the CPU renderer: the runtime steps, the painter repaints the tiles that
     /// changed, and only those rectangles go to the display.
     pub(in crate::window) fn draw_cpu(&mut self, resizing: bool) {
-        let mut frame = CpuWindowFrame { host: self, resizing, owed: false, now: None, encoded: None, sent: false };
+        let mut frame = CpuWindowFrame { host: self, resizing, owed: false, now: None, encoded: None, sent: false, profile: FrameProfile::default(), whole: None };
         host_step::run(&mut frame);
     }
 }
@@ -255,6 +256,8 @@ struct CpuWindowFrame<'a> {
     encoded: Option<Instant>,
     /// This frame sent pixels to the display.
     sent: bool,
+    profile: FrameProfile,
+    whole: Option<&'static str>,
 }
 
 impl FrameHost for CpuWindowFrame<'_> {
@@ -262,6 +265,7 @@ impl FrameHost for CpuWindowFrame<'_> {
     type Prepared = Option<Vec<[u32; 4]>>;
 
     fn gate(&mut self) -> Gate {
+        self.profile.mark_entry();
         let Some(l) = self.host.win.as_mut() else { return Gate::Skip };
         let Some(cpu) = l.native.mode.cpu() else { return Gate::Skip };
         // The display threw away what the window showed and asks for it again: the window is in
@@ -284,6 +288,7 @@ impl FrameHost for CpuWindowFrame<'_> {
     }
 
     fn before_acquire(&mut self) {
+        self.profile.mark_start();
         if !self.resizing { self.host.step_frame(crate::time::now()); }
         let Some(l) = self.host.win.as_mut() else { return };
         l.backoff_step(BackoffEvent::Lapsed);
@@ -293,13 +298,17 @@ impl FrameHost for CpuWindowFrame<'_> {
         }
     }
 
-    fn acquire(&mut self) -> Acquire<()> { Acquire::Ready(()) }
+    fn acquire(&mut self) -> Acquire<()> {
+        self.profile.mark_acquired();
+        Acquire::Ready(())
+    }
 
     fn step_runtime(&mut self) -> StepInfo {
         let now = crate::time::now();
         self.now = Some(now);
         let (animating, dt) = self.host.app.clock_advance(&mut self.host.clock, now, false);
         crate::marks::mark_once(&FIRST_LAYOUT, "frame.first.layout");
+        self.profile.mark_built();
         StepInfo { runtime_animating: animating, animating, dt, update_ms: 0.0, presents_at: None }
     }
 
@@ -325,6 +334,7 @@ impl FrameHost for CpuWindowFrame<'_> {
         let Some(cpu) = l.native.mode.cpu() else { return RenderPrep::Abort };
         cpu.painter.fill_masks(&mut rt.text.atlas);
         crate::marks::mark_once(&FIRST_MASKS, "frame.first.masks");
+        self.profile.mark_uploaded();
         let scene = Scene::new(&rt.instances, &rt.text.atlas, &rt.images, (width, height), rt.clear_color())
             .srgb_blend(rt.srgb_blend())
             .fade_stops(rt.fade_stops())
@@ -379,6 +389,7 @@ impl FrameHost for CpuWindowFrame<'_> {
     }
 
     fn render(&mut self, prepared: &mut Option<Vec<[u32; 4]>>, _info: &StepInfo) -> bool {
+        self.profile.mark_encoded();
         let Some(rects) = prepared.as_deref() else { return false };
         let Some(l) = self.host.win.as_mut() else { return false };
         let Some(cpu) = l.native.mode.cpu() else { return false };
@@ -386,15 +397,18 @@ impl FrameHost for CpuWindowFrame<'_> {
         // wants the window's pixels: the request that asked for this frame may be why.
         let owed = self.owed || (rects.is_empty() && cpu.frames.exposed(true));
         let put = if owed { Put::All } else { Put::Rects(rects) };
+        if owed { self.whole = Some("repaint owed"); }
         // winit asks the compositor for the next frame's time with what is committed now.
         if owed || !rects.is_empty() { l.window.pre_present_notify(); }
         self.sent = cpu.frames.present(put);
+        self.profile.mark_submitted();
         false
     }
 
-    fn submit_and_present(&mut self, prepared: Option<Vec<[u32; 4]>>, _info: &StepInfo) -> Instant {
+    fn submit_and_present(&mut self, prepared: Option<Vec<[u32; 4]>>, info: &StepInfo) -> Instant {
         self.encoded = self.host.frame_reports.stamp();
         crate::window::frame_presented();
+        if let Some(rects) = &prepared { self.profile.build_cpu_frame(self.host.app.rt_mut(), info.animating, rects, self.whole); }
         if prepared.is_some() && let Some(l) = self.host.win.as_mut() {
             crate::marks::mark_once(&FIRST_CPU, "frame.first.cpu");
             if !l.first_frame.ready() { l.first_frame.gpu_done(); }
@@ -432,6 +446,7 @@ impl FrameHost for CpuWindowFrame<'_> {
             l.backoff_step(BackoffEvent::At(crate::time::now() + std::time::Duration::from_secs_f64(1. / hz.clamp(24., 480.))));
         }
         self.host.meter.set_pacing(l.pacing_state(!self.host.idle));
+        self.profile.flush(self.host, info.animating, next_tick);
     }
 }
 

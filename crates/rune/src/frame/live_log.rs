@@ -209,6 +209,7 @@ pub(crate) struct Frame {
     /// `RUNE_LOOP_CHECK=1`: the instances that differ from what the loop-only step would have
     /// drawn, and the largest difference.
     pub(crate) loop_check: Option<(usize, f32)>,
+    pub(crate) painter: &'static str,
 }
 
 pub(crate) fn frame(f: Frame) {
@@ -242,6 +243,7 @@ pub(crate) fn frame(f: Frame) {
     let [prepare, layers, pass, compositor] = f.encode_parts;
     line["encode_parts"] = serde_json::json!({ "prepare": prepare, "layers": layers, "pass": pass, "compositor": compositor });
     line["loop_why"] = serde_json::json!(f.loop_why);
+    line["painter"] = serde_json::json!(f.painter);
     let (missed, reconfigured) = MISSED.replace(([0; 4], 0));
     if missed != [0; 4] || reconfigured > 0 { line["missed"] = serde_json::json!({ "occluded": missed[0], "timeout": missed[1], "outdated": missed[2], "unconfigured": missed[3], "reconfigured": reconfigured }); }
     let (applied, skipped, unclean) = APPLY_SKIPS.with_borrow_mut(std::mem::take);

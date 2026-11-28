@@ -193,10 +193,25 @@ impl FrameProfile {
                     looped: looped.map(Vec::len),
                     loop_why: self.loop_why,
                     loop_check: self.loop_check.take(),
+                    painter: "gpu",
                 })
             }
             _ => None,
         };
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    #[inline]
+    pub(in crate::window) fn build_cpu_frame(&mut self, rt: &mut crate::runtime::RuntimeCore, animating: bool, rects: &[[u32; 4]], whole: Option<&'static str>) {
+        #[cfg(feature = "frame-profile")]
+        {
+            self.whole_why = whole;
+            let damage = whole.is_none().then(|| rects.iter().map(|r| r.map(|v| v as i32)).collect());
+            self.build_frame_core(rt, None, animating, None, damage);
+            if let Some(f) = self.frame.as_mut() { f.painter = "cpu"; }
+        }
+        #[cfg(not(feature = "frame-profile"))]
+        let _ = (rt, animating, rects, whole);
     }
 
     #[inline]
@@ -300,6 +315,7 @@ pub(super) fn prepare_window_render(
     let part = {
         let rt = host.app.rt();
         let whole = if l.alpha.is_some() { Some("alpha") } else if images_changed { Some("image") }
+            else if host.app.compositor_draws_own() { Some("compositor") }
             else if !l.config.usage.contains(wgpu::TextureUsages::COPY_DST) { Some("no copies") } else { None };
         // A new swap chain (`rebind_alpha`, a replaced surface, any configure: a resize, a blend
         // switch, `acquire` retrying an outdated surface) draws its first frame whole, through

@@ -315,7 +315,7 @@ fn glyph_atlas_changes_force_full_redraw_without_breaking_partial_updates() {
 }
 
 #[test]
-fn damage_plan_redraws_whole_for_translucent_clear_and_keeps_partial_for_opaque() {
+fn damage_plan_redraws_part_of_opaque_and_transparent_windows_and_whole_for_a_tinted_clear() {
     let size = (240u32, 80u32);
     let swap = 1u64;
     let atlas = GlyphAtlas::default();
@@ -334,13 +334,18 @@ fn damage_plan_redraws_whole_for_translucent_clear_and_keeps_partial_for_opaque(
         ..Instance::zeroed()
     }];
 
-    // Transparent clear (alpha 0.0, e.g. active WindowBackdrop): partial damage's blended clear
-    // quad cannot erase old pixels, so Damage::plan must request a whole-frame redraw.
     let mut transparent = Damage::default();
     let _ = transparent.plan(&frame1, size, [0.0; 4], swap, atlas, true);
     assert!(
-        matches!(transparent.plan(&frame2, size, [0.0; 4], swap, atlas, true), Plan::All(_)),
-        "transparent clear must draw whole rather than arm partial damage",
+        matches!(transparent.plan(&frame2, size, [0.0; 4], swap, atlas, true), Plan::Part { .. }),
+        "a transparent window redraws only what changed",
+    );
+
+    let mut tinted = Damage::default();
+    let _ = tinted.plan(&frame1, size, [0.0, 0.0, 0.0, 0.5], swap, atlas, true);
+    assert!(
+        matches!(tinted.plan(&frame2, size, [0.0, 0.0, 0.0, 0.5], swap, atlas, true), Plan::All(_)),
+        "a partly transparent clear would blend with what it replaces, so it draws whole",
     );
 
     // Opaque clear (alpha 1.0): partial damage stays active as before.

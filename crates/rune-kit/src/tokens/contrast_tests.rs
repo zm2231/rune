@@ -26,3 +26,14 @@ fn increased_contrast_sets_quiet_text_and_borders_further_from_the_page_in_both_
         assert_eq!(more.c.page, page);
     }
 }
+
+#[test]
+fn asking_for_increased_contrast_twice_changes_nothing_more() {
+    for dark in [false, true] {
+        let once = Kit::neutral(dark).increased_contrast();
+        let twice = once.increased_contrast();
+        assert_eq!(format!("{:?}", twice.c), format!("{:?}", once.c), "palette (dark {dark})");
+        assert_eq!(twice.roles, once.roles, "roles (dark {dark})");
+        assert!(twice.increased_contrast);
+    }
+}

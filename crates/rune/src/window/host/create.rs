@@ -698,7 +698,7 @@ impl Host {
         drop(w.surface.take());
         #[cfg(target_os = "macos")]
         self.frame_presented.reset();
-        self.gpu = None;
+        let old_gpu = self.gpu.take().map(|(gpu, _)| Arc::downgrade(&gpu));
         self.app.release_compositor_gpu();
         {
             let rt = self.app.rt_mut();
@@ -763,7 +763,7 @@ impl Host {
                 setup_surface,
             )
             .map_err(|e| ReattachError {
-                no_software: e.kind == crate::gpu::fallback::Failure::SurfaceUnsupported,
+                no_software: super::gpu_loss::software_missing(e.kind, old_gpu.as_ref().is_some_and(|old| old.strong_count() > 0)),
                 message: format_window_setup_error(e),
             })?,
         };

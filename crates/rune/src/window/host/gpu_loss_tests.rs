@@ -11,7 +11,7 @@ use winit::keyboard::ModifiersState;
 
 use super::{
     LatchedEvent, LatchedWakeAction, LostSurfaceAction, TerminalLoss,
-    classify_latched_wake_event, classify_latched_window_event, decide_lost_surface,
+    classify_latched_wake_event, classify_latched_window_event, decide_lost_surface, software_missing,
 };
 use crate::app::{SharedCore, WindowRequest};
 use crate::render::loss_latch::{GpuFailureKind, GpuLossPolicy};
@@ -732,4 +732,13 @@ mod noop_tests {
         assert!(gpu3.is_lost());
         assert!(!should_present_after_submit(gpu3.is_lost(), false));
     }
+}
+
+#[test]
+fn a_software_adapter_held_by_another_window_is_busy_not_missing() {
+    use crate::gpu::fallback::Failure;
+
+    assert!(software_missing(Failure::SurfaceUnsupported, false));
+    assert!(!software_missing(Failure::SurfaceUnsupported, true));
+    assert!(!software_missing(Failure::DeviceCreate, false));
 }

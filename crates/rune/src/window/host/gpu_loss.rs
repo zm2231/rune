@@ -502,6 +502,10 @@ pub(in crate::window) enum LostSurfaceAction {
     LatchTerminal,
 }
 
+pub(in crate::window) fn software_missing(failure: crate::gpu::fallback::Failure, old_gpu_held: bool) -> bool {
+    failure == crate::gpu::fallback::Failure::SurfaceUnsupported && !old_gpu_held
+}
+
 pub(in crate::window) const fn decide_lost_surface(
     policy: GpuLossPolicy,
     latch_failed: bool,

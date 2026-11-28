@@ -102,14 +102,50 @@ pub fn legible_on_all(fg: Color, fills: &[Color], min: f32) -> Color {
     if lowest_contrast(chosen, fills) >= min {
         return chosen;
     }
-    (-256..=256).map(|step| scaled(chosen, 1.0 + step as f32 * f32::EPSILON / 4.0)).fold(chosen, |best, c| {
+    let settled = settle(chosen, fills, min);
+    if lowest_contrast(settled, fills) > lowest_contrast(chosen, fills) { settled } else { chosen }
+}
+
+fn settle(c: Color, fills: &[Color], min: f32) -> Color {
+    let y = c.luminance();
+    let meets = |k: f32, darker: bool| {
+        let c = scaled(c, k);
+        fills.iter().filter(|f| (f.luminance() < y) == darker).all(|&f| contrast(c, f) >= min)
+    };
+    let darker = !meets(1.0, true);
+    let (mut low, mut high) = if darker { (1.0, 1.0 + SETTLE_SPAN) } else { (1.0 - SETTLE_SPAN, 1.0) };
+    for _ in 0..64 {
+        let mid = (low + high) * 0.5;
+        if mid == low || mid == high {
+            break;
+        }
+        if meets(mid, darker) == darker {
+            high = mid;
+        } else {
+            low = mid;
+        }
+    }
+    let bracket = [scaled(c, low), scaled(c, high)];
+    let nudged = bracket.into_iter().flat_map(|c| (0..3).flat_map(move |channel| (-4..=4).map(move |ulps| nudge(c, channel, ulps))));
+    nudged.fold(bracket[usize::from(darker)], |best, c| {
         if lowest_contrast(c, fills) > lowest_contrast(best, fills) { c } else { best }
     })
+}
+
+fn nudge(c: Color, channel: usize, ulps: i32) -> Color {
+    let step = |v: f32| f32::from_bits(v.to_bits().saturating_add_signed(ulps)).clamp(0.0, 1.0);
+    match channel {
+        0 => Color { r: step(c.r), ..c },
+        1 => Color { g: step(c.g), ..c },
+        _ => Color { b: step(c.b), ..c },
+    }
 }
 
 pub(crate) fn lowest_contrast(fg: Color, fills: &[Color]) -> f32 {
     fills.iter().map(|&fill| contrast(opaque_over(fg, fill), fill)).fold(f32::INFINITY, f32::min)
 }
+
+const SETTLE_SPAN: f32 = 1e-4;
 
 fn scaled(c: Color, by: f32) -> Color {
     Color { r: (c.r * by).min(1.0), g: (c.g * by).min(1.0), b: (c.b * by).min(1.0), a: c.a }

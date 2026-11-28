@@ -157,10 +157,40 @@ fn legible_on_all_finds_the_grey_between_black_and_white() {
 
 #[test]
 fn text_reaches_the_floor_when_one_lightness_alone_meets_it_on_every_fill() {
-    let light = Color { r: 0.9625, g: 0.9625, b: 0.9625, a: 1.0 };
-    let held = rune_kit::legible_on_all(Color::BLACK, &[Color::BLACK, light], 4.5);
-    for fill in [Color::BLACK, light] {
-        let (a, b) = (held.luminance() + 0.05, fill.luminance() + 0.05);
-        assert!(a.max(b) / a.min(b) >= 4.5, "{held:?} on {fill:?}: {}", a.max(b) / a.min(b));
+    let fg = Color { r: 0.1, g: 0.3, b: 0.2, a: 1.0 };
+    for v in [0.9625, f32::from_bits(0.9625f32.to_bits() + 1)] {
+        let light = Color { r: v, g: v, b: v, a: 1.0 };
+        for ink in [Color::BLACK, fg] {
+            let held = rune_kit::legible_on_all(ink, &[Color::BLACK, light], 4.5);
+            for fill in [Color::BLACK, light] {
+                let (a, b) = (held.luminance() + 0.05, fill.luminance() + 0.05);
+                assert!(a.max(b) / a.min(b) >= 4.5, "{ink:?} -> {held:?} on {fill:?}: {}", a.max(b) / a.min(b));
+            }
+        }
+    }
+}
+
+#[test]
+fn text_of_any_hue_reaches_a_floor_only_one_lightness_meets() {
+    let raw = |a: Color, b: Color| {
+        let (a, b) = (a.luminance() + 0.05, b.luminance() + 0.05);
+        a.max(b) / a.min(b)
+    };
+    for i in 0..400 {
+        let v = 0.96249 + i as f32 * 5e-8;
+        let light = Color { r: v, g: v, b: v, a: 1.0 };
+        let reachable = (0..2000)
+            .map(|j| 0.17499 + j as f32 * 1e-8)
+            .any(|g| [Color::BLACK, light].iter().all(|&f| raw(Color { r: g, g, b: g, a: 1.0 }, f) >= 4.5));
+        if !reachable {
+            continue;
+        }
+        for h in 0..24 {
+            let t = h as f32 / 24.0;
+            let fg = Color { r: t, g: (1.0 - t) * 0.6, b: (t * 7.0).fract(), a: 1.0 };
+            let held = rune_kit::legible_on_all(fg, &[Color::BLACK, light], 4.5);
+            let lowest = raw(held, Color::BLACK).min(raw(held, light));
+            assert!(lowest >= 4.5, "{fg:?} beside {v}: {held:?} reads {lowest}");
+        }
     }
 }

@@ -235,18 +235,13 @@ mod loop_frames {
             Some(p) => { renderer.arm_loop(&gpu.device, &gpu.queue, rt.paint_count(), &rt.instances, p, clear, SIZE, format).expect("a loop frame arms its rectangles"); }
             None => renderer.arm_damage(&gpu.device, &gpu.queue, &[[0, 0, SIZE.0, SIZE.1]], clear, SIZE, format),
         }
-        let drawn_instances = {
-            let d = renderer.damage.lock().unwrap();
-            let mut drawn = vec![d.runs.is_empty(); rt.instances.len()];
-            for run in d.runs.iter().flatten() { drawn[run.start as usize..run.end as usize].fill(true); }
-            drawn.iter().filter(|&&on| on).count()
-        };
+        let armed_area: usize = renderer.damage.lock().unwrap().armed.iter().map(|r| (r[2] * r[3]) as usize).sum();
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
         crate::frame::host_step::draw_ui(renderer, gpu, &mut encoder, &view, rt.core_mut(), SIZE, clear);
         let drawn = renderer.damage_drawn();
         readback.copy_from(&mut encoder, &texture);
         renderer.submit(&gpu.queue, encoder);
-        (readback.read(&gpu.device), drawn, drawn_instances)
+        (readback.read(&gpu.device), drawn, armed_area)
     }
 
     fn whole(gpu: &Gpu, rt: &mut Runtime<String>) -> Vec<u8> {
@@ -308,9 +303,9 @@ mod loop_frames {
             assert_eq!(draw(&gpu, &mut renderer, &mut rt, None).1, Ok(KeptDraw::Whole));
             for n in 0..3 {
                 let patched = step(&mut rt);
-                let (pixels, drawn, drawn_instances) = draw(&gpu, &mut renderer, &mut rt, Some(&patched));
+                let (pixels, drawn, armed_area) = draw(&gpu, &mut renderer, &mut rt, Some(&patched));
                 assert_eq!(drawn, Ok(KeptDraw::Partial), "{look} loop frame {n}");
-                assert!(drawn_instances < rt.instances.len(), "{look} loop frame {n} drew all {drawn_instances} instances");
+                assert!(armed_area * 10 < (SIZE.0 * SIZE.1) as usize, "{look} loop frame {n} redrew {armed_area} pixels");
                 assert!(pixels == whole(&gpu, &mut rt), "{look} loop frame {n} differs from the whole frame");
             }
         }

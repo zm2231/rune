@@ -58,9 +58,9 @@ pub(super) struct DamageState {
     /// The paint and target size `arm_cycle` last found its rectangles and runs for, and them.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     cycle: Option<((u64, (u32, u32)), Result<Cull, &'static str>)>,
-    /// The paint and target size `arm_loop` last found the units of, and them.
+    /// The paint `arm_loop` last looked for layers in, and whether it holds any.
     #[cfg(any(target_os = "windows", target_os = "macos", test))]
-    loop_units: Option<((u64, (u32, u32)), Result<std::sync::Arc<Units>, &'static str>)>,
+    loop_layers: Option<(u64, bool)>,
     /// Whether a run of the armed rectangles holds a layer's scope.
     layers_reached: bool,
     clear: [f32; 4],
@@ -157,9 +157,9 @@ impl Renderer {
 
     /// A window's loop-only frame (`Runtime::loop_step`): only the instances at `patched`
     /// (ascending) changed since the frame the kept texture and the instance buffer hold, both
-    /// paint `paint`'s. Arms the pixels they drew on and draw on now, each with only the instances
-    /// that reach it (what the rest drew there stays as drawn). Returns those rectangles (x0, y0,
-    /// x1, y1) to present, or why this frame draws whole.
+    /// paint `paint`'s. Arms the pixels they drew on and draw on now, each redrawn with every
+    /// instance in one draw clipped to it, the way the whole frame draws there. Returns those
+    /// rectangles (x0, y0, x1, y1) to present, or why this frame draws whole.
     #[cfg(any(target_os = "windows", target_os = "macos", test))]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn arm_loop(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, paint: u64, instances: &[Instance], patched: &[u32], clear: [f32; 4], size: (u32, u32), format: wgpu::TextureFormat) -> Result<Vec<[i32; 4]>, &'static str> {
@@ -177,17 +177,14 @@ impl Renderer {
         let mut rects = gather(patched.iter().map(at).flat_map(|i| [&held[i], &instances[i]]), size);
         // Nothing on screen changed: one pixel keeps the present, which DWM composes again as is.
         if rects.is_empty() { rects.push([0, 0, 1, 1]); }
-        let key = (paint, size);
-        let cached = self.damage.lock().unwrap().loop_units.as_ref().filter(|c| c.0 == key).map(|c| c.1.clone());
-        let units = match cached {
-            Some(units) => units?,
-            None => {
-                let units = units(instances, size).map(std::sync::Arc::new);
-                self.damage.lock().unwrap().loop_units = Some((key, units.clone()));
-                units?
-            }
-        };
-        let (draw, runs, layers) = cull_runs(instances, &units, &rects, patched);
+        let cached = self.damage.lock().unwrap().loop_layers.filter(|c| c.0 == paint).map(|c| c.1);
+        let layers = cached.unwrap_or_else(|| {
+            let layers = instances.iter().any(|i| i.kind() == Some(Kind::Layer));
+            self.damage.lock().unwrap().loop_layers = Some((paint, layers));
+            layers
+        });
+        let draw: Vec<[u32; 4]> = rects.iter().map(|r| [r[0] as u32, r[1] as u32, (r[2] - r[0]) as u32, (r[3] - r[1]) as u32]).collect();
+        let runs = vec![vec![0..instances.len() as u32]; draw.len()];
         self.arm_damage(device, queue, &draw, clear, size, format);
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         if super::pixel_check::on() { self.pixel_check_arm(device, size, format); }

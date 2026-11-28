@@ -1489,6 +1489,12 @@ environment, call `Runtime::set_paint_keep_strict(true)` on a headless `Runtime`
 `rt.paint_keep_mismatches() == 0` (which counts both unshifted and scroll-shifted mismatches and is always `0` in
 release builds).
 
+An anchored overlay (`El::anchored`, `El::above`) is reused like any other subtree: its place beside its anchor
+is part of the state it inherits, so an overlay whose anchor moved paints again and one whose anchor held is
+copied. `RUNE_PAINT_KEEP_LOG=1` prints, for each paint, how many nodes were copied and why the rest weren't;
+`RUNE_PAINT_KEEP_LOG=2` also prints every node that can't be copied with the first thing that keeps it from it
+(`looping`, `input`, `scroll`, `text links`, `selection` and so on), and every moved or rebuilt node.
+
 ### Requests off the main thread (`rune::Latest`)
 
 A search box, a mention list or a path completer asks once per keystroke and wants only the newest

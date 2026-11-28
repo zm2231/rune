@@ -362,10 +362,16 @@ impl RuntimeCore {
             if logging() {
                 let why = if !fit { 0 } else if o == NONE { 1 } else if k.moved_at[i] { 2 } else if k.prev[o as usize].epoch != self.tree.nodes[i].epoch { 3 } else if k.prev[o as usize].own != own { 4 } else { 5 };
                 k.why[why] += 1;
-                if (why == 2 || why == 3) && std::env::var_os("RUNE_PAINT_KEEP_LOG").is_some_and(|v| v == "2") {
-                    eprintln!("rune: paint keep:   {} {}", if why == 2 { "moved" } else { "rebuilt" }, self.tree.nodes[i].path);
+                if why <= 3 && why != 1 && std::env::var_os("RUNE_PAINT_KEEP_LOG").is_some_and(|v| v == "2") {
+                    let what = match why {
+                        0 => static_unfit(&self.tree.nodes[i]).or_else(|| dynamic_unfit(self, i, sel, marks)).unwrap_or("unfit"),
+                        2 => "moved",
+                        _ => "rebuilt",
+                    };
+                    eprintln!("rune: paint keep:   {what} {}", self.tree.nodes[i].path);
                 }
             }
+            let k = &mut self.paint.keep;
             k.clean[i] = fit && o != NONE && !k.moved_at[i] && {
                 let r = &k.prev[o as usize];
                 let up = parent.map_or(0, |p| (i - p) as u32);
@@ -768,27 +774,53 @@ fn own_key(rt: &RuntimeCore, i: usize) -> u64 {
 /// What a node's own fields say: paint reads nothing for it that changes without a new epoch
 /// or a scene value.
 fn static_ok(n: &Node) -> bool {
-    n.input.is_none() && !n.ime_cursor && n.scroll.is_none() && n.looping.is_none() && n.live.is_empty()
-        && n.vis.surface.is_none() && n.material.is_none() && !n.vis_flags.cache() && !n.vis_flags.raise()
-        && n.vis.backdrop_blur <= 0.0 && n.vis.effect.is_none() && n.vis.pixels.is_none()
-        && n.sticky.is_none() && n.above.is_none() && n.matched.is_none()
-        && n.static_scale == 1.0 && !n.scale_track && n.vis.mark == 0
-        && n.text.as_ref().is_none_or(|t| t.cold.links.is_empty() && t.cold.advance_in.is_none()
-            && !t.cold.pills.iter().any(crate::text::PillChip::has_image))
+    static_unfit(n).is_none()
+}
+
+fn static_unfit(n: &Node) -> Option<&'static str> {
+    let why = if n.input.is_some() { "input" }
+        else if n.ime_cursor { "ime cursor" }
+        else if n.scroll.is_some() { "scroll" }
+        else if n.looping.is_some() { "looping" }
+        else if !n.live.is_empty() { "live value" }
+        else if n.vis.surface.is_some() { "surface" }
+        else if n.material.is_some() { "material" }
+        else if n.vis_flags.cache() { "cache" }
+        else if n.vis_flags.raise() { "raise" }
+        else if n.vis.backdrop_blur > 0.0 { "backdrop blur" }
+        else if n.vis.effect.is_some() { "effect" }
+        else if n.vis.pixels.is_some() { "pixels" }
+        else if n.sticky.is_some() { "sticky" }
+        else if n.matched.is_some() { "matched" }
+        else if n.static_scale != 1.0 { "scale" }
+        else if n.scale_track { "tracked scale" }
+        else if n.vis.mark != 0 { "mark" }
+        else if n.text.as_ref().is_some_and(|t| !t.cold.links.is_empty()) { "text links" }
+        else if n.text.as_ref().is_some_and(|t| t.cold.advance_in.is_some()) { "text advance" }
+        else if n.text.as_ref().is_some_and(|t| t.cold.pills.iter().any(crate::text::PillChip::has_image)) { "pill image" }
+        else { return None };
+    Some(why)
 }
 
 /// What the runtime holds for a node besides it: selection, marks, reveals, loops, scales
 /// settling, sticky holds, exiting subtrees and folds.
 fn dynamic_ok(rt: &RuntimeCore, i: usize, sel: &[(usize, usize, usize)], marks: &[(usize, usize, usize)]) -> bool {
+    dynamic_unfit(rt, i, sel, marks).is_none()
+}
+
+fn dynamic_unfit(rt: &RuntimeCore, i: usize, sel: &[(usize, usize, usize)], marks: &[(usize, usize, usize)]) -> Option<&'static str> {
     let id = rt.tree.nodes[i].id;
-    !sel.iter().any(|r| r.0 == i) && !marks.iter().any(|r| r.0 == i)
-        && rt.caret_browse_collapsed_on(i).is_none()
-        && !rt.motion.reveal_fading(id)
-        && !rt.motion.has_loop(id)
-        && (rt.paint.static_scales.is_empty() || !rt.paint.static_scales.contains_key(&id))
-        && rt.paint.row_mask[i] < 0.0
-        && rt.scroll.hold_of(&rt.tree.nodes[i].path).is_none()
-        && (rt.scene.exiting().is_empty() || !rt.subtree_exiting(i))
+    let why = if sel.iter().any(|r| r.0 == i) { "selection" }
+        else if marks.iter().any(|r| r.0 == i) { "text marks" }
+        else if rt.caret_browse_collapsed_on(i).is_some() { "caret" }
+        else if rt.motion.reveal_fading(id) { "reveal" }
+        else if rt.motion.has_loop(id) { "loop" }
+        else if !rt.paint.static_scales.is_empty() && rt.paint.static_scales.contains_key(&id) { "settling scale" }
+        else if rt.paint.row_mask[i] >= 0.0 { "row mask" }
+        else if rt.scroll.hold_of(&rt.tree.nodes[i].path).is_some() { "sticky hold" }
+        else if !rt.scene.exiting().is_empty() && rt.subtree_exiting(i) { "exiting" }
+        else { return None };
+    Some(why)
 }
 
 #[cfg(test)]

@@ -571,3 +571,101 @@ fn a_faded_group_that_stops_folding_into_one_paint_repaints_what_took_its_opacit
     let label = rt.instances.iter().find(|q| q.rect == [0.0, 0.0, 20.0, 8.0]).expect("the label draws");
     assert_eq!(label.fill[3], 1.0, "inside its group's layer the label draws opaque, the layer fading it once");
 }
+
+
+mod anchored {
+    use super::*;
+    use crate::{Align, ScrollSpec, Side};
+
+    const ROWS: usize = 60;
+    const TAGS: usize = 30;
+
+    #[derive(Clone, Copy)]
+    struct Screen {
+        top: f32,
+        label: usize,
+    }
+
+    fn view(s: &Screen, _: &mut Cx<Screen>) -> El {
+        let rows = (0..ROWS).fold(col().key("rows").w_full().gap(2.0).child(el().key("top").w_full().h(s.top)), |c, i| {
+            c.child(
+                row()
+                    .key(format!("row{i}"))
+                    .w_full()
+                    .h(24.0)
+                    .gap(4.0)
+                    .child(text(format!("Row {i}")).key(format!("title{i}")))
+                    .child(el().key(format!("dot{i}")).size(8.0, 8.0).fill(Color::WHITE)),
+            )
+        });
+        let list = col().key("list").size(300.0, 400.0).scroll(ScrollSpec::default()).child(rows);
+        let tags = (0..TAGS).map(|t| {
+            col()
+                .key(format!("tag{t}"))
+                .padding(2.0)
+                .fill(Color::BLACK)
+                .child(text(format!("tag {t} v{}", if t == 0 { s.label } else { 0 })).key(format!("tagtext{t}")))
+                .child(el().key(format!("tagbar{t}")).size(20.0, 2.0).fill(Color::WHITE))
+                .anchored(format!("dot{}", t * 2), Side::Right, Align::Center, 4.0)
+        });
+        let spinner = el().key("spinner").size(16.0, 16.0).fill(Color::WHITE).looping(LoopSpec::rotation(1.0));
+        col().w_full().h_full().child(spinner).child(list).children(tags)
+    }
+
+    fn screen() -> Runtime<Screen> {
+        let mut rt = Runtime::new(Screen { top: 0.0, label: 0 }, view, (320.0, 440.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        for _ in 0..3 {
+            rt.frame(1.0 / 120.0);
+        }
+        rt
+    }
+
+    fn tag_roots(rt: &Runtime<Screen>) -> Vec<usize> {
+        let nodes = &rt.core().tree.nodes;
+        (0..nodes.len()).filter(|&i| nodes[i].above.is_some()).collect()
+    }
+
+    #[test]
+    fn an_anchored_overlay_whose_anchor_and_content_hold_is_copied() {
+        let mut rt = screen();
+        rt.frame(1.0 / 120.0);
+        let roots = tag_roots(&rt);
+        assert_eq!(roots.len(), TAGS);
+        let k = &rt.core().paint.keep;
+        assert!(k.on, "paint keep runs while the spinner turns");
+        for &i in &roots {
+            assert!(k.clean[i], "{} is as it was, so it is copied", rt.core().tree.nodes[i].path);
+        }
+    }
+
+    #[test]
+    fn an_anchored_overlay_copied_while_its_anchor_moves_paints_as_a_full_paint_does() {
+        type Step = fn(&mut Runtime<Screen>);
+        let steps: [(&str, Step); 4] = [
+            ("hold", |_| {}),
+            ("scroll", |rt| rt.update(|_, tx| tx.scroll_to("list", 0.0, 180.0))),
+            ("relayout", |rt| rt.update(|s, _| s.top = 36.0)),
+            ("content", |rt| rt.update(|s, _| s.label += 1)),
+        ];
+        for (name, step) in steps {
+            let mut copy = screen();
+            let mut fresh = screen();
+            copy.core_mut().paint.keep.force_copy = true;
+            step(&mut copy);
+            step(&mut fresh);
+            for f in 0..90 {
+                copy.frame(1.0 / 120.0);
+                fresh.core_mut().paint.keep.off_once = true;
+                fresh.frame(1.0 / 120.0);
+                let a = bytemuck::cast_slice::<Instance, u8>(&copy.core().instances);
+                let b = bytemuck::cast_slice::<Instance, u8>(&fresh.core().instances);
+                assert_eq!(a, b, "{name} frame {f}: copied instances differ from a full paint");
+                assert_eq!(copy.core().hit.hits, fresh.core().hit.hits, "{name} frame {f}: hits differ");
+                assert_eq!(copy.core().hit.overlay_hits, fresh.core().hit.overlay_hits, "{name} frame {f}: overlay hits differ");
+                assert_eq!(copy.core().paint.drawn, fresh.core().paint.drawn, "{name} frame {f}: drawn rects differ");
+            }
+            assert!(copy.core().paint.keep.last_kept > 0, "{name}: the copy run copied something");
+        }
+    }
+}

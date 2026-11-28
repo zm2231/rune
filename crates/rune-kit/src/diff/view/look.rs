@@ -62,7 +62,10 @@ fn resolve_line_height(font: TextStyle) -> TextStyle {
 }
 
 impl<S: 'static> DiffView<S> {
-    /// Override the syntax highlighting palette (by default [`SyntaxTheme::from_kit`]).
+    /// Override the syntax highlighting palette (by default [`SyntaxTheme::from_kit`]). On an
+    /// added or removed line, a word-change highlight or a selected row, a colour under 4.5:1
+    /// contrast on what it sits on draws moved toward black or white along its hue until it
+    /// reaches it; unchanged lines draw the theme's colours as given.
     ///
     /// ```
     /// # use rune_kit::{Kit, diff::{DiffState, DiffView}};

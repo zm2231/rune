@@ -555,6 +555,8 @@ impl MarkdownStyle {
         self
     }
     /// The text colours of a diff's added and removed lines (the body text colour by default).
+    /// A colour under 4.5:1 contrast on its line's tint draws moved toward black or white along
+    /// its hue until it reaches it.
     pub fn diff_text(mut self, added: Color, removed: Color) -> Self {
         self.diff_add_text = added;
         self.diff_remove_text = removed;

@@ -4,6 +4,8 @@ use std::ops::Range;
 
 use rune::{Color, Span};
 
+use crate::tokens::palette::{TEXT_CONTRAST, legible};
+
 /// Spans for a line from its syntax colours and the byte ranges given `bg` (word changes):
 /// cut where either starts or ends, so each piece has one colour and one background.
 pub(super) fn layer(len: usize, syntax: &[(Range<usize>, Color)], words: &[Range<usize>], bg: Option<Color>) -> Vec<Span> {
@@ -31,6 +33,13 @@ pub(super) fn layer(len: usize, syntax: &[(Range<usize>, Color)], words: &[Range
         }
     }
     out
+}
+
+pub(super) fn legible_on(mut spans: Vec<Span>, fill: Color, text: Color) -> Vec<Span> {
+    for sp in &mut spans {
+        sp.color = Some(legible(sp.color.unwrap_or(text), sp.bg.unwrap_or(fill), TEXT_CONTRAST));
+    }
+    spans
 }
 
 /// `code` as drawn: text layout draws a tab as one space, so each tab is followed by spaces up

@@ -495,13 +495,13 @@ fn diffs_tint_whole_lines_and_dim_hunk_headers() {
     assert!(matches!(&parse(src)[0], Block::Diff(d) if d.lines().count() == 4));
     assert!(matches!(&parse("```patch\n+a\n```")[0], Block::Diff(_)));
     fn styled(src: &String, _: &mut Cx<String>) -> El {
-        let [add, remove, hunk] = [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]].map(|[r, g, b]| rune::Color { r, g, b, a: 1.0 });
+        let [add, remove, hunk] = [[0.0, 1.0, 0.0], [1.0, 0.5, 0.5], [0.0, 0.0, 1.0]].map(|[r, g, b]| rune::Color { r, g, b, a: 1.0 });
         col().w_full().child(Markdown::new(src.clone()).render(&MarkdownStyle::neutral(false).diff(add, remove).diff_hunk(hunk)))
     }
     let mut rt = Runtime::new(src.to_owned(), styled, (480.0, 400.0), Env::new(false, 1.0));
     rt.frame(0.0);
     let fill = |k: &str| by_key(&rt, k).fill;
-    let [add, remove, hunk] = [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]].map(|[r, g, b]| rune::Color { r, g, b, a: 1.0 });
+    let [add, remove, hunk] = [[0.0, 1.0, 0.0], [1.0, 0.5, 0.5], [0.0, 0.0, 1.0]].map(|[r, g, b]| rune::Color { r, g, b, a: 1.0 });
     assert_eq!((fill("l2"), fill("l3")), (remove, add));
     assert_ne!(fill("l1"), add);
     let block = by_key(&rt, "b0");

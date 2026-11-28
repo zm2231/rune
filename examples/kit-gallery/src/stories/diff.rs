@@ -236,11 +236,12 @@ pub(super) fn custom(s: &G, k: &Kit, _: &mut Vec<El>) -> El {
         });
     }
     if custom_syntax {
+        let paint = |dark: Color, hue: f32, chroma: f32| if k.dark { dark } else { rune::oklch(0.5, chroma, hue) };
         let theme = SyntaxTheme::from_kit(k)
-            .with(Syntax::Keyword, Color { r: 0.86, g: 0.28, b: 0.62, a: 1.0 })
-            .with(Syntax::String, Color { r: 0.18, g: 0.72, b: 0.48, a: 1.0 })
-            .with(Syntax::Function, Color { r: 0.24, g: 0.56, b: 0.94, a: 1.0 })
-            .with(Syntax::Number, Color { r: 0.92, g: 0.58, b: 0.18, a: 1.0 });
+            .with(Syntax::Keyword, paint(Color { r: 0.86, g: 0.28, b: 0.62, a: 1.0 }, 341.0, 0.13))
+            .with(Syntax::String, paint(Color { r: 0.18, g: 0.72, b: 0.48, a: 1.0 }, 168.0, 0.1))
+            .with(Syntax::Function, paint(Color { r: 0.24, g: 0.56, b: 0.94, a: 1.0 }, 244.0, 0.1))
+            .with(Syntax::Number, paint(Color { r: 0.92, g: 0.58, b: 0.18, a: 1.0 }, 81.0, 0.1));
         view = view.syntax_theme(theme);
     }
 

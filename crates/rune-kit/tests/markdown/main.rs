@@ -1,3 +1,6 @@
+mod change_tint_contrast;
+#[path = "../support/contrast.rs"]
+mod contrast;
 mod markdown;
 mod markdown_blocks_and_highlights;
 mod markdown_copy_source;

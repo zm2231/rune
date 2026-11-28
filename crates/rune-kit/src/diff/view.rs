@@ -23,7 +23,7 @@ pub use labels::DiffLabel;
 pub use line_info::FoldRow;
 
 use look::Look;
-use spans::{layer, tabbed};
+use spans::{layer, legible_on, tabbed};
 
 static PLUS: Icon = Icon {
     name: "kit-diff-plus",
@@ -664,7 +664,7 @@ impl View {
             .role("listitem")
             .label(self.cell_label(&c))
             .child(gutter)
-            .child(self.code(st, f, &c, copy, hover_side, &st.keys[i]).key("code"))
+            .child(self.code(st, f, &c, fill, copy, hover_side, &st.keys[i]).key("code"))
     }
 
     fn split<'a>(&self, st: &'a DiffState, i: usize, f: usize, old: Option<Cell<'a>>, new: Option<Cell<'a>>) -> El {
@@ -698,7 +698,7 @@ impl View {
                 .label(self.label(DiffLabel::Line { kind: cell.kind, number, text: cell.text }))
                 .child(self.bar(kind))
                 .child(self.number(st, i, f, n, side, kind, selected, digits).key("n"))
-                .child(self.code(st, f, &cell, copy, side, &st.keys[i]).key("code"));
+                .child(self.code(st, f, &cell, fill, copy, side, &st.keys[i]).key("code"));
             if let Some(at) = n.map(|n| LineRef::new(side, n)).filter(|&at| self.bind.can_comment(f, at)) {
                 h = h.child(self.plus(f, at).absolute(l.plus_x(BAR + l.number_w(digits)), l.plus_y()));
             }
@@ -764,7 +764,8 @@ impl View {
     }
 
     /// The code of a line: syntax colours under word changes, tabs padded to four columns.
-    fn code(&self, st: &DiffState, f: usize, c: &Cell<'_>, copy: bool, side: Side, row_key: &str) -> El {
+    #[allow(clippy::too_many_arguments)]
+    fn code(&self, st: &DiffState, f: usize, c: &Cell<'_>, fill: Color, copy: bool, side: Side, row_key: &str) -> El {
         let l = &self.look;
         let (src, n) = match (side, c.old, c.new) {
             (Side::Old, Some(n), _) => (Side::Old, n),
@@ -778,6 +779,7 @@ impl View {
             .collect();
         let word = l.tints(c.kind).map(|t| t.word);
         let spans = layer(c.text.len(), &syntax, word.map_or(&[][..], |_| c.changes), word);
+        let spans = if fill == l.bg { spans } else { legible_on(spans, fill, l.text) };
         let (shown, spans, pads) = tabbed(c.text, spans, st.wraps());
         let mut t = rich(shown, spans).font(l.font).color(l.text).key("text");
         t = if st.wraps() { t.w_full() } else { t.single_line() };

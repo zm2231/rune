@@ -70,6 +70,46 @@ pub(crate) fn tint(base: Color, hue: Color, t: f32) -> Color {
     Color::from_oklab([0, 1, 2, 3].map(|i| if i == 3 { a[3] } else { a[i] + (b[i] - a[i]) * t }))
 }
 
+pub(crate) const TEXT_CONTRAST: f32 = 4.5;
+
+pub(crate) fn legible(fg: Color, fill: Color, min: f32) -> Color {
+    let fg = if fg.a < 1.0 { Color { a: 1.0, ..fill.mix(fg, fg.a) } } else { fg };
+    if contrast(fg, fill) >= min {
+        return fg;
+    }
+    let pole = |dark: bool| if dark { Color::BLACK } else { Color::WHITE };
+    let own_side = fg.luminance() <= fill.luminance();
+    let dark = if contrast(pole(own_side), fill) >= min { own_side } else { !own_side };
+    let end = pole(dark);
+    if contrast(end, fill) < min {
+        return end;
+    }
+    let at = |t: f32| mix_oklab(fg, end, t);
+    let mut low = 0.0;
+    if dark != own_side {
+        let mut high = 1.0;
+        for _ in 0..24 {
+            let mid = (low + high) * 0.5;
+            if (at(mid).luminance() <= fill.luminance()) == dark {
+                high = mid;
+            } else {
+                low = mid;
+            }
+        }
+    }
+    let goal = (min * 1.01).min(contrast(end, fill));
+    let mut high = 1.0;
+    for _ in 0..24 {
+        let mid = (low + high) * 0.5;
+        if contrast(at(mid), fill) >= goal {
+            high = mid;
+        } else {
+            low = mid;
+        }
+    }
+    at(high)
+}
+
 /// OKLab lightness steps away from `bg` (lighter on dark themes, darker on light ones) per
 /// elevation: `layer_01`–`layer_04`.
 const DARK_LAYERS: [f32; 4] = [0.04, 0.07, 0.10, 0.13];

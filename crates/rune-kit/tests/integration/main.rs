@@ -3,11 +3,14 @@ mod closure_builders;
 mod collapsible;
 mod combobox;
 mod context_menu;
+#[path = "../support/contrast.rs"]
+mod contrast;
 #[allow(deprecated)]
 mod control_size;
 mod dialog_select;
 mod diff;
 mod diff_code_font;
+mod diff_contrast;
 mod diff_custom;
 mod diff_labels;
 mod diff_scroll_bar;

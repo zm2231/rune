@@ -7,6 +7,7 @@ use std::ops::RangeInclusive;
 
 use rune::{Color, El, Family, Spring, TextStyle, Transition, col, el, row, spacer, text};
 
+use crate::tokens::palette::{TEXT_CONTRAST, legible, tint};
 use crate::{Kit, Markdown};
 
 #[cfg(test)]
@@ -519,14 +520,17 @@ fn draw_code(key: &str, title: Option<&str>, marks: &[RangeInclusive<usize>], li
         let added = raw.starts_with('+');
         let removed = raw.starts_with('-');
         let (bar, bg, ink) = if added {
-            (k.roles.added, k.roles.added.alpha(0.12), k.roles.added)
+            let bg = tint(c.bg_deep, k.roles.added, 0.12);
+            (k.roles.added, bg, legible(k.roles.added, bg, TEXT_CONTRAST))
         } else if removed {
-            (k.roles.removed, k.roles.removed.alpha(0.12), k.roles.removed)
+            let bg = tint(c.bg_deep, k.roles.removed, 0.12);
+            (k.roles.removed, bg, legible(k.roles.removed, bg, TEXT_CONTRAST))
         } else if marked {
-            (c.info.fg, c.info.fg.alpha(0.12), c.text_base)
+            (c.info.fg, tint(c.bg_deep, c.info.fg, 0.12), c.text_base)
         } else {
             (Color::TRANSPARENT, Color::TRANSPARENT, c.text_base)
         };
+        let number = if bg == Color::TRANSPARENT { c.text_muted } else { legible(c.text_muted, bg, TEXT_CONTRAST) };
         body = body.child(
             row()
                 .key(format!("line-{line_no}"))
@@ -537,7 +541,7 @@ fn draw_code(key: &str, title: Option<&str>, marks: &[RangeInclusive<usize>], li
                 .center_y()
                 .fill(bg)
                 .child(el().w(2.5).h(15.0).radius(1.0).fill(bar))
-                .child(text(format!("{line_no:>2}")).font(k.text(CODE)).color(c.text_muted).a11y_hidden())
+                .child(text(format!("{line_no:>2}")).font(k.text(CODE)).color(number).a11y_hidden())
                 .child(text(raw).font(k.text(CODE)).color(ink)),
         );
     }

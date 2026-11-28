@@ -40,6 +40,7 @@ pub mod motion;
 mod paragraphs;
 mod pills;
 mod pixel_snap;
+mod pointer;
 mod rare;
 mod ride_trailing;
 mod scroll;
@@ -71,9 +72,9 @@ pub(crate) use handlers::{A11yActionFn, AnyPressFn, DragEndFn, DragFn, DragOutFn
 pub(crate) use help::{HELP_KEY, HELP_ROW, help_words};
 pub use input::{InputSpec, auto_grow, edit_access, text_input};
 pub use items::VirtualItems;
-#[doc(hidden)]
-pub use layout::PathBind;
 pub use pills::{InlineIcon, InlineImage};
+#[doc(hidden)]
+pub use pointer::PathBind;
 pub use rare::OptionAsAlt;
 pub(crate) use rare::{ElCold, ElFlags, RoleTag};
 pub use rune_motion::Cycle;

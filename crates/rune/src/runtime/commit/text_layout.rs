@@ -499,15 +499,51 @@ pub(in crate::runtime) fn compute_layout(taffy: &mut LayoutEngine, root: SlotId,
             {
                 lw = lw.min(a);
             }
-            Size {
-                width: known.width.unwrap_or(lw),
-                height: known.height.unwrap_or(match laid.single() {
-                    Some(l) => clamped_height(l, spec, scale),
-                    None => l.spec_height(spec.style, scale, spec.exact_lines),
-                } / scale),
+            let mut h = match laid.single() {
+                Some(l) => clamped_height(l, spec, scale),
+                None => l.spec_height(spec.style, scale, spec.exact_lines),
+            };
+            if let Some(inp) = nodes[i].input.as_deref() {
+                h = h.max(placeholder_height(text, inp, spec, scale, w.map(|w| w * scale + FIT_SLACK)));
             }
+            Size { width: known.width.unwrap_or(lw), height: known.height.unwrap_or(h / scale) }
         })
     });
+}
+
+fn measures_placeholder(inp: &crate::el::InputSpec) -> bool {
+    !inp.single_line && !inp.placeholder.is_empty() && inp.edit.text.is_empty() && inp.edit.preedit().is_none()
+}
+
+pub(in crate::runtime) fn placeholder_measure_key(inp: Option<&crate::el::InputSpec>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let Some(inp) = inp.filter(|i| measures_placeholder(i)) else { return 0 };
+    let mut h = rustc_hash::FxHasher::default();
+    inp.placeholder.hash(&mut h);
+    inp.placeholder_style.hash(&mut h);
+    h.finish() | 1
+}
+
+pub(in crate::runtime) fn placeholder_indent(spec: &TextSpec, scale: f32) -> f32 {
+    let ti = if spec.cold.text_indent == 0.0 { 0.0 } else { (spec.cold.text_indent * scale).clamp(-1e7, 1e7).round() };
+    spec.cold.blocks.first().map_or(0.0, |b| (b.indent_pt(spec.style.size) * scale).round()) + ti
+}
+
+pub(in crate::runtime) fn placeholder_options(spec: &TextSpec) -> crate::text::RichLayoutOptions {
+    crate::text::RichLayoutOptions::new().flow(match spec.dir {
+        crate::el::TextDir::Fixed(f) if !spec.by_paragraph(true) => Some(f),
+        _ => None,
+    })
+}
+
+fn placeholder_height(text: &mut TextSystem, inp: &crate::el::InputSpec, spec: &TextSpec, scale: f32, wrap: Option<f32>) -> f32 {
+    if !measures_placeholder(inp) {
+        return 0.0;
+    }
+    let style = inp.placeholder_style.unwrap_or(spec.style);
+    let wrap = wrap.map(|w| (w - placeholder_indent(spec, scale)).max(1.0));
+    let l = text.layout_rich_with(&inp.placeholder, &[], style, scale, wrap, placeholder_options(spec));
+    crate::text::spec_height(&l, style, scale, spec.exact_lines)
 }
 
 /// A measured picture's size (`flatten::Picture::Measured`): the side it's given, and the other
@@ -712,3 +748,7 @@ pub(in crate::runtime) fn clamped(text: &mut TextSystem, spec: &TextSpec, scale:
     }
     Some((layout, e))
 }
+
+#[cfg(test)]
+#[path = "text_layout_tests.rs"]
+mod tests;

@@ -406,18 +406,14 @@ impl RuntimeCore {
                 let departing = self.motion.flights().iter().any(|f| f.departs(&n.path, n.key.as_deref())
                     && f.alphas(f.destination, now, self.reduced_motion).0 > 0.0);
                 if e.text.is_empty() && e.preedit().is_none() && !inp.placeholder.is_empty() && !departing {
-                    let ti = if spec.cold.text_indent == 0.0 { 0.0 } else { (spec.cold.text_indent * s).clamp(-1e7, 1e7).round() * tk };
-                    let pl_indent = spec.cold.blocks.first().map_or(0.0, |b| (b.indent_pt(spec.style.size) * s).round() * tk) + ti;
+                    let pl_indent = crate::runtime::commit::text_layout::placeholder_indent(spec, s) * tk;
                     // A one-line field's placeholder stays on its line, cut by the field's clip, as its
                     // text does; a multi-line field's wraps at its width.
                     let wrap = (!inp.single_line).then(|| (x1 - x0 - pl_indent).max(1.0) / tk.max(1e-4));
                     // A by-paragraph field's placeholder is a `dir="auto"` text of its own, as
                     // Desktop's composer draws it: in its own direction, its field's padding with it.
                     let own = spec.by_paragraph(true);
-                    let options = crate::text::RichLayoutOptions::new().flow(match spec.dir {
-                        crate::el::TextDir::Fixed(f) if !own => Some(f),
-                        _ => None,
-                    });
+                    let options = crate::runtime::commit::text_layout::placeholder_options(spec);
                     let pl_style = inp.placeholder_style.unwrap_or(spec.style);
                     let pl = self.text.layout_rich_with(&inp.placeholder, &[], pl_style, s, wrap, options);
                     let pl_flow = crate::el::Flow::of_layout(&pl);

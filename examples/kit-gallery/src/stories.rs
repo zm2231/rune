@@ -31,6 +31,7 @@ mod shell_rows;
 pub(crate) mod sidebar;
 mod split_view;
 mod table;
+mod text_roles;
 mod text_samples;
 mod text_scales;
 
@@ -368,6 +369,7 @@ stories! {
     "rune-text--max-lines-elide" => text_max_lines_elide,
     "rune-text--nowrap-input" => text_nowrap_input,
     "rune-text--align-y-input" => text_align_y_input,
+    "rune-text--roles" => text_roles::roles,
     "rune-dialog--fit" => dialog_fit,
     "rune-dialog--close-disabled" => dialog_close_disabled,
     "rune-popup-list--composer" => popup_list_composer,

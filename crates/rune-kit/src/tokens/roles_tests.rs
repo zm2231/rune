@@ -39,9 +39,8 @@ fn a_role_colour_follows_appearance_and_increased_contrast() {
 fn increased_contrast_lifts_palette_roles_and_keeps_ones_a_theme_chose() {
     let k = Kit::neutral(true);
     let more = k.increased_contrast();
-    assert_eq!(more.roles.meta, more.c.text_faint, "meta lifts with faint text");
-    assert_ne!(more.roles.meta, k.roles.meta);
-    assert_eq!(more.roles.link, k.roles.link);
+    let contrast = crate::tokens::palette::contrast;
+    assert!(contrast(more.roles.meta, k.c.bg_base) > contrast(k.roles.meta, k.c.bg_base), "meta lifts with faint text");
 
     let meta = RoleColor::new(A, B).increased(C, D);
     let theme = crate::KitTheme::new(move |env| {

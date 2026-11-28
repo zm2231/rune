@@ -1,6 +1,7 @@
 use rune::Color;
 
 use super::kit::Palette;
+use super::palette::legible;
 use super::theme::KitEnv;
 
 /// What a run of text means, for the colours [`TextRoles`] gives each.
@@ -96,9 +97,15 @@ pub struct TextRoles {
 impl TextRoles {
     /// Roles from a palette's own tokens: `text_faint` for meta, `text_accent` for links,
     /// `info` text for work in progress, `text_base` for code and peers, the success and danger icon hues for
-    /// added and removed, and the warning, success and danger text for the states.
+    /// added and removed, and the warning, success and danger text for the states. Each reads at
+    /// 4.5:1 on the surfaces text sits on (`bg_base`, `bg_deep` and `layer_01`) and is opaque:
+    /// one that would fall short moves toward black or white along its hue until it does.
     pub fn from_palette(c: &Palette) -> TextRoles {
-        TextRoles {
+        TextRoles::legible_on(c, 4.5)
+    }
+
+    pub(crate) fn legible_on(c: &Palette, floor: f32) -> TextRoles {
+        let mut roles = TextRoles {
             meta: c.text_faint,
             link: c.text_accent,
             code: c.text_base,
@@ -109,7 +116,14 @@ impl TextRoles {
             needs_attention: c.warning.fg,
             done: c.success.fg,
             error: c.danger.fg,
+        };
+        for role in TextRole::ALL {
+            let slot = roles.slot_mut(role);
+            for surface in [c.bg_base, c.bg_deep, c.layer_01] {
+                *slot = legible(*slot, surface, floor);
+            }
         }
+        roles
     }
 
     /// The colour of `role`.

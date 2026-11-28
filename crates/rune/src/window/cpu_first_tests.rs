@@ -73,7 +73,6 @@ fn desktop_gpu_owed_decision_matrix() {
     assert!(!CpuFirst::Only.gpu_owed(true, false));
     assert!(CpuFirst::Off.gpu_owed(true, false));
 
-    // A compositor draws nothing on the CPU renderer, so even Only hands over.
     for mode in [CpuFirst::Auto, CpuFirst::Only, CpuFirst::Off] {
         assert!(mode.gpu_owed(true, true), "{mode:?} with a compositor");
     }

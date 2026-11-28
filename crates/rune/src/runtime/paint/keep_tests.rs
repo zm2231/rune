@@ -639,6 +639,75 @@ mod anchored {
         }
     }
 
+    fn copies_match_full_paints<S: 'static>(name: &str, make: impl Fn() -> Runtime<S>, step: impl Fn(&mut Runtime<S>)) -> usize {
+        let mut copy = make();
+        let mut fresh = make();
+        copy.core_mut().paint.keep.force_copy = true;
+        step(&mut copy);
+        step(&mut fresh);
+        for f in 0..90 {
+            copy.frame(1.0 / 120.0);
+            fresh.core_mut().paint.keep.off_once = true;
+            fresh.frame(1.0 / 120.0);
+            let a = bytemuck::cast_slice::<Instance, u8>(&copy.core().instances);
+            let b = bytemuck::cast_slice::<Instance, u8>(&fresh.core().instances);
+            assert_eq!(a, b, "{name} frame {f}: copied instances differ from a full paint");
+            assert_eq!(copy.core().hit.hits, fresh.core().hit.hits, "{name} frame {f}: hits differ");
+            assert_eq!(copy.core().hit.overlay_hits, fresh.core().hit.overlay_hits, "{name} frame {f}: overlay hits differ");
+            assert_eq!(copy.core().paint.drawn, fresh.core().paint.drawn, "{name} frame {f}: drawn rects differ");
+        }
+        copy.core().paint.keep.last_kept
+    }
+
+    #[test]
+    fn a_zoomed_flipped_or_fitted_overlay_copies_only_what_a_full_paint_draws() {
+        #[derive(Clone, Copy)]
+        struct Edge {
+            right: f32,
+            zoom: f32,
+        }
+        fn view(s: &Edge, _: &mut Cx<Edge>) -> El {
+            let spinner = el().key("spinner").size(16.0, 16.0).fill(Color::WHITE).looping(LoopSpec::rotation(1.0));
+            let page = col()
+                .key("page")
+                .w_full()
+                .scale(s.zoom)
+                .child(row().w_full().child(el().w(s.right)).child(el().key("edge").size(20.0, 20.0).fill(Color::WHITE)));
+            let tip = col()
+                .key("tip")
+                .padding(4.0)
+                .fill(Color::BLACK)
+                .child(text("A tip wider than the room on the right").key("tiptext"))
+                .anchored("edge", Side::Right, Align::Center, 6.0);
+            let list = (0..12).fold(col().key("list").w_full().gap(2.0), |c, i| c.child(text(format!("Line {i}")).key(format!("line{i}"))));
+            let fitted = col()
+                .key("fitted")
+                .fill(Color::BLACK)
+                .child(list)
+                .anchored_fit("edge", Side::Bottom, Align::Start, 4.0);
+            col().w_full().h_full().child(spinner).child(page).child(tip).child(fitted)
+        }
+        let make = |right: f32, zoom: f32| {
+            move || -> Runtime<Edge> {
+                let mut rt = Runtime::new(Edge { right, zoom }, view, (320.0, 240.0), Env::new(true, 2.0));
+                rt.frame(0.0);
+                for _ in 0..3 {
+                    rt.frame(1.0 / 120.0);
+                }
+                rt
+            }
+        };
+        let cases: [(&str, f32, f32, fn(&mut Edge)); 4] = [
+            ("flip at the edge", 40.0, 1.0, |s| s.right = 290.0),
+            ("back from the edge", 290.0, 1.0, |s| s.right = 40.0),
+            ("zoomed", 40.0, 1.25, |_| {}),
+            ("zoom changes", 40.0, 1.0, |s| s.zoom = 1.5),
+        ];
+        for (name, right, zoom, change) in cases {
+            copies_match_full_paints(name, make(right, zoom), move |rt: &mut Runtime<Edge>| rt.update(move |s, _| change(s)));
+        }
+    }
+
     #[test]
     fn an_anchored_overlay_copied_while_its_anchor_moves_paints_as_a_full_paint_does() {
         type Step = fn(&mut Runtime<Screen>);
@@ -649,23 +718,7 @@ mod anchored {
             ("content", |rt| rt.update(|s, _| s.label += 1)),
         ];
         for (name, step) in steps {
-            let mut copy = screen();
-            let mut fresh = screen();
-            copy.core_mut().paint.keep.force_copy = true;
-            step(&mut copy);
-            step(&mut fresh);
-            for f in 0..90 {
-                copy.frame(1.0 / 120.0);
-                fresh.core_mut().paint.keep.off_once = true;
-                fresh.frame(1.0 / 120.0);
-                let a = bytemuck::cast_slice::<Instance, u8>(&copy.core().instances);
-                let b = bytemuck::cast_slice::<Instance, u8>(&fresh.core().instances);
-                assert_eq!(a, b, "{name} frame {f}: copied instances differ from a full paint");
-                assert_eq!(copy.core().hit.hits, fresh.core().hit.hits, "{name} frame {f}: hits differ");
-                assert_eq!(copy.core().hit.overlay_hits, fresh.core().hit.overlay_hits, "{name} frame {f}: overlay hits differ");
-                assert_eq!(copy.core().paint.drawn, fresh.core().paint.drawn, "{name} frame {f}: drawn rects differ");
-            }
-            assert!(copy.core().paint.keep.last_kept > 0, "{name}: the copy run copied something");
+            assert!(copies_match_full_paints(name, screen, step) > 0, "{name}: the copy run copied something");
         }
     }
 }

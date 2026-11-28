@@ -2,10 +2,10 @@
 //! layer-shell overlays. Compiles each locale's Compose file once off the UI thread and
 //! hands each surface its own lightweight `xkb::compose::State` referencing the cached table.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::ffi::OsStr;
-#[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use xkbcommon::xkb::{self, compose};
 
@@ -24,10 +24,9 @@ struct SendTable(compose::Table);
 #[allow(unsafe_code)]
 unsafe impl Send for SendTable {}
 
-#[cfg(test)]
-static TABLE_COMPILATIONS: AtomicUsize = AtomicUsize::new(0);
-
 thread_local! {
+    #[cfg(test)]
+    static TABLE_COMPILATIONS: Cell<usize> = const { Cell::new(0) };
     static POOL: RefCell<ComposePool<compose::Table, SendTable>> =
         RefCell::new(ComposePool::new(MAX_LOCALES));
 }
@@ -36,7 +35,7 @@ fn current_locale() -> String { keyboard::compose_locale(crate::env::var) }
 
 fn compile_table(locale: &str) -> Option<compose::Table> {
     #[cfg(test)]
-    TABLE_COMPILATIONS.fetch_add(1, Ordering::Relaxed);
+    TABLE_COMPILATIONS.with(|n| n.set(n.get() + 1));
     let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
     compose::Table::new_from_locale(&context, OsStr::new(locale), compose::COMPILE_NO_FLAGS).ok()
 }
@@ -102,7 +101,8 @@ impl Slot {
     }
 }
 
-#[cfg(test)] pub(super) fn table_compilations() -> usize { TABLE_COMPILATIONS.load(Ordering::Relaxed) }
+#[cfg(test)] pub(super) fn table_compilations() -> usize { TABLE_COMPILATIONS.with(Cell::get) }
+#[cfg(test)] pub(super) fn in_flight_for_test() -> usize { POOL.with(|p| p.borrow().in_flight_len()) }
 #[cfg(test)] pub(super) fn state_for_locale(locale: &str) -> Option<compose::State> { wait_state(locale) }
 #[cfg(test)] pub(super) fn warm_for_test(locale: &str) { warm_locale(locale); }
 #[cfg(test)] pub(super) fn clear_cache_for_test() { POOL.with(|p| p.borrow_mut().clear()); }

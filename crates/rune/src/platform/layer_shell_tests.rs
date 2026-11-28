@@ -212,6 +212,7 @@ fn xkb_compose_table_is_cached_per_locale_and_states_reset_independently() {
     let _second = super::compose::state_for_locale("C");
     assert_eq!(super::compose::table_compilations(), after_first, "second show reuses the cached table");
     super::compose::warm_for_test("C");
+    assert_eq!(super::compose::in_flight_for_test(), 0, "warm on cached locale starts no background compile");
     assert_eq!(super::compose::table_compilations(), after_first, "warm on cached locale does not recompile");
 
     // Two surfaces sharing one cached table keep independent dead-key composition state.

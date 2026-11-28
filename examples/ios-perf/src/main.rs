@@ -18,6 +18,9 @@ use rune::time::{Instant, SystemTime};
 use rune::{App, AppSpec, Color, Cx, El, GrowthSpec, FrameEncoded, FrameOutcome, FramePresented, ScrollSpec, Spring, TextStyle, Tx, col, el, row, text};
 use stats::say;
 
+#[global_allocator]
+static HEAP: procwatch::alloc::Counting = procwatch::alloc::Counting::system();
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Mode {
     Rune,
@@ -231,6 +234,12 @@ fn on_presented(p: &FramePresented) {
     say_first_frame(probe::wall_of(at), "presented", main_wall);
 }
 
+fn heap_mib() -> String {
+    procwatch::alloc::heap().map_or_else(String::new, |h| format!(" heap_mib={:.2} heap_peak_mib={:.2}", h.live as f64 / MIB, h.peak as f64 / MIB))
+}
+
+const MIB: f64 = 1024.0 * 1024.0;
+
 fn gpu_mib() -> String {
     #[cfg(target_os = "ios")]
     if args().mode != Mode::Native { return format!(" gpu_allocated_mib={:.2}", uikit::gpu_allocated_mib()); }
@@ -262,7 +271,7 @@ fn link_extra(hz: &[f64]) -> String {
 }
 
 fn finish() {
-    say(format!("PERF after_scroll_footprint_mib={:.2}{}", probe::footprint_mib(), gpu_mib()));
+    say(format!("PERF after_scroll_footprint_mib={:.2}{}{}", probe::footprint_mib(), heap_mib(), gpu_mib()));
     trace::step("finish", || format!("exit={}", args().exit));
     if args().exit { std::process::exit(0); }
 }
@@ -359,7 +368,7 @@ fn run_native() -> ! {
             say_first_frame(native::wall_of_media(target), "link_target", REC.with(|r| r.borrow().main_wall));
             native::after(args().idle, || {
                 trace::step("idle_sample", String::new);
-                say(format!("PERF idle_footprint_mib={:.2} idle_s={}", probe::footprint_mib(), args().idle));
+                say(format!("PERF idle_footprint_mib={:.2} idle_s={}{}", probe::footprint_mib(), args().idle, heap_mib()));
                 if args().auto_scroll { drive_uikit(); }
             });
         }));
@@ -395,7 +404,7 @@ fn main() {
         trace::step("idle_wait", String::new);
         std::thread::sleep(Duration::from_secs_f64(args().idle));
         trace::step("idle_sample", String::new);
-        say(format!("PERF idle_footprint_mib={:.2} idle_s={}{}", probe::footprint_mib(), args().idle, gpu_mib()));
+        say(format!("PERF idle_footprint_mib={:.2} idle_s={}{}{}", probe::footprint_mib(), args().idle, heap_mib(), gpu_mib()));
         let marks: String = rune::marks::marks().into_iter()
             .map(|(name, at)| format!(" {name}={}", ms(probe::since_start_ms(probe::wall_of(at))))).collect();
         say(format!("PERF marks{marks}"));

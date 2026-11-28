@@ -513,11 +513,17 @@ impl TextSystem {
             if !self.fallbacks.symbols {
                 self.load_symbol_families();
             }
+            let text_symbols: Vec<&'static str> =
+                self.symbol_families.iter().copied().filter(|f| self.emoji != Some(*f) && !f.contains("Emoji")).collect();
+            let mut sym_cov = FamilyCoverage::from_names(&mut self.font_cx.collection, text_symbols, attributes);
+            missing.retain(|&ch| !sym_cov.covers(&mut self.font_cx, ch));
             // What the symbol families lack (Ethiopic, Khmer, Tibetan...): the platform's own
             // fallback, once per character.
-            self.fallbacks.asked.extend(missing.iter().copied());
-            let files = fallback_family_files(&mut self.fallbacks, &missing, locale.as_deref());
-            self.add_symbol_files(files);
+            if !missing.is_empty() {
+                self.fallbacks.asked.extend(missing.iter().copied());
+                let files = fallback_family_files(&mut self.fallbacks, &missing, locale.as_deref());
+                self.add_symbol_files(files);
+            }
         }
         // Load the math fallback only when a non-emoji symbol in `needs_symbols` is still
         // uncovered after primary and non-emoji symbol fallbacks.

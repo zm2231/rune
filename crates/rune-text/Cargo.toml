@@ -56,6 +56,9 @@ parley = { workspace = true, features = ["std", "complex-scripts"] }
 # keeps system fonts off. Fontconfig opens at run time, so a build needs no headers for it.
 fontique = { version = "0.12", default-features = false, features = ["std", "system", "fontconfig-dlopen"] }
 
+[target.'cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))'.dependencies]
+yeslogic-fontconfig-sys = { version = "6", features = ["dlopen"] }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # `dictionary::set_dictionary_segmenter` (vendor/parley_engine), for `Intl.Segmenter`'s words,
 # and `platform::set_platform_face` for browser-drawn fallback runs.

@@ -1,6 +1,3 @@
-//! A toolbar's trailing items that don't fit fade out toward the title rather than stopping at a
-//! hard edge, at every kit text scale.
-
 use rune::render::{Gpu, OFFSCREEN_FORMAT, Offscreen, Renderer};
 use rune::text::TextSystem;
 use rune::{Color, Cx, El, Env, Runtime, col, el, text};

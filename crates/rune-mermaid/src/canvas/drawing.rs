@@ -11,12 +11,16 @@ use crate::{DiagramStyle, Drawing, Hover};
 pub struct DrawingModel {
     scene: Rc<Scene>,
     style: DiagramStyle,
+    src: Rc<str>,
+    hover: Option<(Hover, Color)>,
+    srgb: bool,
 }
 
 /// Prepare the same layout as [`crate::render_drawing`], retaining it for text lookup.
 pub fn prepare_drawing(src: &str, style: &DiagramStyle, hover: Hover, color: Color) -> Option<DrawingModel> {
     let hover = (hover != Hover::Off).then_some((hover, color));
-    Some(DrawingModel { scene: scenes::built(src, style, hover, None).0?, style: *style })
+    let scene = scenes::built(src, style, hover, None).0?;
+    Some(DrawingModel { scene, style: *style, src: src.into(), hover, srgb: rune::theme::blends_srgb() })
 }
 
 impl DrawingModel {
@@ -32,9 +36,12 @@ impl DrawingModel {
     pub fn same_layout(&self, other: &Self) -> bool { Rc::ptr_eq(&self.scene, &other.scene) }
 
     /// Draw with UTF-8 byte ranges local to each label. Keys are the ones returned by
-    /// [`Self::labels`]. A hover copy uses the same marks as the label underneath it.
+    /// [`Self::labels`]. A hover copy uses the same marks as the label underneath it. Colours
+    /// flattened over the card mix in the blend mode of the window drawing it
+    /// ([`rune::theme::blends_srgb`]), whichever mode it was prepared in.
     pub fn draw(&self, marks: impl Fn(&str) -> Vec<TextHighlight>) -> Drawing {
-        let (el, size) = self.scene.drawing(&self.style, Some(&marks));
+        let rebuilt = (rune::theme::blends_srgb() != self.srgb).then(|| scenes::built(&self.src, &self.style, self.hover, None).0).flatten();
+        let (el, size) = rebuilt.as_ref().unwrap_or(&self.scene).drawing(&self.style, Some(&marks));
         Drawing { el, size, surface: self.style.surface, surface_border: self.style.surface_border }
     }
 }

@@ -57,6 +57,7 @@ mod srgb_default;
 mod switch_snap;
 mod table;
 mod table_columns;
+mod table_frozen_fill;
 mod table_reorder;
 mod table_virtual_columns;
 mod text_role_contrast;

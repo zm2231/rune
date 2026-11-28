@@ -162,15 +162,8 @@ pub(super) fn resolved_min_width(c: &TableColumn, w: Width) -> f32 {
     }
 }
 
-/// Alpha-composites `top` over opaque `base` so frozen cells never bleed scrolled cells through.
 pub(super) fn opaque_over(base: Color, top: Color) -> Color {
-    let a = top.a.clamp(0.0, 1.0);
-    Color {
-        r: base.r + (top.r - base.r) * a,
-        g: base.g + (top.g - base.g) * a,
-        b: base.b + (top.b - base.b) * a,
-        a: 1.0,
-    }
+    crate::over(top, base.alpha(1.0))
 }
 
 /// Fixed-width invisible spacer standing in for unmounted columns.

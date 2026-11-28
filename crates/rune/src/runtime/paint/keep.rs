@@ -835,3 +835,6 @@ mod tests;
 #[cfg(test)]
 #[path = "keep_dots_tests.rs"]
 mod dots_tests;
+#[cfg(test)]
+#[path = "text_scale_tests.rs"]
+mod text_scale_tests;

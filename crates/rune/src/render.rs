@@ -164,7 +164,7 @@ pub use warmup::warm_gpu_with;
 pub(crate) const ATLAS_START_ROWS: u32 = 256;
 
 /// `RUNE_LOOP_CHECK=2` found a picture that differed from the whole frame's (`pixel_check`), so the
-/// process's exit code is 3. Never on macOS and Linux, which have no loop-only frames.
+/// process's exit code is 3. Never on macOS and Linux, which draw loop-only frames whole.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn loop_pixel_check_failed() -> bool {
     #[cfg(target_os = "windows")]

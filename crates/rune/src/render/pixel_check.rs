@@ -4,7 +4,7 @@
 //! frame of any kind (`damage_drawn`, once the encoding frame was submitted), or the next loop-only
 //! frame (`arm_loop`), or the renderer going away, reads them back and compares every pixel, so the
 //! last check of a run is compared too. This reaches what the
-//! instance comparison (`RUNE_LOOP_CHECK=1`) can't: `arm_loop`'s rectangles, the culled redraw
+//! instance comparison (`RUNE_LOOP_CHECK=1`) can't: `arm_loop`'s rectangles, the clipped redraw
 //! inside them, and so the present rectangles, which are the same rectangles. Stalls on the
 //! readback; a diagnostic only. Unset, it costs one `OnceLock` read per loop-only frame.
 //!

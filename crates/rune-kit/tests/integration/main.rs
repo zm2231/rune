@@ -63,6 +63,7 @@ mod text_input_focus_change;
 mod text_input_hooks;
 mod text_input_press;
 mod text_input_read_only;
+mod toolbar_fade;
 mod tooltip;
 mod tree;
 mod tx_callbacks;

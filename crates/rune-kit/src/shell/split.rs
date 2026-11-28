@@ -7,7 +7,7 @@ use std::time::Duration;
 use rune::{Anim, Color, Curve, Cursor, Drag, Easing, El, Phase, Spring, Transition, Tx, col, el, row};
 
 use super::pane::{PaneMotion, PaneState, Peek, SidebarPeek};
-use super::toolbar::{TOOLBAR_HEIGHT, Toolbar};
+use super::toolbar::Toolbar;
 use crate::{ControlSize, IconButton, IconButtonVariant, Kit};
 
 type Apply = Box<dyn FnOnce(El) -> El>;
@@ -333,7 +333,7 @@ impl SplitView {
                     button = button.child(dot.absolute(side - 5.0, -2.0).opacity(if open { 0.0 } else { 1.0 }).opacity_motion(fade));
                 }
                 let x = if open && t.in_header { s.width() - self.padding[1] - side } else { lights };
-                let mut b = tg(button).key("sidebar-toggle").absolute(x, top + (TOOLBAR_HEIGHT - side) / 2.0).motion(spring);
+                let mut b = tg(button).key("sidebar-toggle").absolute(x, top + (Toolbar::height(k) - side) / 2.0).motion(spring);
                 if let (Some(pk), Some(h)) = (peek, &hover)
                     && !open
                 {
@@ -357,7 +357,7 @@ impl SplitView {
                     let h = h.clone();
                     pane_hold = Some(Box::new(move |e: El| h(e, Duration::ZERO, pk.grace, PeekHover::Hold(PaneState::PEEK_PANE))) as Apply);
                 } else if !open && !s.is_resizing() {
-                    let below = pk.below.unwrap_or(top + TOOLBAR_HEIGHT);
+                    let below = pk.below.unwrap_or(top + Toolbar::height(k));
                     let edge = el().key("sidebar-peek-edge").pin(Some(0.0), Some(below), None, Some(0.0)).w(frame + pk.edge);
                     zones.push(h(edge.transition(instant), pk.edge_delay, Duration::ZERO, PeekHover::Open(0)));
                 }
@@ -374,7 +374,7 @@ impl SplitView {
             let mut band = row()
                 .key("sidebar-titlebar")
                 .w_full()
-                .h(top + TOOLBAR_HEIGHT)
+                .h(top + Toolbar::height(k))
                 .pt(top)
                 .center_y()
                 .window_drag()

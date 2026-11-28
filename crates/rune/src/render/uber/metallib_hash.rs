@@ -14,6 +14,6 @@ pub(super) const UBER_NATIVE_MSL_BLAKE3: &str = "604341d72b20463057e13f151c81159
 #[cfg(all(test, target_os = "macos", feature = "metal-backend"))]
 pub(super) const UBER_NATIVE_METALLIB_FNV64: u64 = 0x4f05d93e3e7e141a;
 #[cfg(test)]
-pub(super) const UBER_IOS_METALLIB_FNV64: u64 = 0x0000000000000000;
+pub(super) const UBER_IOS_METALLIB_FNV64: u64 = 0x63db67eb8ee078e7;
 #[cfg(test)]
-pub(super) const UBER_IOS_SIM_METALLIB_FNV64: u64 = 0x0000000000000000;
+pub(super) const UBER_IOS_SIM_METALLIB_FNV64: u64 = 0x4c0e104ea6a4fedd;

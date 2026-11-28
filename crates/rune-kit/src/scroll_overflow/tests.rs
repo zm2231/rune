@@ -7,6 +7,7 @@ struct App {
     pressed: Vec<usize>,
     rtl: bool,
     reveal: Option<usize>,
+    hidden: bool,
 }
 
 fn view(s: &App, cx: &mut rune::Cx<App>) -> El {
@@ -15,6 +16,9 @@ fn view(s: &App, cx: &mut rune::Cx<App>) -> El {
     let items = (0..10).map(|i| el().key(format!("item{i}")).role("button").w(100.0).h(28.0).on_press(move |s: &mut App| s.pressed.push(i)));
     let viewport = row().scroll_x().child(row().key("list").children(items));
     let strip = ScrollOverflow::new("strip", viewport).reveal(s.reveal.map(|i| format!("item{i}"))).build(&k).w_full().h(28.0);
+    if s.hidden {
+        return col();
+    }
     col().child(if s.rtl { strip.dir(rune::Direction::Rtl) } else { strip })
 }
 
@@ -172,4 +176,43 @@ fn a_window_grown_to_fit_drops_the_chevrons_and_the_scroll() {
     assert_eq!((opacity(&rt, "overflow-start"), opacity(&rt, "overflow-end")), (0.0, 0.0), "and no chevron shows");
     press(&mut rt, "item9");
     assert_eq!(rt.state.pressed, [9], "the hidden chevron leaves the last item its presses");
+}
+
+#[test]
+fn a_remounted_strip_opens_on_its_revealed_element_again() {
+    let mut rt = mount(App { reveal: Some(8), ..App::default() }, false);
+    for _ in 0..4 {
+        press(&mut rt, "overflow-start");
+        settle(&mut rt);
+    }
+    assert_eq!(scrolled(&rt), 0.0, "scrolled back to the start");
+    rt.state.hidden = true;
+    rt.invalidate();
+    settle(&mut rt);
+    assert!(rt.presented("strip").is_none(), "unmounted");
+    rt.state.hidden = false;
+    rt.invalidate();
+    settle(&mut rt);
+    let (item, strip) = (rect(&rt, "item8"), rect(&rt, "strip"));
+    assert!(item[0] >= strip[0] - 0.5 && item[0] + item[2] <= strip[0] + strip[2] + 0.5, "item8 {item:?} shows in {strip:?} again");
+}
+
+#[test]
+fn a_chevron_held_to_the_end_stops_paging_and_leaves_the_last_item_its_presses() {
+    let mut rt = app(false);
+    let r = rect(&rt, "overflow-end");
+    let (x, y) = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    rt.pointer_move(x, y);
+    rt.pointer_down(x, y);
+    for _ in 0..240 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(scrolled(&rt), 700.0, "held, it pages to the end");
+    assert_eq!(opacity(&rt, "overflow-end"), 0.0, "where its chevron hides");
+    assert_eq!(rt.next_wake(), None, "and nothing more is scheduled while it's still held");
+    rt.pointer_up(x, y);
+    settle(&mut rt);
+    press(&mut rt, "item9");
+    assert_eq!(rt.state.pressed, [9], "a press where the chevron stood reaches the last item");
+    assert_eq!(scrolled(&rt), 700.0);
 }

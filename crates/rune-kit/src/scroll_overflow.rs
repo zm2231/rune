@@ -52,14 +52,16 @@ impl Edges {
         }
     }
 
-    fn page(&self, end: bool, chevron: f32, target: &str, tx: &mut Tx) {
+    fn page(&self, end: bool, chevron: f32, target: &str, tx: &mut Tx) -> bool {
         let at = self.pos.get();
+        let max = at.max[0].max(0.0);
         let page = (at.viewport[0] - 2.0 * chevron).max(at.viewport[0] / 2.0);
         let from = self.aim.get().unwrap_or(at.offset[0]);
-        let to = (if end { from + page } else { from - page }).clamp(0.0, at.max[0].max(0.0));
+        let to = (if end { from + page } else { from - page }).clamp(0.0, max);
         self.aim.set(Some(to));
         tx.live_only();
         tx.scroll_to(target, to, at.offset[1]);
+        (if end { max - to } else { to }) > SHOW_PAST
     }
 }
 
@@ -185,8 +187,7 @@ fn chevron(look: &Look, edges: &Rc<Edges>, end: bool, target: String) -> El {
     backing.child(glyph).on_drag_any(move |d: &mut Drag, tx: &mut Tx| {
         tx.live_only();
         let again = tx.drag_repeat();
-        if d.phase == Phase::Down || again {
-            edges.page(end, w, &target, tx);
+        if (d.phase == Phase::Down || again) && edges.page(end, w, &target, tx) {
             tx.drag_repeat_after(if again { PAGE_EVERY } else { PAGE_DELAY });
         }
     })

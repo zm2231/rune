@@ -7,7 +7,7 @@ use rune::{Align, TextStyle};
 
 use super::date::{self, DAY, Span, Step};
 use super::{axis_x, ink, soft, strong};
-use crate::canvas::{Canvas, Measured, Scene, measure, measure_wrap, over_color, room, rounded_rect};
+use crate::canvas::{Canvas, Measured, Scene, measure, measure_wrap, room, rounded_rect};
 use crate::{DiagramStyle, clean, clean_quoted, oklab_mix, statements};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -331,7 +331,7 @@ pub(crate) fn draw(g: &Gantt, paint: &DiagramStyle) -> Option<Scene> {
             width = 1.5;
         }
         if t.tags.done {
-            fill = over_color(paint.text.alpha(0.12), paint.surface);
+            fill = rune::theme::over(paint.text.alpha(0.12), paint.surface);
             if !t.tags.crit {
                 border = paint.node_border;
             }

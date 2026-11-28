@@ -9,7 +9,7 @@ use super::route::Ctx;
 use crate::canvas::parts::{Kind, Part};
 use crate::canvas::shape;
 pub(crate) use crate::canvas::shape::{NodeShape, boundary, node_size, outline};
-use crate::canvas::{Canvas, Measured, Scene, ellipse, measure_balanced, measure_wrap, over_color, room, rounded_rect};
+use crate::canvas::{Canvas, Measured, Scene, ellipse, measure_balanced, measure_wrap, room, rounded_rect};
 use crate::chart::small;
 use crate::{DiagramStyle, EdgeStyle, Hover, NodeStyle};
 
@@ -311,7 +311,7 @@ fn draw_in(dir: Dir, p: &Parts, fonts: Fonts, spacing: &Spacing, paint: &Diagram
         .map(|e| {
             let (ca, cb) = (chain_of(nodes[e.from].cluster()), chain_of(nodes[e.to].cluster()));
             let common = ca.iter().zip(&cb).take_while(|(x, y)| x == y).count();
-            (0..common).fold(paint.surface, |bg, _| over_color(paint.cluster_fill, bg))
+            (0..common).fold(paint.surface, |bg, _| rune::theme::over(paint.cluster_fill, bg))
         })
         .collect();
     connector::edges(&mut c, &ctx, edges, labels, &backs, &title_boxes, flip, fonts.edge, paint);

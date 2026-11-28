@@ -6,7 +6,7 @@ use rune::{Align, Color, TextStyle};
 
 use super::{bold, hue, ink, s_curve, soft, solid, strong};
 use crate::canvas::shape::{self, NodeShape};
-use crate::canvas::{Canvas, Measured, Scene, measure_wrap, over_color, rounded_rect};
+use crate::canvas::{Canvas, Measured, Scene, measure_wrap, rounded_rect};
 use crate::{DiagramStyle, MAX_DEPTH, clean_quoted};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -182,7 +182,7 @@ pub(crate) fn draw(m: &Mindmap, paint: &DiagramStyle) -> Option<Scene> {
         let (fill, border) = match node.depth {
             0 => (solid(paint, hue(0)), strong(paint, hue(0))),
             1 => (soft(paint, h), strong(paint, h)),
-            _ => (over_color(soft(paint, h).alpha(0.55), paint.surface), strong(paint, h).alpha(0.7)),
+            _ => (rune::theme::over(soft(paint, h).alpha(0.55), paint.surface), strong(paint, h).alpha(0.7)),
         };
         let text = if node.depth == 0 { ink(fill) } else { paint.text };
         draw_node(&mut c, look(i, node.look), p, [fill, border, text], font(i));

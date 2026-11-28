@@ -7,9 +7,11 @@
 //! card's surface, a subgraph's tint, a node's fill), so overlaps and joints paint the same
 //! colour twice and look like one stroke. Area fills (tints, bands, slices) keep their alpha.
 //!
-//! The blend is in sRGB-encoded values, as apps blend by default (`App::srgb_blend`).
+//! The blend is the window's (`rune::theme::over`): in sRGB-encoded values by default, in linear
+//! light under `App::srgb_blend(false)`.
 
 use rune::Color;
+use rune::theme::over;
 
 use super::Op;
 use super::hover::Trace;
@@ -132,24 +134,6 @@ impl Backdrop {
 /// Ink that shows what's under it; clear ink stays clear.
 fn translucent(c: Color) -> bool {
     c.a > 0.0 && c.a < 1.0
-}
-
-/// `top` over `bottom`, blended in sRGB-encoded values.
-pub(crate) fn over(top: Color, bottom: Color) -> Color {
-    let a = top.a + bottom.a * (1.0 - top.a);
-    if a <= 1e-6 {
-        return Color::TRANSPARENT;
-    }
-    let m = |t: f32, b: f32| dec((enc(t) * top.a + enc(b) * bottom.a * (1.0 - top.a)) / a);
-    Color { r: m(top.r, bottom.r), g: m(top.g, bottom.g), b: m(top.b, bottom.b), a }
-}
-
-fn enc(c: f32) -> f32 {
-    rune::color::srgb_encode(c.clamp(0.0, 1.0))
-}
-
-fn dec(c: f32) -> f32 {
-    rune::color::srgb_decode(c.clamp(0.0, 1.0))
 }
 
 fn bounds(points: &[[f32; 2]]) -> [f32; 4] {

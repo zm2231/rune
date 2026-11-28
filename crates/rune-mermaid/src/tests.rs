@@ -346,3 +346,36 @@ fn max_items_preserves_dummy_and_depth_bounds_and_applies_across_diagram_types()
         assert!(supported_with(src, &high), "raised cap accepts {}", &src[..20]);
     }
 }
+
+fn fills<'a>(ops: impl IntoIterator<Item = &'a Op>) -> Vec<Color> {
+    ops.into_iter().filter_map(|op| if let Op::Fill(_, c) = op { Some(*c) } else { None }).collect()
+}
+
+fn mixed(top: Color, bottom: Color, srgb: bool) -> Color {
+    let (enc, dec) = (rune::color::srgb_encode, rune::color::srgb_decode);
+    let m = |t: f32, b: f32| if srgb { dec(top.a * enc(t) + (1.0 - top.a) * enc(b)) } else { top.a * t + (1.0 - top.a) * b };
+    Color { r: m(top.r, bottom.r), g: m(top.g, bottom.g), b: m(top.b, bottom.b), a: 1.0 }
+}
+
+fn holds(fills: &[Color], want: Color) -> bool {
+    fills.iter().any(|c| c.a == 1.0 && [c.r - want.r, c.g - want.g, c.b - want.b].iter().all(|d| d.abs() < 1e-5))
+}
+
+#[test]
+fn flattened_fills_mix_as_the_window_blends_and_each_mode_keeps_its_own_scene() {
+    let paint = DiagramStyle::neutral(true);
+    let Some(Parsed { diagram: Diagram::Flowchart(flow), .. }) = parse("flowchart LR\n  subgraph S [Box]\n    A -->|label| B\n  end") else { panic!() };
+    let gantt = "gantt\n  dateFormat YYYY-MM-DD\n  section S\n    Shipped :done, a, 2024-01-01, 3d";
+    let pill = paint.cluster_fill;
+    let done = paint.text.alpha(0.12);
+    for srgb in [true, false, true] {
+        let (f, g) = rune::theme::with_blend(srgb, || {
+            let c = graph::flowchart::draw_canvas(&flow, &paint, Some((Hover::Edges, paint.text))).expect("draws");
+            (fills(c.traces.iter().flat_map(|t| &t.ops)), fills(&scenes::built(gantt, &paint, None, None).0.expect("draws").ops))
+        });
+        assert!(holds(&f, mixed(pill, paint.surface, srgb)), "srgb {srgb}: an edge label's pill is its subgraph's tint over the surface");
+        assert!(!holds(&f, mixed(pill, paint.surface, !srgb)), "srgb {srgb}: the pill was mixed in the other mode");
+        assert!(holds(&g, mixed(done, paint.surface, srgb)), "srgb {srgb}: a done task's bar is the text's wash over the surface");
+        assert!(!holds(&g, mixed(done, paint.surface, !srgb)), "srgb {srgb}: the bar was mixed in the other mode");
+    }
+}

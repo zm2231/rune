@@ -417,7 +417,7 @@ pub(crate) fn outline(shape: NodeShape, c: [f32; 2], s: [f32; 2]) -> Vec<[f32; 2
 #[allow(clippy::too_many_arguments, reason = "one node's whole drawing")]
 /// A cylinder's open end, a shade off its side so the shape reads even without an outline.
 fn lid(fill: Color, paint: &DiagramStyle) -> Color {
-    super::over_color(paint.text.alpha(0.06), fill)
+    rune::theme::over(paint.text.alpha(0.06), fill)
 }
 
 pub(crate) fn draw(

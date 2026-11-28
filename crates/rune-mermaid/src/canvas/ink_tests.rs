@@ -1,6 +1,8 @@
 use rune::{Color, LineCap};
 
-use super::{flatten, over};
+use rune::theme::over;
+
+use super::flatten;
 use crate::canvas::{Canvas, Op, dist, lerp};
 use crate::{DiagramStyle, Hover, scene};
 
@@ -99,23 +101,37 @@ fn every_diagram_draws_its_ink_opaque_over_an_opaque_surface() {
 }
 
 #[test]
-fn ink_takes_the_colour_of_the_fills_beneath_it() {
+fn ink_takes_the_colour_of_the_fills_beneath_it_in_the_windows_blend() {
     let surface = Color { r: 0.02, g: 0.02, b: 0.02, a: 1.0 };
     let tint = Color::WHITE.alpha(0.1);
     let ink = Color::WHITE.alpha(0.5);
-    let mut c = Canvas::default();
-    c.fill(vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]], tint);
-    c.stroke(vec![[10.0, 50.0], [90.0, 50.0]], false, 1.0, ink);
-    c.stroke(vec![[110.0, 50.0], [190.0, 50.0]], false, 1.0, ink);
-    c.fill(vec![[150.0, 40.0], [160.0, 50.0], [150.0, 60.0]], ink);
-    flatten(&mut c.ops, &mut [], surface);
-    let colors: Vec<Color> = c.ops.iter().map(|op| match op {
-        Op::Fill(_, c) | Op::Stroke { color: c, .. } => *c,
-    }).collect();
-    assert_eq!(colors[0], tint, "an area keeps its alpha");
-    assert_eq!(colors[1], over(ink, over(tint, surface)), "ink inside the tint");
-    assert_eq!(colors[2], over(ink, surface), "ink on the surface");
-    assert_eq!(colors[3], colors[2], "a head in the line's colour matches its line");
+    let enc = rune::color::srgb_encode;
+    let dec = rune::color::srgb_decode;
+    let srgb = |a: f32, g: f32| dec(a + (1.0 - a) * enc(g));
+    let linear = |a: f32, g: f32| a + (1.0 - a) * g;
+    for (mode, mix) in [(true, &srgb as &dyn Fn(f32, f32) -> f32), (false, &linear)] {
+        let colors: Vec<Color> = rune::theme::with_blend(mode, || {
+            let mut c = Canvas::default();
+            c.fill(vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]], tint);
+            c.stroke(vec![[10.0, 50.0], [90.0, 50.0]], false, 1.0, ink);
+            c.stroke(vec![[110.0, 50.0], [190.0, 50.0]], false, 1.0, ink);
+            c.fill(vec![[150.0, 40.0], [160.0, 50.0], [150.0, 60.0]], ink);
+            flatten(&mut c.ops, &mut [], surface);
+            c.ops.iter().map(|op| match op {
+                Op::Fill(_, c) | Op::Stroke { color: c, .. } => *c,
+            }).collect()
+        });
+        let close = |got: Color, want: f32, what: &str| {
+            let off = [got.r, got.g, got.b].iter().map(|c| (c - want).abs()).fold(0.0, f32::max);
+            assert!(off < 1e-5 && got.a == 1.0, "srgb {mode}: {what} is {got:?}, want {want}");
+        };
+        assert_eq!(colors[0], tint, "srgb {mode}: an area keeps its alpha");
+        close(colors[1], mix(0.5, mix(0.1, 0.02)), "ink inside the tint");
+        close(colors[2], mix(0.5, 0.02), "ink on the surface");
+        assert_eq!(colors[3], colors[2], "srgb {mode}: a head in the line's colour matches its line");
+    }
+    let on_surface = |mode| rune::theme::with_blend(mode, || over(ink, surface));
+    assert!(on_surface(true).r < on_surface(false).r, "sRGB-encoded mixing of white over near-black reads darker than linear light");
 }
 
 #[test]
@@ -130,25 +146,4 @@ fn hover_traces_light_in_opaque_ink_too() {
     });
     assert!(strokes.clone().count() >= 3);
     assert!(strokes.into_iter().all(|a| a == 1.0));
-}
-
-#[test]
-fn srgb_enc_dec_match_clamped_reference_bit_for_bit() {
-    let ref_enc = |c: f32| {
-        let c = c.clamp(0.0, 1.0);
-        if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
-    };
-    let ref_dec = |c: f32| {
-        let c = c.clamp(0.0, 1.0);
-        if c <= 0.040_45 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
-    };
-    for v in 0..=255u8 {
-        let x = v as f32 / 255.0;
-        assert_eq!(super::enc(x).to_bits(), ref_enc(x).to_bits(), "enc byte {v}");
-        assert_eq!(super::dec(x).to_bits(), ref_dec(x).to_bits(), "dec byte {v}");
-    }
-    for x in [-1.0, -0.01, -0.0, 0.0, 0.003_130_8, 0.040_45, 0.5, 1.0, 1.5] {
-        assert_eq!(super::enc(x).to_bits(), ref_enc(x).to_bits(), "enc {x}");
-        assert_eq!(super::dec(x).to_bits(), ref_dec(x).to_bits(), "dec {x}");
-    }
 }

@@ -69,6 +69,22 @@ impl Drop for Scope {
     }
 }
 
+/// Straight-alpha `top` composited over `bottom` as a window in the current blend mode
+/// ([`blends_srgb`]) draws the two layers: mixed in sRGB encoding when it blends in sRGB (the
+/// default, as a browser composites), else in linear light. For flattening a translucent colour
+/// over a known backdrop into the fill the window would show.
+pub fn over(top: Color, bottom: Color) -> Color {
+    let a = top.a + bottom.a * (1.0 - top.a);
+    if a <= 0.0 {
+        return Color::TRANSPARENT;
+    }
+    let srgb = blends_srgb();
+    let enc = |c: f32| if srgb { srgb_encode(c.clamp(0.0, 1.0)) } else { c };
+    let dec = |c: f32| if srgb { srgb_decode(c.clamp(0.0, 1.0)) } else { c };
+    let mix = |t: f32, b: f32| dec((enc(t) * top.a + enc(b) * bottom.a * (1.0 - top.a)) / a);
+    Color { r: mix(top.r, bottom.r), g: mix(top.g, bottom.g), b: mix(top.b, bottom.b), a }
+}
+
 /// `c`, authored for sRGB blending (as CSS colours are), as it should be painted over the
 /// opaque `bg` in the current blend mode ([`blends_srgb`]): unchanged when blending in sRGB,
 /// its alpha re-solved with [`srgb_equivalent`] when blending in linear light.

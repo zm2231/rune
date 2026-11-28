@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use rune::{Align, Color};
 
 use super::{bold, small, soft, strong};
-use crate::canvas::{Canvas, Measured, Scene, ellipse, measure, measure_wrap, over_color, room};
+use crate::canvas::{Canvas, Measured, Scene, ellipse, measure, measure_wrap, room};
 use crate::{DiagramStyle, clean, parse_color_spec, word};
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -141,7 +141,7 @@ pub(crate) fn draw(q: &Quadrant, paint: &DiagramStyle) -> Option<Scene> {
     let origins = [[x0 + half, 0.0], [x0, 0.0], [x0, half], [x0 + half, half]];
     let tints = [0.95, 0.7, 0.45, 0.7];
     for (o, a) in origins.iter().zip(tints) {
-        let fill = over_color(soft(paint, HUE).alpha(a), paint.surface);
+        let fill = rune::theme::over(soft(paint, HUE).alpha(a), paint.surface);
         c.fill(vec![*o, [o[0] + half, o[1]], [o[0] + half, o[1] + half], [o[0], o[1] + half]], fill);
     }
     c.stroke(vec![[x0 + half, 0.0], [x0 + half, y1]], false, 2.0, paint.surface);

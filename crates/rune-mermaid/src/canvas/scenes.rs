@@ -1,5 +1,6 @@
-//! Built scenes, kept by source, style and hover, so a diagram rebuilt with nothing new costs a
-//! lookup, and a diagram streaming in builds each line held to the one before (see [`steady`]).
+//! Built scenes, kept by source, style, hover and blend mode, so a diagram rebuilt with nothing
+//! new costs a lookup, and a diagram streaming in builds each line held to the one before (see
+//! [`steady`]).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -73,6 +74,7 @@ fn scene_key(src: &str, style: &DiagramStyle, hover: Option<(Hover, Color)>, gro
     growing.hash(&mut h);
     // Layout measures labels in the app's fonts.
     rune::text::font_epoch().hash(&mut h);
+    rune::theme::blends_srgb().hash(&mut h);
     h.finish()
 }
 

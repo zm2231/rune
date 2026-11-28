@@ -80,16 +80,6 @@ pub(crate) fn measure_balanced(s: &str, font: TextStyle) -> Measured {
     m
 }
 
-/// Straight-alpha `top` composited over `bottom` in linear sRGB.
-pub(crate) fn over_color(top: Color, bottom: Color) -> Color {
-    let a = top.a + bottom.a * (1.0 - top.a);
-    if a <= 1e-6 {
-        return Color::TRANSPARENT;
-    }
-    let m = |t: f32, b: f32| (t * top.a + b * bottom.a * (1.0 - top.a)) / a;
-    Color { r: m(top.r, bottom.r), g: m(top.g, bottom.g), b: m(top.b, bottom.b), a }
-}
-
 /// The outline of a group (a subgraph, a block group, a participant box): the nodes' outline,
 /// quieter, so a group reads as a region behind its nodes rather than another node.
 pub(crate) fn group_border(paint: &crate::DiagramStyle) -> Color {

@@ -20,7 +20,7 @@ pub(super) fn begin_host_drag_out(
     });
     let (sink, path) = (rt.drag_end_sink(), start.path.clone());
     let handle = native_handle.clone();
-    crate::drag_out::begin(&l.window, start, image, Box::new(move |outcome| {
+    crate::drag_out::begin(&l.window, start, image, rt.srgb_blend(), Box::new(move |outcome| {
         sink.borrow_mut().push((path, outcome));
         handle.send(WakeEvent::App);
     }));

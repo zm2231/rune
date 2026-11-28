@@ -55,24 +55,26 @@ fn the_snapshot_frame_is_its_pixel_aligned_crop() {
 #[test]
 fn an_opaque_backing_fills_transparent_pixels_and_keeps_opaque_ones() {
     let image = DragImage::rgba(3, 1, &[255, 0, 0, 255, 0, 0, 0, 0, 255, 255, 255, 128]).unwrap().size(3.0, 1.0).over_element();
-    let flat = image.over(Color { r: 0.0, g: 0.0, b: 1.0, a: 1.0 }).unwrap();
+    let blue = Color { r: 0.0, g: 0.0, b: 1.0, a: 1.0 };
+    let flat = image.over(blue, true).unwrap();
     assert_eq!((flat.points(), flat.placement), (Some((3.0, 1.0)), Placement::Element), "size and placement survive");
     let rgba = image::load_from_memory(flat.png_data()).unwrap().to_rgba8();
     assert_eq!(rgba.get_pixel(0, 0).0, [255, 0, 0, 255]);
     assert_eq!(rgba.get_pixel(1, 0).0, [0, 0, 255, 255]);
-    let half = rgba.get_pixel(2, 0).0;
-    assert_eq!(half[3], 255);
-    assert!(half[0] == half[1] && half[0] > 150 && half[2] == 255, "half white over blue, mixed in linear light: {half:?}");
+    assert_eq!(rgba.get_pixel(2, 0).0, [128, 128, 255, 255], "half white over blue, mixed in sRGB as the window blends by default");
+    let linear = image.over(blue, false).unwrap();
+    let half = image::load_from_memory(linear.png_data()).unwrap().to_rgba8().get_pixel(2, 0).0;
+    assert_eq!(half, [188, 188, 255, 255], "half white over blue, mixed in linear light in a window that blends that way");
 }
 
 #[test]
 fn the_picture_is_the_items_image_else_the_snapshot_over_the_backing() {
     let snap = DragImage::rgba(1, 1, &[0, 0, 0, 0]).unwrap();
     let own = DragImage::rgba(1, 1, &[1, 2, 3, 255]).unwrap();
-    assert_eq!(picture(&DragItem::new(), Some(snap.clone())), Some(snap.clone()));
-    assert_eq!(picture(&DragItem::new().image(own.clone()), Some(snap.clone())), Some(own));
-    assert_eq!(picture(&DragItem::new(), None), None);
-    let flat = picture(&DragItem::new().opaque(Color::WHITE), Some(snap)).unwrap();
+    assert_eq!(picture(&DragItem::new(), Some(snap.clone()), true), Some(snap.clone()));
+    assert_eq!(picture(&DragItem::new().image(own.clone()), Some(snap.clone()), true), Some(own));
+    assert_eq!(picture(&DragItem::new(), None, true), None);
+    let flat = picture(&DragItem::new().opaque(Color::WHITE), Some(snap), true).unwrap();
     assert_eq!(image::load_from_memory(flat.png_data()).unwrap().to_rgba8().get_pixel(0, 0).0, [255, 255, 255, 255]);
 }
 
@@ -245,7 +247,7 @@ fn drag_image_hotspot_places_frame_and_survives_backing() {
     let sanitized = image.clone().hotspot(f32::NAN, f32::INFINITY);
     assert_eq!(sanitized.hotspot_point(), Some((0.0, 0.0)));
 
-    let flat = hot.over(Color::WHITE).unwrap();
+    let flat = hot.over(Color::WHITE, true).unwrap();
     assert_eq!(flat.hotspot_point(), Some((12.0, 18.0)));
     assert_eq!(flat.frame(rect, press, (64.0, 64.0)), [38.0, 42.0, 48.0, 48.0]);
 }

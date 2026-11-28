@@ -377,17 +377,19 @@ impl DragImage {
         }
     }
 
-    /// The image composited over an opaque `backing`, blended in linear light as the window
-    /// blends. `None` if the PNG doesn't decode.
+    /// The image composited over an opaque `backing`, blended as the window blends: in sRGB
+    /// encoding when `srgb_blend` (the default), else in linear light. `None` if the PNG doesn't
+    /// decode.
     #[cfg_attr(not(any(target_os = "macos", target_os = "windows", all(unix, not(target_os = "ios"), not(target_os = "android")))), allow(dead_code))]
-    pub(crate) fn over(&self, backing: Color) -> Option<Self> {
+    pub(crate) fn over(&self, backing: Color, srgb_blend: bool) -> Option<Self> {
         let mut rgba = crate::image::png_rgba8(&self.png).ok()?;
         let bg = [backing.r, backing.g, backing.b];
         for p in rgba.pixels_mut() {
             let a = p[3] as f32 / 255.0;
             for c in 0..3 {
-                let v = srgb_decode(p[c] as f32 / 255.0) * a + bg[c] * (1.0 - a);
-                p[c] = (srgb_encode(v) * 255.0).round().clamp(0.0, 255.0) as u8;
+                let top = p[c] as f32 / 255.0;
+                let v = if srgb_blend { top * a + srgb_encode(bg[c]) * (1.0 - a) } else { srgb_encode(srgb_decode(top) * a + bg[c] * (1.0 - a)) };
+                p[c] = (v * 255.0).round().clamp(0.0, 255.0) as u8;
             }
             p[3] = 255;
         }
@@ -525,14 +527,14 @@ fn to_straight_rgba(pixels: &mut [u8], bgra: bool, srgb_target: bool) {
 /// threshold. `done` runs once with how it ended (also when it couldn't start: `Cancelled`).
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg_attr(not(any(target_os = "macos", target_os = "windows", all(unix, not(target_os = "ios"), not(target_os = "android")))), allow(unused_variables))]
-pub(crate) fn begin(window: &winit::window::Window, start: DragOutStart, snapshot: Option<DragImage>, done: Box<dyn FnOnce(DragOutcome)>) {
+pub(crate) fn begin(window: &winit::window::Window, start: DragOutStart, snapshot: Option<DragImage>, srgb_blend: bool, done: Box<dyn FnOnce(DragOutcome)>) {
     #[cfg(target_os = "macos")]
-    { let picture = picture(&start.item, snapshot); macos::begin(window, start, picture, done); }
+    { let picture = picture(&start.item, snapshot, srgb_blend); macos::begin(window, start, picture, done); }
     #[cfg(target_os = "windows")]
-    { let picture = picture(&start.item, snapshot); windows::begin(window, start, picture, done); }
+    { let picture = picture(&start.item, snapshot, srgb_blend); windows::begin(window, start, picture, done); }
     #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
     {
-        let picture = picture(&start.item, snapshot);
+        let picture = picture(&start.item, snapshot, srgb_blend);
         let scale = window.scale_factor() as f32;
         let offers = crate::platform::wayland::drag_source::mime::offers_from_item(&start.item);
         let actions_mask = crate::platform::wayland::drag_source::mime::dnd_action_mask(
@@ -555,12 +557,13 @@ pub(crate) fn begin(window: &winit::window::Window, start: DragOutStart, snapsho
     done(DragOutcome::Cancelled);
 }
 
-/// The item's own image, else the snapshot, over the item's backing colour if it has one.
+/// The item's own image, else the snapshot, over the item's backing colour if it has one, blended
+/// in the window's mode.
 #[cfg_attr(not(any(target_os = "macos", target_os = "windows", all(unix, not(target_os = "ios"), not(target_os = "android")))), allow(dead_code))]
-fn picture(item: &DragItem, snapshot: Option<DragImage>) -> Option<DragImage> {
+fn picture(item: &DragItem, snapshot: Option<DragImage>, srgb_blend: bool) -> Option<DragImage> {
     let picture = item.drag_image().cloned().or(snapshot)?;
     match item.backing() {
-        Some(backing) => picture.over(backing).or(Some(picture)),
+        Some(backing) => picture.over(backing, srgb_blend).or(Some(picture)),
         None => Some(picture),
     }
 }

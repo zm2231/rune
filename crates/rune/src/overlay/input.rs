@@ -190,7 +190,7 @@ impl OverlayCore {
             _ => None,
         };
         let wake = self.shared.wake.lock().unwrap().clone();
-        crate::drag_out::begin(&window, start, image, Box::new(move |outcome| {
+        crate::drag_out::begin(&window, start, image, rt.srgb_blend(), Box::new(move |outcome| {
             sink.borrow_mut().push((path, outcome));
             if let Some(wake) = wake { wake(); }
         }));

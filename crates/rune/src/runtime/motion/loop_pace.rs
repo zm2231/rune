@@ -7,10 +7,12 @@ pub(in crate::runtime) struct LoopPace {
 }
 
 impl tracks::MotionState {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::runtime) fn set_ambient_period(&mut self, period: Option<std::time::Duration>) {
         self.loop_pace.period = period.map(|p| p.as_secs_f64()).filter(|p| *p > 0.0);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::runtime) fn note_steering_input(&mut self, clock: f64) {
         self.loop_pace.steered_until = clock + crate::frame::clock::STEERED_IDLE.as_secs_f64();
     }

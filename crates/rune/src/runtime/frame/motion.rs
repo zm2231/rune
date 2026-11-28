@@ -33,10 +33,12 @@ impl RuntimeCore {
         self.motion.set_reveal_fps(fps);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn set_ambient_period(&mut self, period: Option<std::time::Duration>) {
         self.motion.set_ambient_period(period);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn note_steering_input(&mut self) {
         let now = self.now_clock();
         self.motion.note_steering_input(now);

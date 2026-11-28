@@ -196,6 +196,7 @@ pub use tokens::metrics::SwitchMetrics;
 pub use tokens::metrics::TextAreaMetrics;
 pub use tokens::palette::PaletteFocus;
 pub use tokens::palette::PaletteSeed;
+pub use tokens::palette::legible;
 pub use tokens::roles::RoleColor;
 pub use tokens::roles::TextRole;
 pub use tokens::roles::TextRoles;

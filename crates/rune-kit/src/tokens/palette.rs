@@ -70,7 +70,20 @@ pub(crate) fn tint(base: Color, hue: Color, t: f32) -> Color {
     Color::from_oklab([0, 1, 2, 3].map(|i| if i == 3 { a[3] } else { a[i] + (b[i] - a[i]) * t }))
 }
 
-pub(crate) fn legible(fg: Color, fill: Color, min: f32) -> Color {
+/// `fg` as text on `fill` reading at no less than `min`:1 (WCAG contrast; 4.5 for body text, 7
+/// under Increase Contrast). A colour that already reads at `min` comes back as it is. One that
+/// falls short comes back opaque, moved in OKLab toward black or white, whichever can reach
+/// `min`, keeping its hue as far as it can; translucent `fg` is first laid over `fill`. When
+/// neither black nor white reaches `min` on `fill`, the one with more contrast comes back.
+///
+/// ```
+/// use rune::{Color, color::hex};
+/// let grey = hex("#8a8a8a").unwrap();
+/// let text = rune_kit::legible(grey, Color::WHITE, 4.5);
+/// assert!(text.luminance() < grey.luminance());
+/// assert_eq!(rune_kit::legible(Color::BLACK, Color::WHITE, 4.5), Color::BLACK);
+/// ```
+pub fn legible(fg: Color, fill: Color, min: f32) -> Color {
     let fg = if fg.a < 1.0 { Color { a: 1.0, ..fill.mix(fg, fg.a) } } else { fg };
     if contrast(fg, fill) >= min {
         return fg;

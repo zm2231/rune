@@ -92,6 +92,14 @@ blue (set `k.c.border_focus` to change it), and elevation rings follow `k.c.bord
 painted, so overriding border tokens after `from_palette` restyles them too. It uses neutral
 typography and motion; override individual tokens as needed. The default glyph set includes `k.glyph.lock`, `k.glyph.eye` and `k.glyph.eye_off`.
 
+Text the kit derives reads at 4.5:1 (7:1 under Increase Contrast) on `bg_base`, `bg_deep` and
+`layer_01`. Colours an app sets afterwards are drawn as given. To hold them to the same floor,
+end with `k.legible_text()`, after `k.increased_contrast()` when the system asks for it:
+`text_strong`, `text_base`, `text_weak`, `text_muted`, `text_accent` and every `k.roles` colour
+that falls short moves toward black or white along its hue until it reads (faint text at 3:1, or
+4.5:1), and the rest stay as they are. For text on an app's own surfaces,
+`rune_kit::legible(fg, fill, 4.5)` does the same for one colour.
+
 - Builders end in `.build(&kit)`; overlays take `.build(&kit, &mut layer)` and return their
   trigger. Content is `El::anchored` to the trigger (flips, shifts, stays inside the window).
 - Handlers attach through the builder (`on_press`, `on_toggle`, `on_select`, `on_choose`,

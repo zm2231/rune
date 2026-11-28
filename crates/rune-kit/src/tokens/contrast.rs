@@ -1,7 +1,7 @@
 use rune::Color;
 
 use super::kit::Kit;
-use super::palette::{contrast, tint};
+use super::palette::{contrast, legible, tint};
 use super::roles::{TextRole, TextRoles};
 
 impl Kit {
@@ -34,6 +34,48 @@ impl Kit {
             if k.roles.get(role) == before.get(role) {
                 k.roles.set(role, after.get(role));
             }
+        }
+        k
+    }
+
+    /// The kit with the text colours an app set held to the contrast the kit's own text keeps,
+    /// on the surfaces text sits on (`bg_base`, `bg_deep` and `layer_01`): `text_strong`,
+    /// `text_base`, `text_weak`, `text_muted`, `text_accent` and every [`TextRole`] at 4.5:1,
+    /// and `text_faint` at 3:1; 7:1 and 4.5:1 on a kit made for
+    /// [`increased_contrast`](Kit::increased_contrast). A colour that already reads at its floor
+    /// is left as it is; one that falls short becomes opaque and moves toward black or white
+    /// along its hue ([`legible`](crate::legible)) until it does. Icons, borders, fills and the
+    /// text drawn on fills (`text_inverse`, `text_contrast`) are left alone.
+    ///
+    /// Call it after overriding the colours, and after [`Kit::increased_contrast`], which keeps
+    /// roles it did not derive as they are.
+    ///
+    /// ```
+    /// use rune::color::hex;
+    /// use rune_kit::Kit;
+    /// let mut kit = Kit::neutral(false);
+    /// kit.c.text_base = hex("#9a9a9a").unwrap();
+    /// kit.roles.link = hex("#7aa7ff").unwrap();
+    /// let kit = kit.legible_text();
+    /// assert_ne!(kit.c.text_base, hex("#9a9a9a").unwrap());
+    /// ```
+    pub fn legible_text(&self) -> Kit {
+        let mut k = self.clone();
+        let (body, faint) = if k.increased_contrast { (7.0, 4.5) } else { (4.5, 3.0) };
+        let surfaces = [k.c.bg_base, k.c.bg_deep, k.c.layer_01];
+        let floor = |color: Color, min: f32| {
+            if surfaces.iter().all(|&s| contrast(s.mix(color.alpha(1.0), color.a), s) >= min) {
+                return color;
+            }
+            surfaces.iter().fold(color, |color, &s| legible(color, s, min))
+        };
+        let c = &mut k.c;
+        for token in [&mut c.text_strong, &mut c.text_base, &mut c.text_weak, &mut c.text_muted, &mut c.text_accent] {
+            *token = floor(*token, body);
+        }
+        c.text_faint = floor(c.text_faint, faint);
+        for role in TextRole::ALL {
+            k.roles.set(role, floor(k.roles.get(role), body));
         }
         k
     }

@@ -282,6 +282,7 @@ impl Kit {
                     if shadow.blur == 0.0 { border } else { Color::BLACK.alpha(if dark { 0.30 } else { 0.12 }) };
             }
         }
+        kit.roles = crate::TextRoles::from_palette(&kit.c);
         kit
     }
 }

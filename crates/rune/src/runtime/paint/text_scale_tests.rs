@@ -57,7 +57,7 @@ fn tick(rt: &mut Runtime<App>, frames: usize) -> usize {
 }
 
 fn shapes(rt: &Runtime<App>) -> Vec<String> {
-    rt.instances.iter().map(|i| format!("{:?} {:?} {:?} {:?} {:?}", i.rect, i.radii, i.params[0..3].to_vec(), i.clip, i.fade)).collect()
+    rt.instances.iter().map(|i| format!("{:?} {:?} {:?} {:?} {:?} {:?}", i.rect, i.radii, i.fill, i.params[0..3].to_vec(), i.clip, i.fade)).collect()
 }
 
 #[test]
@@ -71,7 +71,8 @@ fn a_text_scale_step_between_loop_only_frames_paints_what_a_fresh_window_paints(
         }
         assert!(stepped > 0, "{path:?}: the spinners stepped on loop-only frames");
         let mut fresh = window(*path.last().unwrap());
-        tick(&mut fresh, 30);
+        tick(&mut fresh, 30 * path.len());
+        assert_eq!(rt.frame.test_clock_mut().unwrap().now(), fresh.frame.test_clock_mut().unwrap().now(), "{path:?}: the same time");
         let (a, b) = (shapes(&rt), shapes(&fresh));
         let first = a.iter().zip(&b).position(|(x, y)| x != y);
         assert!(a.len() == b.len() && first.is_none(), "{path:?}: {} instances against {}, first differing {first:?}: {:?} / {:?}", a.len(), b.len(), first.map(|n| &a[n]), first.map(|n| &b[n]));
